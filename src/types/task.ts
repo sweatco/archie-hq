@@ -2,7 +2,7 @@
  * Task-related type definitions
  */
 
-export type TaskStatus = 'in_progress' | 'stopped' | 'completed';
+export type TaskStatus = 'preparing' | 'in_progress' | 'stopped' | 'completed';
 
 export type TaskMemoryScope =
   | { kind: 'public'; channel_id: string }
@@ -267,6 +267,15 @@ export interface AgentSessionState {
 
 export interface TaskMetadata {
   task_id: string;
+  approved_start?: {
+    correlation: string;
+    version: string;
+    actor: string;
+    budget: 'task';
+    phase: 'prepared' | 'ready';
+    brief: string;
+    owner_reply_delivered?: boolean;
+  };
   initiative_origin?: { delivery_id: string; matter_ids: string[] };
   channels: Record<string, Channel>;   // Active message delivery targets, keyed by channel ID
   default_channel: string | null;      // Channel ID of the originating channel (null for CLI-originated tasks)
@@ -315,6 +324,7 @@ export interface TaskMetadata {
    */
   briefed_channels?: string[];
   status: TaskStatus;
+  waiting_for?: 'user' | 'time_budget' | 'edit_mode' | 'research_budget' | 'merge' | 'trigger' | 'max_mode' | 'tool_call';
   /**
    * Which engine generation last wrote this metadata. `2` is the flat single-PM runtime; absent means the folder was written by the pre-flattening multi-agent engine. Stamped on first load by `stampRuntimeVersion` (`src/tasks/task.ts`), set directly by `Task.create`.
    */

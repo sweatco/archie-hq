@@ -57,7 +57,7 @@ import { grantTriggerDataAccess, buildTriggerDataPromptSection } from './trigger
 import { applyOAuthBindings } from '../system/oauth/inject.js';
 import { enrichPromptWithMemory } from '../memory/index.js';
 import { getAuthorizedMemoryAuthors } from '../memory/task-authors.js';
-import { hasObservationMemory } from '../memory/observations.js';
+import { createObservationMcpServer, observationToolGuidance, shouldAttachObservationTools } from '../proactivity/tools.js';
 import { isInjectionEnabled, isMemoryToolsEnabled } from '../memory/paths.js';
 import {
   authorizeTaskMemory,
@@ -413,6 +413,11 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
       `Task: ${taskId}`,
       `Status: ${metadata.status}`,
     ];
+    if (metadata.approved_start?.phase === 'ready') {
+      const start = metadata.approved_start;
+      contextLines.push(`Owner-approved task start: ${start.correlation}; ordinary task budgeting applies. Existing edit and external-action approvals still apply.`,
+        `<approved_task_brief untrusted="true">${start.brief.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').slice(0, 8000)}</approved_task_brief>`);
+    }
     if (channelEntries.length === 0 && metadata.home_channel) {
       // A trigger-fired task has no thread yet but does have a home channel, so telling it there is nowhere to reply would be exactly backwards: its first user-facing message is what opens the thread this task then lives in.
       contextLines.push(
@@ -541,7 +546,12 @@ Shared folder: ${sharedPath} [READ-ONLY]
     );
   }
 
-  if ((memoryAuthorization || hasObservationMemory()) && shouldAttachMemoryTools(metadata)) {
+  if (shouldAttachObservationTools(metadata)) {
+    mcpServers['observation-tools'] = createObservationMcpServer(task);
+    systemPrompt += `\n\n${observationToolGuidance}`;
+  }
+
+  if (memoryAuthorization && shouldAttachMemoryTools(metadata)) {
     mcpServers['memory-tools'] = createMemoryMcpServer(task);
   }
 

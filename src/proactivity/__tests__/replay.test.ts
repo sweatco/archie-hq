@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ObservationStore } from '../../memory/observation-store.js';
+import { InitiativeStore } from '../store.js';
 import { InitiativeService } from '../service.js';
 import { LearningService } from '../learning.js';
 import { AdmissionDeferred, ModelGateway, type BackgroundModel } from '../model.js';
@@ -10,10 +10,10 @@ import type { ObservationSlack } from '../slack.js';
 const NOW = Date.parse('2026-10-20T10:00:00Z');
 const TS = (NOW / 1000).toFixed(6);
 const config = { mode: 'shadow' as const, owner: 'U1', extractionModel: 'claude-haiku-5-5', investigationModel: 'claude-sonnet-5-5' };
-let store: ObservationStore;
+let store: InitiativeStore;
 let slack: ObservationSlack;
 beforeEach(() => {
-  store = new ObservationStore(':memory:', 'T1', NOW - 1000);
+  store = new InitiativeStore(':memory:', 'T1', NOW - 1000);
   store.channel('C1', true, false);
   store.record({ channel: 'C1', thread: TS, ts: TS, version: TS, author: 'U1', text: 'Please prepare the urgent release checklist' }, NOW);
   slack = { inspect: async () => ({ shared: false, ownerCanRead: true }), active: () => false } as unknown as ObservationSlack;
@@ -37,18 +37,18 @@ describe('production-path snapshot replay', () => {
     expect(complete).toHaveBeenCalledTimes(2);
     expect(store.matters()).toEqual([]);
     expect(store.deliveries('sent')).toEqual([]);
-    expect(store.rows('SELECT kind FROM jobs')).toEqual([]);
+    expect(store['rows']('SELECT kind FROM jobs')).toEqual([]);
   });
 
   it('records before extraction and keeps zero-matter decisions as completed no-action cases', async () => {
     const learning = new LearningService(store, new ModelGateway(store), config.investigationModel, [], async () => true);
     const model: BackgroundModel = { complete: vi.fn(async (request) => {
-      expect(store.rows('SELECT id FROM episodes')).toHaveLength(1);
+      expect(store['rows']('SELECT id FROM episodes')).toHaveLength(1);
       return result(request, true) as never;
     }) };
     const service = new InitiativeService(store, slack, model, config, () => NOW, learning);
     store.schedule('extract', 'global', NOW); await service.tick(NOW, true); service.stop();
-    const input = JSON.parse(String(store.row('SELECT payload FROM episodes')!.payload)).decision;
+    const input = JSON.parse(String(store['row']('SELECT payload FROM episodes')!.payload)).decision;
     const replay = await replayDecision(store, input, 'base', '{}', model, false, new AbortController().signal);
     expect(replay).toEqual({ interventions: [], matters: [] });
   });
@@ -62,7 +62,7 @@ describe('production-path snapshot replay', () => {
   });
 
   it('refuses an incomplete source read instead of inventing an empty complete thread', async () => {
-    store.run('UPDATE threads SET gap=?', 'Pagination missing');
+    store['run']('UPDATE threads SET gap=?', 'Pagination missing');
     const input = await captureDecision(store, slack, config, [store.snapshot('C1', TS)!], NOW);
     const complete = vi.fn(async (request) => result(request, true)) as BackgroundModel['complete'];
     await expect(replayDecision(store, input, 'base', '{}', { complete }, false, new AbortController().signal)).rejects.toThrow('Recorded source coverage is incomplete');
@@ -84,7 +84,7 @@ describe('production-path snapshot replay', () => {
   });
 
   it('preserves consumed notification slots from other threads without copying their content', async () => {
-    for (let i = 0; i < 2; i++) store.run("INSERT INTO deliveries VALUES (?, 'D_OTHER',NULL,'Other-source text','[]','[]','base',0,'sent',NULL,?,'2026-10-20')", `other-${i}`, NOW);
+    for (let i = 0; i < 2; i++) store['run']("INSERT INTO deliveries VALUES (?, 'D_OTHER',NULL,'Other-source text','[]','[]','base',0,'sent',NULL,?,'2026-10-20',NULL)", `other-${i}`, NOW);
     const input = await captureDecision(store, slack, config, [store.snapshot('C1', TS)!], NOW);
     expect(input.usedSlots.extra).toBe(2);
     expect(JSON.stringify(input)).not.toContain('Other-source text');
@@ -96,7 +96,7 @@ describe('production-path snapshot replay', () => {
     const gateway = new ModelGateway(store);
     const submit = vi.spyOn(gateway, 'submit').mockImplementation(async (request, context) => {
       const id = `batch-${submit.mock.calls.length}`;
-      store.run('INSERT INTO batches VALUES (?,NULL,?,?,?,?,?,?)', id, id, '{}', JSON.stringify(context), 'complete',
+      store['run']('INSERT INTO batches VALUES (?,NULL,?,?,?,?,?,?)', id, id, '{}', JSON.stringify(context), 'complete',
         JSON.stringify({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(result(request)) }] }), NOW);
       return id;
     });

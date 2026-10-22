@@ -3,13 +3,14 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ObservationStore } from '../observation-store.js';
+import { InitiativeStore } from '../store.js';
 import { DatabaseSync } from 'node:sqlite';
-import { lisbonDay, type Delivery, type Matter, type SourceMessage } from '../observation-types.js';
+import { lisbonDay, type Delivery, type Matter, type SourceMessage } from '../types.js';
+import { SCHEMA_VERSION } from '../persistence/migrations.js';
 
 const NOW = Date.parse('2026-10-20T10:00:00Z');
 let root: string;
-let store: ObservationStore;
+let store: InitiativeStore;
 
 function message(overrides: Partial<SourceMessage> = {}): SourceMessage {
   return { channel: 'C1', thread: '1792490401.000001', ts: '1792490401.000001', version: '1792490401.000001', author: 'U1', text: 'Release Friday', ...overrides };
@@ -32,7 +33,7 @@ function delivery(id: string, matter: Matter): Delivery {
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'archie-observations-'));
-  store = new ObservationStore(join(root, 'state.sqlite'), 'T1', NOW);
+  store = new InitiativeStore(join(root, 'state.sqlite'), 'T1', NOW);
   store.channel('C1', true, false);
 });
 afterEach(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
@@ -40,9 +41,9 @@ afterEach(() => { store.close(); rmSync(root, { recursive: true, force: true });
 describe('observation memory', () => {
   it('binds the workspace and keeps the initial watermark across restart', () => {
     const watermark = store.setting('watermark');
-    expect(() => new ObservationStore(join(root, 'state.sqlite'), 'T2', NOW)).toThrow('workspace mismatch');
+    expect(() => new InitiativeStore(join(root, 'state.sqlite'), 'T2', NOW)).toThrow('workspace mismatch');
     store.close();
-    store = new ObservationStore(join(root, 'state.sqlite'), 'T1', NOW + 86_400_000);
+    store = new InitiativeStore(join(root, 'state.sqlite'), 'T1', NOW + 86_400_000);
     expect(store.setting('watermark')).toBe(watermark);
   });
 
@@ -72,20 +73,20 @@ describe('observation memory', () => {
     expect(store.record(message({ eventId: 'mention-event' }), NOW)).not.toBeNull();
     expect(store.record(message({ eventId: 'message-event' }), NOW)).toBeNull();
     expect(store.record(message({ eventId: 'message-event', text: 'Inconsistent retry' }), NOW)).toBeNull();
-    expect(store.rows('SELECT id FROM revisions')).toHaveLength(1);
-    expect(store.rows('SELECT id FROM source_events')).toHaveLength(2);
+    expect(store['rows']('SELECT id FROM revisions')).toHaveLength(1);
+    expect(store['rows']('SELECT id FROM source_events')).toHaveLength(2);
   });
 
   it('migrates old schema without treating unknown bot provenance as human evidence', () => {
     populate();
     const path = join(root, 'old.sqlite');
-    store.run('VACUUM INTO ?', path);
+    store['run']('VACUUM INTO ?', path);
     const legacy = new DatabaseSync(path);
-    legacy.exec('ALTER TABLE threads DROP COLUMN gap; ALTER TABLE revisions DROP COLUMN bot; PRAGMA user_version=1');
+    legacy.exec('DROP INDEX pending_handoff_cards; ALTER TABLE handoffs DROP COLUMN card_state; ALTER TABLE handoffs DROP COLUMN card_retry; ALTER TABLE threads DROP COLUMN gap; ALTER TABLE revisions DROP COLUMN bot; PRAGMA user_version=1');
     legacy.close();
-    const migrated = new ObservationStore(path, 'T1', NOW);
+    const migrated = new InitiativeStore(path, 'T1', NOW);
     try {
-      expect(migrated.row('PRAGMA user_version')?.user_version).toBe(4);
+      expect(migrated['row']('PRAGMA user_version')?.user_version).toBe(SCHEMA_VERSION);
       expect(migrated.snapshot('C1', message().thread)?.evidence[0].bot).toBe(true);
       expect(migrated.matters()).toEqual([]);
       expect(migrated.setting('watermark')).toBe(String(NOW / 1000));
@@ -141,7 +142,7 @@ describe('observation memory', () => {
   it('expires raw content after 30 days and evidence validity after 90', () => {
     const matter = populate();
     store.expire(NOW + 31 * 86_400_000);
-    expect(store.row('SELECT text,excerpt FROM revisions')?.text).toBe('');
+    expect(store['row']('SELECT text,excerpt FROM revisions')?.text).toBe('');
     expect(store.snapshot('C1', matter.thread)?.evidence[0]?.text).toBe('Release Friday');
     store.expire(NOW + 91 * 86_400_000);
     expect(store.snapshot('C1', matter.thread)?.evidence).toEqual([]);
@@ -161,7 +162,7 @@ describe('durable admission', () => {
   });
 
   it('atomically caps routine and priority spending across two connections', () => {
-    const second = new ObservationStore(join(root, 'state.sqlite'), 'T1', NOW);
+    const second = new InitiativeStore(join(root, 'state.sqlite'), 'T1', NOW);
     try {
       expect(store.reserve(150_000_000, false, NOW)).toBeTruthy();
       expect(second.reserve(1, false, NOW)).toBeNull();
@@ -201,7 +202,7 @@ describe('durable admission', () => {
     expect(store.admitDelivery('1', NOW)).toBe(true);
     expect(store.admitDelivery('2', NOW)).toBe(false);
     store.close();
-    store = new ObservationStore(join(root, 'state.sqlite'), 'T1', NOW);
+    store = new InitiativeStore(join(root, 'state.sqlite'), 'T1', NOW);
     store.acquireRunner('recovered', NOW);
     expect(store.deliveries('uncertain')).toHaveLength(2);
     expect(store.admitDelivery('2', NOW)).toBe(false);

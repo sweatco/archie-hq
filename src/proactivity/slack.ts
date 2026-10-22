@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { getSlackClient, getHomeTeamId, getBotId, getBotUserId, postSlackMessage, extractMessageContent, isSlackDryRun, buildThreadUrl } from '../connectors/slack/client.js';
+import { getSlackClient, getHomeTeamId, getBotId, getBotUserId, postSlackMessage, extractMessageContent, isSlackDryRun, buildThreadUrl, restoreMentions, assertSlackMarkdownLength } from '../connectors/slack/client.js';
 import { exploreBody } from '../connectors/slack/message-body.js';
 import { WebClient } from '@slack/web-api';
 import { getActiveTaskIds, getTask } from '../tasks/task.js';
-import type { Delivery, SourceMessage } from '../memory/observation-types.js';
+import type { Delivery, SourceMessage } from './types.js';
 
 export interface SourceAccess { shared: boolean; ownerCanRead: boolean }
 export interface SlackPage { messages: SourceMessage[]; cursor?: string }
@@ -37,7 +37,11 @@ export async function normalizeSlackSource(raw: Payload, channel: string, contex
   };
 }
 
-export class PublicSlack implements ObservationSlack {
+export interface ProposalSlack extends ObservationSlack {
+  updateProposal(delivery: Delivery, status: string, taskUrl?: string): Promise<void>;
+}
+
+export class PublicSlack implements ProposalSlack {
   private readonly client = new WebClient(getSlackClient().token, { retryConfig: { retries: 0 }, rejectRateLimitedCalls: true, timeout: 15_000 });
   constructor(private readonly owner: string) {}
 
@@ -110,11 +114,19 @@ export class PublicSlack implements ObservationSlack {
     if (isSlackDryRun()) return Promise.resolve(undefined);
     return postSlackMessage({ channel: delivery.channel, threadTs: delivery.thread ?? undefined,
       text: delivery.text.replace(/<!(?:channel|here|everyone)>/g, '[group mention]'), correlationId: delivery.id,
-      actions: delivery.matters.length === 1 ? ['handled', 'later', 'not useful', 'stop following'].map((action) => ({
+      actions: delivery.proposal ? [{ type: 'button', text: { type: 'plain_text', text: 'Start task' }, action_id: 'initiative_start_task', value: `${delivery.id}:start:${delivery.proposal.version}` }] : delivery.matters.length === 1 ? ['handled', 'later', 'not useful', 'stop following'].map((action) => ({
         type: 'button', text: { type: 'plain_text', text: action }, action_id: `initiative_${action.replaceAll(' ', '_')}`,
         value: `${delivery.id}:${action}`,
       })) : undefined,
     });
+  }
+
+  async updateProposal(delivery: Delivery, status: string, taskUrl?: string): Promise<void> {
+    if (isSlackDryRun()) return;
+    if (!delivery.ts) throw new Error('Proposal card has no Slack timestamp');
+    const text = restoreMentions(`${delivery.text}\n\n${status}${taskUrl ? `\n[Open task](${taskUrl})` : ''}`);
+    assertSlackMarkdownLength(text);
+    await this.client.chat.update({ channel: delivery.channel, ts: delivery.ts, text, blocks: [{ type: 'markdown', text }] });
   }
 
   async find(delivery: Delivery): Promise<string | undefined> {

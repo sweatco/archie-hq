@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import type { ThreadSnapshot } from '../memory/observation-types.js';
+import type { ThreadSnapshot } from './types.js';
 
 export function partitionThreads(threads: ThreadSnapshot[], fits: (batch: ThreadSnapshot[]) => boolean): ThreadSnapshot[][] {
   const batches: ThreadSnapshot[][] = [];

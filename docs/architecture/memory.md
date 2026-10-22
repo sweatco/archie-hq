@@ -1,6 +1,6 @@
 # Memory Layer
 
-The memory API also has an independently enabled public-Slack observation backend. `search_memory` combines authorized knowledge results with authorized observations, and observation-specific tools expose evidence and owner-only attention state. Its storage, processing and controls are described in [Proactive observation](proactivity.md). The flags and file layout below describe the existing knowledge backend; disabling it does not disable an explicitly enabled observation backend.
+Public Slack observations and attention state belong to the separate [proactive observation subsystem](proactivity.md), with its own API, MCP tools and SQLite store. `search_memory` searches knowledge memory only. The flags, storage and reset lifecycle below do not enable, disable or reset initiative; either subsystem works independently.
 
 Archie stores durable knowledge under `WORKDIR/memory/`. The store is bound to one authenticated Slack workspace and separates organization-wide memory from exact private conversation history.
 

@@ -74,6 +74,23 @@ export interface Delivery {
   state: 'pending' | 'sending' | 'uncertain' | 'sent' | 'cancelled';
   ts: string | null;
   created: number;
+  proposal?: { id: string; version: string };
+}
+
+export interface CapabilityProposal {
+  id: string;
+  repository: string;
+  outcome: string;
+  evidence: number[];
+  status: string;
+  acknowledgedOutcome?: { state: 'implemented' | 'released' | 'rejected'; actor: string; at: number; artifact: string; acceptance: string };
+}
+
+export interface TaskHandoffRecord {
+  proposal: string; version: string; actor: string; approved: number; task: string;
+  state: 'approved' | 'prepared' | 'activated' | 'stale'; budget: 'task'; delivery: string;
+  card_state?: 'pending' | 'activated' | 'stale' | null;
+  card_retry?: number;
 }
 
 export function lisbonDay(now: number): string {

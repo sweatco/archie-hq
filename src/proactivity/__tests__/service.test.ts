@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import { ObservationRecall } from '../recall.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { ObservationStore } from '../../memory/observation-store.js';
+import { InitiativeStore } from '../store.js';
 import { InitiativeService, nextMorning, notificationWindow } from '../service.js';
 import type { BackgroundModel } from '../model.js';
 import type { ObservationSlack } from '../slack.js';
@@ -12,14 +13,14 @@ import type { TaskMetadata } from '../../types/task.js';
 const NOW = Date.parse('2026-10-20T10:00:00Z');
 const TS = '1792490401.000001';
 let root: string;
-let store: ObservationStore;
+let store: InitiativeStore;
 let service: InitiativeService;
 let slack: ObservationSlack;
 let model: BackgroundModel;
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'archie-initiative-'));
-  store = new ObservationStore(join(root, 'state.sqlite'), 'T1', NOW);
+  store = new InitiativeStore(join(root, 'state.sqlite'), 'T1', NOW);
   store.channel('C1', true, false);
   slack = {
     inspect: vi.fn(async (channel: string) => channel === 'C1' ? { shared: false, ownerCanRead: true } : null),
@@ -43,8 +44,6 @@ async function extract(): Promise<string> {
   store.schedule('extract', 'global', NOW);
   await service.tick(NOW);
   const id = store.matters()[0].id;
-  store.run('UPDATE matters SET next_check=? WHERE id=?', NOW + 60_000, id);
-  store.schedule('investigate', id, NOW + 60_000);
   return id;
 }
 
@@ -66,11 +65,51 @@ describe('initiative flow', () => {
     expect(slack.send).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps the next investigation scheduled for tomorrow', async () => {
+  it('bounds overdue follow-ups without a tight loop', async () => {
     const id = await investigate(null);
-    const due = store.row("SELECT due FROM jobs WHERE kind='investigate' AND target=?", id)?.due;
-    expect(due).toBe(NOW + 60_000 + 86_400_000);
+    const due = store['row']("SELECT due FROM jobs WHERE kind='investigate' AND target=?", id)?.due;
+    expect(due).toBe(NOW + 60_000 + 3_600_000);
     expect(store.claim(NOW + 120_000)).toBeNull();
+  });
+
+  it('reuses unchanged due checks while preserving an explicitly agreed reminder', async () => {
+    const id = await investigate(null);
+    vi.mocked(model.complete).mockClear();
+    await service.tick(NOW + 60_000 + 3_600_000);
+    expect(model.complete).not.toHaveBeenCalled();
+    expect(store.explain(id).decisions[0].code).toBe('unchanged');
+    store.feedback(id, 'later', NOW + 4_000_000, NOW + 7_260_000);
+    await service.tick(NOW + 7_260_000);
+    expect(model.complete).toHaveBeenCalledTimes(1);
+    expect(store.matter(id)?.state).toBe('open');
+  });
+
+  it('preserves a handled decision made while the model is investigating', async () => {
+    const id = await extract();
+    vi.mocked(model.complete).mockImplementationOnce(async () => {
+      store.feedback(id, 'handled', NOW + 60_000);
+      return { resolved: false, help: 'I can help.', public: false, evidence: store.matter(id)!.evidence };
+    });
+    await service.tick(NOW + 60_000);
+    expect(store.matter(id)?.state).toBe('resolved');
+    expect(store.deliveries('pending')).toEqual([]);
+    expect(store.explain(id).decisions[0].code).toBe('resolved');
+  });
+
+  it('rejects a related-source revision changed while preparing the recipient', async () => {
+    const id = await extract();
+    const other = (Number(TS) + .5).toFixed(6);
+    const revision = store.record({ channel: 'C1', thread: other, ts: other, version: other, author: 'U_OTHER', text: 'Release checklist ready' }, NOW)!;
+    store.apply([store.snapshot('C1', other)!], [{ id: 'related', channel: 'C1', thread: other, kind: 'change', text: 'Release context', evidence: [revision] }], [], 'base');
+    vi.mocked(slack.page).mockImplementation(async (_channel, _oldest, _latest, _cursor, thread) => ({ messages: store.snapshot('C1', thread ?? TS)?.evidence ?? [] }));
+    vi.mocked(model.complete).mockResolvedValueOnce({ resolved: false, help: 'Checklist is ready.', public: false, evidence: [...store.matter(id)!.evidence, revision] });
+    vi.mocked(slack.ownerDm).mockImplementationOnce(async () => {
+      store.record({ channel: 'C1', thread: other, ts: other, version: (Number(other) + 1).toFixed(6), author: 'U_OTHER', text: 'Checklist is cancelled' }, NOW);
+      return 'D1';
+    });
+    await service.tick(NOW + 60_000);
+    expect(store.matter(id)?.valid).toBe(true);
+    expect(store.deliveries('pending')).toEqual([]);
   });
 
   it('lets cancellation invalidate pending delivery before sending', async () => {
@@ -120,7 +159,7 @@ describe('initiative flow', () => {
     vi.mocked(slack.inspect).mockResolvedValue(null);
     await service.tick(NOW);
     expect(model.complete).not.toHaveBeenCalled();
-    expect(store.row("SELECT allowed FROM channels WHERE id='C1'")?.allowed).toBe(0);
+    expect(store['row']("SELECT allowed FROM channels WHERE id='C1'")?.allowed).toBe(0);
   });
 
   it('keeps extraction requests within one public source channel', async () => {
@@ -171,7 +210,7 @@ describe('initiative flow', () => {
       observations: [{ key: 'release', text: 'Release', kind: 'commitment', evidence: [999] }], matters: [] }] });
     store.schedule('extract', 'global', NOW);
     await service.tick(NOW);
-    expect(store.rows('SELECT id FROM extractions')).toEqual([]);
+    expect(store['rows']('SELECT id FROM extractions')).toEqual([]);
     vi.mocked(model.complete).mockResolvedValueOnce({ threads: [{ channel: 'C1', thread: TS, observations: [], matters: [] }] });
     await service.tick(NOW + 5 * 60_000);
     expect(model.complete).toHaveBeenCalledTimes(2);
@@ -186,7 +225,7 @@ describe('initiative flow', () => {
       return { threads: (req.input as { threads: Array<{ channel: string; thread: string }> }).threads.map((s) => ({ channel: s.channel, thread: s.thread, observations: [], matters: [] })) } as never;
     });
     store.schedule('extract', 'global', NOW); await service.tick(NOW);
-    expect(store.rows('SELECT id FROM extractions')).toHaveLength(1);
+    expect(store['rows']('SELECT id FROM extractions')).toHaveLength(1);
     await service.tick(NOW + 5 * 60_000);
     expect(store.dirty()).toEqual([]);
     expect(vi.mocked(model.complete).mock.calls.filter(([r]) => (r.input as { carried: unknown[] }).carried.length === 0)).toHaveLength(1);
@@ -244,16 +283,16 @@ describe('initiative flow', () => {
       store.schedule('thread', `C1:${ts}`, NOW, JSON.stringify({ channel: 'C1', thread: ts }));
     }
     await service.tick(NOW + 120_000);
-    expect(store.rows("SELECT target FROM jobs WHERE kind='thread'")).toHaveLength(38);
+    expect(store['rows']("SELECT target FROM jobs WHERE kind='thread'")).toHaveLength(38);
   });
 
   it('provides source-scoped observation recall and owner-only matter recall', async () => {
     const id = await extract();
     const metadata = (channel_id: string) => ({ memory_destination: { channel_id } }) as TaskMetadata;
-    expect(await service.search(metadata('C1'), 'release', 10)).toHaveLength(1);
-    expect(await service.search(metadata('C2'), 'release', 10)).toEqual([]);
-    expect(await service.read(metadata('C1'), 'matter', id)).toBe('Matter unavailable.');
-    expect(await service.read(metadata('D1'), 'matter', id)).toMatchObject({ matter: { id } });
+    expect(await new ObservationRecall(store, slack).search(metadata('C1'), 'release', 10)).toHaveLength(1);
+    expect(await new ObservationRecall(store, slack).search(metadata('C2'), 'release', 10)).toEqual([]);
+    expect(await new ObservationRecall(store, slack).read(metadata('C1'), 'matter', id)).toBe('Matter unavailable.');
+    expect(await new ObservationRecall(store, slack).read(metadata('D1'), 'matter', id)).toMatchObject({ matter: { id } });
   });
 
   it('keeps collecting and schedules work after day 14 without expiration', async () => {
@@ -261,7 +300,7 @@ describe('initiative flow', () => {
     service.seed(NOW + 15 * 86_400_000);
     expect(store.setting('stop')).toBeUndefined();
     expect(store.setting('pause')).toBeUndefined();
-    expect(store.rows('SELECT kind FROM jobs')).not.toHaveLength(0);
+    expect(store['rows']('SELECT kind FROM jobs')).not.toHaveLength(0);
     expect(store.setting('live_start')).toBe(String(NOW));
   });
 });

@@ -4,7 +4,7 @@ import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import type { Message, MessageCreateParamsNonStreaming, Usage } from '@anthropic-ai/sdk/resources/messages';
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import type { ObservationStore } from '../memory/observation-store.js';
+import type { InitiativeStore } from './store.js';
 
 const PRICES: Record<string, { input: number; output: number }> = {
   // Microdollars/token. Haiku uses its higher long-context tier conservatively.
@@ -33,11 +33,14 @@ export interface BackgroundModel {
 export class ModelGateway implements BackgroundModel {
   private client?: Anthropic;
   private active = 0;
+  private readonly providerIdentity?: string;
+  private readonly submitting = new Set<string>();
 
-  constructor(private readonly store: ObservationStore, client?: Anthropic) {
+  constructor(private readonly store: InitiativeStore, client?: Anthropic, providerIdentity?: string) {
     this.client = client;
-    store.run(`CREATE TABLE IF NOT EXISTS batches (id TEXT PRIMARY KEY, remote TEXT, charge TEXT NOT NULL, request TEXT NOT NULL, context TEXT NOT NULL, state TEXT NOT NULL, result TEXT, created INTEGER NOT NULL)`);
-    store.run('CREATE TABLE IF NOT EXISTS requests (charge TEXT PRIMARY KEY, model TEXT NOT NULL, fingerprint TEXT NOT NULL, remote TEXT, usage TEXT, state TEXT NOT NULL)');
+    const credential = client?.apiKey ?? process.env.ANTHROPIC_API_KEY;
+    const endpoint = client?.baseURL ?? process.env.ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com';
+    this.providerIdentity = providerIdentity ?? (credential ? createHash('sha256').update(JSON.stringify([endpoint, credential])).digest('hex') : undefined);
   }
 
   private get provider(): Anthropic { return this.client ??= new Anthropic({ maxRetries: 0, timeout: 90_000 }); }
@@ -73,7 +76,7 @@ export class ModelGateway implements BackgroundModel {
   }
 
   batchCapacity(): number {
-    return Math.max(0, 3 - this.active - Number(this.store.row("SELECT count(*) AS n FROM batches WHERE state IN ('submitting','pending','uncertain')")!.n));
+    return Math.max(0, 3 - this.active - Number(this.store.requests.activeBatches()!.n));
   }
 
   private settle(id: string, usage: Usage, model: string): void {
@@ -92,7 +95,7 @@ export class ModelGateway implements BackgroundModel {
 
   async complete<T>(request: ModelRequest & { schema: z.ZodType<T> }, signal: AbortSignal): Promise<T> {
     const { params, maximum } = this.prepare(request);
-    const batches = Number(this.store.row("SELECT count(*) AS n FROM batches WHERE state IN ('submitting','pending','uncertain')")!.n);
+    const batches = Number(this.store.requests.activeBatches()!.n);
     if (this.active + batches >= 4) throw new AdmissionDeferred('Background request concurrency reached');
     this.active++;
     try {
@@ -104,14 +107,14 @@ export class ModelGateway implements BackgroundModel {
         if (this.store.setting('stop') === 'true' || this.store.setting('pause') === 'true') throw new AdmissionDeferred('Background analysis was stopped or paused');
         const charge = this.store.reserve(maximum, request.priority === true, Date.now(), request.scope);
         if (!charge) throw new AdmissionDeferred('Background daily allowance unavailable');
-        this.store.run("INSERT INTO requests VALUES (?,?,?,NULL,NULL,'dispatching')", charge, request.model, createHash('sha256').update(JSON.stringify(params)).digest('hex'));
+        this.store.requests.dispatchDirect(charge, request.model, createHash('sha256').update(JSON.stringify(params)).digest('hex'));
         try {
           const result = await this.provider.messages.create(params, { signal, maxRetries: 0 });
           this.settle(charge, result.usage, request.model);
-          this.store.run("UPDATE requests SET state='complete',remote=?,usage=? WHERE charge=?", (result as Message & { _request_id?: string })._request_id ?? null, JSON.stringify(result.usage), charge);
+          this.store.requests.completeDirect((result as Message & { _request_id?: string })._request_id ?? null, JSON.stringify(result.usage), charge);
           return this.parse(result, request.schema);
         } catch (error) {
-          this.store.run("UPDATE requests SET state=CASE WHEN usage IS NULL THEN 'uncertain' ELSE 'invalid' END,remote=COALESCE(remote,?) WHERE charge=?", error instanceof Anthropic.APIError ? error.requestID ?? null : null, charge);
+          this.store.requests.uncertainDirect(error instanceof Anthropic.APIError ? error.requestID ?? null : null, charge);
           // An interrupted call may have executed. Its reservation remains until usage is known.
           if (signal.aborted || !(error instanceof Anthropic.APIError) || !error.status || error.status < 500 || attempt === 2) throw error;
         }
@@ -139,69 +142,142 @@ export class ModelGateway implements BackgroundModel {
         const charge = this.store.reserve(r.maximum, false, Date.now(), r.item.request.scope);
         if (!charge) throw new AdmissionDeferred('Batch allowance unavailable');
         r.charge = charge;
-        this.store.run('INSERT INTO batches VALUES (?,NULL,?,?,?,?,NULL,?)', r.id, charge, JSON.stringify(r.params), JSON.stringify(r.item.context), 'submitting', Date.now());
+        this.store.transaction(() => {
+          this.store.requests.prepareBatch(r.id, charge, JSON.stringify(r.params), JSON.stringify(r.item.context), 'submitting', Date.now());
+          if (this.providerIdentity) this.store.set(`batch-provider:${r.id}`, this.providerIdentity);
+        });
       }
     } catch (error) {
       // These requests have not been dispatched, so their execution cost is provably zero.
       for (const r of requests.filter((r) => r.charge)) {
         this.store.settle(r.charge, 0, Date.now());
-        this.store.run("UPDATE batches SET state='not dispatched' WHERE id=?", r.id);
+        this.store.requests.undispatchedBatch(r.id);
       }
       throw error;
     }
+    for (const request of requests) this.submitting.add(request.id);
     try {
       const batch = await this.provider.messages.batches.create({ requests: requests.map((r) => ({ custom_id: r.id, params: r.params })) }, { signal, maxRetries: 0 });
       this.store.transaction(() => {
-        for (const r of requests) this.store.run("UPDATE batches SET remote=?,state='pending' WHERE id=?", batch.id, r.id);
+        for (const r of requests) this.store.requests.submittedBatch(batch.id, r.id);
       });
     } catch (error) {
-      for (const r of requests) this.store.run("UPDATE batches SET state='uncertain' WHERE id=?", r.id);
+      for (const r of requests) this.store.requests.uncertainBatch(r.id);
       throw error;
-    }
+    } finally { for (const request of requests) this.submitting.delete(request.id); }
     return requests.map((r) => r.id);
   }
 
-  async poll(signal: AbortSignal): Promise<void> {
-    for (const remote of this.store.rows("SELECT DISTINCT remote FROM batches WHERE state='pending' AND remote IS NOT NULL LIMIT 10")) {
-      const batch = await this.provider.messages.batches.retrieve(String(remote.remote), { signal, maxRetries: 0 });
-      if (batch.processing_status !== 'ended') continue;
-      for await (const item of await this.provider.messages.batches.results(batch.id, { signal, maxRetries: 0 })) {
-        const row = this.store.row("SELECT * FROM batches WHERE id=? AND remote=? AND state='pending'", item.custom_id, remote.remote);
-        if (!row) continue;
-        if (item.result.type === 'succeeded') {
-          const params = JSON.parse(String(row.request)) as MessageCreateParamsNonStreaming;
-          // Ordinary prices overstate batch usage, providing a conservative debit.
-          this.settle(String(row.charge), item.result.message.usage, params.model);
-          const discard = JSON.parse(String(row.context)).discard === true;
-          this.store.run('UPDATE batches SET result=?,state=? WHERE id=?', JSON.stringify(discard ? { usage: item.result.message.usage } : item.result.message), discard ? 'applied' : 'complete', row.id);
-        } else {
-          // Non-success results without authoritative usage keep their liability.
-          this.store.run("UPDATE batches SET result=?,state='failed' WHERE id=?", JSON.stringify(item.result), row.id);
-        }
+  private async receive(remote: string, signal: AbortSignal): Promise<void> {
+    let count = 0;
+    for await (const item of await this.provider.messages.batches.results(remote, { signal, maxRetries: 0 })) {
+      // Discovery may inspect an unrelated workspace batch. Keep scans bounded.
+      if (++count > 1000) break;
+      const row = this.store.requests.correlatedResult(item.custom_id, remote);
+      if (!row) continue;
+      if (item.result.type === 'succeeded') {
+        const params = JSON.parse(String(row.request)) as MessageCreateParamsNonStreaming;
+        this.settle(String(row.charge), item.result.message.usage, params.model);
+        const discard = JSON.parse(String(row.context)).discard === true;
+        this.store.requests.completeBatch(JSON.stringify(discard ? { usage: item.result.message.usage } : item.result.message), discard ? 'applied' : 'complete', row.id);
+      } else {
+        // The API explicitly guarantees errored/canceled/expired results are unbilled.
+        this.store.settle(String(row.charge), 0, Date.now());
+        this.store.requests.failedBatch(JSON.stringify(item.result), row.id);
       }
     }
   }
 
+  private async discover(signal: AbortSignal): Promise<void> {
+    let downloads = 0;
+    for (const row of this.store.requests.unknownSubmissions()) {
+      const id = String(row.id);
+      const current = this.store.requests.localBatch(id);
+      if (this.submitting.has(id) || current?.remote || !['submitting', 'uncertain'].includes(String(current?.state))) continue;
+      if (!this.providerIdentity || this.store.setting(`batch-provider:${id}`) !== this.providerIdentity) {
+        this.store.set(`batch-recovery:${id}`, 'Provider credentials changed or the legacy submission is unbound. Confirm the original provider workspace and use bind-provider before discovery. Liability and execution slots remain reserved.');
+        continue;
+      }
+      const key = `batch-discovery:${id}`;
+      const progress = JSON.parse(this.store.setting(key) ?? '{}') as { cursor?: string; active?: boolean; pages?: number; checked?: number; startedAt?: number };
+      progress.startedAt ??= Date.now();
+      const upper = Number(row.created) + 3_600_000;
+      const page = await this.provider.messages.batches.list({ limit: 20, after_id: progress.cursor }, { signal, maxRetries: 0 });
+      const finished = !page.has_more;
+      progress.pages = (progress.pages ?? 0) + 1;
+      progress.checked = (progress.checked ?? 0) + page.data.length;
+      for (const batch of page.data) {
+        const created = Date.parse(batch.created_at);
+        if (!Number.isFinite(created)) throw new Error('Provider discovery returned invalid creation time');
+        if (batch.processing_status === 'ended') {
+          // A missing results file cannot erase liability; terminal metadata still
+          // proves this candidate no longer occupies a remote execution slot.
+          if (downloads < 3 && Date.now() - created < 29 * 86_400_000) {
+            downloads++;
+            await this.receive(batch.id, signal);
+          }
+        } else progress.active = true;
+      }
+      if (finished) {
+        if (!progress.active && Date.now() > upper + 86_400_000) {
+          this.store.requests.retireUnknown(id);
+          this.store.set(key, JSON.stringify({ terminalScanAt: Date.now(), startedAt: progress.startedAt, pages: progress.pages, checked: progress.checked, liability: 'reserved', explanation: 'Complete provider listing found no possibly running candidate in the complete provider listing. Result identity/usage remains unresolved.' }));
+        } else this.store.set(key, '{}');
+      } else {
+        if (!page.last_id) throw new Error('Provider discovery pagination is incomplete');
+        this.store.set(key, JSON.stringify({ ...progress, cursor: page.last_id, active: progress.active === true }));
+      }
+    }
+  }
+
+  async poll(signal: AbortSignal): Promise<void> {
+    const failures: unknown[] = [];
+    for (const remote of this.store.requests.pendingRemotes()) {
+      try {
+        const batch = await this.provider.messages.batches.retrieve(String(remote.remote), { signal, maxRetries: 0 });
+        if (batch.processing_status === 'ended') {
+          this.store.requests.endedBatch(batch.id);
+          const created = Date.parse(batch.created_at);
+          if (Number.isFinite(created) && Date.now() - created >= 29 * 86_400_000) {
+            this.store.requests.retireRemote(batch.id);
+            this.store.set(`batch-recovery:${batch.id}`, 'Provider confirms processing ended, but results are beyond retention. Execution slots released; unresolved liability remains reserved.');
+          } else await this.receive(batch.id, signal);
+        }
+      } catch (error) { failures.push(error); }
+    }
+    try { await this.discover(signal); } catch (error) { failures.push(error); }
+    if (failures.length) throw new AggregateError(failures, 'Provider reconciliation incomplete; outstanding liability retained');
+  }
+
+  bindProvider(id: string): void {
+    if (!this.providerIdentity || !this.store.requests.localBatch(id)) throw new Error('Existing batch and configured provider credentials required');
+    this.store.set(`batch-provider:${id}`, this.providerIdentity);
+    this.store.set(`batch-binding-ack:${id}`, String(Date.now()));
+  }
+
+  async reconcileRemote(remote: string, signal: AbortSignal): Promise<void> {
+    const batch = await this.provider.messages.batches.retrieve(remote, { signal, maxRetries: 0 });
+    if (batch.processing_status !== 'ended') throw new Error('Remote batch is still running; keep its execution slots reserved');
+    this.store.requests.endedBatch(batch.id);
+    this.store.requests.retryResults(batch.id);
+    await this.receive(batch.id, signal);
+  }
+
   completed<T>(id: string, schema: z.ZodType<T>): T | null {
-    const row = this.store.row("SELECT result FROM batches WHERE id=? AND state='complete'", id);
+    const row = this.store.requests.completedBatch(id);
     if (!row) return null;
     try { return this.parse(JSON.parse(String(row.result)) as Message, schema); }
-    catch { this.store.run("UPDATE batches SET state='invalid' WHERE id=?", id); return null; }
+    catch { this.store.requests.invalidBatch(id); return null; }
   }
 
   async cancel(signal: AbortSignal): Promise<void> {
-    for (const row of this.store.rows("SELECT DISTINCT remote FROM batches WHERE state='pending' AND remote IS NOT NULL")) {
+    for (const row of this.store.requests.allPendingRemotes()) {
       await this.provider.messages.batches.cancel(String(row.remote), { signal, maxRetries: 0 });
     }
   }
 
   expire(now: number): void {
-    this.store.run(`UPDATE batches SET request=json_object('model',json_extract(request,'$.model')),context='{"discard":true}',result=NULL,
-      state=CASE WHEN state IN ('submitting','pending','uncertain') THEN state ELSE 'expired' END WHERE EXISTS
-      (SELECT 1 FROM json_each(batches.context,'$.evidence') j LEFT JOIN revisions r ON r.id=j.value LEFT JOIN messages m ON m.channel=r.channel AND m.ts=r.ts
-      LEFT JOIN revisions latest ON latest.id=m.revision WHERE r.id IS NULL OR r.excerpt='' OR r.captured<? OR latest.deleted=1)`, now - 90 * 86_400_000);
-    this.store.run(`UPDATE batches SET request=json_object('model',json_extract(request,'$.model')),context=json_object('discard',json('true'),'evidence',json_extract(context,'$.evidence')) WHERE created<? OR EXISTS
-      (SELECT 1 FROM json_each(batches.context,'$.evidence') j JOIN revisions r ON r.id=j.value WHERE r.captured<?)`, now - 30 * 86_400_000, now - 30 * 86_400_000);
-    this.store.run("UPDATE batches SET result=NULL,state=CASE WHEN state IN ('complete','applied','invalid','failed') THEN 'expired' ELSE state END WHERE created<?", now - 90 * 86_400_000);
+    this.store.requests.expire(now);
   }
+
 }

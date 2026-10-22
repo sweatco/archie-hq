@@ -2,14 +2,15 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Cron } from 'croner';
 import { z } from 'zod';
-import { ObservationStore } from '../memory/observation-store.js';
-import type { ObservationMemory } from '../memory/observations.js';
-import type { Delivery, Job, Matter, Observation, SourceMessage, ThreadSnapshot } from '../memory/observation-types.js';
-import { lisbonDay } from '../memory/observation-types.js';
-import type { TaskMetadata } from '../types/task.js';
+import { InitiativeStore } from './store.js';
+import { SourceAccess } from './access.js';
+import { SourceCollector } from './collection.js';
+import type { Delivery, Job, Matter, Observation, SourceMessage, ThreadSnapshot } from './types.js';
+import { lisbonDay } from './types.js';
 import { logger } from '../system/logger.js';
 import { AdmissionDeferred, type BackgroundModel } from './model.js';
 import type { ObservationSlack } from './slack.js';
+import { deadlinePhase, nextMatterCheck, citationIdentity, reminderPhase, type DecisionReason } from './decisions.js';
 import { partitionThreads } from './context.js';
 
 const HOUR = 3_600_000;
@@ -64,45 +65,37 @@ function businessDaysSince(start: number, end: number): number {
   return count;
 }
 
-export class InitiativeService implements ObservationMemory {
+export class InitiativeService {
+  private readonly access: SourceAccess;
+  private readonly collection: SourceCollector;
   private readonly runner = randomUUID();
   private active?: AbortController;
   private ticking = false;
   private stopped = false;
 
-  constructor(readonly store: ObservationStore, private readonly slack: ObservationSlack, private readonly model: BackgroundModel, readonly config: InitiativeConfig, private readonly clock: () => number = Date.now, private readonly learning?: InitiativeLearning) {
+  constructor(readonly store: InitiativeStore, private readonly slack: ObservationSlack, private readonly model: BackgroundModel, readonly config: InitiativeConfig, private readonly clock: () => number = Date.now, private readonly learning?: InitiativeLearning) {
+    this.access = new SourceAccess(store, slack);
+    this.collection = new SourceCollector(store, slack, () => this.stopped);
     store.set('decision_config', decisionConfig(config));
   }
 
   private instructions(): string {
-    const row = this.store.row("SELECT body FROM policies WHERE id=? AND state='active'", this.store.setting('policy')!);
-    return row ? `${SYSTEM}\nApproved ranking, context and reminder guidance: ${row.body}` : SYSTEM;
+    const row = this.store.learning.policy(this.store.setting('policy')!);
+    return row?.state === 'active' ? `${SYSTEM}\nApproved ranking, context and reminder guidance: ${row.body}` : SYSTEM;
   }
 
   seed(now = Date.now()): void {
     for (const [kind, due] of [['reconcile', now], ['extract', now + HOUR], ['retention', now], ['reflection', nextMorning(now)], ['digest', nextMorning(now)]] as const) {
-      if (!this.store.row('SELECT kind FROM jobs WHERE kind=? AND target=?', kind, 'global')) this.store.schedule(kind, 'global', due);
+      if (!this.store.attention.scheduledJob(kind, 'global')) this.store.schedule(kind, 'global', due);
     }
     if (this.config.mode === 'live' && !this.store.setting('live_start')) this.store.set('live_start', String(now));
-    if (!this.store.setting('review_report') && !this.store.row("SELECT kind FROM jobs WHERE kind='review' AND target='global'")) this.store.schedule('review', 'global', Number(this.store.setting('watermark')) * 1000 + 14 * DAY);
+    if (!this.store.setting('review_report') && !this.store.attention.scheduledJob('review', 'global')) this.store.schedule('review', 'global', Number(this.store.setting('watermark')) * 1000 + 14 * DAY);
   }
 
-  async capture(message: SourceMessage, now = Date.now()): Promise<void> {
-    const access = await this.slack.inspect(message.channel);
-    this.store.channel(message.channel, !!access, access?.shared ?? false);
-    if (access && this.store.record(message, now) !== null && !message.own) this.store.schedule('thread', `${message.channel}:${message.thread}`, now, JSON.stringify({ channel: message.channel, thread: message.thread }));
-  }
+  capture(message: SourceMessage, now = Date.now()): Promise<void> { return this.collection.capture(message, now); }
 
-  private async accessible(channel: string, owner = false): Promise<boolean> {
-    try {
-      const access = await this.slack.inspect(channel, owner);
-      this.store.channel(channel, !!access, access?.shared ?? false);
-      return !!access && (!owner || access.ownerCanRead);
-    } catch (error) {
-      this.store.channel(channel, false, false, 'Access lookup failed; coverage unknown');
-      logger.warn('initiative', `Access unavailable for ${channel}`, error);
-      return false;
-    }
+  private accessible(channel: string, owner = false): Promise<boolean> {
+    return this.access.check(channel, owner);
   }
 
   async tick(now = Date.now(), failFast = false): Promise<void> {
@@ -119,12 +112,18 @@ export class InitiativeService implements ObservationMemory {
         this.active = new AbortController();
         const timeout = setTimeout(() => this.active?.abort(), 5 * 60_000);
         try {
-          if (!['retention', 'reconcile', 'collect', 'thread', 'review'].includes(job.kind) && (this.store.setting('stop') === 'true' || this.store.setting('pause') === 'true')) this.store.finish(job, now + HOUR);
-          else this.store.finish(job, await this.run(job, now, this.active.signal));
+          if (!['retention', 'reconcile', 'collect', 'thread', 'review'].includes(job.kind) && (this.store.setting('stop') === 'true' || this.store.setting('pause') === 'true')) {
+            const matter = job.kind === 'investigate' ? this.store.matter(job.target) : null;
+            if (matter) this.store.recordDecision(matter, 'controlled', now, { nextDue: now + HOUR });
+            this.store.finish(job, now + HOUR);
+          } else this.store.finish(job, await this.run(job, now, this.active.signal));
         } catch (error) {
           if (failFast) throw error;
           logger.warn('initiative', `Background ${job.kind} deferred`, error);
-          this.store.finish(job, now + (error instanceof AdmissionDeferred ? HOUR : 5 * 60_000));
+          const matter = job.kind === 'investigate' ? this.store.matter(job.target) : null;
+          const retryAt = now + (error instanceof AdmissionDeferred ? HOUR : 5 * 60_000);
+          if (matter) this.store.recordDecision(matter, error instanceof AdmissionDeferred ? 'budget_deferred' : 'source_unavailable', now, { nextDue: retryAt, scope: `investigate:${job.token}` });
+          this.store.finish(job, retryAt);
         } finally { clearTimeout(timeout); }
       }
     } finally {
@@ -136,11 +135,11 @@ export class InitiativeService implements ObservationMemory {
 
   private async run(job: Job, now: number, signal: AbortSignal): Promise<number | undefined> {
     if (job.kind === 'retention') { this.store.expire(now); return now + DAY; }
-    if (job.kind === 'reconcile') { await this.reconcile(now, signal); return now + DAY; }
-    if (job.kind === 'collect') return await this.collect(job.target, now, signal);
+    if (job.kind === 'reconcile') { await this.collection.reconcile(now, signal); return now + DAY; }
+    if (job.kind === 'collect') return await this.collection.collect(job.target, now, signal);
     if (job.kind === 'thread') {
       const source = JSON.parse(job.payload) as Pick<Matter, 'channel' | 'thread'>;
-      const snapshot = await this.refresh(source, now, signal);
+      const snapshot = await this.collection.refresh(source, now, signal);
       return snapshot ? undefined : now + 60_000;
     }
     if (job.kind === 'extract') { await this.extract(job, now, signal); return now + (this.store.dirty(1).length ? 60_000 : HOUR); }
@@ -148,39 +147,11 @@ export class InitiativeService implements ObservationMemory {
     if (job.kind === 'digest') { await this.digest(now); return nextMorning(now); }
     if (job.kind === 'reflection') { await this.learning?.reflect(job, now, signal); return nextMorning(now); }
     if (job.kind === 'review') {
-      this.store.set('review_report', `Observed ${this.store.row('SELECT count(*) AS n FROM threads')!.n} threads; delivered ${this.store.row("SELECT count(*) AS n FROM deliveries WHERE state='sent'")!.n} interventions; received ${this.store.row('SELECT count(*) AS n FROM feedback')!.n} feedback actions. Usefulness requires the labelled evaluation; operation continues.`);
+      const stats = this.store.attention.statistics();
+      this.store.set('review_report', `Observed ${stats.threads} threads; delivered ${stats.sent} interventions; received ${stats.feedback} feedback actions. Usefulness requires the labelled evaluation; operation continues.`);
       return;
     }
     throw new Error(`Unknown initiative job ${job.kind}`);
-  }
-
-  private async reconcile(now: number, signal: AbortSignal): Promise<void> {
-    const channels = await this.slack.channels();
-    const known = this.store.rows('SELECT id FROM channels WHERE allowed=1');
-    for (const row of known) if (!channels.includes(String(row.id))) this.store.channel(String(row.id), false, false, 'Bot membership removed');
-    for (const channel of channels) {
-      signal.throwIfAborted();
-      if (!this.store.row("SELECT kind FROM jobs WHERE kind='collect' AND target=?", channel)) this.store.schedule('collect', channel, now);
-    }
-  }
-
-  private async collect(channel: string, now: number, signal: AbortSignal): Promise<number> {
-    if (!await this.accessible(channel)) return now + HOUR;
-    const progress = this.store.row('SELECT * FROM channels WHERE id=?', channel)!;
-    const latest = this.store.setting(`scan:${channel}`) ?? String(now / 1000);
-    this.store.set(`scan:${channel}`, latest);
-    const page = await this.slack.page(channel, String(progress.checkpoint), latest, progress.cursor as string | undefined);
-    signal.throwIfAborted();
-    if (!await this.accessible(channel)) return now + HOUR;
-    for (const message of page.messages) {
-      if (this.store.record(message, now) !== null && !message.own) this.store.schedule('thread', `${channel}:${message.thread}`, now, JSON.stringify({ channel, thread: message.thread }));
-    }
-    this.store.run('UPDATE channels SET cursor=?,checkpoint=? WHERE id=?', page.cursor ?? null, page.cursor ? progress.checkpoint : latest, channel);
-    if (!page.cursor) {
-      this.store.run('DELETE FROM settings WHERE key=?', `scan:${channel}`);
-      this.store.run("UPDATE channels SET gap=NULL WHERE id=? AND gap='Collection pagination pending'", channel);
-    } else this.store.run("UPDATE channels SET gap=? WHERE id=? AND (gap IS NULL OR gap='Collection pagination pending')", 'Collection pagination pending', channel);
-    return now + (page.cursor ? 60_000 : HOUR);
   }
 
   private async extract(job: Job, now: number, signal: AbortSignal): Promise<void> {
@@ -206,7 +177,6 @@ export class InitiativeService implements ObservationMemory {
       },
     });
     const remaining = snapshots.map((s) => ({ ...s, evidence: s.evidence.map((e) => ({ ...e })) })).sort((a, b) => a.channel.localeCompare(b.channel));
-    this.store.run('CREATE TABLE IF NOT EXISTS extractions (id TEXT PRIMARY KEY, created INTEGER NOT NULL, response TEXT NOT NULL)');
     const keys: string[] = [];
     let applying = false;
     try {
@@ -223,8 +193,8 @@ export class InitiativeService implements ObservationMemory {
         }
         const key = createHash('sha256').update(JSON.stringify([req.model, req.system, z.toJSONSchema(Findings), req.input])).digest('hex');
         keys.push(key);
-        const cached = this.store.row('SELECT response FROM extractions WHERE id=?', key);
-        const part = cached ? Findings.parse(JSON.parse(String(cached.response))) : await this.model.complete({ ...req, scope: `extract:${key}` }, signal);
+        const cached = this.store.attention.extractionPart(key);
+        const part = cached ? Findings.parse(cached) : await this.model.complete({ ...req, scope: `extract:${key}` }, signal);
         const seenThreads = new Set<string>();
         for (const thread of part.threads) {
           const id = sourceKey(thread);
@@ -238,7 +208,7 @@ export class InitiativeService implements ObservationMemory {
           carried.set(id, thread);
         }
         if (batch.some((t) => !seenThreads.has(sourceKey(t)))) throw new Error('Extraction omitted a supplied thread');
-        if (!cached) this.store.run('INSERT OR REPLACE INTO extractions VALUES (?,?,?)', key, now, JSON.stringify(part));
+        if (!cached) this.store.attention.cacheExtraction(key, now, part);
         for (const thread of batch) {
           const pending = remaining.find((s) => sourceKey(s) === sourceKey(thread))!;
           for (const piece of thread.evidence) {
@@ -258,7 +228,7 @@ export class InitiativeService implements ObservationMemory {
         for (const o of thread.observations) observations.push({ ...o, id: `${thread.channel}:${thread.thread}:o:${o.key}`, channel: thread.channel, thread: thread.thread });
         for (const m of thread.matters) {
           const prior = previous.filter((p) => p.channel === thread.channel && p.thread === thread.thread);
-          const origins = (ids: number[]) => new Set(ids.map((id) => this.store.row('SELECT ts FROM revisions WHERE id=?', id)?.ts));
+          const origins = (ids: number[]) => new Set(ids.map((id) => this.store.attention.revision(id)?.ts));
           const cited = origins(m.evidence);
           const overlapping = prior.filter((p) => [...origins(p.evidence)].some((ts) => cited.has(ts)));
           const identity = prior.find((p) => p.id.endsWith(`:m:${m.key}`)) ?? (overlapping.length === 1 ? overlapping[0] : undefined);
@@ -271,77 +241,48 @@ export class InitiativeService implements ObservationMemory {
         for (const matter of matters) if (matter.state === 'open') this.store.schedule('investigate', matter.id, matter.nextCheck);
       }
     } catch (error) {
-      if (!signal.aborted && !(error instanceof AdmissionDeferred)) for (const key of applying ? keys : keys.slice(-1)) this.store.run('DELETE FROM extractions WHERE id=?', key);
-      for (const s of snapshots) this.store.run('UPDATE threads SET changed=? WHERE channel=? AND thread=?', now, s.channel, s.thread);
+      if (!signal.aborted && !(error instanceof AdmissionDeferred)) for (const key of applying ? keys : keys.slice(-1)) this.store.attention.discardExtraction(key);
+      for (const s of snapshots) this.store.attention.deferThread(now, s.channel, s.thread);
       throw error;
     }
   }
 
-  private async refresh(matter: Pick<Matter, 'channel' | 'thread'>, now: number, signal?: AbortSignal, maxReads = 10): Promise<ThreadSnapshot | null> {
-    if (!await this.accessible(matter.channel)) return null;
-    const oldest = this.store.setting('watermark')!;
-    const key = `thread-scan:${matter.channel}:${matter.thread}`;
-    const scan = JSON.parse(this.store.setting(key) ?? JSON.stringify({ latest: String(now / 1000), cursor: undefined, seen: [] })) as { latest: string; cursor?: string; seen?: string[] };
-    scan.seen ??= [];
-    const olderParent = Number(matter.thread) < Number(oldest);
-    let parentUnavailable = false;
-    if (olderParent) {
-      signal?.throwIfAborted();
-      const parent = await this.slack.page(matter.channel, matter.thread, matter.thread);
-      signal?.throwIfAborted();
-      if (!await this.accessible(matter.channel)) return null;
-      const original = parent.messages.find((m) => m.ts === matter.thread);
-      if (original) this.store.record({ ...original, context: true }, now);
-      else {
-        const previous = this.store.row('SELECT r.* FROM revisions r JOIN messages m ON m.revision=r.id WHERE m.channel=? AND m.ts=?', matter.channel, matter.thread);
-        if (previous) this.store.record({ channel: matter.channel, thread: matter.thread, ts: matter.thread, version: Number(scan.latest).toFixed(6), author: String(previous.author), text: '', deleted: true, own: previous.own === 1, bot: previous.bot === 1 }, now);
-        else parentUnavailable = true;
-      }
-    }
-    for (let reads = Number(olderParent); reads < maxReads; reads++) {
-      if (this.stopped) return null;
-      signal?.throwIfAborted();
-      const page = await this.slack.page(matter.channel, oldest, scan.latest, scan.cursor, matter.thread);
-      signal?.throwIfAborted();
-      if (!await this.accessible(matter.channel)) return null;
-      for (const message of page.messages) this.store.record(message, now);
-      scan.seen.push(...page.messages.map((m) => m.ts));
-      if (!page.cursor) {
-        for (const missing of this.store.rows(`SELECT r.* FROM revisions r JOIN messages m ON m.revision=r.id
-          WHERE r.channel=? AND r.thread=? AND r.deleted=0 AND CAST(r.ts AS REAL)>=? AND CAST(r.ts AS REAL)<=?
-          AND CAST(r.version AS REAL)<=?`, matter.channel, matter.thread, Number(oldest), Number(scan.latest), Number(scan.latest))) {
-          if (!scan.seen.includes(String(missing.ts))) this.store.record({ channel: matter.channel, thread: matter.thread, ts: String(missing.ts),
-            version: Number(scan.latest).toFixed(6), author: String(missing.author), text: '', deleted: true, own: missing.own === 1, bot: missing.bot === 1 }, now);
-        }
-        this.store.run('DELETE FROM settings WHERE key=?', key);
-        this.store.run('UPDATE threads SET gap=? WHERE channel=? AND thread=?', parentUnavailable ? 'Older thread parent unavailable; context incomplete' : null, matter.channel, matter.thread);
-        return this.store.snapshot(matter.channel, matter.thread);
-      }
-      scan.cursor = page.cursor;
-      this.store.set(key, JSON.stringify(scan));
-      this.store.run('UPDATE threads SET gap=? WHERE channel=? AND thread=?', 'Thread pagination incomplete', matter.channel, matter.thread);
-    }
-    this.store.schedule('thread', `${matter.channel}:${matter.thread}`, now + 60_000, JSON.stringify(matter));
-    return null;
+  refreshEvidence(source: Pick<Matter, 'channel' | 'thread'>): Promise<ThreadSnapshot | null> {
+    return this.collection.refresh(source, this.clock(), undefined, 2);
   }
 
   private async investigate(job: Job, now: number, signal: AbortSignal): Promise<number | undefined> {
     const matter = this.store.matter(job.target);
     if (!matter?.valid || !['open', 'snoozed'].includes(matter.state)) return;
-    if (matter.nextCheck > now) return matter.nextCheck;
-    if (this.store.setting(`unfollow:${matter.channel}:${matter.thread}`) === 'true') return;
+    const explain = (code: DecisionReason, nextDue?: number, delivery?: string) => this.store.recordDecision(matter, code, now, { nextDue, delivery, scope: `investigate:${job.token}` });
+    if (matter.nextCheck > now) { explain(matter.state === 'snoozed' ? 'snoozed' : 'scheduled', matter.nextCheck); return matter.nextCheck; }
+    if (this.store.setting(`unfollow:${matter.channel}:${matter.thread}`) === 'true') { explain('dismissed'); return; }
+    if (this.slack.active(matter.channel, matter.thread)) {
+      const next = nextMatterCheck(matter, now);
+      if (next !== undefined) this.store.attention.setNextCheck(next, matter.id);
+      explain('active_task', next);
+      return next;
+    }
     if (matter.state === 'snoozed') {
       matter.state = 'open';
-      this.store.run('UPDATE matters SET body=? WHERE id=?', JSON.stringify(matter), matter.id);
+      this.store.attention.saveMatter(matter);
     }
-    const snapshot = await this.refresh(matter, now, signal, 8);
-    if (!snapshot || !this.store.matter(matter.id)?.valid) { this.store.schedule('extract', 'global', now); return; }
+    const snapshot = await this.collection.refresh(matter, now, signal, 8);
+    if (!snapshot || !this.store.matter(matter.id)?.valid) { explain(snapshot ? 'source_changed' : 'source_unavailable'); this.store.schedule('extract', 'global', now); return; }
     const sources = [snapshot];
     const related = this.store.search(matter.title, [matter.channel], 3).find((o) => o.thread !== matter.thread);
     if (related) {
-      const context = await this.refresh(related, now, signal, 2);
+      const context = await this.collection.refresh(related, now, signal, 2);
       if (context) sources.push(context);
       else snapshot.gap = [snapshot.gap, 'Related discussion could not be completely checked'].filter(Boolean).join('; ');
+    }
+    const signature = createHash('sha256').update(JSON.stringify([matter.policy, decisionConfig(this.config), matter.title, matter.detail,
+      matter.owner, matter.deadline, deadlinePhase(matter, now), this.store.latestReminder(matter.id), sources.map(source => [source.channel, source.thread, source.generation, source.gap])])).digest('hex');
+    if (this.store.priorCheck(matter.id, signature)) {
+      const next = nextMatterCheck(matter, now);
+      if (next !== undefined) this.store.attention.setNextCheck(next, matter.id);
+      explain('unchanged', next);
+      return next;
     }
     const bounded = sources.map((s) => ({ ...s, evidence: s.evidence.map((e) => ({ ...e })) }));
     const request = () => ({ model: this.config.investigationModel, system: this.instructions(), scope: `investigate:${job.token}`,
@@ -364,27 +305,40 @@ export class InitiativeService implements ObservationMemory {
     const assessment = await this.model.complete(request(), signal);
     signal.throwIfAborted();
     if (!this.store.owns(job) || !this.store.current(sources) || matter.policy !== this.store.setting('policy') || this.store.setting('stop') === 'true') return;
+    const currentMatter = this.store.matter(matter.id);
+    if (!currentMatter?.valid || ['resolved', 'dismissed'].includes(currentMatter.state)) {
+      explain(currentMatter?.state === 'resolved' ? 'resolved' : currentMatter?.state === 'dismissed' ? 'dismissed' : 'source_changed');
+      return;
+    }
+    if (currentMatter.state === 'snoozed' && currentMatter.nextCheck > now) { explain('snoozed', currentMatter.nextCheck); return currentMatter.nextCheck; }
     const evidence = bounded.flatMap((s) => s.evidence);
     if (assessment.evidence.some((id) => !evidence.some((e) => e.id === id))
       || !assessment.evidence.some((id) => evidence.some((e) => e.id === id && !e.own && !e.bot))) throw new Error('Unsupported investigation result');
     this.learning?.record({ ...bounded[0], evidence }, matter, assessment, now);
     if (assessment.resolved) {
-      this.store.run('UPDATE matters SET body=? WHERE id=?', JSON.stringify({ ...matter, state: 'resolved' }), matter.id);
+      this.store.attention.saveMatter({ ...matter, state: 'resolved' });
+      explain('resolved');
       return;
     }
-    this.store.run('UPDATE matters SET next_check=? WHERE id=?', now + DAY, matter.id);
-    if (!assessment.help) return now + DAY;
+    const nextCheck = nextMatterCheck(matter, now)!;
+    this.store.attention.setNextCheck(nextCheck, matter.id);
+    if (!assessment.help) { this.store.rememberCheck(matter.id, signature, 'no_help', now); explain('no_help', nextCheck); return nextCheck; }
     const lastHuman = Math.max(...snapshot.evidence.filter((e) => !e.own && !e.bot).map((e) => Number(e.ts) * 1000));
     const publicReply = assessment.public && bounded.every((s) => !s.gap) && businessDaysSince(lastHuman, now) >= 2;
-    if (!publicReply && !await this.accessible(matter.channel, true)) return now + DAY;
-    const previous = this.store.rows("SELECT evidence FROM deliveries WHERE state IN ('sent','sending','uncertain','pending') AND EXISTS (SELECT 1 FROM json_each(matters) WHERE value=?)", matter.id);
-    const cited = JSON.stringify(assessment.evidence);
-    if (previous.some((r) => r.evidence === cited)) return now + DAY;
+    if (!publicReply && !await this.accessible(matter.channel, true)) return nextCheck;
+    const previous = ['pending', 'sending', 'uncertain', 'sent'].flatMap(state => this.store.deliveries(state as Delivery['state'], [matter.id]));
+    const reminder = this.store.latestReminder(matter.id);
+    if (previous.some(delivery => citationIdentity(delivery.evidence) === citationIdentity(assessment.evidence)
+      && reminderPhase(matter, delivery.created) === reminderPhase(matter, now)
+      && (!reminder || delivery.created >= reminder))) { this.store.rememberCheck(matter.id, signature, 'notified', now); explain('already_notified', nextCheck); return nextCheck; }
     const delivery: Delivery = { id: randomUUID(), channel: publicReply ? matter.channel : await this.slack.ownerDm(), thread: publicReply ? matter.thread : null,
       text: `${assessment.help}\n\n${this.slack.link(matter.channel, matter.thread)}`, matters: [matter.id], evidence: assessment.evidence,
       policy: matter.policy, digest: false, state: 'pending', ts: null, created: now };
-    this.store.enqueueDelivery(delivery);
-    return now + DAY;
+    if (this.store.enqueueDelivery(delivery)) {
+      this.store.rememberCheck(matter.id, signature, 'notified', now);
+      explain('queued', nextCheck, delivery.id);
+    } else explain('source_changed', nextCheck);
+    return nextCheck;
   }
 
   private async digest(now: number): Promise<void> {
@@ -405,26 +359,42 @@ export class InitiativeService implements ObservationMemory {
     for (const delivery of this.store.deliveries('uncertain')) {
       if (this.stopped) return;
       const ts = await this.slack.find(delivery);
-      if (ts) this.store.run("UPDATE deliveries SET state='sent',ts=? WHERE id=?", ts, delivery.id);
+      if (ts) this.store.attention.reconcileDelivery(ts, delivery.id);
     }
-    if (this.config.mode !== 'live' || this.store.setting('rollout_approved') !== this.store.setting('policy')
-      || !notificationWindow(now) || this.store.setting('mute') === 'true' || this.store.setting('stop') === 'true') return;
+    const suppression: DecisionReason | undefined = this.config.mode !== 'live' || this.store.setting('rollout_approved') !== this.store.setting('policy')
+      ? 'approval_required' : !notificationWindow(now) ? 'outside_hours'
+        : this.store.setting('mute') === 'true' || this.store.setting('stop') === 'true' ? 'controlled' : undefined;
+    if (suppression) {
+      for (const delivery of this.store.deliveries('pending')) for (const id of delivery.matters) {
+        const matter = this.store.matter(id);
+        if (matter) this.store.recordDecision(matter, suppression, now, { delivery: delivery.id });
+      }
+      return;
+    }
     for (const delivery of this.store.deliveries('pending')) {
       if (this.stopped) return;
       if (delivery.policy !== this.store.setting('policy')) continue;
+      if (delivery.proposal) {
+        const proposal = this.store.proposal(delivery.proposal.id);
+        if (!proposal || !this.store.proposalCurrent(proposal, now) || this.store.handoff(proposal.id)) { this.store.attention.cancelDelivery(delivery.id); continue; }
+      }
       let eligible = true;
       for (const id of delivery.matters) {
         const matter = this.store.matter(id);
-        if (!matter?.valid || matter.state !== 'open' || this.slack.active(matter.channel, matter.thread)) { eligible = false; break; }
-        const snapshot = await this.refresh(matter, now);
+        if (!matter?.valid || matter.state !== 'open' || this.slack.active(matter.channel, matter.thread)) {
+          if (matter) this.store.recordDecision(matter, this.slack.active(matter.channel, matter.thread) ? 'active_task' : 'source_changed', now, { delivery: delivery.id });
+          eligible = false; break;
+        }
+        const snapshot = await this.collection.refresh(matter, now);
         if (!snapshot || !this.store.matter(id)?.valid || (delivery.channel.startsWith('D') && !await this.accessible(matter.channel, true))) { eligible = false; break; }
       }
       const roots = delivery.matters.map((id) => this.store.matter(id)).filter((m): m is Matter => !!m);
-      for (const source of this.store.rows('SELECT DISTINCT r.channel,r.thread FROM revisions r JOIN json_each(?) j ON j.value=r.id', JSON.stringify(delivery.evidence))) {
+      for (const source of this.store.attention.evidenceSources(delivery.evidence)) {
         if (roots.some((m) => m.channel === source.channel && m.thread === source.thread)) continue;
-        if (!await this.refresh({ channel: String(source.channel), thread: String(source.thread) }, now, undefined, 2)) { eligible = false; break; }
+        if (!await this.collection.refresh({ channel: String(source.channel), thread: String(source.thread) }, now, undefined, 2)
+          || (delivery.channel.startsWith('D') && !await this.accessible(String(source.channel), true))) { eligible = false; break; }
       }
-      if (!eligible) { this.store.run("UPDATE deliveries SET state='cancelled' WHERE id=?", delivery.id); continue; }
+      if (!eligible) { this.store.attention.cancelDelivery(delivery.id); continue; }
       if (delivery.channel.startsWith('D') && !await this.slack.verifyDm(delivery.channel)) continue;
       const sendTime = this.clock();
       if (this.stopped || !notificationWindow(sendTime)) break;
@@ -435,51 +405,30 @@ export class InitiativeService implements ObservationMemory {
       if (!this.store.admitDelivery(delivery.id, sendTime)) continue;
       try {
         const ts = await this.slack.send(delivery);
-        this.store.run('UPDATE deliveries SET state=?,ts=? WHERE id=?', ts ? 'sent' : 'uncertain', ts ?? null, delivery.id);
+        this.store.attention.finishDelivery(ts ? 'sent' : 'uncertain', ts ?? null, delivery.id);
+        for (const id of delivery.matters) {
+          const matter = this.store.matter(id);
+          if (matter) this.store.recordDecision(matter, ts ? 'delivered' : 'delivery_uncertain', now, { delivery: delivery.id });
+        }
       } catch (error) {
-        this.store.run("UPDATE deliveries SET state='uncertain' WHERE id=?", delivery.id);
+        this.store.attention.uncertainDelivery(delivery.id);
         logger.warn('initiative', 'Delivery needs reconciliation', error);
       }
     }
   }
 
-  private async scope(metadata: TaskMetadata): Promise<{ channels: string[]; owner: boolean }> {
-    const destination = metadata.memory_destination?.channel_id;
-    if (!destination) return { channels: [], owner: false };
-    if (await this.slack.verifyDm(destination)) {
-      const channels: string[] = [];
-      for (const row of this.store.rows('SELECT id FROM channels WHERE allowed=1')) if (await this.accessible(String(row.id), true)) channels.push(String(row.id));
-      return { channels, owner: true };
-    }
-    return { channels: await this.accessible(destination) ? [destination] : [], owner: false };
-  }
-
-  async search(metadata: TaskMetadata, query: string, limit: number) {
-    const scope = await this.scope(metadata);
-    return this.store.search(query, scope.channels, limit).map((o) => ({ id: o.id, text: `${o.text}\n${this.slack.link(o.channel, o.thread)}`, recency: '' }));
-  }
-
-  async read(metadata: TaskMetadata, kind: 'observation' | 'matter' | 'matters', id?: string): Promise<unknown> {
-    const scope = await this.scope(metadata);
-    if (kind === 'matters') return scope.owner ? this.store.matters().filter((m) => scope.channels.includes(m.channel)) : 'Owner DM required.';
-    if (kind === 'matter') {
-      const matter = this.store.matter(id ?? '');
-      return scope.owner && matter?.valid && scope.channels.includes(matter.channel) ? { matter, source: this.store.snapshot(matter.channel, matter.thread) } : 'Matter unavailable.';
-    }
-    const row = this.store.row('SELECT * FROM observations WHERE id=? AND valid=1', id ?? '');
-    return row && scope.channels.includes(String(row.channel)) ? { observation: row, source: this.store.snapshot(String(row.channel), String(row.thread)) } : 'Observation unavailable.';
-  }
-
   status(now = Date.now()): string {
-    const sources = this.store.rows('SELECT id,allowed,gap,checkpoint FROM channels');
-    const pending = this.store.rows("SELECT id,evaluation FROM policies WHERE state='proposed' LIMIT 5");
+    const sources = this.store.attention.channelStatus();
+    const stats = this.store.attention.statistics();
+    const pending = this.store.attention.proposedPolicies();
     return [
       `Initiative: ${this.config.mode}; delivery ${this.store.setting('rollout_approved') === this.store.setting('policy') ? 'approved' : 'awaiting evaluated approval'}.`,
       `Public channels: ${sources.filter((r) => r.allowed === 1).length}; coverage gaps: ${sources.filter((r) => r.gap).length}. Open matters: ${this.store.matters().length}.`,
-      `Today’s conservative spending and reservations: $${(this.store.budget(now) / 1_000_000).toFixed(2)} / $200. Unsettled requests: ${this.store.row('SELECT count(*) AS n FROM charges WHERE settled IS NULL')!.n}.`,
+      `Today’s conservative spending and reservations: $${(this.store.budget(now) / 1_000_000).toFixed(2)} / $200. Unsettled requests: ${stats.unsettled}.`,
       `Controls: muted=${this.store.setting('mute') === 'true'}, research paused=${this.store.setting('pause') === 'true'}, stopped=${this.store.setting('stop') === 'true'}.`,
+      `Unresolved provider attempts: ${JSON.stringify(this.store.requests.unresolved())}.`,
       `Active policy: ${this.store.setting('policy')}. Pending policy reviews: ${JSON.stringify(pending)}.`,
-      `Capability proposals awaiting filing: ${this.store.row("SELECT count(*) AS n FROM proposals WHERE status='pending filing'")!.n}.`,
+      `Capability proposals awaiting filing: ${stats.proposals}.`,
       ...sources.filter((r) => r.gap).slice(0, 5).map((r) => `${r.id}: ${r.gap}`),
       this.store.setting('intake_gap') ?? '',
       this.store.setting('review_report') ?? '',

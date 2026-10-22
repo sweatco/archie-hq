@@ -1,6 +1,8 @@
 # Memory Layer — CLAUDE.md
 
-`src/memory/` contains Archie's workspace-bound memory API and its knowledge and observation backends. The file-based knowledge backend keeps a global public corpus plus canonical task summaries for exact public and private Slack conversations; its behavior is gated by `ARCHIE_MEMORY`. The observation backend is independently gated by `ARCHIE_PROACTIVITY_MODE` and stores public evidence in a transactional database outside the knowledge store. See `docs/architecture/proactivity.md`.
+`src/memory/` is Archie's file-based, workspace-bound memory subsystem. It keeps a global public corpus plus canonical task summaries for exact public and private Slack conversations. All behavior is gated by `ARCHIE_MEMORY`.
+
+Public Slack observation, initiative SQLite state and observation MCP tools belong to `src/proactivity/`. Do not add those responsibilities to knowledge-memory search, initialization or reset.
 
 ## Read before changing this subsystem
 
@@ -25,8 +27,8 @@
 - **Public profiles use human Slack IDs only.** New profile and DM paths accept `U…` or `W…` IDs. Bot IDs, fallback IDs, display names, and path-shaped values cannot create or authorize scoped profile files.
 - **Model output is untrusted.** Extraction output passes through `sanitize.ts` before persistence. Memory tool responses are escaped, marked as untrusted evidence, and size-bounded.
 - **Writes are serialized.** Extraction, canonical task replacement, overview rebuilding, pending recovery, and automatic housekeeping use the lifecycle queue. Do not add an independent writer to scoped memory.
-- **Flags are independent and default safe.** `ARCHIE_MEMORY=false` disables the knowledge backend. `ARCHIE_MEMORY_INJECT` gates knowledge injection and `ARCHIE_MEMORY_TOOLS` gates knowledge tools; both default off. Enabled observation memory attaches scoped recall through the same memory MCP server. It never enables knowledge reads or writes.
-- **Knowledge-store compatibility.** Scoped v1 remains Markdown/JSON on disk. An unmarked old knowledge store is wiped instead of migrated. Observation state lives outside that reset lifecycle and has its own workspace binding and schema version.
+- **Flags are independent and default safe.** `ARCHIE_MEMORY=false` disables every knowledge-memory seam. `ARCHIE_MEMORY_INJECT` gates prompt injection and `ARCHIE_MEMORY_TOOLS` gates read and explicit write tools; both default off.
+- **No migration or external dependency.** Scoped v1 remains Markdown/JSON on disk. An unmarked old store is wiped instead of migrated.
 
 ## Load-bearing files
 
