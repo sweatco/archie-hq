@@ -9,6 +9,7 @@ import type { ObservationSlack } from './slack.js';
 import { captureDecision, PIPELINE } from './replay.js';
 import { CohortRunner, RUBRIC } from './cohort.js';
 
+const ApprovalProof = z.object({ pipelineVerified: z.literal(1), cohort: z.string().min(1) });
 const Guidance = z.object({ ranking: z.string().max(1500), context: z.string().max(1500), reminders: z.string().max(1500) });
 const Reflection = z.object({
   guidance: Guidance.nullable(), evidence: z.array(z.number().int().positive()).max(30),
@@ -160,17 +161,24 @@ export class LearningService {
   }
 
   private approvalMatches(policy: string): boolean {
+    const evaluation = this.store.setting(`approved:${policy}`);
+    const candidate = this.store.learning.policy(policy);
+    if (!evaluation || !candidate || candidate.evaluation !== evaluation) return false;
+    const report = this.store.learning.passingEvaluation(evaluation, policy, RUBRIC);
+    if (!report) return false;
+    let proof: z.infer<typeof ApprovalProof>;
     try {
-      const evaluation = this.store.setting(`approved:${policy}`);
-      const candidate = this.store.learning.policy(policy);
-      if (!evaluation || candidate?.evaluation !== evaluation) return false;
-      const report = this.store.learning.passingEvaluation(evaluation, policy, RUBRIC);
-      if (!report || !Guidance.safeParse(JSON.parse(candidate.body)).success) return false;
-      const proof = JSON.parse(report.result);
-      const cohort = this.store.learning.cohort(policy);
-      return proof.pipelineVerified === 1 && cohort?.id === proof.cohort && cohort.state === 'complete'
-        && this.cohorts.valid(policy, proof.cohort, false);
-    } catch { return false; }
+      if (!Guidance.safeParse(JSON.parse(candidate.body)).success) return false;
+      const parsed = ApprovalProof.safeParse(JSON.parse(report.result));
+      if (!parsed.success) return false;
+      proof = parsed.data;
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      return false;
+    }
+    const cohort = this.store.learning.cohort(policy);
+    if (!cohort || cohort.id !== proof.cohort || cohort.state !== 'complete') return false;
+    return this.cohorts.valid(policy, proof.cohort, false);
   }
 
   revalidateApproval(): void {

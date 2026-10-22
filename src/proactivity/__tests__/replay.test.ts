@@ -109,3 +109,39 @@ describe('production-path snapshot replay', () => {
     expect(submit.mock.calls.every(([request]) => (request.input as { now: number }).now === NOW)).toBe(true);
   });
 });
+
+it('replays stable cache reuse and the later inactivity transition from recorded check facts', async () => {
+  const source = store.snapshot('C1', TS)!;
+  slack = { ...slack, channels: async () => ['C1'], page: async () => ({ messages: source.evidence }), ownerDm: async () => 'D_REPLAY', verifyDm: async () => true, send: async () => 'sent', find: async () => undefined, link: (channel, thread) => `${channel}/${thread}` };
+  const output = (request: Parameters<BackgroundModel['complete']>[0]) => {
+    const input = request.input as { threads?: unknown; matter?: { evidence: number[] } };
+    if (input.threads) {
+      const findings = result(request) as { threads: Array<{ matters: Array<{ deadline: number | null }> }> };
+      for (const thread of findings.threads) for (const matter of thread.matters) matter.deadline = null;
+      return findings;
+    }
+    return { resolved: false, help: null, public: false, evidence: input.matter!.evidence };
+  };
+  const production = new InitiativeService(store, slack, { complete: async request => output(request) as never }, config, () => NOW);
+  try {
+    store.schedule('extract', 'global', NOW);
+    await production.tick(NOW, true);
+    const complete = vi.fn(async request => {
+      const input = request.input as { threads?: unknown; matter?: { evidence: number[] } };
+      return input.threads ? output(request) : { resolved: false, help: 'Can I prepare this abandoned request?', public: true, evidence: input.matter!.evidence };
+    }) as BackgroundModel['complete'];
+    const before = JSON.stringify(store['rows']('SELECT * FROM matter_checks'));
+    const stable = await captureDecision(store, slack, config, [store.snapshot('C1', TS)!], NOW + 86_400_000);
+    expect(stable.checks).toHaveLength(1);
+    expect((await replayDecision(store, stable, 'base', '{}', { complete }, false, new AbortController().signal)).interventions).toEqual([]);
+    expect(complete).toHaveBeenCalledTimes(1);
+    const deterministic = await replayDecision(store, stable, 'base', '{}', { complete }, true, new AbortController().signal);
+    expect(deterministic.interventions).toHaveLength(1);
+    vi.mocked(complete).mockClear();
+    const abandoned = await captureDecision(store, slack, config, [store.snapshot('C1', TS)!], NOW + 2 * 86_400_000);
+    const replay = await replayDecision(store, abandoned, 'base', '{}', { complete }, false, new AbortController().signal);
+    expect(complete).toHaveBeenCalledTimes(2);
+    expect(replay.interventions[0]?.channel).toBe('C1');
+    expect(JSON.stringify(store['rows']('SELECT * FROM matter_checks'))).toBe(before);
+  } finally { production.stop(); production.release(); }
+});

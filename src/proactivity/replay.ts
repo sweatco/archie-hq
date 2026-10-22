@@ -80,7 +80,8 @@ export async function replayDecision(source: InitiativeStore, input: DecisionCas
   if (input.sources.some((s) => s.gap)) throw new Error('Recorded source coverage is incomplete');
   const store = new InitiativeStore(':memory:', source.setting('team')!, input.now);
   try {
-    store.restoreReplay(input, input.refs.map(ref => source.attention.revision(ref.id)!), policy, body);
+    // Recorded model assessments do not describe the deterministic baseline strategy.
+    store.restoreReplay(baseline ? { ...input, checks: [] } : input, input.refs.map(ref => source.attention.revision(ref.id)!), policy, body);
     const channel = input.roots[0].channel;
     const interventions: DecisionResult['interventions'] = [];
     const slack: ObservationSlack = {

@@ -222,3 +222,40 @@ describe('initiative runtime integration', () => {
     expect(origin?.brief).not.toContain('Cached source text');
   });
 });
+
+
+it.each(['same', 'investigation', 'extraction', 'repositories'] as const)('validates a fully evaluated approval against the current %s configuration', async change => {
+  const { approveFixturePolicy } = await import('./fixtures/evaluated-policy.js');
+  runtime = await startInitiative('T1', 'shadow');
+  await runtime.close(); runtime = undefined;
+  const store = openStore();
+  try {
+    const prior = JSON.parse(store.setting('decision_config')!);
+    const config = { mode: 'shadow' as const, owner: prior[0], extractionModel: prior[1], investigationModel: prior[2], repositories: change === 'repositories' ? ['previous/repo'] : prior[3] };
+    const { decisionConfig } = await import('../service.js');
+    store.set('decision_config', decisionConfig(config));
+    const policy = await approveFixturePolicy(store, config, NOW);
+    expect(store.setting('policy')).toBe(policy);
+    store.set('delivery_enabled', 'true');
+    vi.stubEnv('ARCHIE_SELF_EVOLUTION', 'true');
+    vi.setSystemTime(NOW + 3_600_000);
+    if (change === 'investigation') vi.stubEnv('ARCHIE_PROACTIVITY_INVESTIGATION_MODEL', 'changed-model');
+    if (change === 'extraction') vi.stubEnv('ARCHIE_PROACTIVITY_EXTRACTION_MODEL', 'changed-model');
+    runtime = await startInitiative('T1', 'shadow');
+    expect(store.setting('policy')).toBe(change === 'same' ? policy : 'base');
+    expect(store.setting('delivery_enabled')).toBe('true');
+  } finally { store.close(); }
+});
+
+it('runs ordinary work before a deferred optional learning provider call', async () => {
+  const { InitiativeService } = await import('../service.js');
+  const { LearningService } = await import('../learning.js');
+  const { AdmissionDeferred } = await import('../model.js');
+  vi.stubEnv('ARCHIE_SELF_EVOLUTION', 'true');
+  const order: string[] = [];
+  vi.spyOn(InitiativeService.prototype, 'tick').mockImplementation(async () => { order.push('ordinary'); });
+  vi.spyOn(LearningService.prototype, 'process').mockImplementation(async () => { order.push('learning'); throw new AdmissionDeferred('Learning capacity exhausted'); });
+  runtime = await startInitiative('T1', 'shadow'); runtime.start();
+  await vi.advanceTimersByTimeAsync(120_000);
+  expect(order).toEqual(['ordinary', 'learning', 'ordinary', 'learning']);
+});

@@ -362,3 +362,15 @@ it.each(['sending', 'uncertain', 'sent', 'attempted-cancelled', 'approved'] as c
   expect(slack.send).toHaveBeenCalledTimes(1);
   await handoff.drainCards();
 });
+
+
+it('keeps evolution-origin offers separate from default baseline suggestions', async () => {
+  const seed = store.proposal('release')!;
+  store.learning.proposeCapability('future', { repository: seed.repository, outcome: 'Improve Archie behavior', evidence: seed.evidence });
+  await handoff.present(NOW);
+  expect(store.deliveries('pending').some(delivery => delivery.proposal?.id === 'future')).toBe(false);
+  store.set('self_evolution', 'true');
+  await handoff.present(NOW);
+  expect(store.deliveries('pending').some(delivery => delivery.proposal?.id === 'future')).toBe(true);
+  expect(tasks.prepare).not.toHaveBeenCalled();
+});

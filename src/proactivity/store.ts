@@ -234,9 +234,10 @@ export class InitiativeStore {
   }
 
   pendingProposalIds(after = ''): string[] {
+    const origins = this.setting('self_evolution') === 'true' ? ['investigation', 'evolution'] : ['investigation'];
     return this.rows(`SELECT p.id FROM proposals p
       WHERE p.status='pending filing' AND p.id>?
-        AND json_extract(p.body,'$.origin')='investigation'
+        AND json_extract(p.body,'$.origin') IN (${origins.map(() => '?').join(',')})
         AND NOT EXISTS (SELECT 1 FROM handoffs WHERE proposal=p.id)
         AND NOT EXISTS (
           SELECT 1 FROM deliveries d
@@ -244,7 +245,7 @@ export class InitiativeStore {
             AND json_extract(d.proposal,'$.version')=json_extract(p.body,'$.version')
             AND d.state IN ('pending','sending','uncertain','sent')
         )
-      ORDER BY p.id LIMIT 20`, after).map(row => String(row.id));
+      ORDER BY p.id LIMIT 20`, after, ...origins).map(row => String(row.id));
   }
 
   prepareHandoff(id: string, token: string): boolean {

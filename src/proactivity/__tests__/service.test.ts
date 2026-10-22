@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { InitiativeStore } from '../store.js';
-import { InitiativeService, nextMorning, notificationWindow } from '../service.js';
+import { InitiativeService, LearningDeferred, nextMorning, notificationWindow } from '../service.js';
 import type { BackgroundModel } from '../model.js';
 import type { ObservationSlack } from '../slack.js';
 import type { TaskMetadata } from '../../types/task.js';
@@ -372,4 +372,83 @@ it.each(['sent', 'uncertain'] as const)('keeps %s nudge evidence and cached dupl
   await service.tick(NOW + 3_660_000);
   expect(model.complete).not.toHaveBeenCalled();
   expect(slack.send).toHaveBeenCalledTimes(1);
+});
+
+
+async function optionalLearning() {
+  const { LearningService } = await import('../learning.js');
+  const learning = new LearningService(store, {} as never, 'sonnet', [], async () => true);
+  service.stop(); service.release();
+  service = new InitiativeService(store, slack, model, { mode: 'live', owner: 'U1', extractionModel: 'haiku', investigationModel: 'sonnet' }, () => NOW, learning);
+  return learning;
+}
+
+it('continues extraction and first investigation after a genuine learning-only snapshot outage', async () => {
+  const { logger } = await import('../../system/logger.js');
+  const warning = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+  try {
+    const learning = await optionalLearning();
+    const observe = learning.observe.bind(learning);
+    vi.spyOn(learning, 'observe').mockImplementation(async (...args) => {
+      vi.mocked(slack.inspect).mockRejectedValueOnce(new Error('learning-only lookup outage'));
+      return observe(...args);
+    });
+    const id = await extract();
+    expect(model.complete).toHaveBeenCalledTimes(2);
+    expect(store.matter(id)?.valid).toBe(true);
+    expect(store['row']("SELECT allowed FROM channels WHERE id='C1'")?.allowed).toBe(1);
+    expect(warning).toHaveBeenCalledWith('initiative', expect.stringContaining('Optional learning capture deferred'), expect.any(LearningDeferred));
+    const episodes = store['rows']('SELECT payload FROM episodes');
+    expect(episodes.every(row => !JSON.parse(String(row.payload)).decision)).toBe(true);
+    expect(store['rows']('SELECT * FROM evaluations')).toEqual([]);
+    expect(store['rows']('SELECT * FROM policies')).toEqual([]);
+  } finally { warning.mockRestore(); }
+});
+
+it('does not invent an assessment record when the optional record hook is deferred', async () => {
+  const learning = await optionalLearning();
+  vi.spyOn(learning, 'record').mockImplementationOnce(() => { throw new LearningDeferred('Optional record unavailable'); });
+  const id = await extract();
+  expect(store.matter(id)?.valid).toBe(true);
+  const episode = JSON.parse(String(store['row']('SELECT payload FROM episodes')!.payload));
+  expect(episode.decision).toBeDefined();
+  expect(episode.actual).toBeUndefined();
+  expect(store['rows']('SELECT * FROM evaluations')).toEqual([]);
+});
+
+it('preserves storage-integrity failure instead of treating it as an optional learning outage', async () => {
+  await optionalLearning();
+  vi.spyOn(store.replay, 'observations').mockImplementationOnce(() => { throw new Error('SQLITE_CORRUPT fixture'); });
+  store.record({ channel: 'C1', thread: TS, ts: TS, version: TS, author: 'U1', text: 'Release request' }, NOW);
+  store.schedule('extract', 'global', NOW);
+  await expect(service.tick(NOW, true)).rejects.toThrow('SQLITE_CORRUPT');
+  expect(model.complete).not.toHaveBeenCalled();
+  expect(store['rows']('SELECT * FROM episodes')).toEqual([]);
+});
+
+it('still requires ordinary source authorization after a deferred learning lookup', async () => {
+  const learning = await optionalLearning();
+  const observe = learning.observe.bind(learning);
+  vi.spyOn(learning, 'observe').mockImplementation(async (...args) => {
+    vi.mocked(slack.inspect).mockRejectedValueOnce(new Error('learning-only outage')).mockResolvedValueOnce(null);
+    return observe(...args);
+  });
+  store.record({ channel: 'C1', thread: TS, ts: TS, version: TS, author: 'U1', text: 'Release request' }, NOW);
+  store.schedule('extract', 'global', NOW);
+  await service.tick(NOW, true);
+  expect(model.complete).not.toHaveBeenCalled();
+  expect(store.matters()).toEqual([]);
+  expect(store['row']("SELECT allowed FROM channels WHERE id='C1'")?.allowed).toBe(0);
+});
+
+it('honors an abort during an optional capture rather than continuing ordinary analysis', async () => {
+  const learning = await optionalLearning();
+  vi.spyOn(learning, 'observe').mockImplementationOnce(async () => {
+    service.stop(); throw new LearningDeferred('Learning lookup aborted');
+  });
+  store.record({ channel: 'C1', thread: TS, ts: TS, version: TS, author: 'U1', text: 'Release request' }, NOW);
+  store.schedule('extract', 'global', NOW);
+  await expect(service.tick(NOW, true)).rejects.toMatchObject({ name: 'AbortError' });
+  expect(model.complete).not.toHaveBeenCalled();
+  expect(store['rows']('SELECT * FROM episodes')).toEqual([]);
 });

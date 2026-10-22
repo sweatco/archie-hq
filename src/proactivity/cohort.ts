@@ -13,9 +13,11 @@ const TopicList = z.array(z.string().min(1).max(120)).min(1).max(64);
 const ThreadTopics = z.object({ channel: z.string(), thread: z.string(), topics: TopicList });
 const Truth = ThreadTopics.extend({ urgent: z.boolean(), actionable: z.boolean() });
 const Training = z.object({ episode: z.string(), threads: z.array(ThreadTopics).min(1).max(1000) });
-const Freeze = z.object({ training: z.array(Training).min(1).max(1000), groups: z.array(z.object({ episode: z.string(), threads: z.array(Truth).min(1).max(16) })).min(1).max(1000) });
+export const CohortLabels = z.object({ training: z.array(Training).min(1).max(1000), groups: z.array(z.object({ episode: z.string(), threads: z.array(Truth).min(1).max(16) })).min(1).max(1000) });
+export const EvaluationLabels = z.object({ cohort: z.string(), messages: z.array(z.object({ episode: z.string(), strategy: z.enum(['candidate', 'baseline']), draft: z.string(), useful: z.boolean(), covers: z.array(z.string()).max(16), violation: z.boolean() })).max(10000) });
+
 type TrainingInput = { episode: string; input: string | null; approved: string | null };
-export type Manifest = { pipeline: string; config: string; epoch: string; policy: string; body: string; base: string; baseBody: string; rubric: string; training: z.infer<typeof Training>[]; trainingInputs: TrainingInput[]; groups: Array<z.infer<typeof Freeze>['groups'][number] & { input: string }> };
+export type Manifest = { pipeline: string; config: string; epoch: string; policy: string; body: string; base: string; baseBody: string; rubric: string; training: z.infer<typeof Training>[]; trainingInputs: TrainingInput[]; groups: Array<z.infer<typeof CohortLabels>['groups'][number] & { input: string }> };
 const threadKey = (t: { channel: string; thread: string }) => `${t.channel}:${t.thread}`;
 
 export class CohortRunner {
@@ -73,7 +75,7 @@ export class CohortRunner {
   }
 
   freeze(policy: string, labels: unknown): string {
-    const review = Freeze.parse(labels);
+    const review = CohortLabels.parse(labels);
     if (this.store.learning.cohort(policy)) throw new Error('This policy already has an immutable cohort');
     const candidate = this.store.learning.policy(policy);
     if (!candidate || candidate.state !== 'proposed' || candidate.base !== this.store.setting('policy')) throw new Error('Stale evaluation base');
@@ -174,7 +176,7 @@ export class CohortRunner {
   }
 
   evaluate(policy: string, labels: unknown, now: number) {
-    const review = z.object({ cohort: z.string(), messages: z.array(z.object({ episode: z.string(), strategy: z.enum(['candidate', 'baseline']), draft: z.string(), useful: z.boolean(), covers: z.array(z.string()).max(16), violation: z.boolean() })).max(10000) }).parse(labels);
+    const review = EvaluationLabels.parse(labels);
     const row = this.store.learning.cohort(policy);
     if (!row || row.id !== review.cohort || row.state !== 'complete' || !this.valid(policy, review.cohort)) throw new Error('Incomplete, expired or changed full-pipeline cohort');
     const manifest = row.manifest;

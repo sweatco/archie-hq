@@ -357,3 +357,32 @@ describe('human-labelled activation gate', () => {
     expect(store['rows']('SELECT id FROM episodes')).toEqual([]);
   });
 });
+
+
+it.each(['configuration', 'body', 'cohort'] as const)('does not activate a rollback with invalid %s proof or disable baseline delivery', async change => {
+  const { review } = await completedCohort();
+  const evaluation = learning.evaluate('policy1', review, NOW);
+  learning.approve('policy1', evaluation.id, NOW);
+  expect(learning.rollback('base')).toBe(true);
+  store.set('delivery_enabled', 'true');
+  if (change === 'configuration') store.set('decision_config', 'different-models');
+  if (change === 'body') store['run']("UPDATE policies SET body='{}' WHERE id='policy1'");
+  if (change === 'cohort') store['run']("UPDATE cohorts SET state='invalid' WHERE policy='policy1'");
+  const activation = vi.spyOn(store.learning, 'selectApprovedGuidance');
+  expect(learning.rollback('policy1')).toBe(false);
+  expect(activation).not.toHaveBeenCalled();
+  expect(store.setting('policy')).toBe('base');
+  expect(store.setting('delivery_enabled')).toBe('true');
+});
+
+
+it('propagates approval storage failure without mutating selected guidance or delivery enablement', async () => {
+  const { review } = await completedCohort();
+  const evaluation = learning.evaluate('policy1', review, NOW);
+  learning.approve('policy1', evaluation.id, NOW);
+  store.set('delivery_enabled', 'true');
+  vi.spyOn(store.learning, 'passingEvaluation').mockImplementationOnce(() => { throw new Error('SQLITE_CORRUPT fixture'); });
+  expect(() => learning.revalidateApproval()).toThrow('SQLITE_CORRUPT');
+  expect(store.setting('policy')).toBe('policy1');
+  expect(store.setting('delivery_enabled')).toBe('true');
+});

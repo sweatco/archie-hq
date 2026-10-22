@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { InitiativeStore } from '../proactivity/store.js';
 import { ModelGateway } from '../proactivity/model.js';
+import { CohortLabels, EvaluationLabels } from '../proactivity/cohort.js';
 import { LearningService } from '../proactivity/learning.js';
 import { logger } from '../system/logger.js';
 
@@ -23,6 +24,8 @@ export async function runInitiativeOperator(args: string[]): Promise<void> {
   const evolutionCommand = ['export', 'cohort', 'evaluate'].includes(command);
   if (evolutionCommand && process.env.ARCHIE_SELF_EVOLUTION !== 'true') throw new Error('Self-evolution is disabled; its operator commands require explicit opt-in');
   const labels = command === 'cohort' || command === 'evaluate' ? JSON.parse(await readFile(values[1], 'utf8')) : undefined;
+  if (command === 'cohort') CohortLabels.parse(labels);
+  if (command === 'evaluate') EvaluationLabels.parse(labels);
   const store = new InitiativeStore(resolve(path), team, Date.now(), { readOnly: ['export', 'proposals', 'explain'].includes(command) });
   try {
     const gateway = new ModelGateway(store);
