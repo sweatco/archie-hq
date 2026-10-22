@@ -52,6 +52,8 @@ The background ledger reserves each paid attempt before dispatch, including expl
 
 This release admits no new learning batches. Historical batches are still polled to settle existing responsibility. Lost create responses and process exits recover through persisted `custom_id` correlation with supported provider listing/result streams. `submitting`/`uncertain` can hold execution slots; `retrieving`/`retired` release logical slots only after provider-backed terminal evidence while retaining unresolved money. Status shows unresolved IDs, provider IDs where known, state and maximum liability. Listing may encounter other batches in the provider workspace; unmatched payloads are not saved. Ongoing unrelated batches or missing provider binding deliberately keep an ambiguous attempt conservative.
 
+Provider bindings now use an endpoint-scoped scrypt derivation. Older SHA-256 bindings require the same explicit verification and rebinding before discovery resumes; their outstanding liabilities remain reserved.
+
 After a credential change, verify outside Archie that the configured endpoint/key addresses the original provider workspace, then bind the existing **local** batch ID. This is an operator assertion of provider identity, not a refund or retry:
 
 ```bash

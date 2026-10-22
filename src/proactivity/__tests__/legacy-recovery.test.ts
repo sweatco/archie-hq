@@ -89,6 +89,37 @@ describe('deferred provider work retains its financial responsibility', () => {
     expect(batches.create).not.toHaveBeenCalled();
   });
 
+  it('requires explicit rebinding of a legacy credential digest without releasing liability', async () => {
+    const charge = legacy('unknown', null, 'submitting');
+    // Legacy SHA-256 of JSON.stringify([endpoint, credential]) for the fixture below.
+    store.set('batch-provider:unknown', '1c27e0ca771ac97b319c9beaa2a8e27039ac4bc11213352105479c9d9f59047a');
+    gateway = new ModelGateway(store, { apiKey: 'test-provider-key', baseURL: 'https://api.anthropic.com', messages: { batches } } as unknown as Anthropic);
+    batches.list.mockResolvedValue({ data: [{ id: 'found', processing_status: 'ended', created_at: new Date(NOW).toISOString() }], has_more: false });
+    batches.results.mockImplementation(async function* () { yield { custom_id: 'unknown', result: { type: 'succeeded', message } }; });
+    await gateway.poll(new AbortController().signal);
+    expect(batches.list).not.toHaveBeenCalled();
+    expect(store.budget(NOW)).toBe(50_000);
+    expect(store['row']('SELECT settled FROM charges WHERE id=?', charge)?.settled).toBeNull();
+    gateway.bindProvider('unknown');
+    await gateway.poll(new AbortController().signal);
+    expect(store['row']('SELECT actual FROM charges WHERE id=?', charge)?.actual).toBe(18);
+    expect(batches.create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['test-provider-key', 'https://api.anthropic.com', true],
+    ['rotated-provider-key', 'https://api.anthropic.com', false],
+    ['test-provider-key', 'https://other-provider.example', false],
+  ])('keeps discovery bound to credential %s and endpoint %s', async (apiKey, baseURL, matches) => {
+    legacy('unknown', null, 'submitting');
+    new ModelGateway(store, { apiKey: 'test-provider-key', baseURL: 'https://api.anthropic.com' } as Anthropic).bindProvider('unknown');
+    gateway = new ModelGateway(store, { apiKey, baseURL, messages: { batches } } as unknown as Anthropic);
+    await gateway.poll(new AbortController().signal);
+    expect(batches.list).toHaveBeenCalledTimes(matches ? 1 : 0);
+    expect(store.budget(NOW)).toBe(50_000);
+    expect(store.setting('batch-provider:unknown')).not.toContain('test-provider-key');
+  });
+
   it('counts legacy execution slots toward new direct admission', async () => {
     for (let i = 0; i < 3; i++) legacy(`pending-${i}`);
     const result = await gateway.complete({ model: 'claude-haiku-5-5', system: 'Test', input: 'Evidence', schema: z.object({ answer: z.string() }) }, new AbortController().signal);

@@ -2,7 +2,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import type { Message, MessageCreateParamsNonStreaming, Usage } from '@anthropic-ai/sdk/resources/messages';
-import { createHash } from 'node:crypto';
+import { createHash, scryptSync } from 'node:crypto';
 import { z } from 'zod';
 import type { InitiativeStore } from './store.js';
 
@@ -54,7 +54,10 @@ export class ModelGateway implements BackgroundModel {
     this.client = client;
     const credential = client?.apiKey ?? process.env.ANTHROPIC_API_KEY;
     const endpoint = client?.baseURL ?? process.env.ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com';
-    this.providerIdentity = providerIdentity ?? (credential ? createHash('sha256').update(JSON.stringify([endpoint, credential])).digest('hex') : undefined);
+    // Stable across restarts; endpoint-scoped derivation binds recovery without persisting the credential.
+    this.providerIdentity = providerIdentity ?? (credential
+      ? `scrypt-v1:${scryptSync(credential, `archie-initiative-provider:${endpoint}`, 32).toString('hex')}`
+      : undefined);
   }
 
   private get provider(): Anthropic { return this.client ??= new Anthropic({ maxRetries: 0, timeout: 90_000 }); }
