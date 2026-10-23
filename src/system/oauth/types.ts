@@ -68,6 +68,10 @@ export interface OAuthPendingMeta {
   resource?: string;
   redirect_uri: string;
   created_at: number;
+  /** Set only for a personal connection started from a Slack DM. */
+  slack_user_id?: string;
+  dm_channel_id?: string;
+  thread_ts?: string;
 }
 
 /** Encrypted half of a pending file (verifier + client creds). */

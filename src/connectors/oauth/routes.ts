@@ -1,9 +1,10 @@
 /**
  * Public OAuth callback endpoint.
  *
- * Mounted at `/oauth/callback` on the existing Express app. The CLI
- * runs the discovery + DCR + state setup itself and writes a pending
- * file to disk; this handler only finishes the exchange when the
+ * Mounted at `/oauth/callback` on the existing Express app. The
+ * discovery + DCR + state setup runs elsewhere and writes a pending
+ * file to disk: the CLI for a shared record, or a DM `connect` for a
+ * personal record. This handler only finishes the exchange when the
  * provider redirects back here.
  */
 
@@ -17,8 +18,10 @@ import {
   deletePendingRecord,
   markPendingError,
   writeOAuthRecord,
+  writePersonalRecord,
   reapStalePending,
 } from '../../system/oauth/storage.js';
+import { postSlackMessage } from '../slack/client.js';
 
 const PENDING_TTL_MS = 60 * 60 * 1000; // 1 hour
 const REAPER_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
@@ -149,26 +152,44 @@ async function completeFlow(state: string, code: string): Promise<CallbackOutcom
   const nowSec = Math.floor(Date.now() / 1000);
   const expiresAt = typeof tokens.expires_in === 'number' ? nowSec + tokens.expires_in : nowSec + 3600;
 
-  await writeOAuthRecord(
-    {
-      server_name: pending.server_name,
-      label: pending.label,
-      expires_at: expiresAt,
-      created_at: nowSec,
-      updated_at: nowSec,
-      issuer: pending.issuer,
-      token_endpoint: pending.token_endpoint,
-      scopes: pending.scopes,
-      resource: pending.resource,
-    },
-    {
-      access_token: tokens.access_token,
-      refresh_token: typeof tokens.refresh_token === 'string' ? tokens.refresh_token : undefined,
-      client_id: sealed.client_id,
-      client_secret: sealed.client_secret,
-      token_type: tokens.token_type,
-    },
-  );
+  const meta = {
+    server_name: pending.server_name,
+    label: pending.label,
+    expires_at: expiresAt,
+    created_at: nowSec,
+    updated_at: nowSec,
+    issuer: pending.issuer,
+    token_endpoint: pending.token_endpoint,
+    scopes: pending.scopes,
+    resource: pending.resource,
+  };
+  const sealedRecord = {
+    access_token: tokens.access_token,
+    refresh_token: typeof tokens.refresh_token === 'string' ? tokens.refresh_token : undefined,
+    client_id: sealed.client_id,
+    client_secret: sealed.client_secret,
+    token_type: tokens.token_type,
+  };
+
+  if (pending.slack_user_id && pending.dm_channel_id) {
+    await writePersonalRecord({ ...meta, slack_user_id: pending.slack_user_id }, sealedRecord);
+    await deletePendingRecord(state);
+    logger.system(`OAuth: ${pending.slack_user_id} connected MCP server "${pending.server_name}" with their own account`);
+    // The record is already stored, so a failed confirmation must not fail the callback.
+    await postSlackMessage({
+      channel: pending.dm_channel_id,
+      threadTs: pending.thread_ts,
+      text: `Connected \`${pending.server_name}\` with your account. Say \`disconnect ${pending.server_name}\` to remove it.`,
+    }).catch((err) => logger.warn('oauth', 'Could not confirm the personal connection in Slack', err));
+    return {
+      ok: true,
+      title: 'Connected',
+      message: `"${pending.server_name}" is now connected to your account. You can close this tab.`,
+      serverName: pending.server_name,
+    };
+  }
+
+  await writeOAuthRecord(meta, sealedRecord);
 
   await deletePendingRecord(state);
   logger.system(`OAuth: connected MCP server "${pending.server_name}"`);

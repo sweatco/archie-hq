@@ -31,6 +31,8 @@ export interface ConnectInput {
   clientSecret?: string;
   /** Optional override for the client_name advertised during DCR. */
   clientName?: string;
+  /** A personal connection: whose record the callback writes, and the DM it confirms in. */
+  person?: { slackUserId: string; channelId: string; threadTs?: string };
 }
 
 export interface ConnectResult {
@@ -65,6 +67,15 @@ export function readMcpServerUrl(serverName: string): string {
     throw new Error(`MCP server "${serverName}" has no URL in ${path}`);
   }
   return entry.url;
+}
+
+/** The daemon's `/oauth/callback` URL, built from ARCHIE_PUBLIC_URL the way the CLI builds it. */
+export function publicRedirectUri(): string {
+  const publicUrl = process.env.ARCHIE_PUBLIC_URL;
+  if (!publicUrl) {
+    throw new Error('ARCHIE_PUBLIC_URL is not set, so no OAuth redirect URL can be built');
+  }
+  return new URL(`${publicUrl.replace(/\/+$/, '')}/oauth/callback`).toString();
 }
 
 export async function beginConnect(input: ConnectInput): Promise<ConnectResult> {
@@ -158,6 +169,13 @@ export async function beginConnect(input: ConnectInput): Promise<ConnectResult> 
       resource: resourceIndicator,
       redirect_uri: redirectUri,
       created_at: Math.floor(Date.now() / 1000),
+      ...(input.person
+        ? {
+          slack_user_id: input.person.slackUserId,
+          dm_channel_id: input.person.channelId,
+          ...(input.person.threadTs ? { thread_ts: input.person.threadTs } : {}),
+        }
+        : {}),
     },
     {
       code_verifier: pkce.verifier,
