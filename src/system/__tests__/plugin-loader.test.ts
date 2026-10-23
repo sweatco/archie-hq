@@ -197,6 +197,41 @@ describe('loadMcpJson — archie tool policy', () => {
     }
   });
 
+  it('parses access approverGroups as a default plus per-tool overrides', async () => {
+    const path = await writePolicy({
+      default: 'ask',
+      access: { default: { approverGroups: ['S1'] }, tools: { run_x: { approverGroups: ['S2'] } } },
+    });
+    expect(loadMcpJson(path).policies.tramline.approverGroups)
+      .toStrictEqual({ default: ['S1'], tools: { run_x: ['S2'] } });
+  });
+
+  it.each([
+    ['a list without the approverGroups wrapper', { default: ['S1'] }],
+    ['a misspelled access key', { defualt: { approverGroups: ['S1'] } }],
+    ['a misspelled rule key', { default: { approvergroup: ['S1'] } }],
+    ['a tool entry without a list', { tools: { run_x: {} } }],
+    ['a non-list approverGroups', { tools: { run_x: { approverGroups: 'S1' } } }],
+    ['a non-map tools', { tools: null }],
+    ['a list as access', []],
+  ])('rejects %s rather than leaving the tool unrestricted', async (_label, access) => {
+    const path = await writePolicy({ default: 'ask', access });
+    expect(() => loadMcpJson(path)).toThrow(/access/);
+  });
+
+  it('trims per-tool access names, as it does tier names', async () => {
+    const path = await writePolicy({ default: 'ask', access: { tools: { ' run_x ': { approverGroups: ['S1'] } } } });
+    expect(loadMcpJson(path).policies.tramline.approverGroups).toStrictEqual({ tools: { run_x: ['S1'] } });
+  });
+
+  it('rejects approverGroups on a tool that is not ask-tier', async () => {
+    const path = await writePolicy({
+      allow: ['get_x'],
+      access: { tools: { get_x: { approverGroups: ['S1'] } } },
+    });
+    expect(() => loadMcpJson(path)).toThrow(/only apply to ask-tier tools/);
+  });
+
   it('rejects a non-map titles value', async () => {
     const path = await writePolicy({ titles: ['a title'] });
     expect(() => loadMcpJson(path)).toThrow(/must be a map of tool name to button text/);

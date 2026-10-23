@@ -70,7 +70,8 @@ const HOST_OWNED_MCP_SERVER_NAMES = new Set([
  *     "deny":  ["start_release"],    // withheld from the session
  *     "titles": {                    // optional approver-facing button text
  *       "extend_soak": "Extend the beta soak, delaying the production rollout"
- *     }
+ *     },
+ *     "access": { "default": { "approverGroups": ["S0123ABCD"] } }  // only these Slack groups may approve
  *   }
  * }
  * ```
@@ -104,11 +105,11 @@ function parseServerPolicy(serverKey: string, raw: unknown, path: string): McpSe
     );
   }
 
-  const allowedKeys = new Set(['default', 'titles', ...TIERS]);
+  const allowedKeys = new Set(['default', 'titles', 'access', ...TIERS]);
   for (const key of Object.keys(entry)) {
     if (key.startsWith('_')) continue;
     if (!allowedKeys.has(key)) {
-      throw new Error(`${where}: unknown key "${key}" — expected one of default, ${TIERS.join(', ')}, titles, or a "_"-prefixed comment.`);
+      throw new Error(`${where}: unknown key "${key}" — expected one of default, ${TIERS.join(', ')}, titles, access, or a "_"-prefixed comment.`);
     }
   }
 
@@ -146,7 +147,45 @@ function parseServerPolicy(serverKey: string, raw: unknown, path: string): McpSe
     }
   }
 
-  return { default: fallback as ToolTier, tiers, titles };
+  let approverGroups: McpServerPolicy['approverGroups'];
+  if (entry.access !== undefined) {
+    // Strict: a misspelled key here would otherwise leave the tool approvable by anyone.
+    const groupsOf = (rule: unknown, at: string): string[] => {
+      const list = (rule as Record<string, unknown> | null)?.approverGroups;
+      if (!rule || typeof rule !== 'object' || Object.keys(rule).some((k) => k !== 'approverGroups') ||
+          !Array.isArray(list) || list.some((g) => typeof g !== 'string')) {
+        throw new Error(`${where}.${at} must be { "approverGroups": [<Slack user group ids>] }.`);
+      }
+      return list;
+    };
+    const isMap = (value: unknown): value is Record<string, unknown> =>
+      !!value && typeof value === 'object' && !Array.isArray(value);
+    const access = entry.access;
+    if (!isMap(access) || Object.keys(access).some((k) => k !== 'default' && k !== 'tools') ||
+        (access.tools !== undefined && !isMap(access.tools))) {
+      throw new Error(`${where}.access may only contain "default" and a "tools" map.`);
+    }
+    const tools: Record<string, string[]> = {};
+    for (const [rawTool, rule] of Object.entries(access.tools ?? {})) {
+      const tool = rawTool.trim();
+      const tier = tiers[tool] ?? fallback;
+      if (tier !== 'ask') {
+        throw new Error(`${where}.access.tools.${tool}: approverGroups only apply to ask-tier tools — "${tool}" is ${tier}.`);
+      }
+      tools[tool] = groupsOf(rule, `access.tools.${tool}`);
+    }
+    approverGroups = {
+      ...(access.default !== undefined ? { default: groupsOf(access.default, 'access.default') } : {}),
+      tools,
+    };
+  }
+
+  return {
+    default: fallback as ToolTier,
+    tiers,
+    titles,
+    ...(approverGroups ? { approverGroups } : {}),
+  };
 }
 
 /**
