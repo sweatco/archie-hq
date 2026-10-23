@@ -27,10 +27,23 @@ vi.mock('../../system/logger.js', () => ({
 
 vi.mock('../../system/event-bus.js', () => ({ emitEvent: vi.fn() }));
 
+vi.mock('../../agents/registry.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../agents/registry.js')>()),
+  getPmDef: vi.fn(),
+}));
+vi.mock('../../system/plugin-sync.js', () => ({ syncPlugins: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('../../connectors/slack/client.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../connectors/slack/client.js')>()),
+  isInAnyUserGroup: vi.fn(),
+}));
+
 import { Task } from '../task.js';
 import { appendAgentFinding } from '../persistence.js';
 import { emitEvent } from '../../system/event-bus.js';
-import { APPROVAL_TTL_MS, PENDING_APPROVAL_TTL_MS } from '../../agents/tool-approval-gate.js';
+import { getPmDef } from '../../agents/registry.js';
+import { isInAnyUserGroup } from '../../connectors/slack/client.js';
+import { APPROVAL_TTL_MS, PENDING_APPROVAL_TTL_MS, type McpServerPolicy } from '../../agents/tool-approval-gate.js';
+import type { AgentDef } from '../../types/agent.js';
 import type { TaskMetadata } from '../../types/task.js';
 
 const REQUEST = {
@@ -72,15 +85,24 @@ const request = (task: FakeTask, req = REQUEST, agent = 'pm-agent') =>
   Task.prototype.requestToolApproval.call(task as unknown as Task, agent, req);
 const consume = (task: FakeTask, digest: string) =>
   Task.prototype.consumeToolApproval.call(task as unknown as Task, digest);
-const approve = (task: FakeTask, digest: string, approver = { id: 'U1', name: 'Misha' }) =>
-  Task.prototype.handleToolCallApproval.call(task as unknown as Task, approver, digest);
+const approve = (task: FakeTask, digest: string, approver = { id: 'U1', name: 'Misha' }, slackUserId?: string) =>
+  Task.prototype.handleToolCallApproval.call(task as unknown as Task, approver, digest, slackUserId);
 const deny = (task: FakeTask, digest: string) =>
   Task.prototype.handleToolCallDenial.call(task as unknown as Task, digest);
+
+const UNRESTRICTED: McpServerPolicy = { default: 'ask', tiers: {}, titles: {} };
+const RESTRICTED: McpServerPolicy = {
+  ...UNRESTRICTED,
+  approverGroups: { tools: { retry_workflow_run: ['S1'] } },
+};
+const usePolicy = (mcpPolicy: Record<string, McpServerPolicy>) =>
+  vi.mocked(getPmDef).mockReturnValue({ mcpPolicy } as unknown as AgentDef);
 
 beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-08-07T12:00:00.000Z'));
+  usePolicy({ tramline: UNRESTRICTED });
 });
 afterEach(() => vi.useRealTimers());
 
@@ -238,6 +260,95 @@ describe('handleToolCallApproval', () => {
     await approve(task, REQUEST.digest);
 
     expect(task.metadata.approved_tool_calls).toHaveLength(1);
+  });
+});
+
+describe('handleToolCallApproval — approver groups', () => {
+  beforeEach(() => usePolicy({ tramline: RESTRICTED }));
+
+  it('resolves for a member of an approver group', async () => {
+    const task = makeFakeTask();
+    await request(task);
+    vi.mocked(isInAnyUserGroup).mockResolvedValue(true);
+
+    expect(await approve(task, REQUEST.digest, undefined, 'U1')).toBe('resolved');
+    expect(isInAnyUserGroup).toHaveBeenCalledWith('U1', ['S1']);
+    expect(task.metadata.approved_tool_calls).toHaveLength(1);
+  });
+
+  it('refuses a non-member and leaves the prompt open', async () => {
+    const task = makeFakeTask();
+    await request(task);
+    vi.mocked(isInAnyUserGroup).mockResolvedValue(false);
+
+    expect(await approve(task, REQUEST.digest, undefined, 'U1')).toBe('forbidden');
+    expect(task.metadata.pending_tool_approval!.digest).toBe(REQUEST.digest);
+    expect(task.metadata.approved_tool_calls ?? []).toHaveLength(0);
+    expect(vi.mocked(appendAgentFinding)).toHaveBeenCalledWith(
+      'task-123', 'system', expect.stringContaining('refused'), 'decision',
+    );
+  });
+
+  it('refuses the API path, which carries no Slack user, without a lookup', async () => {
+    const task = makeFakeTask();
+    await request(task);
+
+    expect(await approve(task, REQUEST.digest)).toBe('forbidden');
+    expect(isInAnyUserGroup).not.toHaveBeenCalled();
+    expect(task.metadata.approved_tool_calls ?? []).toHaveLength(0);
+  });
+
+  it('refuses a guest approver even with a Slack user id', async () => {
+    const task = makeFakeTask();
+    await request(task);
+    vi.mocked(isInAnyUserGroup).mockResolvedValue(true);
+
+    const result = await Task.prototype.handleToolCallApproval.call(
+      task as unknown as Task, undefined, REQUEST.digest, 'U1',
+    );
+    expect(result).toBe('forbidden');
+    expect(task.metadata.approved_tool_calls ?? []).toHaveLength(0);
+  });
+
+  it('judges the click against the policy as it is now, not as it was at request time', async () => {
+    usePolicy({ tramline: UNRESTRICTED });
+    const task = makeFakeTask();
+    await request(task);
+    usePolicy({ tramline: RESTRICTED });
+    vi.mocked(isInAnyUserGroup).mockResolvedValue(false);
+
+    expect(await approve(task, REQUEST.digest, undefined, 'U1')).toBe('forbidden');
+    expect(isInAnyUserGroup).toHaveBeenCalledWith('U1', ['S1']);
+  });
+
+  it('refuses when the server no longer has a loaded policy', async () => {
+    usePolicy({});
+    const task = makeFakeTask();
+    await request(task);
+
+    expect(await approve(task, REQUEST.digest, undefined, 'U1')).toBe('forbidden');
+    expect(task.metadata.approved_tool_calls ?? []).toHaveLength(0);
+  });
+
+  it('is stale with no grant when the slot is replaced during the membership lookup', async () => {
+    const task = makeFakeTask();
+    await request(task);
+    vi.mocked(isInAnyUserGroup).mockImplementation(async () => {
+      task.metadata.pending_tool_approval = { ...task.metadata.pending_tool_approval!, digest: OTHER_DIGEST };
+      return true;
+    });
+
+    expect(await approve(task, REQUEST.digest, undefined, 'U1')).toBe('stale');
+    expect(task.metadata.approved_tool_calls ?? []).toHaveLength(0);
+  });
+
+  it('lets anyone deny a restricted call, without a membership lookup', async () => {
+    const task = makeFakeTask();
+    await request(task);
+
+    expect(await deny(task, REQUEST.digest)).toBe('resolved');
+    expect(isInAnyUserGroup).not.toHaveBeenCalled();
+    expect(task.metadata.pending_tool_approval).toBeUndefined();
   });
 });
 

@@ -12,7 +12,7 @@ import type { AgentDef } from '../types/agent.js';
 import type { TriggerBinding } from '../types/trigger.js';
 import { modelDisplayLabel, resolveAgentModel } from '../agents/model-label.js';
 import { prCardFingerprint, prCardTitlePlain } from '../system/pr-card-format.js';
-import { APPROVAL_TTL_MS, PENDING_APPROVAL_TTL_MS } from '../agents/tool-approval-gate.js';
+import { APPROVAL_TTL_MS, PENDING_APPROVAL_TTL_MS, approverGroupsFor } from '../agents/tool-approval-gate.js';
 import { getGitHubClient } from '../connectors/github/client.js';
 import { createKeyedLock } from '../system/keyed-lock.js';
 
@@ -70,10 +70,10 @@ import {
 } from './persistence.js';
 import { getIsShuttingDown } from '../system/shutdown.js';
 import { scheduleIdleCheck } from './recovery.js';
-import { scanPmDef } from '../agents/registry.js';
+import { scanPmDef, getPmDef } from '../agents/registry.js';
 import type { AttachedRepo } from '../types/task.js';
 import { syncPlugins } from '../system/plugin-sync.js';
-import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, formatSlackChannelRef, formatSlackChannelDisplay, classifySlackMemoryScope, getBotUserId, getChannelInfo, isInternalMemoryUser } from '../connectors/slack/client.js';
+import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, formatSlackChannelRef, formatSlackChannelDisplay, classifySlackMemoryScope, getBotUserId, getChannelInfo, isInternalMemoryUser, isInAnyUserGroup } from '../connectors/slack/client.js';
 import type { SlackReactionsResult } from '../connectors/slack/client.js';
 import { renderMessageBody, shouldRedact } from '../connectors/slack/message-body.js';
 import { basename } from 'path';
@@ -1886,12 +1886,15 @@ export class Task {
    * a stale no-op and can never authorize the call currently pending. On match
    * the grant is *stored*, not executed — the agent spends it by retrying its
    * own call, which keeps the action running through the same audited MCP path
-   * as everything else.
+   * as everything else. A restricted call (`archie.access` approverGroups) is
+   * approved only from Slack by a member of those groups, judged against the
+   * current policy; anything else returns `'forbidden'` and leaves the prompt open.
    */
   async handleToolCallApproval(
     approver: { id: string; name: string } | undefined,
     expectedDigest: string,
-  ): Promise<'resolved' | 'stale'> {
+    slackUserId?: string,
+  ): Promise<'resolved' | 'stale' | 'forbidden'> {
     const pending = this.metadata.pending_tool_approval;
     if (!pending || pending.digest !== expectedDigest) {
       logger.warn(
@@ -1919,6 +1922,26 @@ export class Task {
       );
       return 'stale';
     }
+    // Judged against the policy as it is now, so a plugins update reaches prompts already posted.
+    await syncPlugins();
+    const policy = getPmDef().mcpPolicy;
+    const groups = policy && Object.hasOwn(policy, pending.server)
+      ? approverGroupsFor(policy[pending.server], pending.tool)
+      : null;
+    const allowed = groups === null
+      ? false
+      : !groups || (!!slackUserId && !!approver && await isInAnyUserGroup(slackUserId, groups));
+    if (!allowed) {
+      logger.warn('task', `Tool-call approval for ${pending.server}:${pending.tool} on task ${this.taskId} refused for ${slackUserId ?? 'a non-Slack approver'}`);
+      await appendAgentFinding(
+        this.taskId,
+        'system',
+        `Tool-call approval refused for ${slackUserId ? `<@${slackUserId}>` : 'a non-Slack approver'}: ${pending.server}:${pending.tool}`,
+        'decision',
+      );
+      return 'forbidden';
+    }
+    if (this.metadata.pending_tool_approval !== pending) return 'stale';
     this.metadata.pending_tool_approval = undefined;
 
     // Dedupe on digest so two prompts for the same call cannot become two
