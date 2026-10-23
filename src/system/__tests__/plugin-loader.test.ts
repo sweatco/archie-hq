@@ -200,10 +200,10 @@ describe('loadMcpJson — archie tool policy', () => {
   it('parses access approverGroups as a default plus per-tool overrides', async () => {
     const path = await writePolicy({
       default: 'ask',
-      access: { default: { approverGroups: ['S1'] }, tools: { run_x: { approverGroups: ['S2'] } } },
+      access: { default: { approverGroups: ['S1'] }, tools: { run_x: { approverGroups: ['S2'] }, run_y: {} } },
     });
     expect(loadMcpJson(path).policies.tramline.approverGroups)
-      .toEqual({ default: ['S1'], tools: { run_x: ['S2'] } });
+      .toStrictEqual({ default: ['S1'], tools: { run_x: ['S2'] } });
   });
 
   it('rejects approverGroups on a tool that is not ask-tier', async () => {

@@ -152,7 +152,8 @@ function parseServerPolicy(serverKey: string, raw: unknown, path: string): McpSe
     const access = entry.access as any;
     const tools: Record<string, string[]> = {};
     for (const [tool, rule] of Object.entries<any>(access.tools ?? {})) {
-      tools[tool] = rule.approverGroups;
+      // An entry without a list must not read as "unrestricted" and override the default.
+      if (rule?.approverGroups !== undefined) tools[tool] = rule.approverGroups;
     }
     for (const tool of Object.keys(tools)) {
       const tier = tiers[tool] ?? fallback;

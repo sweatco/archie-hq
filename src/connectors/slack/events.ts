@@ -659,7 +659,9 @@ const FORBIDDEN_TOOL_APPROVAL_TEXT = 'Only members of the Slack groups allowed t
  * can see the prompt may resolve it — identity is resolved for the audit
  * finding only, and an external/guest clicker still resolves with their
  * identity omitted, mirroring edit mode and merge. The Task method's atomic
- * read-compare-clear on the digest is the single verification point.
+ * read-compare-clear on the digest is the single verification point. The
+ * exception is a call whose policy names approverGroups: only a member of one
+ * of them can approve it (anyone can still deny).
  *
  * Exported for tests, which pass a fake Bolt app recording `.action`
  * registrations; production registration happens in mountSlackApp.
