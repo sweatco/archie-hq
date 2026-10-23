@@ -73,7 +73,7 @@ import { scheduleIdleCheck } from './recovery.js';
 import { scanPmDef } from '../agents/registry.js';
 import type { AttachedRepo } from '../types/task.js';
 import { syncPlugins } from '../system/plugin-sync.js';
-import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, formatSlackChannelRef, formatSlackChannelDisplay, classifySlackMemoryScope, getBotUserId, getChannelInfo, isInternalMemoryUser } from '../connectors/slack/client.js';
+import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, formatSlackChannelRef, formatSlackChannelDisplay, classifySlackMemoryScope, getBotUserId, getChannelInfo, getUserInfo, isInternalMemoryUser } from '../connectors/slack/client.js';
 import type { SlackReactionsResult } from '../connectors/slack/client.js';
 import { renderMessageBody, shouldRedact } from '../connectors/slack/message-body.js';
 import { basename } from 'path';
@@ -612,6 +612,19 @@ export class Task {
     const channel = await getChannelInfo(binding.channel_id);
     if (channel.isIm !== true || channel.imUserId !== binding.user_id) {
       throw new Error('delivery blocked: trigger belongs to a different Slack destination');
+    }
+  }
+
+  /** The internal person whose 1:1 DM this task belongs to, or null. */
+  async getDmOwner(): Promise<string | null> {
+    const channelId = this.metadata.memory_destination?.channel_id;
+    if (!channelId?.startsWith('D')) return null;
+    const channel = await getChannelInfo(channelId);
+    if (!channel.isIm || !channel.imUserId) return null;
+    try {
+      return isInternalMemoryUser(await getUserInfo(channel.imUserId)) ? channel.imUserId : null;
+    } catch {
+      return null;
     }
   }
 
