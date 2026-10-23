@@ -116,6 +116,49 @@ describe('GET /oauth/callback', () => {
     return fetch(`${baseUrl}/oauth/callback?state=${state}&code=the-code`);
   }
 
+  it('stores a reconnect after a refresh already in flight, so the reconnect is what remains', async () => {
+    const { storage } = await setup();
+    const { ensureFreshPersonalToken } = await import('../../../system/oauth/refresh.js');
+    const nowSec = Math.floor(Date.now() / 1000);
+    await storage.writePersonalRecord(
+      {
+        server_name: 'notion', slack_user_id: USER, expires_at: nowSec + 10, created_at: nowSec - 3600, updated_at: nowSec - 3600,
+        issuer: 'https://auth.example.com', token_endpoint: 'https://auth.example.com/token', scopes: ['read'],
+      },
+      { access_token: 'AT-old', refresh_token: 'RT-old', client_id: 'cli', client_secret: 'sec', token_type: 'Bearer' },
+    );
+    await writePending(storage, 'state-reconnect', { slack_user_id: USER, dm_channel_id: DM });
+
+    const realFetch = globalThis.fetch;
+    let respond!: () => void;
+    const tokenEndpointHit = new Promise<void>((hit) => {
+      globalThis.fetch = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (!url.startsWith('https://auth.example.com/')) return realFetch(input, init);
+        hit();
+        return new Promise<Response>((resolve) => {
+          respond = () => resolve(new Response(
+            JSON.stringify({ access_token: 'AT-refreshed', token_type: 'Bearer', expires_in: 3600 }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          ));
+        });
+      }) as typeof fetch;
+    });
+    try {
+      const refreshing = ensureFreshPersonalToken(USER, 'notion');
+      await tokenEndpointHit;
+      const reconnecting = callback('state-reconnect');
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      respond();
+      await refreshing;
+      expect((await reconnecting).status).toBe(200);
+      const record = await storage.readPersonalRecord(USER, 'notion');
+      expect((await storage.readOAuthSealed(record!)).access_token).toBe('AT-new');
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
   it('stores a personal record, confirms in the DM thread and writes no shared record', async () => {
     const { storage, post } = await setup();
     await writePending(storage, 'state-personal', { slack_user_id: USER, dm_channel_id: DM, thread_ts: THREAD });
