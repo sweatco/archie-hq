@@ -1,7 +1,7 @@
 /**
  * Token-refresh logic and the `ensureFreshToken` API used at agent
- * spawn time. All concurrent calls for the same server name share one
- * refresh round-trip via the secrets-vault key mutex.
+ * spawn time. All concurrent calls for the same record (shared, or one
+ * person's) share one refresh round-trip via the secrets-vault key mutex.
  */
 
 import { withKeyMutex, type EncryptedEnvelope } from '../secrets-vault.js';

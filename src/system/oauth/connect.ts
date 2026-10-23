@@ -1,8 +1,8 @@
 /**
  * High-level orchestration for connecting an MCP server.
  *
- * Used by the CLI: discover → register → write pending → return
- * authorize URL. The HTTP callback handler in
+ * Used by the CLI and by a DM `connect`: discover → register → write
+ * pending → return authorize URL. The HTTP callback handler in
  * `src/connectors/oauth/routes.ts` picks up the pending record and
  * finishes the exchange.
  */
