@@ -1941,7 +1941,16 @@ export class Task {
       );
       return 'forbidden';
     }
-    if (this.metadata.pending_tool_approval !== pending) return 'stale';
+    // A parked task is reloaded per click, so a Deny on another instance can
+    // land during the awaits above and is only visible on disk.
+    const persisted = (await loadMetadata(this.taskId))?.pending_tool_approval;
+    if (
+      this.metadata.pending_tool_approval !== pending ||
+      persisted?.digest !== pending.digest ||
+      persisted?.requested_at !== pending.requested_at
+    ) {
+      return 'stale';
+    }
     this.metadata.pending_tool_approval = undefined;
 
     // Dedupe on digest so two prompts for the same call cannot become two

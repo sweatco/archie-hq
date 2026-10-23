@@ -149,19 +149,31 @@ function parseServerPolicy(serverKey: string, raw: unknown, path: string): McpSe
 
   let approverGroups: McpServerPolicy['approverGroups'];
   if (entry.access !== undefined) {
-    const access = entry.access as any;
-    const tools: Record<string, string[]> = {};
-    for (const [tool, rule] of Object.entries<any>(access.tools ?? {})) {
-      // An entry without a list must not read as "unrestricted" and override the default.
-      if (rule?.approverGroups !== undefined) tools[tool] = rule.approverGroups;
+    // Strict: a misspelled key here would otherwise leave the tool approvable by anyone.
+    const groupsOf = (rule: unknown, at: string): string[] => {
+      const list = (rule as Record<string, unknown> | null)?.approverGroups;
+      if (!rule || typeof rule !== 'object' || Object.keys(rule).some((k) => k !== 'approverGroups') ||
+          !Array.isArray(list) || list.some((g) => typeof g !== 'string')) {
+        throw new Error(`${where}.${at} must be { "approverGroups": [<Slack user group ids>] }.`);
+      }
+      return list;
+    };
+    const access = entry.access as Record<string, unknown> | null;
+    if (!access || typeof access !== 'object' || Object.keys(access).some((k) => k !== 'default' && k !== 'tools')) {
+      throw new Error(`${where}.access may only contain "default" and "tools".`);
     }
-    for (const tool of Object.keys(tools)) {
+    const tools: Record<string, string[]> = {};
+    for (const [tool, rule] of Object.entries((access.tools ?? {}) as Record<string, unknown>)) {
       const tier = tiers[tool] ?? fallback;
       if (tier !== 'ask') {
         throw new Error(`${where}.access.tools.${tool}: approverGroups only apply to ask-tier tools — "${tool}" is ${tier}.`);
       }
+      tools[tool] = groupsOf(rule, `access.tools.${tool}`);
     }
-    approverGroups = { default: access.default?.approverGroups, tools };
+    approverGroups = {
+      ...(access.default !== undefined ? { default: groupsOf(access.default, 'access.default') } : {}),
+      tools,
+    };
   }
 
   return {

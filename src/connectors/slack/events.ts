@@ -650,7 +650,7 @@ const STALE_TOOL_APPROVAL_TEXT =
   '⚠️ This approval prompt is stale — the pending request changed, expired, or was already resolved. ' +
   'Nothing ran, and the task was not resumed — ping the thread if it is still needed.';
 
-const FORBIDDEN_TOOL_APPROVAL_TEXT = 'Only members of the Slack groups allowed to approve this tool can approve it. Nothing was approved, and the request is still open.';
+const FORBIDDEN_TOOL_APPROVAL_TEXT = 'You can\'t approve this call: it is limited to members of specific Slack groups, or its tool policy is no longer loaded. Nothing was approved, and the request is still open.';
 
 /**
  * Register the MCP tool-call approve/deny button handlers.

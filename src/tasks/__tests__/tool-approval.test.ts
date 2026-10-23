@@ -15,7 +15,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../persistence.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../persistence.js')>();
-  return { ...actual, appendAgentFinding: vi.fn().mockResolvedValue(undefined) };
+  return { ...actual, appendAgentFinding: vi.fn().mockResolvedValue(undefined), loadMetadata: vi.fn() };
 });
 
 vi.mock('../../system/logger.js', () => ({
@@ -38,9 +38,10 @@ vi.mock('../../connectors/slack/client.js', async (importOriginal) => ({
 }));
 
 import { Task } from '../task.js';
-import { appendAgentFinding } from '../persistence.js';
+import { appendAgentFinding, loadMetadata } from '../persistence.js';
 import { emitEvent } from '../../system/event-bus.js';
 import { getPmDef } from '../../agents/registry.js';
+import { syncPlugins } from '../../system/plugin-sync.js';
 import { isInAnyUserGroup } from '../../connectors/slack/client.js';
 import { APPROVAL_TTL_MS, PENDING_APPROVAL_TTL_MS, type McpServerPolicy } from '../../agents/tool-approval-gate.js';
 import type { AgentDef } from '../../types/agent.js';
@@ -67,7 +68,11 @@ type FakeTask = {
   stop: ReturnType<typeof vi.fn>;
 };
 
+// What loadMetadata returns: the latest fake task's metadata, i.e. disk agrees with memory.
+let onDisk: Partial<TaskMetadata> = {};
+
 function makeFakeTask(metadata: Partial<TaskMetadata> = {}): FakeTask {
+  onDisk = metadata;
   return {
     taskId: 'task-123',
     metadata,
@@ -103,6 +108,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-08-07T12:00:00.000Z'));
   usePolicy({ tramline: UNRESTRICTED });
+  vi.mocked(loadMetadata).mockImplementation(async () => structuredClone(onDisk) as TaskMetadata);
 });
 afterEach(() => vi.useRealTimers());
 
@@ -319,6 +325,8 @@ describe('handleToolCallApproval — approver groups', () => {
 
     expect(await approve(task, REQUEST.digest, undefined, 'U1')).toBe('forbidden');
     expect(isInAnyUserGroup).toHaveBeenCalledWith('U1', ['S1']);
+    expect(vi.mocked(syncPlugins).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(getPmDef).mock.invocationCallOrder.at(-1)!);
   });
 
   it('refuses when the server no longer has a loaded policy', async () => {
@@ -340,6 +348,17 @@ describe('handleToolCallApproval — approver groups', () => {
 
     expect(await approve(task, REQUEST.digest, undefined, 'U1')).toBe('stale');
     expect(task.metadata.approved_tool_calls ?? []).toHaveLength(0);
+  });
+
+  it('is stale with no grant when a Deny on another instance lands during the lookup', async () => {
+    const task = makeFakeTask();
+    await request(task);
+    vi.mocked(isInAnyUserGroup).mockResolvedValue(true);
+    vi.mocked(loadMetadata).mockResolvedValueOnce({ ...structuredClone(task.metadata), pending_tool_approval: undefined } as TaskMetadata);
+
+    expect(await approve(task, REQUEST.digest, undefined, 'U1')).toBe('stale');
+    expect(task.metadata.approved_tool_calls ?? []).toHaveLength(0);
+    expect(task.sendMessage).not.toHaveBeenCalled();
   });
 
   it('lets anyone deny a restricted call, without a membership lookup', async () => {

@@ -364,7 +364,7 @@ export function mountApiRoutes(app: Application): void {
           return;
         }
         if (disposition === 'forbidden') {
-          res.status(403).json({ ok: false, error: 'This tool call can only be approved in Slack by a member of its approver groups.' });
+          res.status(403).json({ ok: false, error: 'This tool call can only be approved in Slack by a member of its approver groups, or its tool policy is no longer loaded.' });
           return;
         }
       } else if (type === 'max_mode') {
