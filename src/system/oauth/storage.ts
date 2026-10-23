@@ -12,6 +12,7 @@
  */
 
 import { join } from 'path';
+import { readdirSync } from 'fs';
 import { readdir } from 'fs/promises';
 import { OAUTH_DIR, OAUTH_PENDING_DIR, OAUTH_PERSONAL_DIR } from '../workdir.js';
 import {
@@ -21,6 +22,7 @@ import {
   readJson,
   deleteFileIfExists,
   fileExists,
+  withKeyMutex,
 } from '../secrets-vault.js';
 import type {
   OAuthRecord,
@@ -145,11 +147,22 @@ export async function listPersonalRecords(slackUserId: string): Promise<OAuthPer
     const { envelope: _envelope, ...meta } = record;
     metas.push(meta);
   }
-  return metas.sort((a, b) => a.server_name.localeCompare(b.server_name));
+  return metas;
+}
+
+/** Serialises everything that writes one person's record, so a refresh in flight cannot resurrect a disconnect or overwrite a reconnect. */
+export function withPersonalRecordLock<T>(slackUserId: string, serverName: string, fn: () => Promise<T>): Promise<T> {
+  return withKeyMutex(`oauth:personal:${slackUserId}:${serverName}`, fn);
 }
 
 export async function deletePersonalRecord(slackUserId: string, serverName: string): Promise<boolean> {
-  return deleteFileIfExists(personalPathFor(slackUserId, serverName));
+  return withPersonalRecordLock(slackUserId, serverName, () => deleteFileIfExists(personalPathFor(slackUserId, serverName)));
+}
+
+/** Whether any shared or personal record is on disk. Personal records are found by file name, because a disconnect leaves the person's emptied directory behind. */
+export function hasAnyVaultRecord(): boolean {
+  return readdirSync(OAUTH_DIR).some((name) => name.endsWith('.json'))
+    || readdirSync(OAUTH_PERSONAL_DIR, { recursive: true }).some((name) => String(name).endsWith('.json'));
 }
 
 // ---- Pending attempts -------------------------------------------------------

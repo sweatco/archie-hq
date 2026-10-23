@@ -58,7 +58,7 @@ describe('getDmOwner', () => {
   });
 
   it('is null when the destination is not a 1:1 DM', async () => {
-    getChannelInfoMock.mockResolvedValue({ id: 'D0OWNERDM', name: 'D0OWNERDM', isPrivate: true, isIm: false });
+    getChannelInfoMock.mockResolvedValue({ id: 'D0OWNERDM', name: 'D0OWNERDM', isPrivate: true, isIm: false, imUserId: 'U0OWNER1' });
     expect(await task('D0OWNERDM').getDmOwner()).toBeNull();
     expect(getUserInfoMock).not.toHaveBeenCalled();
   });

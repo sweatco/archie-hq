@@ -93,7 +93,7 @@ describe('GET /oauth/callback', () => {
   async function writePending(
     storage: typeof import('../../../system/oauth/storage.js'),
     state: string,
-    person?: { slack_user_id: string; dm_channel_id: string; thread_ts?: string },
+    person?: { slack_user_id: string; dm_channel_id?: string; thread_ts?: string },
   ) {
     await storage.writePendingRecord(
       {
@@ -172,7 +172,19 @@ describe('GET /oauth/callback', () => {
     const sealed = await storage.readOAuthSealed(record!);
     expect(sealed.access_token).toBe('AT-new');
     expect(sealed.refresh_token).toBe('RT-new');
+    expect(await storage.readPendingRecord('state-shared')).toBeNull();
     expect(await storage.listPersonalRecords(USER)).toEqual([]);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('stores a personal record, never the shared one, for a person without a DM to confirm in', async () => {
+    const { storage, post } = await setup();
+    await writePending(storage, 'state-no-dm', { slack_user_id: USER });
+
+    const res = await callback('state-no-dm');
+    expect(res.status).toBe(200);
+    expect(await storage.readPersonalRecord(USER, 'notion')).not.toBeNull();
+    expect(await storage.readOAuthRecord('notion')).toBeNull();
     expect(post).not.toHaveBeenCalled();
   });
 });

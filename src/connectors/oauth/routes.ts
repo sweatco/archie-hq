@@ -19,6 +19,7 @@ import {
   markPendingError,
   writeOAuthRecord,
   writePersonalRecord,
+  withPersonalRecordLock,
   reapStalePending,
 } from '../../system/oauth/storage.js';
 import { postSlackMessage } from '../slack/client.js';
@@ -171,16 +172,21 @@ async function completeFlow(state: string, code: string): Promise<CallbackOutcom
     token_type: tokens.token_type,
   };
 
-  if (pending.slack_user_id && pending.dm_channel_id) {
-    await writePersonalRecord({ ...meta, slack_user_id: pending.slack_user_id }, sealedRecord);
+  // Keyed on the person alone: a personal attempt must never fall through to overwriting the shared record.
+  const slackUserId = pending.slack_user_id;
+  if (slackUserId) {
+    await withPersonalRecordLock(slackUserId, pending.server_name, () =>
+      writePersonalRecord({ ...meta, slack_user_id: slackUserId }, sealedRecord));
     await deletePendingRecord(state);
-    logger.system(`OAuth: ${pending.slack_user_id} connected MCP server "${pending.server_name}" with their own account`);
-    // The record is already stored, so a failed confirmation must not fail the callback.
-    await postSlackMessage({
-      channel: pending.dm_channel_id,
-      threadTs: pending.thread_ts,
-      text: `Connected \`${pending.server_name}\` with your account. Say \`disconnect ${pending.server_name}\` to remove it.`,
-    }).catch((err) => logger.warn('oauth', 'Could not confirm the personal connection in Slack', err));
+    logger.system(`OAuth: ${slackUserId} connected MCP server "${pending.server_name}" with their own account`);
+    if (pending.dm_channel_id) {
+      // The record is already stored, so a failed confirmation must not fail the callback.
+      await postSlackMessage({
+        channel: pending.dm_channel_id,
+        threadTs: pending.thread_ts,
+        text: `Connected \`${pending.server_name}\` with your account. Say \`disconnect ${pending.server_name}\` to remove it.`,
+      }).catch((err) => logger.warn('oauth', 'Could not confirm the personal connection in Slack', err));
+    }
     return {
       ok: true,
       title: 'Connected',

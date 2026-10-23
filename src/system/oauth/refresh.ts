@@ -12,6 +12,7 @@ import {
   readPersonalRecord,
   writeOAuthRecord,
   writePersonalRecord,
+  withPersonalRecordLock,
 } from './storage.js';
 import type { OAuthRecordMeta, OAuthSealed } from './types.js';
 
@@ -73,7 +74,7 @@ export async function ensureFreshPersonalToken(
   options: EnsureFreshTokenOptions = {},
 ): Promise<FreshToken | null> {
   const { now = Date.now(), force = false } = options;
-  return withKeyMutex(`oauth:personal:${slackUserId}:${serverName}`, async () => {
+  return withPersonalRecordLock(slackUserId, serverName, async () => {
     const record = await readPersonalRecord(slackUserId, serverName);
     if (!record) return null;
     return freshTokenFor(record, writePersonalRecord, now, force);

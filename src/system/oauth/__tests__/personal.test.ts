@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtemp, readdir, readFile, rm, stat } from 'fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { randomBytes } from 'crypto';
@@ -58,7 +58,7 @@ describe('personal OAuth records', () => {
     expect(await storage.readOAuthSealed(record!)).toEqual(sealed);
 
     const listed = await storage.listPersonalRecords(USER);
-    expect(listed.map((m) => m.server_name)).toEqual(['linear', 'notion']);
+    expect(listed.map((m) => m.server_name).sort()).toEqual(['linear', 'notion']);
     for (const m of listed) {
       expect(m.slack_user_id).toBe(USER);
       expect(m).not.toHaveProperty('envelope');
@@ -68,6 +68,45 @@ describe('personal OAuth records', () => {
     expect(await storage.deletePersonalRecord(USER, 'notion')).toBe(false);
     expect(await storage.readPersonalRecord(USER, 'notion')).toBeNull();
     expect((await storage.listPersonalRecords(USER)).map((m) => m.server_name)).toEqual(['linear']);
+  });
+
+  it('counts a vault record only while a record file exists, shared or personal', async () => {
+    const { storage } = await importFresh();
+    const { OAUTH_DIR, OAUTH_PERSONAL_DIR } = await import('../../workdir.js');
+    await mkdir(OAUTH_PERSONAL_DIR, { recursive: true });
+    expect(storage.hasAnyVaultRecord()).toBe(false);
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    await storage.writePersonalRecord(meta('notion', nowSec + 3600, nowSec), sealed);
+    expect(storage.hasAnyVaultRecord()).toBe(true);
+
+    await storage.deletePersonalRecord(USER, 'notion');
+    expect(await readdir(join(OAUTH_PERSONAL_DIR, USER))).toEqual([]);
+    expect(storage.hasAnyVaultRecord()).toBe(false);
+
+    await writeFile(join(OAUTH_DIR, 'linear.json'), '{}');
+    expect(storage.hasAnyVaultRecord()).toBe(true);
+  });
+
+  it('keeps a disconnect that lands while a refresh is in flight', async () => {
+    const { refresh, storage } = await importFresh();
+    const nowSec = Math.floor(Date.now() / 1000);
+    await storage.writePersonalRecord(meta('notion', nowSec + 10, nowSec - 3600), sealed);
+    let respond!: () => void;
+    globalThis.fetch = vi.fn(() => new Promise<Response>((resolve) => {
+      respond = () => resolve(new Response(
+        JSON.stringify({ access_token: 'AT-new', token_type: 'Bearer', expires_in: 3600 }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ));
+    })) as any;
+
+    const refreshing = refresh.ensureFreshPersonalToken(USER, 'notion');
+    await vi.waitFor(() => expect(globalThis.fetch).toHaveBeenCalled());
+    const disconnecting = storage.deletePersonalRecord(USER, 'notion');
+    respond();
+    await refreshing;
+    expect(await disconnecting).toBe(true);
+    expect(await storage.readPersonalRecord(USER, 'notion')).toBeNull();
   });
 
   it('lists nothing for a person with no directory', async () => {
