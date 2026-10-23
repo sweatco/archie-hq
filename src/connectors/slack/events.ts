@@ -650,6 +650,8 @@ const STALE_TOOL_APPROVAL_TEXT =
   '⚠️ This approval prompt is stale — the pending request changed, expired, or was already resolved. ' +
   'Nothing ran, and the task was not resumed — ping the thread if it is still needed.';
 
+const FORBIDDEN_TOOL_APPROVAL_TEXT = 'Only members of the Slack groups allowed to approve this tool can approve it. Nothing was approved, and the request is still open.';
+
 /**
  * Register the MCP tool-call approve/deny button handlers.
  *
@@ -690,9 +692,11 @@ export function registerToolApprovalHandlers(boltApp: Pick<AppType, 'action'>): 
     try {
       const approver = await resolveApprover(userId !== 'unknown' ? userId : undefined);
       const task = await Task.get(taskId);
-      const disposition = await task.handleToolCallApproval(approver, digest);
+      const disposition = await task.handleToolCallApproval(approver, digest, userId !== 'unknown' ? userId : undefined);
 
-      if (body.channel?.id && body.message?.ts) {
+      if (disposition === 'forbidden') {
+        if (body.channel?.id) await postEphemeral(body.channel.id, userId, FORBIDDEN_TOOL_APPROVAL_TEXT, body.message?.thread_ts);
+      } else if (body.channel?.id && body.message?.ts) {
         const text = disposition === 'resolved'
           ? `✅ *Tool call approved* by <@${userId}>`
           : STALE_TOOL_APPROVAL_TEXT;
