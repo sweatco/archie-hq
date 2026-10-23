@@ -4,13 +4,16 @@
  * Vault records: `${OAUTH_DIR}/<server-name>.json`
  *   { plaintext meta..., envelope: { ciphertext, iv, tag } }
  *
+ * Personal records: `${OAUTH_PERSONAL_DIR}/<slack-user-id>/<server-name>.json`
+ *   { plaintext meta..., slack_user_id, envelope: { ... } }
+ *
  * Pending attempts: `${OAUTH_PENDING_DIR}/<state>.json`
  *   { plaintext meta..., envelope: { ... } }
  */
 
 import { join } from 'path';
 import { readdir } from 'fs/promises';
-import { OAUTH_DIR, OAUTH_PENDING_DIR } from '../workdir.js';
+import { OAUTH_DIR, OAUTH_PENDING_DIR, OAUTH_PERSONAL_DIR } from '../workdir.js';
 import {
   encryptJson,
   decryptJson,
@@ -23,16 +26,25 @@ import type {
   OAuthRecord,
   OAuthRecordMeta,
   OAuthSealed,
+  OAuthPersonalRecord,
+  OAuthPersonalRecordMeta,
   OAuthPendingMeta,
   OAuthPendingRecord,
   OAuthPendingSealed,
 } from './types.js';
 
 const SERVER_NAME_PATTERN = /^[a-zA-Z0-9_.-]+$/;
+const SLACK_USER_ID_PATTERN = /^[UW][A-Z0-9]{2,30}$/;
 
 function assertSafeServerName(name: string): void {
   if (!SERVER_NAME_PATTERN.test(name)) {
     throw new Error(`Invalid MCP server name "${name}" — must match ${SERVER_NAME_PATTERN}`);
+  }
+}
+
+function assertSafeSlackUserId(id: string): void {
+  if (!SLACK_USER_ID_PATTERN.test(id)) {
+    throw new Error(`Invalid Slack user id "${id}" — must match ${SLACK_USER_ID_PATTERN}`);
   }
 }
 
@@ -90,6 +102,54 @@ export async function listOAuthServers(): Promise<string[]> {
 
 export async function hasOAuthRecord(serverName: string): Promise<boolean> {
   return fileExists(vaultPathFor(serverName));
+}
+
+// ---- Personal records -------------------------------------------------------
+
+export function personalPathFor(slackUserId: string, serverName: string): string {
+  assertSafeSlackUserId(slackUserId);
+  assertSafeServerName(serverName);
+  return join(OAUTH_PERSONAL_DIR, slackUserId, `${serverName}.json`);
+}
+
+export async function writePersonalRecord(
+  meta: OAuthPersonalRecordMeta,
+  sealed: OAuthSealed,
+): Promise<void> {
+  const record: OAuthPersonalRecord = { ...meta, envelope: encryptJson(sealed) };
+  await writeJsonAtomic(personalPathFor(meta.slack_user_id, meta.server_name), record, 0o600);
+}
+
+export async function readPersonalRecord(
+  slackUserId: string,
+  serverName: string,
+): Promise<OAuthPersonalRecord | null> {
+  return readJson<OAuthPersonalRecord>(personalPathFor(slackUserId, serverName));
+}
+
+export async function listPersonalRecords(slackUserId: string): Promise<OAuthPersonalRecordMeta[]> {
+  assertSafeSlackUserId(slackUserId);
+  const dir = join(OAUTH_PERSONAL_DIR, slackUserId);
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch (err: any) {
+    if (err.code === 'ENOENT') return [];
+    throw err;
+  }
+  const metas: OAuthPersonalRecordMeta[] = [];
+  for (const name of entries) {
+    if (!name.endsWith('.json')) continue;
+    const record = await readJson<OAuthPersonalRecord>(join(dir, name));
+    if (!record) continue;
+    const { envelope: _envelope, ...meta } = record;
+    metas.push(meta);
+  }
+  return metas.sort((a, b) => a.server_name.localeCompare(b.server_name));
+}
+
+export async function deletePersonalRecord(slackUserId: string, serverName: string): Promise<boolean> {
+  return deleteFileIfExists(personalPathFor(slackUserId, serverName));
 }
 
 // ---- Pending attempts -------------------------------------------------------

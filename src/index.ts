@@ -30,7 +30,7 @@ import { mountOAuthRoutes } from './connectors/oauth/routes.js';
 import { getIsShuttingDown, setShuttingDown } from './system/shutdown.js';
 import { getActiveTaskIds } from './tasks/task.js';
 import { logger } from './system/logger.js';
-import { bootstrapWorkdir, cloneRepos, OAUTH_DIR } from './system/workdir.js';
+import { bootstrapWorkdir, cloneRepos, OAUTH_DIR, OAUTH_PERSONAL_DIR } from './system/workdir.js';
 import { validateMasterKey } from './system/secrets-vault.js';
 import { initPlugins, getPlugins, getArchieConfig } from './system/plugin-loader.js';
 import { startContextProbe } from './system/context-probe.js';
@@ -96,8 +96,8 @@ async function main(): Promise<void> {
 
     // If any OAuth vault records exist (or the master key was provided),
     // validate it now so a misconfigured deployment fails fast instead of
-    // erroring at agent-spawn time.
-    const hasVaultRecords = readdirSync(OAUTH_DIR).some((name) => name.endsWith('.json'));
+    // erroring at agent-spawn time. Personal records count too.
+    const hasVaultRecords = readdirSync(OAUTH_DIR).some((name) => name.endsWith('.json')) || readdirSync(OAUTH_PERSONAL_DIR, { recursive: true }).some((name) => String(name).endsWith('.json'));
     if (hasVaultRecords || process.env.ARCHIE_SECRETS_KEY) {
       validateMasterKey();
     }

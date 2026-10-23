@@ -74,6 +74,9 @@ export const OAUTH_DIR = join(SECRETS_DIR, 'oauth');
 /** Pending OAuth attempts (short-lived state during an authorize flow). */
 export const OAUTH_PENDING_DIR = join(OAUTH_DIR, '.pending');
 
+/** Per-person OAuth records from personal connections, one directory per Slack user. */
+export const OAUTH_PERSONAL_DIR = join(OAUTH_DIR, 'personal');
+
 // =============================================================================
 // Bootstrap (async — must be called from main() before plugin/repo loading)
 // =============================================================================
@@ -94,6 +97,7 @@ export async function bootstrapWorkdir(): Promise<void> {
   await mkdir(CACHES_DIR, { recursive: true });
   await mkdir(OAUTH_DIR, { recursive: true, mode: 0o700 });
   await mkdir(OAUTH_PENDING_DIR, { recursive: true, mode: 0o700 });
+  await mkdir(OAUTH_PERSONAL_DIR, { recursive: true, mode: 0o700 });
 
   const pluginsUrl = process.env.ARCHIE_PLUGINS;
   const pluginsBranch = process.env.ARCHIE_PLUGINS_BRANCH;

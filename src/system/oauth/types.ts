@@ -45,6 +45,15 @@ export interface OAuthRecord extends OAuthRecordMeta {
   envelope: EncryptedEnvelope;
 }
 
+/** A shared record plus the Slack user it belongs to (`oauth/personal/<slackUserId>/<server>.json`). */
+export interface OAuthPersonalRecordMeta extends OAuthRecordMeta {
+  slack_user_id: string;
+}
+
+export interface OAuthPersonalRecord extends OAuthPersonalRecordMeta {
+  envelope: EncryptedEnvelope;
+}
+
 /** What the CLI persists for the daemon's callback handler to pick up. */
 export interface OAuthPendingMeta {
   state: string;
