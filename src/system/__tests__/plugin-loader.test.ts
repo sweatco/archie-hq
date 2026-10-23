@@ -212,9 +212,16 @@ describe('loadMcpJson — archie tool policy', () => {
     ['a misspelled rule key', { default: { approvergroup: ['S1'] } }],
     ['a tool entry without a list', { tools: { run_x: {} } }],
     ['a non-list approverGroups', { tools: { run_x: { approverGroups: 'S1' } } }],
+    ['a non-map tools', { tools: null }],
+    ['a list as access', []],
   ])('rejects %s rather than leaving the tool unrestricted', async (_label, access) => {
     const path = await writePolicy({ default: 'ask', access });
     expect(() => loadMcpJson(path)).toThrow(/access/);
+  });
+
+  it('trims per-tool access names, as it does tier names', async () => {
+    const path = await writePolicy({ default: 'ask', access: { tools: { ' run_x ': { approverGroups: ['S1'] } } } });
+    expect(loadMcpJson(path).policies.tramline.approverGroups).toStrictEqual({ tools: { run_x: ['S1'] } });
   });
 
   it('rejects approverGroups on a tool that is not ask-tier', async () => {

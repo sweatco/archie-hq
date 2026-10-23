@@ -1949,6 +1949,7 @@ export class Task {
       persisted?.digest !== pending.digest ||
       persisted?.requested_at !== pending.requested_at
     ) {
+      logger.warn('task', `Tool-call approval for ${expectedDigest} on task ${this.taskId} resolved elsewhere during the approver check`);
       return 'stale';
     }
     this.metadata.pending_tool_approval = undefined;

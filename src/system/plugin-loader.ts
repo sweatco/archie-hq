@@ -158,12 +158,16 @@ function parseServerPolicy(serverKey: string, raw: unknown, path: string): McpSe
       }
       return list;
     };
-    const access = entry.access as Record<string, unknown> | null;
-    if (!access || typeof access !== 'object' || Object.keys(access).some((k) => k !== 'default' && k !== 'tools')) {
-      throw new Error(`${where}.access may only contain "default" and "tools".`);
+    const isMap = (value: unknown): value is Record<string, unknown> =>
+      !!value && typeof value === 'object' && !Array.isArray(value);
+    const access = entry.access;
+    if (!isMap(access) || Object.keys(access).some((k) => k !== 'default' && k !== 'tools') ||
+        (access.tools !== undefined && !isMap(access.tools))) {
+      throw new Error(`${where}.access may only contain "default" and a "tools" map.`);
     }
     const tools: Record<string, string[]> = {};
-    for (const [tool, rule] of Object.entries((access.tools ?? {}) as Record<string, unknown>)) {
+    for (const [rawTool, rule] of Object.entries(access.tools ?? {})) {
+      const tool = rawTool.trim();
       const tier = tiers[tool] ?? fallback;
       if (tier !== 'ask') {
         throw new Error(`${where}.access.tools.${tool}: approverGroups only apply to ask-tier tools — "${tool}" is ${tier}.`);
