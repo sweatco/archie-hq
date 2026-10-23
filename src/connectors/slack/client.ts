@@ -1598,6 +1598,24 @@ export async function fetchExploreThread(
   return { channel: channelInfo, messages: await resolveAuthorsAndMap(raw) };
 }
 
+/** Uncached and fail-closed on purpose: it runs once per human approval click. */
+export async function isInAnyUserGroup(userId: string, groupIds: string[]): Promise<boolean> {
+  for (const usergroup of groupIds) {
+    try {
+      const result = await getSlackClient().usergroups.users.list({ usergroup });
+      if (!result.ok) {
+        logger.warn('Slack', `Could not read members of user group ${usergroup}: ${result.error ?? 'not ok'}`);
+        return false;
+      }
+      if (result.users?.includes(userId)) return true;
+    } catch (error) {
+      logger.warn('Slack', `Could not read members of user group ${usergroup}`, error);
+      return false;
+    }
+  }
+  return false;
+}
+
 /**
  * Get user info
  */

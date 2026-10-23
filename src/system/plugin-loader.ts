@@ -70,7 +70,8 @@ const HOST_OWNED_MCP_SERVER_NAMES = new Set([
  *     "deny":  ["start_release"],    // withheld from the session
  *     "titles": {                    // optional approver-facing button text
  *       "extend_soak": "Extend the beta soak, delaying the production rollout"
- *     }
+ *     },
+ *     "access": { "default": { "approverGroups": ["S0123ABCD"] } }  // only these Slack groups may approve
  *   }
  * }
  * ```
@@ -104,11 +105,11 @@ function parseServerPolicy(serverKey: string, raw: unknown, path: string): McpSe
     );
   }
 
-  const allowedKeys = new Set(['default', 'titles', ...TIERS]);
+  const allowedKeys = new Set(['default', 'titles', 'access', ...TIERS]);
   for (const key of Object.keys(entry)) {
     if (key.startsWith('_')) continue;
     if (!allowedKeys.has(key)) {
-      throw new Error(`${where}: unknown key "${key}" — expected one of default, ${TIERS.join(', ')}, titles, or a "_"-prefixed comment.`);
+      throw new Error(`${where}: unknown key "${key}" — expected one of default, ${TIERS.join(', ')}, titles, access, or a "_"-prefixed comment.`);
     }
   }
 
@@ -146,7 +147,28 @@ function parseServerPolicy(serverKey: string, raw: unknown, path: string): McpSe
     }
   }
 
-  return { default: fallback as ToolTier, tiers, titles };
+  let approverGroups: McpServerPolicy['approverGroups'];
+  if (entry.access !== undefined) {
+    const access = entry.access as any;
+    const tools: Record<string, string[]> = {};
+    for (const [tool, rule] of Object.entries<any>(access.tools ?? {})) {
+      tools[tool] = rule.approverGroups;
+    }
+    for (const tool of Object.keys(tools)) {
+      const tier = tiers[tool] ?? fallback;
+      if (tier !== 'ask') {
+        throw new Error(`${where}.access.tools.${tool}: approverGroups only apply to ask-tier tools — "${tool}" is ${tier}.`);
+      }
+    }
+    approverGroups = { default: access.default?.approverGroups, tools };
+  }
+
+  return {
+    default: fallback as ToolTier,
+    tiers,
+    titles,
+    ...(approverGroups ? { approverGroups } : {}),
+  };
 }
 
 /**

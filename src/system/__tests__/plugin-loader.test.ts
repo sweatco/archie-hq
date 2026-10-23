@@ -197,6 +197,23 @@ describe('loadMcpJson — archie tool policy', () => {
     }
   });
 
+  it('parses access approverGroups as a default plus per-tool overrides', async () => {
+    const path = await writePolicy({
+      default: 'ask',
+      access: { default: { approverGroups: ['S1'] }, tools: { run_x: { approverGroups: ['S2'] } } },
+    });
+    expect(loadMcpJson(path).policies.tramline.approverGroups)
+      .toEqual({ default: ['S1'], tools: { run_x: ['S2'] } });
+  });
+
+  it('rejects approverGroups on a tool that is not ask-tier', async () => {
+    const path = await writePolicy({
+      allow: ['get_x'],
+      access: { tools: { get_x: { approverGroups: ['S1'] } } },
+    });
+    expect(() => loadMcpJson(path)).toThrow(/only apply to ask-tier tools/);
+  });
+
   it('rejects a non-map titles value', async () => {
     const path = await writePolicy({ titles: ['a title'] });
     expect(() => loadMcpJson(path)).toThrow(/must be a map of tool name to button text/);
