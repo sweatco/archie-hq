@@ -20,6 +20,7 @@ const bolt = vi.hoisted(() => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     event(name: string, handler: (arg: any) => unknown) { handlers.set(name, handler); }
     action(_name: string, _handler: unknown) {}
+    command(_name: string, _handler: unknown) {}
     async start() {}
     async stop() {}
   }

@@ -9,6 +9,8 @@
 #      Archie selects Socket Mode automatically when this var is present.
 # The `request_url` fields are ignored by Slack when Socket Mode is on,
 # so they can stay as-is for environments that toggle between modes.
+#
+# A test app needs its own slash command name (they are unique per workspace): set it with ARCHIE_SLASH_COMMAND.
 
 display_information:
   name: Archie
@@ -21,6 +23,12 @@ features:
   assistant_view:
     assistant_description: "Autonomous Responsive and Collaborative Hyper Intelligent Employee"
     suggested_prompts: []
+  slash_commands:
+    - command: /archie
+      url: https://your-domain.example.com/webhooks/slack
+      description: "Connect your own account to one of Archie's tools"
+      usage_hint: "connect <server> | disconnect <server> | connections"
+      should_escape: false
 oauth_config:
   scopes:
     bot:
@@ -44,6 +52,7 @@ oauth_config:
       - reactions:read
       - reactions:write
       - assistant:write
+      - commands
 settings:
   interactivity:
     is_enabled: true

@@ -29,7 +29,7 @@ import {
 } from './client.js';
 import { ensureChannelCanvas } from './channel-canvas.js';
 import { ensureChannelPins } from './channel-pins.js';
-import { handleDmCommand } from './dm-commands.js';
+import { registerConnectCommand } from './connect-command.js';
 import { shouldCreateNewTask, shouldForwardMessageEvent, isAckableEvent } from './task-routing.js';
 import { Task } from '../../tasks/task.js';
 import { registerMemoryPreferenceHandlers } from '../../memory/slack-approval.js';
@@ -409,6 +409,7 @@ export async function mountSlackApp(
   registerMergeActionHandlers(app!);
   registerToolApprovalHandlers(app!);
   registerMemoryPreferenceHandlers(app!);
+  registerConnectCommand(app!);
 
   // Handle trigger approval button
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -795,9 +796,6 @@ export async function handleSlackEvent(event: {
       logger.warn('Slack', `Failed to classify event author ${event.user}`, error);
     }
   }
-
-  // Engine-level DM commands (connect, disconnect, connections) never reach the PM.
-  if (await handleDmCommand(event)) return;
 
   // Instant acknowledgment — react before any LLM processing. Only @mentions
   // and DM messages are acknowledged; plain thread replies in an engaged channel

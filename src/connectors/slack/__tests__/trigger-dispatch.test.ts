@@ -20,6 +20,7 @@ const bolt = vi.hoisted(() => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     event(name: string, handler: (arg: any) => unknown) { handlers.set(name, handler); }
     action(_name: string, _handler: unknown) {}
+    command(_name: string, _handler: unknown) {}
     async start() {}
     async stop() {}
   }
@@ -108,11 +109,8 @@ vi.mock('../../../system/logger.js', () => ({
   },
 }));
 
-vi.mock('../dm-commands.js', () => ({ handleDmCommand: vi.fn() }));
-
 import { handleSlackEvent, mountSlackApp } from '../events.js';
-import { handleDmCommand } from '../dm-commands.js';
-import { addReaction, fetchSlackThread, getBotUserId, isExternalUser, extractMessageContent } from '../client.js';
+import { fetchSlackThread, getBotUserId, isExternalUser, extractMessageContent } from '../client.js';
 import { getChannelMessageTriggers, fireTrigger } from '../../../system/trigger-scheduler.js';
 import { logger } from '../../../system/logger.js';
 import { Task } from '../../../tasks/task.js';
@@ -430,38 +428,6 @@ describe('the content floor on task creation', () => {
     expect(task.sendMessage).toHaveBeenCalledWith(
       expect.stringContaining('[<@U1:R> in #dm] hello'),
     );
-  });
-});
-
-describe('engine DM commands', () => {
-  it('a handled command returns before the eyes reaction, the thread fetch and any task', async () => {
-    vi.mocked(handleDmCommand).mockResolvedValueOnce(true);
-    const event = {
-      type: 'message',
-      channel: 'D0USER',
-      user: 'U1',
-      raw: { type: 'message', channel: 'D0USER', user: 'U1', text: 'connections', ts: '1700000000.001200' },
-      ts: '1700000000.001200',
-    };
-
-    await handleSlackEvent(event);
-
-    expect(vi.mocked(handleDmCommand)).toHaveBeenCalledWith(event);
-    expect(vi.mocked(addReaction)).not.toHaveBeenCalled();
-    expect(vi.mocked(fetchSlackThread)).not.toHaveBeenCalled();
-    expect(vi.mocked(Task.create)).not.toHaveBeenCalled();
-  });
-
-  it('is never consulted for an external author', async () => {
-    vi.mocked(isExternalUser).mockReturnValueOnce(true);
-    await handleSlackEvent({
-      type: 'message',
-      channel: 'D0USER',
-      user: 'U_EXT',
-      raw: { type: 'message', channel: 'D0USER', user: 'U_EXT', text: 'connections', ts: '1700000000.001300' },
-      ts: '1700000000.001300',
-    });
-    expect(vi.mocked(handleDmCommand)).not.toHaveBeenCalled();
   });
 });
 
