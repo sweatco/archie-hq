@@ -62,6 +62,7 @@ describe('slack-manifest.yaml — pinned messages', () => {
 
 describe('slack-manifest.yaml — personal connections command', () => {
   it('declares the /archie slash command and grants the commands bot scope', () => {
+    expect(section(manifest, 'features')).toContain('slash_commands:');
     expect(section(manifest, 'slash_commands')).toContain('command: /archie');
     expect(section(manifest, 'bot')).toContain('- commands');
   });

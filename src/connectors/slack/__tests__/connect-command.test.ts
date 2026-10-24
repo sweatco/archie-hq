@@ -95,7 +95,7 @@ describe('connectCommandReply', () => {
       person: { slackUserId: USER, channelId: DM },
     });
     expect(reply).toBe(
-      'Open this link to connect `notion` with your own account. It works once and expires in an hour.\n[Connect notion](https://auth.example.com/authorize?state=abc)',
+      'Open this link to connect `notion` with your own account. It works once and expires in an hour.\n<https://auth.example.com/authorize?state=abc|Connect notion>',
     );
   });
 
@@ -168,6 +168,8 @@ describe('registerConnectCommand', () => {
 
     expect(ack).toHaveBeenCalledTimes(1);
     expect(respond).toHaveBeenCalledTimes(1);
+    // Slack's 3 s ack limit: the ack must not wait for any Slack lookup or OAuth discovery.
+    expect(ack.mock.invocationCallOrder[0]).toBeLessThan(getChannelInfo.mock.invocationCallOrder[0]);
     expect(ack.mock.invocationCallOrder[0]).toBeLessThan(respond.mock.invocationCallOrder[0]);
     expect(respond).toHaveBeenCalledWith({
       response_type: 'ephemeral',
@@ -176,6 +178,7 @@ describe('registerConnectCommand', () => {
   });
 
   it('does not throw when respond rejects, and logs it', async () => {
+    delete process.env.ARCHIE_SLASH_COMMAND;
     const handler = register().mock.calls[0][1] as (arg: unknown) => Promise<void>;
     const respond = vi.fn().mockRejectedValue(new Error('expired response_url'));
 

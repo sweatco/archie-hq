@@ -55,7 +55,8 @@ export async function connectCommandReply(command: { user_id: string; channel_id
         redirectUri: publicRedirectUri(),
         person: { slackUserId: command.user_id, channelId: command.channel_id },
       });
-      return `Open this link to connect \`${name}\` with your own account. It works once and expires in an hour.\n[Connect ${name}](${authorizeUrl})`;
+      // `respond` text is Slack mrkdwn, where a link is <url|label>; a CommonMark [label](url) would show raw.
+      return `Open this link to connect \`${name}\` with your own account. It works once and expires in an hour.\n<${authorizeUrl}|Connect ${name}>`;
     }
     const removed = await deletePersonalRecord(command.user_id, name);
     return removed ? `Disconnected \`${name}\`.` : `\`${name}\` wasn't connected.`;
