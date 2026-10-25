@@ -11,7 +11,7 @@ vi.mock('../../connectors/slack/client.js', async original => ({
 import { PublicSlack } from '../slack.js';
 
 const delivery: Delivery = { id: 'card', channel: 'D_OWNER', thread: null, ts: '10.000001', text: 'Proposal; repository owner/repo; https://slack.test/source; normal task budget outside $200/day.',
-  matters: [], evidence: [1], policy: 'base', digest: false, state: 'sent', created: 0, proposal: { id: 'release', version: 'v1' } };
+  matters: [], evidence: [1], digest: false, state: 'sent', created: 0, proposal: { id: 'release', version: 'v1' } };
 beforeEach(() => { f.update.mockReset(); f.update.mockResolvedValue({ ok: true }); });
 describe('proposal card replacement', () => {
   it('replaces all old actions while retaining proposal, sources and budget, then supplies an Open task link', async () => {

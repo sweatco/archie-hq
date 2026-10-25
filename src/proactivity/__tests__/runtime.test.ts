@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { InitiativeStore } from '../store.js';
 import { hasObservationAPI, searchObservations } from '../api.js';
 import { ModelGateway } from '../model.js';
+import { InitiativeService } from '../service.js';
 import type { InitiativeRuntime } from '../index.js';
 
 const f = vi.hoisted(() => ({ root: `/tmp/archie-runtime-${process.pid}`, post: vi.fn(), slack: {
@@ -34,8 +35,7 @@ beforeEach(() => {
   f.slack.ownerDm.mockResolvedValue('D_OWNER'); f.slack.verifyDm.mockImplementation(async (channel) => channel === 'D_OWNER');
   f.slack.updateProposal.mockResolvedValue(undefined); f.slack.link.mockImplementation((channel, ts) => `https://slack.test/${channel}/${ts}`);
   vi.spyOn(ModelGateway.prototype, 'verify').mockResolvedValue();
-  vi.spyOn(ModelGateway.prototype, 'poll').mockResolvedValue();
-  vi.spyOn(ModelGateway.prototype, 'cancel').mockResolvedValue();
+  vi.spyOn(InitiativeService.prototype, 'tick').mockResolvedValue();
 });
 afterEach(async () => {
   await runtime?.close(); runtime = undefined;
@@ -43,20 +43,13 @@ afterEach(async () => {
 });
 
 describe('initiative runtime integration', () => {
-  it('returns a current-schema historical learned policy to baseline without losing pending work', async () => {
-    runtime = await startInitiative('T1', 'shadow');
-    await runtime.close(); runtime = undefined;
-    const store = openStore();
-    try {
-      store.set('policy', 'previous-guidance');
-      store.set('delivery_enabled', 'true');
-      store.schedule('reflection', 'global', NOW);
-      runtime = await startInitiative('T1', 'shadow');
-      expect(store.setting('policy')).toBe('base');
-      expect(store.setting('deferred_policy')).toBe('previous-guidance');
-      expect(store.setting('delivery_enabled')).toBe('true');
-      expect(store['row']("SELECT attempts FROM jobs WHERE kind='reflection'")?.attempts).toBe(0);
-    } finally { store.close(); }
+  it('rechecks owner binding after awaited provider verification', async () => {
+    vi.mocked(ModelGateway.prototype.verify).mockImplementationOnce(async () => {
+      const other = openStore();
+      try { other.set('owner', 'U000002'); } finally { other.close(); }
+    });
+    await expect(startInitiative('T1', 'shadow')).rejects.toThrow('Observation owner mismatch');
+    expect(hasObservationAPI()).toBe(false);
   });
 
   it('updates the original card instead of posting a confirmation for every valid callback', async () => {
@@ -67,9 +60,10 @@ describe('initiative runtime integration', () => {
       store.channel('C1', true, false);
       const evidence = store.record({ channel: 'C1', thread: ts, ts, version: ts, author: OWNER, text: 'Read-only test' }, NOW)!;
       f.slack.page.mockImplementation(async () => ({ messages: store.snapshot('C1', ts)?.evidence ?? [] }));
-      store.proposeCapability('test', { repository: 'owner/repo', outcome: 'Read-only test', evidence: [evidence] });
-      const version = proposalVersion(store.proposal('test')!);
-      store.enqueueDelivery({ id: 'card', channel: 'D_OWNER', thread: null, text: 'Proposal and budget context', matters: [], evidence: [evidence], policy: 'base', digest: false, state: 'sent', ts: '1792490401.000001', created: NOW, proposal: { id: 'test', version } });
+      store.apply([store.snapshot('C1', ts)!], [], [{ id: 'test', channel: 'C1', thread: ts, title: 'Read-only test', detail: 'Read-only test', evidence: [evidence], state: 'open', owner: OWNER, deadline: null, explicit: true, nextCheck: NOW, valid: true }]);
+      const proposal = store.proposeCapability({ repository: 'owner/repo', outcome: 'Read-only test', evidence: [evidence], matter: 'test' });
+      const version = proposalVersion(store.proposal(proposal)!);
+      store.enqueueDelivery({ id: 'card', channel: 'D_OWNER', thread: null, text: 'Proposal and budget context', matters: [], evidence: [evidence], digest: false, state: 'sent', ts: '1792490401.000001', created: NOW, proposal: { id: proposal, version } });
       store.attention.finishDelivery('sent', '1792490401.000001', 'card');
       let metadata: any;
       vi.spyOn(ordinaryTasks, 'prepare').mockImplementation(async input => { metadata = { approved_start: { ...input, phase: 'prepared' } }; });
@@ -89,10 +83,10 @@ describe('initiative runtime integration', () => {
     runtime = await startInitiative('T1', 'shadow');
     expect(hasObservationAPI()).toBe(true);
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(ModelGateway.prototype.poll).not.toHaveBeenCalled();
+    expect(InitiativeService.prototype.tick).not.toHaveBeenCalled();
     runtime.start(); runtime.start();
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(ModelGateway.prototype.poll).toHaveBeenCalledTimes(1);
+    expect(InitiativeService.prototype.tick).toHaveBeenCalledTimes(1);
   });
 
   it('rejects forged owner controls and consumes a verified owner command', async () => {
@@ -103,9 +97,8 @@ describe('initiative runtime integration', () => {
     expect(f.post).not.toHaveBeenCalled();
     expect(await runtime.capture({ channel: 'D_OWNER', user: OWNER, text: 'initiative stop' })).toBe(true);
     const store = openStore();
-    try { expect(store.setting('stop')).toBe('true'); expect(store.setting('analysis_epoch')).toBe('1'); }
+    try { expect(store.setting('stop')).toBe('true'); }
     finally { store.close(); }
-    expect(ModelGateway.prototype.cancel).toHaveBeenCalledTimes(1);
   });
 
   it('does not accept a bot-authored message as an owner control', async () => {
@@ -160,13 +153,13 @@ describe('initiative runtime integration', () => {
     await closing; runtime = undefined;
   });
 
-  it('waits for the real active reconciliation on close rather than a later no-op tick', async () => {
+  it('waits for the active service tick on close rather than a later no-op tick', async () => {
     runtime = await startInitiative('T1', 'shadow');
     let finish!: () => void;
-    vi.mocked(ModelGateway.prototype.poll).mockReturnValue(new Promise<void>((resolve) => { finish = resolve; }));
+    vi.mocked(InitiativeService.prototype.tick).mockReturnValue(new Promise<void>((resolve) => { finish = resolve; }));
     runtime.start();
     await vi.advanceTimersByTimeAsync(120_000);
-    expect(ModelGateway.prototype.poll).toHaveBeenCalledTimes(1);
+    expect(InitiativeService.prototype.tick).toHaveBeenCalledTimes(1);
     let closed = false;
     const closing = runtime.close().then(() => { closed = true; });
     await Promise.resolve(); expect(closed).toBe(false);
@@ -207,7 +200,7 @@ describe('initiative runtime integration', () => {
   it('recognizes a proactive origin during lookup failures without exposing its cached context', async () => {
     runtime = await startInitiative('T1', 'shadow');
     const store = openStore();
-    try { store['run']("INSERT INTO deliveries VALUES ('delivery','C1','10.000001','Cached source text','[\"secret-matter\"]','[]','base',0,'sent','11.000001',?,NULL,NULL)", NOW); }
+    try { store['run']("INSERT INTO deliveries VALUES ('delivery','C1','10.000001','Cached source text','[\"secret-matter\"]','[]',0,'sent','11.000001',?,NULL,NULL)", NOW); }
     finally { store.close(); }
     f.slack.inspect.mockRejectedValueOnce(new Error('Slack unavailable'));
     const origin = await runtime.origin('C1', '10.000001');

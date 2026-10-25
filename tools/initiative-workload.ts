@@ -69,7 +69,7 @@ export async function runInitiativeWorkload() {
           return { channel: thread.channel, thread: thread.thread,
             observations: [{ key: 'discussion', text: 'The public discussion has an evidenced update.', kind: 'change', evidence }],
             matters: thread.evidence.some(item => item.text.includes('[action]')) ? [{ key: 'review', title: 'Release review', detail: 'Review the release decision.', evidence,
-              state: 'open', owner: 'U_OWNER', deadline: START + 2 * HOUR, explicit: true, reopen: false }] : [] };
+              state: 'open', owner: 'U_OWNER', deadline: { date: new Date(START + 2 * HOUR).toISOString().slice(0, 10), time: new Date(START + 2 * HOUR).toISOString().slice(11, 16), timeZone: 'UTC' }, explicit: true, reopen: false }] : [] };
         }) };
       } else if (input.matter) {
         dueLateness.push(Math.max(0, now - input.matter.nextCheck));
@@ -82,7 +82,7 @@ export async function runInitiativeWorkload() {
       } };
     } },
   };
-  const gateway = new ModelGateway(store, provider as unknown as Anthropic, 'synthetic-workload');
+  const gateway = new ModelGateway(store, provider as unknown as Anthropic);
   const slack: ObservationSlack = {
     inspect: async channel => { calls.inspect++; return channels.includes(channel) ? { shared: false, ownerCanRead: true } : null; },
     channels: async () => { calls.channels++; return channels; },
@@ -152,7 +152,7 @@ export async function runInitiativeWorkload() {
     };
     const pressure = new InitiativeStore(':memory:', 'T_PRESSURE', now);
     try {
-      const pressureGateway = new ModelGateway(pressure, provider as unknown as Anthropic, 'synthetic-pressure');
+      const pressureGateway = new ModelGateway(pressure, provider as unknown as Anthropic);
       const probe = { model: 'claude-sonnet-5-5', system: 'Return the requested result.', input: {}, schema: z.object({ answer: z.string() }) };
       pressure.reserve(149_999_999, false, now);
       let routineDeferred = false;

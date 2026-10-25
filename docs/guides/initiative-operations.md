@@ -1,74 +1,51 @@
 # Operating initiative
 
-The [architecture](../architecture/proactivity.md) describes the independent observation subsystem. Enable it with Node 24+, Slack configured, a verified internal human `ARCHIE_PROACTIVITY_OWNER`, and `ARCHIE_PROACTIVITY_MODE=shadow`. Keep knowledge-memory flags as required for knowledge memory; they do not control initiative. The first successful activation sets the forward watermark. There is no backfill or auto-joining, and passive collection excludes DMs, private channels and mail.
+Use Node 24+, configured Slack, a human `ARCHIE_PROACTIVITY_OWNER` and `ARCHIE_PROACTIVITY_MODE=shadow` to collect and analyze without sending. Knowledge-memory flags do not control observation. Collection starts at successful enablement, with no backfill, auto-joining, DM, private-channel or mailbox observation. See the [architecture](../architecture/proactivity.md).
 
-## Database upgrade and diagnostics
+## Storage and diagnostics
 
-Use the same source or compiled build form as the running instance: use the form matching its executed implementation. For a local `tsx` runtime, replace `node dist/cli/initiative.js` in these commands with `node --import tsx src/cli/initiative.ts`.
+Startup creates `WORKDIR/initiative/state.sqlite` with schema 11. Restarts preserve its watermark, evidence, controls, charges and approved tasks. Old experimental and optional-learner databases are not supported or migrated; attempting to open one leaves it unchanged. Keep historical test snapshots with their original verification artifacts. Do not replace an existing file just to bypass a schema error. Wrong workspace, wrong owner or newer schema also fails.
 
-Keep the existing `WORKDIR/initiative/state.sqlite` path. Stop Archie and take a SQLite-aware backup before upgrading; an ordinary copy while the WAL is active is not a complete backup. Startup upgrades published schema v4 through v9 transactionally, retaining source IDs, watermark, in-flight work, liabilities, deliveries, feedback, policies and proposals. Schema v8 adds card synchronization state and an indexed retry queue to existing handoffs; previously approved cards enter that queue once so their old Start actions can be removed. Schema v9 disables delivery by default independently of prior learning approvals and preserves inactive learning data and unresolved paid work. A previous learned policy is retained as `deferred_policy`; baseline extraction is refreshed while old outbox rows remain stored. A workspace/owner mismatch or newer schema fails closed. To run the upgrade explicitly after building:
+Use SQLite-aware backups or stop Archie before copying the database; a live copy without its WAL is incomplete.
+
+After building, use:
 
 ```bash
-node dist/cli/initiative.js <database> <team-id> migrate
 node dist/cli/initiative.js <database> <team-id> explain <matter-id> matter.json
 node dist/cli/initiative.js <database> <team-id> proposals proposals.json
 ```
 
-Rejected command names, arities and invalid acknowledgement arguments are checked before opening the database. `proposals` and `explain` open read-only; they do not perform migrations or write schema. Output files are created with mode 600. They can contain public-source evidence and owner decision state, so use the workspace operator's access and do not post the files to another audience. The owner DM's `read_matter` tool supplies the explanation with live source authorization. It includes structured suppression/defer reasons, next due work, cost references, delivery states and related task handoffs without requiring a manual table join.
+For a source runtime, substitute `node --import tsx src/cli/initiative.ts`. Command names and arguments are validated before opening state. `explain` and `proposals` open read-only and require a current schema; they never create or upgrade storage. Their mode-600 files can contain source evidence and owner state. Keep them within the workspace operator's audience. For authorized current sources and decision reasons, use `read_matter` in the owner DM.
 
-## Owner controls and task starts
+## Owner controls
 
-Send these commands in the configured owner's verified DM. Other users and bot-authored messages cannot apply them.
+Send commands in the configured owner's verified DM. Other users and bot messages cannot operate them.
 
 | Command | Effect |
 |---|---|
-| `initiative status` | Delivery enablement, controls, coverage, allowance and unresolved provider attempts. |
-| `initiative delivery on` / `off` | Explicitly enable or disable proactive delivery; sending also requires live mode and all source/audience/budget/interruption checks. |
-| `initiative mute` / `unmute` | Block or permit new proactive delivery. |
-| `initiative pause` / `resume` | Abort/defer background analysis and new delivery, or resume; intake and reconciliation continue. |
-| `initiative stop` / `start` | Cancel pending analysis/delivery and advance its responsibility epoch, or seed work again. Existing normal tasks retain their own controls. |
-| `initiative handled <matter>` | Resolve the followed matter. |
-| `initiative later <matter>` | Snooze to the next weekday 09:00 Europe/Lisbon. |
-| `initiative not useful <matter>` | Dismiss the intervention. |
-| `initiative stop following <matter>` | Dismiss and stop following the source thread. |
-| `initiative proposal <proposal>` | Inspect linked task, preparation/activation state, waiting reason and acknowledged outcome. |
-| `initiative outcome <proposal> <implemented\|released\|rejected> <repository artifact URL> <acceptance result>` | Record the owner's explicit outcome evidence, separately from task execution status. |
+| `initiative status` | Show delivery, controls, coverage, allowance and unsettled requests. |
+| `initiative delivery on` / `off` | Enable or disable delivery; live mode and source, audience, budget and interruption checks still apply. |
+| `initiative mute` / `unmute` | Block or permit proactive delivery. |
+| `initiative pause` / `resume` | Abort/defer analysis and delivery, or resume. |
+| `initiative stop` / `start` | Cancel pending analysis and delivery, or seed work again. Intake and existing charge reservations remain. |
+| `initiative handled <matter>` | Resolve a matter. |
+| `initiative later <matter>` | Snooze to the next weekday 09:00 in Lisbon. |
+| `initiative not useful <matter>` | Dismiss a matter. |
+| `initiative stop following <matter>` | Dismiss and stop following its thread. |
+| `initiative proposal <proposal>` | Inspect the linked task, source availability and waiting reason. |
 
-After review, select live mode and send `initiative delivery on` from the configured owner DM. This is delivery enablement, independent of any learning evaluation. This change does not enable an installation automatically. Ordinary investigation can suggest scoped repository work without reflection; suggestions use the existing outbox and daily interruption slots. The same proposal version is not sent repeatedly. A cancelled proposal can be freshly revalidated and requeued only if it never received a send slot or timestamp; sent, sending, uncertain and approved cards cannot be replayed. Presentation keeps a bounded durable scan cursor so deferred or invalid history cannot starve newer suggestions. **Start task** is an owner-only button on a delivered proposal. The card states the repository, intended result, source links and the switch to ordinary task budgeting outside the $200/day background allowance before approval. The button authorizes that scoped task only; normal edit-mode, GitHub-write, merge and release gates remain.
+After review, select live mode and send `initiative delivery on`. This enables delivery without a learning evaluation; it does not enable an installation automatically. Sending is limited to one weekday digest and two other interventions per Lisbon day, during weekday 09:00–18:00. There is no automatic pause or expiry.
 
-One durable task identity survives double-clicks and crashes. `preparing` tasks are inert; the first metadata write already contains the complete fixed destination, approval correlation and untrusted brief. Recovery resumes transiently interrupted preparation, and recognizes a durably activated task even if its acknowledgement was lost. A source change during preparation makes the handoff stale and leaves the task inert. Inspect it, obtain a fresh proposal or use the ordinary mention workflow; stale authority is never automatically reactivated.
+Deadlines use the source’s local date, time and timezone, resolved by host code. Incomplete, invalid, skipped or repeated local times stay unknown and receive ordinary checks; they do not acquire a guessed instant. An unknown deadline does not mean the matter is resolved.
 
-Approved task replies use the single owner-DM thread persisted during preparation. Their `post_to_user` tool accepts only a message; `post_to_channel` is withheld. Forged targets, another thread in the same DM and inconsistent or missing destination metadata fail closed, including after reload. Existing prepared tasks with a consistent persisted conversation use the same binding without adding a new destination field. Ordinary tasks keep their existing tool and targeting behavior. The initial `report_completion` cannot silently park an approved task until a PM reply has returned a Slack timestamp in that bound conversation. The host persists `owner_reply_delivered`; the completion call may itself supply the reply. Plain assistant text, failed/unconfirmed sends and system budget notices do not satisfy this prerequisite. Ordinary task silent completion, muted conversations and forced stops retain their existing behavior. No arbitrary assistant output is forwarded. Public evidence URLs never determine a reply destination. An explicit request for public outreach is incompatible with this task scope and is refused; it is not privately retargeted.
+Task suggestions name the repository, intended result, sources and normal-task budget before offering **Start task**. Only the owner can start them. Rephrasing an unchanged suggestion reuses its first scope and identity. Fresh human work-thread context or different work requires a new candidate and approval. One approved task identity survives repeated clicks and crashes. Preparation stays inert until the final source check; changed sources require a fresh proposal or an ordinary mention. Approved task replies stay in their saved private owner thread. A confirmed initial PM reply is required before silent completion. Edit-mode and external-action approvals remain in force; the task uses ordinary budgeting outside the $200 background ceiling.
 
-After durable approval the original card loses its Start action and shows **Starting…**; after confirmed activation it shows **Task started** and an **Open task** link to the owner conversation. Proposal text, source links and the normal-task budget explanation remain. These are handoff states, not claims that the feature shipped; use proposal inspection for subsequent runtime waits. Replayed callbacks do not start another task or post another confirmation reply. Unauthorized or initially stale actions do not alter a valid card.
+The card becomes **Starting…**, then **Task started · Open task**. Edits retry independently of activation, at most ten due cards per minute, with a 60-second retry delay and a 15-second Slack edit timeout. If an old Start action remains visible during an outage, the server still reuses the original approval. Inspect the linked task and restore access and allow normal extraction to revalidate the matter; do not clear its handoff to force another start. A parked or waiting task is not proof that a feature shipped. This release adds no external filing or outcome-writing commands.
 
-Card edits run separately from task preparation/activation. A delayed pending edit is serialized before the final edit, and a durable 60-second card-write lease also protects recovery from overlapping edits. Each Slack edit is bounded to 15 seconds without automatic retries. Failure leaves the desired state discoverable in SQLite; minute recovery handles at most ten due unsynchronized cards using an index, with a 60-second retry delay. Successful old cards are not scanned or rewritten on every tick. A crash during an edit leaves its lease to expire; it never rolls back task approval or blocks task activation. If an old action remains visible during an outage, server-side idempotency still applies. Check `initiative proposal <id>` and restore Slack access rather than clearing the handoff or creating another task.
+## Background spending
 
-`completed` is a parked PM session, not a shipped feature. Clarification, edit/merge/tool approval, research budget and time budget waits remain distinguishable in proposal inspection. An `implemented` acknowledgement can later become `released`; the artifact URL and acceptance text are the owner's assertion, not an automatic artifact validator. Recording feedback or an outcome does not change Archie behavior in this release.
+Each background attempt reserves its maximum cost before dispatch. Routine work can use $150/day; priority work has the remaining $50 up to $200, by Lisbon calendar day. Missing usage remains reserved across possible execution days. Exhaustion defers work without stopping collection. Ordinary approved tasks have separate budgets.
 
-## Provider reconciliation
+This base sends direct requests only. Unknown usage remains reserved because an interrupted request may have executed. Do not refund a charge by age or treat missing usage as zero. Persistent uncertainty may need external provider/accounting evidence. Legacy batch discovery, credential rebinding and recovery commands are removed.
 
-The background ledger reserves each paid attempt before dispatch, including explicit retries. Routine work stops admission at $150/day; priority work has the remaining $50 up to a hard $200/day ceiling, on Lisbon calendar days. Outstanding financial exposure carries into possible execution days. Budget exhaustion defers paid work; it does not pause or expire the service.
-
-This release admits no new learning batches. Historical batches are still polled to settle existing responsibility. Lost create responses and process exits recover through persisted `custom_id` correlation with supported provider listing/result streams. `submitting`/`uncertain` can hold execution slots; `retrieving`/`retired` release logical slots only after provider-backed terminal evidence while retaining unresolved money. Status shows unresolved IDs, provider IDs where known, state and maximum liability. Listing may encounter other batches in the provider workspace; unmatched payloads are not saved. Ongoing unrelated batches or missing provider binding deliberately keep an ambiguous attempt conservative.
-
-Provider bindings now use an endpoint-scoped scrypt derivation. Older SHA-256 bindings require the same explicit verification and rebinding before discovery resumes; their outstanding liabilities remain reserved.
-
-After a credential change, verify outside Archie that the configured endpoint/key addresses the original provider workspace, then bind the existing **local** batch ID. This is an operator assertion of provider identity, not a refund or retry:
-
-```bash
-node dist/cli/initiative.js <database> <team-id> bind-provider <local-batch-id>
-node dist/cli/initiative.js <database> <team-id> reconcile-batch <provider-batch-id>
-```
-
-`reconcile-batch` retrieves an ended provider batch and correlates its individual results to existing local requests. It does not submit a new paid request. Discovery persists each page until its unattempted candidates are consumed. Unreadable/capped unrelated streams remain represented by a bounded retry-round record and cannot block later pages. Only authoritative individual outcomes or complete billable usage settle liability. Do not delete a stuck charge, refund it by age, or resubmit an unresolved request as new paid work. Results beyond provider retention may require external provider/accounting evidence; missing results remain an explicit unresolved limitation.
-
-## External development workflow and deferred learning
-
-```bash
-node dist/cli/initiative.js <database> <team-id> ack <proposal> <repository-issue-URL> filed
-```
-
-Offline `ack` accepts only `filed` or `implementing`, optionally followed by a note. It records an issue created under the separate workflow's approvals; it cannot file the issue or declare a feature completed/rejected. Proposals retain their intent and cited evidence. Historical proposals created by reflection stay stored but cannot initiate new tasks in this release; already owner-approved handoffs still recover normally.
-
-Reflection, episode capture, guidance changes, cohorts, replay, evaluations and their operator commands are deferred to the stacked self-evolution change. Existing data remains subject to source retention, while accounting recovery continues without applying late learning output. The [historical verification guide](initiative-verification.md) records its earlier patch; current checks and limits are recorded with the release-split receipt.
+Reflection, training episodes, guidance, cohorts, replay and evaluations belong to the deferred self-evolution change and have no tables in this base. That future change needs its own storage integration. See [verification and limits](initiative-verification.md).

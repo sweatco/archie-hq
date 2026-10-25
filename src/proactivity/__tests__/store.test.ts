@@ -4,9 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { InitiativeStore } from '../store.js';
-import { DatabaseSync } from 'node:sqlite';
 import { lisbonDay, type Delivery, type Matter, type SourceMessage } from '../types.js';
-import { SCHEMA_VERSION } from '../persistence/migrations.js';
 
 const NOW = Date.parse('2026-10-20T10:00:00Z');
 let root: string;
@@ -21,14 +19,14 @@ function populate(): Matter {
   const snapshot = store.snapshot('C1', message().thread)!;
   const matter: Matter = { id: 'C1:release', channel: 'C1', thread: message().thread, title: 'Release', detail: 'Release Friday',
     evidence: snapshot.evidence.map((e) => e.id), state: 'open', owner: 'U1', deadline: NOW + 86_400_000,
-    explicit: true, nextCheck: NOW, valid: true, policy: 'base' };
-  expect(store.apply([snapshot], [{ ...matter, kind: 'commitment', text: matter.detail }], [matter], 'base')).toBe(true);
+    explicit: true, nextCheck: NOW, valid: true };
+  expect(store.apply([snapshot], [{ ...matter, kind: 'commitment', text: matter.detail }], [matter])).toBe(true);
   return matter;
 }
 
 function delivery(id: string, matter: Matter): Delivery {
   return { id, channel: 'D1', thread: null, text: matter.title, matters: [matter.id], evidence: matter.evidence,
-    policy: 'base', digest: false, state: 'pending', ts: null, created: NOW };
+    digest: false, state: 'pending', ts: null, created: NOW };
 }
 
 beforeEach(() => {
@@ -77,34 +75,18 @@ describe('observation memory', () => {
     expect(store['rows']('SELECT id FROM source_events')).toHaveLength(2);
   });
 
-  it('migrates old schema without treating unknown bot provenance as human evidence', () => {
-    populate();
-    const path = join(root, 'old.sqlite');
-    store['run']('VACUUM INTO ?', path);
-    const legacy = new DatabaseSync(path);
-    legacy.exec('DROP INDEX pending_handoff_cards; ALTER TABLE handoffs DROP COLUMN card_state; ALTER TABLE handoffs DROP COLUMN card_retry; ALTER TABLE threads DROP COLUMN gap; ALTER TABLE revisions DROP COLUMN bot; PRAGMA user_version=1');
-    legacy.close();
-    const migrated = new InitiativeStore(path, 'T1', NOW);
-    try {
-      expect(migrated['row']('PRAGMA user_version')?.user_version).toBe(SCHEMA_VERSION);
-      expect(migrated.snapshot('C1', message().thread)?.evidence[0].bot).toBe(true);
-      expect(migrated.matters()).toEqual([]);
-      expect(migrated.setting('watermark')).toBe(String(NOW / 1000));
-    } finally { migrated.close(); }
-  });
-
   it('requires changed human evidence and an explicit reopening decision', () => {
     const matter = populate();
     store.feedback(matter.id, 'handled', NOW);
-    store.apply([store.snapshot('C1', matter.thread)!], [], [{ ...matter, reopen: true }], 'base');
+    store.apply([store.snapshot('C1', matter.thread)!], [], [{ ...matter, reopen: true }]);
     expect(store.matter(matter.id)?.state).toBe('resolved');
     store.record(message({ version: '1792490402.000001', text: 'Reinstated for Monday' }), NOW);
     let snapshot = store.snapshot('C1', matter.thread)!;
-    store.apply([snapshot], [], [{ ...matter, evidence: snapshot.evidence.map((e) => e.id) }], 'base');
+    store.apply([snapshot], [], [{ ...matter, evidence: snapshot.evidence.map((e) => e.id) }]);
     expect(store.matter(matter.id)?.state).toBe('resolved');
     store.record(message({ version: '1792490403.000001', text: 'Please reopen the release for next Friday' }), NOW);
     snapshot = store.snapshot('C1', matter.thread)!;
-    store.apply([snapshot], [], [{ ...matter, evidence: snapshot.evidence.map((e) => e.id), reopen: true }], 'base');
+    store.apply([snapshot], [], [{ ...matter, evidence: snapshot.evidence.map((e) => e.id), reopen: true }]);
     expect(store.matter(matter.id)?.state).toBe('open');
   });
 
@@ -123,9 +105,9 @@ describe('observation memory', () => {
     store.record(message(), NOW);
     const snapshot = store.snapshot('C1', message().thread)!;
     store.record(message({ version: '1792490402.000001', text: 'Release Monday' }), NOW);
-    expect(store.apply([snapshot], [], [], 'base')).toBe(false);
+    expect(store.apply([snapshot], [], [])).toBe(false);
     const current = store.snapshot('C1', message().thread)!;
-    expect(() => store.apply([current], [{ id: 'bad', channel: 'C1', thread: message().thread, kind: 'decision', text: 'bad', evidence: [999] }], [], 'base')).toThrow('outside');
+    expect(() => store.apply([current], [{ id: 'bad', channel: 'C1', thread: message().thread, kind: 'decision', text: 'bad', evidence: [999] }], [])).toThrow('outside');
     expect(store.dirty()).toHaveLength(1);
   });
 
@@ -135,19 +117,25 @@ describe('observation memory', () => {
     expect(store.search('Friday', ['C2'])).toEqual([]);
     store.feedback(matter.id, 'not useful', NOW);
     const snapshot = store.snapshot('C1', matter.thread)!;
-    store.apply([snapshot], [], [{ ...matter, state: 'open' }], 'base');
+    store.apply([snapshot], [], [{ ...matter, state: 'open' }]);
     expect(store.matter(matter.id)?.state).toBe('dismissed');
   });
 
   it('expires raw content after 30 days and evidence validity after 90', () => {
     const matter = populate();
+    const proposal = store.proposeCapability({ repository: 'owner/repo', outcome: 'Review the release', evidence: matter.evidence, matter: matter.id });
+    const charge = store.reserve(50_000, false, NOW)!;
     store.expire(NOW + 31 * 86_400_000);
     expect(store['row']('SELECT text,excerpt FROM revisions')?.text).toBe('');
     expect(store.snapshot('C1', matter.thread)?.evidence[0]?.text).toBe('Release Friday');
+    expect(store.proposal(proposal)?.evidence).toEqual(matter.evidence);
     store.expire(NOW + 91 * 86_400_000);
     expect(store.snapshot('C1', matter.thread)?.evidence).toEqual([]);
     expect(store.search('Friday', ['C1'])).toEqual([]);
     expect(store.matter(matter.id)?.valid).toBe(false);
+    expect(store.proposal(proposal)).toMatchObject({ outcome: 'Evidence expired', evidence: [] });
+    expect(store.budget(NOW + 91 * 86_400_000)).toBe(50_000);
+    expect(store['row']('SELECT settled FROM charges WHERE id=?', charge)?.settled).toBeNull();
   });
 });
 
@@ -247,24 +235,24 @@ describe('review regressions', () => {
     const snapshot = store.snapshot('C1', message().thread)!;
     store.channel('C1', false, false);
     store.channel('C1', true, false);
-    expect(store.apply([snapshot], [], [], 'base')).toBe(false);
+    expect(store.apply([snapshot], [], [])).toBe(false);
     const restored = store.snapshot('C1', message().thread)!;
     store.expire(NOW + 91 * 86_400_000);
-    expect(store.apply([restored], [], [], 'base')).toBe(false);
+    expect(store.apply([restored], [], [])).toBe(false);
   });
 
   it('lets cancellation resolve a snoozed commitment', () => {
     const matter = populate();
     store.feedback(matter.id, 'later', NOW, NOW + 86_400_000);
     const snapshot = store.snapshot('C1', matter.thread)!;
-    store.apply([snapshot], [], [{ ...matter, state: 'resolved' }], 'base');
+    store.apply([snapshot], [], [{ ...matter, state: 'resolved' }]);
     expect(store.matter(matter.id)?.state).toBe('resolved');
   });
 
   it('does not let resolved matters starve open matters', () => {
     const matter = populate();
     const snapshot = store.snapshot('C1', matter.thread)!;
-    store.apply([snapshot], [], Array.from({ length: 101 }, (_, i) => ({ ...matter, id: `m${i}`, state: i < 100 ? 'resolved' as const : 'open' as const })), 'base');
+    store.apply([snapshot], [], Array.from({ length: 101 }, (_, i) => ({ ...matter, id: `m${i}`, state: i < 100 ? 'resolved' as const : 'open' as const })));
     expect(store.matters()).toHaveLength(2);
     expect(store.matters().some((m) => m.id === 'm100')).toBe(true);
   });
@@ -278,7 +266,7 @@ describe('review regressions', () => {
     const matter = populate();
     store.record(message({ ts: '1792490402.000001', version: '1792490402.000001', text: 'Proposed schedule', own: true }), NOW);
     const snapshot = store.snapshot('C1', matter.thread)!;
-    store.apply([snapshot], [], [{ ...matter, evidence: snapshot.evidence.map((e) => e.id) }], 'base');
+    store.apply([snapshot], [], [{ ...matter, evidence: snapshot.evidence.map((e) => e.id) }]);
     store.enqueueDelivery(delivery('context-reminder', store.matter(matter.id)!));
     store.record(message({ ts: '1792490402.000001', version: '1792490403.000001', text: 'Schedule revised', own: true }), NOW);
     expect(store.matter(matter.id)?.valid).toBe(false);

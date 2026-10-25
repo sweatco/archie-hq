@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { proposalVersion } from './proposals.js';
+import { proposalVersion, suggestionId } from './proposals.js';
 import type { CapabilityProposal, TaskHandoffRecord } from './types.js';
 import { reasonText, type DecisionReason } from './decisions.js';
-import { expireLegacyEvidence } from './persistence/retention.js';
 import { AttentionRecords } from './persistence/attention.js';
-import { RequestRecords } from './persistence/requests.js';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
-import { migrate, selectBaseline, validateCurrentSchema } from './persistence/migrations.js';
+import { initializeSchema, validateSchema } from './persistence/schema.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { Delivery, Job, Matter, Observation, SourceMessage, ThreadSnapshot } from './types.js';
 import { lisbonDay } from './types.js';
@@ -17,20 +15,19 @@ const DAY = 86_400_000;
 export class InitiativeStore {
   private readonly db: DatabaseSync;
   readonly attention: AttentionRecords;
-  readonly requests: RequestRecords;
 
   constructor(path: string, team: string, now = Date.now(), options: { readOnly?: boolean; owner?: string } = {}) {
     this.db = new DatabaseSync(path, { readOnly: options.readOnly === true });
     try {
+      this.db.exec('PRAGMA busy_timeout=5000');
       if (options.readOnly) {
-        this.db.exec('PRAGMA query_only=ON; PRAGMA busy_timeout=5000;');
-        validateCurrentSchema(this.db, team, options.owner);
+        this.db.exec('PRAGMA query_only=ON');
+        validateSchema(this.db, team, options.owner);
       } else {
-        this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;');
-        migrate(this.db, team, now, options.owner);
+        initializeSchema(this.db, team, now, options.owner);
+        this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;');
       }
       this.attention = new AttentionRecords(this.db);
-      this.requests = new RequestRecords(this.db);
     } catch (error) {
       this.db.close();
       throw error;
@@ -44,7 +41,17 @@ export class InitiativeStore {
   setting(key: string): string | undefined { return this.row('SELECT value FROM settings WHERE key=?', key)?.value as string | undefined; }
   set(key: string, value: string): void { this.run('INSERT INTO settings VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', key, value); }
 
-  useBaseline(now: number): void { this.transaction(() => selectBaseline(this.db, now)); }
+  dispatchRequest(charge: string, model: string, fingerprint: string): void {
+    this.run("INSERT INTO requests VALUES (?,?,?,NULL,NULL,'dispatching')", charge, model, fingerprint);
+  }
+
+  completeRequest(remote: string | null, usage: string, charge: string): void {
+    this.run("UPDATE requests SET state='complete',remote=?,usage=? WHERE charge=?", remote, usage, charge);
+  }
+
+  uncertainRequest(remote: string | null, charge: string): void {
+    this.run("UPDATE requests SET state=CASE WHEN usage IS NULL THEN 'uncertain' ELSE 'invalid' END,remote=COALESCE(remote,?) WHERE charge=?", remote, charge);
+  }
 
   acquireRunner(owner: string, now: number): boolean {
     return this.transaction(() => {
@@ -115,19 +122,19 @@ export class InitiativeStore {
     const requests = details.scope ? this.rows(`SELECT c.id,c.maximum,c.actual,c.settled,r.remote,r.state FROM charges c
       JOIN charge_scopes s ON s.charge=c.id LEFT JOIN requests r ON r.charge=c.id WHERE s.scope=? LIMIT 4`, details.scope) : [];
     const evidence = matter.evidence.slice(0, 40).map(id => ({ id, hash: this.row('SELECT hash FROM revisions WHERE id=?', id)?.hash ?? null }));
-    const previous = this.row('SELECT code,policy,next_due,evidence,delivery,requests FROM decisions WHERE matter=? ORDER BY id DESC LIMIT 1', matter.id);
-    if (previous?.code === code && previous.policy === matter.policy && previous.next_due === (details.nextDue ?? null)
+    const previous = this.row('SELECT code,next_due,evidence,delivery,requests FROM decisions WHERE matter=? ORDER BY id DESC LIMIT 1', matter.id);
+    if (previous?.code === code && previous.next_due === (details.nextDue ?? null)
       && previous.delivery === (details.delivery ?? null) && previous.evidence === JSON.stringify(evidence) && previous.requests === JSON.stringify(requests)) return;
     this.transaction(() => {
-      this.run('INSERT INTO decisions(matter,at,code,policy,next_due,evidence,delivery,requests) VALUES (?,?,?,?,?,?,?,?)', matter.id, at, code,
-        matter.policy, details.nextDue ?? null, JSON.stringify(evidence), details.delivery ?? null, JSON.stringify(requests));
+      this.run('INSERT INTO decisions(matter,at,code,next_due,evidence,delivery,requests) VALUES (?,?,?,?,?,?,?)', matter.id, at, code,
+        details.nextDue ?? null, JSON.stringify(evidence), details.delivery ?? null, JSON.stringify(requests));
       this.run('DELETE FROM decisions WHERE matter=? AND id NOT IN (SELECT id FROM decisions WHERE matter=? ORDER BY id DESC LIMIT 20)', matter.id, matter.id);
     });
   }
 
   explain(id: string) {
     const decisions = this.rows('SELECT * FROM decisions WHERE matter=? ORDER BY id DESC LIMIT 20', id).map(row => ({
-      at: row.at, code: row.code, explanation: reasonText[row.code as DecisionReason], policy: row.policy, nextDue: row.next_due,
+      at: row.at, code: row.code, explanation: reasonText[row.code as DecisionReason], nextDue: row.next_due,
       evidence: JSON.parse(String(row.evidence)), delivery: row.delivery, requests: JSON.parse(String(row.requests)),
     }));
     const deliveries = this.rows("SELECT id,state,created,ts,proposal FROM deliveries WHERE EXISTS (SELECT 1 FROM json_each(matters) WHERE value=?) ORDER BY created DESC LIMIT 10", id);
@@ -138,42 +145,51 @@ export class InitiativeStore {
     return { decisions, deliveries, nextJob, handoffs, feedback };
   }
 
-  proposeCapability(id: string, proposal: Pick<CapabilityProposal, 'repository' | 'outcome' | 'evidence' | 'matter'>): void {
-    const versioned = JSON.stringify({ ...proposal, origin: 'investigation', version: proposalVersion(proposal) });
-    this.run(`INSERT INTO proposals(id,body) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body WHERE proposals.status='pending filing' AND NOT EXISTS (SELECT 1 FROM handoffs WHERE proposal=proposals.id)`, id, versioned);
+  private proposalId(repository: string, matter: Matter): string {
+    // Use all known human work-thread context, independently of model citation selection.
+    const context = this.rows(`SELECT r.id FROM revisions r JOIN messages m ON m.revision=r.id
+      WHERE r.channel=? AND r.thread=? AND r.own=0 AND r.bot=0 AND r.deleted=0`, matter.channel, matter.thread).map(row => Number(row.id));
+    return suggestionId({ repository, matter: matter.id, evidence: context });
   }
 
-  acknowledgeDevelopment(id: string, issue: string, status: 'filed' | 'implementing', note?: string): void {
-    if (status !== 'filed' && status !== 'implementing') throw new Error('An owner acknowledgement with an acceptance result is required for proposal outcomes');
-    const proposal = this.proposal(id);
-    if (!proposal || proposal.acknowledgedOutcome) throw new Error('Unknown proposal or outcome already acknowledged');
-    if (!/^https:\/\/github\.com\/[^/]+\/[^/]+\/issues\/\d+$/.test(issue)
-      || !issue.startsWith(`https://github.com/${proposal.repository}/issues/`)) throw new Error('A matching repository issue URL is required');
-    const { id: _id, status: _status, ...body } = proposal;
-    this.run('UPDATE proposals SET status=?,issue=?,body=? WHERE id=?', status, issue, JSON.stringify({ ...body, developmentNote: note }), id);
+  proposeCapability(proposal: Pick<CapabilityProposal, 'repository' | 'outcome' | 'evidence' | 'matter'>): string {
+    const matter = this.matter(proposal.matter);
+    if (!matter?.valid || matter.state !== 'open') throw new Error('Task suggestion requires a current open matter');
+    const id = this.proposalId(proposal.repository, matter);
+    const versioned = JSON.stringify({ ...proposal, version: proposalVersion({ ...proposal, id }) });
+    // Keep the first scope immutable while its evidence context is unchanged.
+    this.run('INSERT INTO proposals(id,body) VALUES (?,?) ON CONFLICT(id) DO NOTHING', id, versioned);
+    return id;
   }
 
   proposal(id: string): CapabilityProposal | null {
     const row = this.row('SELECT * FROM proposals WHERE id=?', id);
     if (!row) return null;
     const body = JSON.parse(String(row.body));
-    if (typeof body.repository !== 'string' || typeof body.outcome !== 'string' || !Array.isArray(body.evidence)) return null;
-    return { ...body, id, status: String(row.status) };
+    if (typeof body.repository !== 'string' || typeof body.outcome !== 'string' || typeof body.matter !== 'string' || !Array.isArray(body.evidence)) return null;
+    return { ...body, id };
   }
 
   proposalCurrent(proposal: CapabilityProposal, now: number, checkAccess = true): boolean {
-    if (proposal.matter) {
-      const matter = this.matter(proposal.matter);
-      if (!matter?.valid || matter.state !== 'open' || this.setting(`unfollow:${matter.channel}:${matter.thread}`) === 'true') return false;
-    }
-    return (proposal.origin === 'investigation' || !!this.handoff(proposal.id)) && proposal.status === 'pending filing' && proposal.evidence.length > 0 && proposal.evidence.length <= 20 && proposal.evidence.every(id =>
+    const matter = this.matter(proposal.matter);
+    if (!matter?.valid || matter.state !== 'open' || this.setting(`unfollow:${matter.channel}:${matter.thread}`) === 'true'
+      || proposal.id !== this.proposalId(proposal.repository, matter)) return false;
+    return proposal.evidence.length > 0 && proposal.evidence.length <= 20 && proposal.evidence.every(id =>
       Number.isSafeInteger(id) && this.row(`SELECT r.id FROM revisions r JOIN messages m ON m.revision=r.id JOIN channels c ON c.id=r.channel
         WHERE r.id=? AND r.deleted=0 AND r.bot=0 AND r.own=0 AND r.excerpt!='' AND r.captured>=? AND (?=0 OR c.allowed=1)`, id, now - 90 * DAY, Number(checkAccess)));
   }
 
+  pendingProposalCount(now: number): number {
+    return this.rows('SELECT p.id FROM proposals p WHERE NOT EXISTS (SELECT 1 FROM handoffs WHERE proposal=p.id)')
+      .filter(row => {
+        const proposal = this.proposal(String(row.id));
+        return proposal && this.proposalCurrent(proposal, now);
+      }).length;
+  }
+
   proposalSources(id: string): Array<{ channel: string; thread: string }> {
     const proposal = this.proposal(id);
-    return proposal ? this.rows('SELECT DISTINCT channel,thread FROM revisions JOIN json_each(?) j ON j.value=revisions.id', JSON.stringify(proposal.evidence))
+    return proposal ? this.rows('SELECT DISTINCT channel,thread FROM revisions JOIN json_each(?) j ON j.value=revisions.id UNION SELECT channel,thread FROM matters WHERE id=?', JSON.stringify(proposal.evidence), proposal.matter)
       .map(row => ({ channel: String(row.channel), thread: String(row.thread) })) : [];
   }
 
@@ -181,14 +197,13 @@ export class InitiativeStore {
     const row = this.row('SELECT * FROM deliveries WHERE id=?', id);
     if (!row) return null;
     return { id, channel: String(row.channel), thread: row.thread as string | null, text: String(row.text), matters: JSON.parse(String(row.matters)),
-      evidence: JSON.parse(String(row.evidence)), policy: String(row.policy), digest: row.digest === 1, state: row.state as Delivery['state'],
+      evidence: JSON.parse(String(row.evidence)), digest: row.digest === 1, state: row.state as Delivery['state'],
       ts: row.ts as string | null, created: Number(row.created), proposal: row.proposal ? JSON.parse(String(row.proposal)) : undefined };
   }
 
   pendingProposalIds(after = ''): string[] {
     return this.rows(`SELECT p.id FROM proposals p
-      WHERE p.status='pending filing' AND p.id>?
-        AND json_extract(p.body,'$.origin')='investigation'
+      WHERE p.id>?
         AND NOT EXISTS (SELECT 1 FROM handoffs WHERE proposal=p.id)
         AND NOT EXISTS (
           SELECT 1 FROM deliveries d
@@ -253,15 +268,9 @@ export class InitiativeStore {
     this.run('UPDATE handoffs SET card_state=CASE WHEN ?=0 THEN ? ELSE card_state END,card_retry=? WHERE proposal=? AND card_retry=?', retryAt, state, retryAt, id, lease);
   }
 
-  acknowledgeOutcome(id: string, outcome: NonNullable<CapabilityProposal['acknowledgedOutcome']>): void {
-    const row = this.row('SELECT body FROM proposals WHERE id=?', id);
-    if (!row) throw new Error('Unknown proposal');
-    this.run('UPDATE proposals SET status=?,body=? WHERE id=?', outcome.state, JSON.stringify({ ...JSON.parse(String(row.body)), acknowledgedOutcome: outcome }), id);
-  }
-
   listProposals() {
-    return (this.rows('SELECT * FROM proposals ORDER BY id') as Array<{ id: string; status: string; issue: string | null; body: string }>)
-      .map(row => ({ ...row, body: JSON.parse(row.body) as Omit<CapabilityProposal, 'id' | 'status'> }));
+    return (this.rows('SELECT * FROM proposals ORDER BY id') as Array<{ id: string; body: string }>)
+      .map(row => ({ ...row, body: JSON.parse(row.body) as Omit<CapabilityProposal, 'id'> }));
   }
 
   private writeCoverageGap(channel: string, code: string, detail: string | null): void {
@@ -274,8 +283,6 @@ export class InitiativeStore {
   coverageGap(channel: string, code: 'access' | 'pagination' | 'unknown', detail: string | null): void {
     this.transaction(() => this.writeCoverageGap(channel, code, detail));
   }
-
-  repairAccess(channel: string): void { this.coverageGap(channel, 'access', null); }
 
   advanceCollection(channel: string, checkpoint: string, cursor?: string): void {
     this.transaction(() => {
@@ -360,9 +367,9 @@ export class InitiativeStore {
     return snapshots.every((s) => this.row('SELECT generation FROM threads t JOIN channels c ON c.id=t.channel WHERE t.channel=? AND t.thread=? AND c.allowed=1', s.channel, s.thread)?.generation === s.generation);
   }
 
-  apply(snapshots: ThreadSnapshot[], observations: Observation[], matters: Matter[], policy: string, job?: Job): boolean {
+  apply(snapshots: ThreadSnapshot[], observations: Observation[], matters: Matter[], job?: Job): boolean {
     return this.transaction(() => {
-      if ((job && !this.owns(job)) || this.setting('policy') !== policy || !this.current(snapshots)) return false;
+      if ((job && !this.owns(job)) || !this.current(snapshots)) return false;
       const allowed = new Set(snapshots.flatMap((s) => s.evidence.map((e) => e.id)));
       for (const item of [...observations, ...matters]) {
         const snapshot = snapshots.find((s) => s.channel === item.channel && s.thread === item.thread);
@@ -450,7 +457,7 @@ export class InitiativeStore {
 
   claim(now: number, leaseMs = 360_000): Job | null {
     return this.transaction(() => {
-      const row = this.row("SELECT * FROM jobs WHERE kind!='reflection' AND due<=? AND lease<=? ORDER BY due LIMIT 1", now, now);
+      const row = this.row("SELECT * FROM jobs WHERE due<=? AND lease<=? ORDER BY due LIMIT 1", now, now);
       if (!row) return null;
       const token = randomUUID();
       this.run('UPDATE jobs SET token=?,lease=?,attempts=attempts+1 WHERE kind=? AND target=?', token, now + leaseMs, row.kind, row.target);
@@ -521,7 +528,7 @@ export class InitiativeStore {
   enqueueDelivery(delivery: Delivery): boolean {
     return this.transaction(() => {
       if (delivery.state === 'pending' && !this.evidenceCurrent(delivery.evidence)) return false;
-      if (delivery.policy !== this.setting('policy') || (!delivery.matters.length && !delivery.proposal)) return false;
+      if (!delivery.matters.length && !delivery.proposal) return false;
       if (delivery.proposal) {
         const proposal = this.proposal(delivery.proposal.id);
         if (!proposal || !this.proposalCurrent(proposal, delivery.created) || proposalVersion(proposal) !== delivery.proposal.version || this.handoff(proposal.id)) return false;
@@ -532,14 +539,14 @@ export class InitiativeStore {
         return this.setting(`unfollow:${matter.channel}:${matter.thread}`) === 'true';
       })) return false;
       // A cancelled card is retryable only when it never reserved a send slot or received a timestamp.
-      return this.run(`INSERT INTO deliveries(id,channel,thread,text,matters,evidence,policy,digest,state,ts,created,proposal)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+      return this.run(`INSERT INTO deliveries(id,channel,thread,text,matters,evidence,digest,state,ts,created,proposal)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(id) DO UPDATE SET channel=excluded.channel,thread=excluded.thread,text=excluded.text,
-          matters=excluded.matters,evidence=excluded.evidence,policy=excluded.policy,created=excluded.created,state='pending'
+          matters=excluded.matters,evidence=excluded.evidence,created=excluded.created,state='pending'
         WHERE deliveries.state='cancelled' AND excluded.state='pending'
           AND deliveries.ts IS NULL AND deliveries.slot_day IS NULL
           AND excluded.proposal IS NOT NULL AND deliveries.proposal=excluded.proposal`,
-        delivery.id, delivery.channel, delivery.thread, delivery.text, JSON.stringify(delivery.matters), JSON.stringify(delivery.evidence), delivery.policy, Number(delivery.digest), delivery.state, null, delivery.created, delivery.proposal ? JSON.stringify(delivery.proposal) : null).changes > 0;
+        delivery.id, delivery.channel, delivery.thread, delivery.text, JSON.stringify(delivery.matters), JSON.stringify(delivery.evidence), Number(delivery.digest), delivery.state, null, delivery.created, delivery.proposal ? JSON.stringify(delivery.proposal) : null).changes > 0;
     });
   }
 
@@ -548,7 +555,7 @@ export class InitiativeStore {
     return this.rows(`SELECT * FROM deliveries WHERE state=? ${matters ? `AND EXISTS (SELECT 1 FROM json_each(deliveries.matters) j WHERE j.value IN (${matters.map(() => '?').join(',')}))` : ''}
       ORDER BY created ${matters ? '' : 'LIMIT 100'}`, state, ...(matters ?? [])).map((r) => ({
       id: String(r.id), channel: String(r.channel), thread: r.thread as string | null, text: String(r.text),
-      matters: JSON.parse(String(r.matters)), evidence: JSON.parse(String(r.evidence)), policy: String(r.policy),
+      matters: JSON.parse(String(r.matters)), evidence: JSON.parse(String(r.evidence)),
       digest: r.digest === 1, state, ts: r.ts as string | null, created: Number(r.created), proposal: r.proposal ? JSON.parse(String(r.proposal)) : undefined,
     }));
   }
@@ -562,7 +569,7 @@ export class InitiativeStore {
         const proposal = this.proposal(ref.id);
         if (!proposal || !this.proposalCurrent(proposal, now) || proposalVersion(proposal) !== ref.version || this.handoff(proposal.id)) return false;
       }
-      if (this.setting('delivery_enabled') !== 'true' || ['mute', 'pause', 'stop'].some(key => this.setting(key) === 'true') || delivery.policy !== this.setting('policy')) return false;
+      if (this.setting('delivery_enabled') !== 'true' || ['mute', 'pause', 'stop'].some(key => this.setting(key) === 'true')) return false;
       const ineligible = this.row(`SELECT 1 FROM json_each(?) j LEFT JOIN matters m ON m.id=j.value LEFT JOIN channels c ON c.id=m.channel
         WHERE m.id IS NULL OR m.valid=0 OR c.allowed!=1 OR json_extract(m.body,'$.state')!='open' LIMIT 1`, delivery.matters);
       if (ineligible) return false;
@@ -586,8 +593,10 @@ export class InitiativeStore {
       this.run(`UPDATE deliveries SET text='',state=CASE WHEN state='pending' THEN 'cancelled' ELSE state END WHERE created<? OR EXISTS
         (SELECT 1 FROM json_each(deliveries.evidence) j LEFT JOIN revisions r ON r.id=j.value WHERE r.excerpt IS NULL OR r.excerpt='')`, now - 90 * DAY);
       this.run('DELETE FROM observation_search WHERE id IN (SELECT id FROM observations WHERE valid=0)');
-      expireLegacyEvidence(this.db, now);
-      if (this.row("SELECT name FROM sqlite_master WHERE name='extractions'")) this.run(`DELETE FROM extractions WHERE created<? OR EXISTS
+      this.run(`UPDATE proposals SET body=json_set(body,'$.outcome','Evidence expired','$.evidence',json('[]')) WHERE EXISTS
+        (SELECT 1 FROM json_each(proposals.body,'$.evidence') j LEFT JOIN revisions r ON r.id=j.value LEFT JOIN messages m ON m.channel=r.channel AND m.ts=r.ts
+        LEFT JOIN revisions latest ON latest.id=m.revision WHERE r.id IS NULL OR r.excerpt='' OR latest.deleted=1)`);
+      this.run(`DELETE FROM extractions WHERE created<? OR EXISTS
         (SELECT 1 FROM json_tree(extractions.response) j JOIN revisions r ON r.id=j.atom WHERE j.path LIKE '%.evidence' AND r.excerpt='')`, now - 90 * DAY);
     });
   }

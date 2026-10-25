@@ -81,7 +81,7 @@ describe('durable prepared task starts', () => {
       vi.setSystemTime(now + 3_600_000);
       await service.tick(Date.now(), true);
       expect(model.complete).toHaveBeenCalledTimes(2);
-      expect(store['rows']('SELECT * FROM episodes')).toEqual([]);
+      expect(store['row']("SELECT name FROM sqlite_master WHERE name='episodes'")).toBeUndefined();
       expect(store.pendingProposalIds()).toHaveLength(1);
       await handoff.present(Date.now());
       if (scenario === 'access recovery') {

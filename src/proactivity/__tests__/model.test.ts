@@ -13,13 +13,11 @@ const result = () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text:
 let store: InitiativeStore;
 let gateway: ModelGateway;
 let create: ReturnType<typeof vi.fn>;
-let batches: { list: ReturnType<typeof vi.fn>; create: ReturnType<typeof vi.fn>; retrieve: ReturnType<typeof vi.fn>; results: ReturnType<typeof vi.fn>; cancel: ReturnType<typeof vi.fn> };
 beforeEach(() => {
   vi.useFakeTimers(); vi.setSystemTime(NOW);
   store = new InitiativeStore(':memory:', 'T1', NOW);
   create = vi.fn(async () => result());
-  batches = { list: vi.fn(async () => ({ data: [], has_more: false, last_id: null })), create: vi.fn(async () => ({ id: 'batch1' })), retrieve: vi.fn(), results: vi.fn(), cancel: vi.fn() };
-  gateway = new ModelGateway(store, { messages: { create, batches } } as unknown as Anthropic, 'provider-fixture');
+  gateway = new ModelGateway(store, { messages: { create } } as unknown as Anthropic);
 });
 afterEach(() => { store.close(); vi.useRealTimers(); });
 

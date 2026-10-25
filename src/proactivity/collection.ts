@@ -12,8 +12,6 @@ export class SourceCollector {
     this.access = new SourceAccess(store, slack);
   }
 
-  private accessible(channel: string, owner = false): Promise<boolean> { return this.access.check(channel, owner); }
-
   async capture(message: SourceMessage, now = Date.now()): Promise<void> {
     const access = await this.slack.inspect(message.channel);
     this.store.channel(message.channel, !!access, access?.shared ?? false);
@@ -31,13 +29,13 @@ export class SourceCollector {
   }
 
   async collect(channel: string, now: number, signal: AbortSignal): Promise<number> {
-    if (!await this.accessible(channel)) return now + HOUR;
+    if (!await this.access.check(channel)) return now + HOUR;
     const progress = this.store.attention.channelProgress(channel)!;
     const latest = this.store.setting(`scan:${channel}`) ?? String(now / 1000);
     this.store.set(`scan:${channel}`, latest);
     const page = await this.slack.page(channel, String(progress.checkpoint), latest, progress.cursor as string | undefined);
     signal.throwIfAborted();
-    if (!await this.accessible(channel)) return now + HOUR;
+    if (!await this.access.check(channel)) return now + HOUR;
     for (const message of page.messages) {
       if (this.store.record(message, now) !== null && !message.own) this.store.schedule('thread', `${channel}:${message.thread}`, now, JSON.stringify({ channel, thread: message.thread }));
     }
@@ -46,7 +44,7 @@ export class SourceCollector {
   }
 
   async refresh(matter: Pick<Matter, 'channel' | 'thread'>, now: number, signal?: AbortSignal, maxReads = 10): Promise<ThreadSnapshot | null> {
-    if (!await this.accessible(matter.channel)) return null;
+    if (!await this.access.check(matter.channel)) return null;
     const oldest = this.store.setting('watermark')!;
     const key = `thread-scan:${matter.channel}:${matter.thread}`;
     const scan = JSON.parse(this.store.setting(key) ?? JSON.stringify({ latest: String(now / 1000), cursor: undefined, seen: [] })) as { latest: string; cursor?: string; seen?: string[] };
@@ -57,7 +55,7 @@ export class SourceCollector {
       signal?.throwIfAborted();
       const parent = await this.slack.page(matter.channel, matter.thread, matter.thread);
       signal?.throwIfAborted();
-      if (!await this.accessible(matter.channel)) return null;
+      if (!await this.access.check(matter.channel)) return null;
       const original = parent.messages.find((m) => m.ts === matter.thread);
       if (original) this.store.record({ ...original, context: true }, now);
       else {
@@ -71,7 +69,7 @@ export class SourceCollector {
       signal?.throwIfAborted();
       const page = await this.slack.page(matter.channel, oldest, scan.latest, scan.cursor, matter.thread);
       signal?.throwIfAborted();
-      if (!await this.accessible(matter.channel)) return null;
+      if (!await this.access.check(matter.channel)) return null;
       for (const message of page.messages) this.store.record(message, now);
       scan.seen.push(...page.messages.map((m) => m.ts));
       if (!page.cursor) {

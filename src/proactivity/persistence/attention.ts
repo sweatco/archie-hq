@@ -1,18 +1,42 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import type { Delivery, Observation, Matter } from '../types.js';
-import { SqlOperations, type RevisionRecord, type ChannelRecord } from './sql.js';
+import type { Delivery, Observation, Matter, Evidence } from '../types.js';
+import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 
-export class AttentionRecords extends SqlOperations {
+type Row = Record<string, string | number | null>;
+type RevisionRecord = Omit<Evidence, 'own' | 'bot' | 'deleted' | 'context' | 'eventId'> & { own: number; bot: number; deleted: number; excerpt: string; hash: string };
+type ChannelRecord = { id: string; allowed: number; shared: number; checkpoint: string; cursor: string | null; gap: string | null };
+
+export class AttentionRecords {
+  constructor(private readonly database: DatabaseSync) {}
+
+  private row<T = Row>(sql: string, ...args: SQLInputValue[]): T | undefined {
+    return this.database.prepare(sql).get(...args) as T | undefined;
+  }
+
+  private rows<T = Row>(sql: string, ...args: SQLInputValue[]): T[] {
+    return this.database.prepare(sql).all(...args) as T[];
+  }
+
+  private run(sql: string, ...args: SQLInputValue[]) {
+    return this.database.prepare(sql).run(...args);
+  }
+
+  private atomic<T>(work: () => T): T {
+    if (this.database.isTransaction) return work();
+    this.database.exec('BEGIN IMMEDIATE');
+    try { const result = work(); this.database.exec('COMMIT'); return result; }
+    catch (error) { this.database.exec('ROLLBACK'); throw error; }
+  }
+
   revision(id: number) { return this.row<RevisionRecord>('SELECT * FROM revisions WHERE id=?', id); }
 
   stopAnalysis(): void {
     this.atomic(() => {
-      this.run("INSERT INTO settings VALUES ('analysis_epoch','1') ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1");
       this.run(`DELETE FROM matter_checks WHERE kind='notified' AND matter IN (
         SELECT j.value FROM deliveries d,json_each(d.matters) j WHERE d.state='pending'
       )`);
       this.run("UPDATE deliveries SET state='cancelled' WHERE state='pending'");
-      this.run("DELETE FROM jobs WHERE kind IN ('extract','investigate','reflection','digest')");
+      this.run("DELETE FROM jobs WHERE kind IN ('extract','investigate','digest')");
     });
   }
 
@@ -115,11 +139,10 @@ export class AttentionRecords extends SqlOperations {
   }
 
   statistics() {
-    return this.row<{ threads: number; sent: number; feedback: number; unsettled: number; proposals: number }>(`SELECT
+    return this.row<{ threads: number; sent: number; feedback: number; unsettled: number }>(`SELECT
       (SELECT count(*) FROM threads) AS threads,
       (SELECT count(*) FROM deliveries WHERE state='sent') AS sent,
       (SELECT count(*) FROM feedback) AS feedback,
-      (SELECT count(*) FROM charges WHERE settled IS NULL) AS unsettled,
-      (SELECT count(*) FROM proposals WHERE status='pending filing') AS proposals`)!;
+      (SELECT count(*) FROM charges WHERE settled IS NULL) AS unsettled`)!;
   }
 }

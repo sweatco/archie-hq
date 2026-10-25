@@ -40,8 +40,8 @@ afterEach(() => { service.stop(); service.release(); store.close(); vi.useRealTi
 
 function seed(nextCheck = START, deadline: number | null = null): Matter {
   const snapshot = store.snapshot('C1', message.thread)!;
-  const matter: Matter = { id: `C1:${message.thread}:m:release`, channel: 'C1', thread: message.thread, title: 'Release checklist', detail: 'Prepare checklist', evidence: snapshot.evidence.map(e => e.id), state: 'open', owner: 'U1', deadline, explicit: true, nextCheck, valid: true, policy: 'base' };
-  store.apply([snapshot], [], [matter], 'base');
+  const matter: Matter = { id: `C1:${message.thread}:m:release`, channel: 'C1', thread: message.thread, title: 'Release checklist', detail: 'Prepare checklist', evidence: snapshot.evidence.map(e => e.id), state: 'open', owner: 'U1', deadline, explicit: true, nextCheck, valid: true };
+  store.apply([snapshot], [], [matter]);
   store.schedule('investigate', matter.id, nextCheck);
   return matter;
 }
@@ -52,7 +52,7 @@ async function editDeadline(matter: Matter, deadline: number): Promise<void> {
   message = { ...message, version: (now / 1000).toFixed(6), text: `The checklist deadline changed to ${deadline}.` };
   store.record(message, now);
   const evidence = store.snapshot('C1', message.thread)!.evidence.map(e => e.id);
-  vi.mocked(model.complete).mockResolvedValueOnce({ threads: [{ channel: 'C1', thread: message.thread, observations: [], matters: [{ key: 'release', title: matter.title, detail: message.text, evidence, state: 'open', owner: 'U1', deadline, explicit: true }] }] });
+  vi.mocked(model.complete).mockResolvedValueOnce({ threads: [{ channel: 'C1', thread: message.thread, observations: [], matters: [{ key: 'release', title: matter.title, detail: message.text, evidence, state: 'open', owner: 'U1', deadline: { date: new Date(deadline).toISOString().slice(0, 10), time: new Date(deadline).toISOString().slice(11, 16), timeZone: 'UTC' }, explicit: true }] }] });
   store.schedule('extract', 'global', now);
   await service.tick(now, true);
 }

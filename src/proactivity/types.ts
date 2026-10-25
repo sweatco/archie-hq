@@ -40,7 +40,6 @@ export interface Matter {
   explicit: boolean;
   nextCheck: number;
   valid: boolean;
-  policy: string;
   reopen?: boolean;
 }
 
@@ -69,7 +68,6 @@ export interface Delivery {
   text: string;
   matters: string[];
   evidence: number[];
-  policy: string;
   digest: boolean;
   state: 'pending' | 'sending' | 'uncertain' | 'sent' | 'cancelled';
   ts: string | null;
@@ -82,10 +80,7 @@ export interface CapabilityProposal {
   repository: string;
   outcome: string;
   evidence: number[];
-  status: string;
-  origin?: 'investigation' | 'evolution';
-  matter?: string;
-  acknowledgedOutcome?: { state: 'implemented' | 'released' | 'rejected'; actor: string; at: number; artifact: string; acceptance: string };
+  matter: string;
 }
 
 export interface TaskHandoffRecord {

@@ -39,7 +39,7 @@ describe('independent PR review probes', () => {
     const evidence = store.snapshot('C1', TS)!.evidence.map((e) => e.id);
     vi.mocked(model.complete).mockResolvedValueOnce({ threads: [{ channel: 'C1', thread: TS, observations: [], matters: [{
       key: 'release', title: 'Release', detail: 'Release in one hour', evidence, state: 'open', owner: 'U1',
-      deadline: NOW + 3_600_000, explicit: true,
+      deadline: { date: '2026-10-20', time: '12:00', timeZone: 'Europe/Lisbon' }, explicit: true,
     }] }] });
     store.schedule('extract', 'global', NOW);
     await service.tick(NOW);
@@ -67,10 +67,10 @@ describe('independent PR review probes', () => {
     const snapshot = store.snapshot('C1', TS)!;
     const evidence = snapshot.evidence.map((e) => e.id);
     const matter: Matter = { id: 'release', channel: 'C1', thread: TS, title: 'Release', detail: 'Prepare release', evidence,
-      state: 'open', owner: 'U1', deadline: null, explicit: true, nextCheck: NOW, valid: true, policy: 'base' };
-    store.apply([snapshot], [], [matter], 'base');
+      state: 'open', owner: 'U1', deadline: null, explicit: true, nextCheck: NOW, valid: true };
+    store.apply([snapshot], [], [matter]);
     store.enqueueDelivery({ id: 'previous', channel: 'D1', thread: null, text: 'I can prepare the release.', matters: [matter.id], evidence,
-      policy: 'base', digest: false, state: 'sent', ts: 'prior-ts', created: NOW - 86_400_000 });
+      digest: false, state: 'sent', ts: 'prior-ts', created: NOW - 86_400_000 });
     vi.mocked(model.complete).mockResolvedValueOnce({ resolved: false, help: 'I can prepare the release.', public: false, evidence: [...evidence].reverse() });
     store.schedule('investigate', matter.id, NOW);
     await service.tick(NOW);

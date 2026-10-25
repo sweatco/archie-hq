@@ -22,6 +22,7 @@ let slack: ProposalSlack;
 let tasks: ApprovedTaskRuntime;
 let records: Map<string, TaskMetadata>;
 let repositories: string[];
+let proposalId: string;
 
 function freshHandoff() {
   const collection = new SourceCollector(store, slack);
@@ -45,7 +46,8 @@ beforeEach(() => {
   store.set('owner', 'U_OWNER'); store.set('delivery_enabled', 'true');
   store.channel('C1', true, false);
   const evidence = store.record({ channel: 'C1', thread: TS, ts: TS, version: TS, author: 'U_AUTHOR', text: 'We need a release checklist.' }, NOW)!;
-  store.proposeCapability('release', { repository: 'owner/repo', outcome: 'Build a release checklist', evidence: [evidence] });
+  store.apply([store.snapshot('C1', TS)!], [], [{ id: 'release', channel: 'C1', thread: TS, title: 'Release checklist', detail: 'Prepare checklist', evidence: [evidence], state: 'open', owner: null, deadline: null, explicit: true, nextCheck: NOW, valid: true }]);
+  proposalId = store.proposeCapability({ repository: 'owner/repo', outcome: 'Build a release checklist', evidence: [evidence], matter: 'release' });
   repositories = ['owner/repo']; records = new Map();
   tasks = {
     prepare: vi.fn(async (input: PreparedTaskInput) => {
@@ -68,11 +70,6 @@ beforeEach(() => {
 afterEach(async () => { await handoff.drainCards(); store.close(); vi.useRealTimers(); rmSync(root, { recursive: true, force: true }); });
 
 describe('owner-approved proposal handoff', () => {
-  it('retains the outcome boundary for external development status updates', () => {
-    expect(() => store.acknowledgeDevelopment('release', 'https://github.com/owner/repo/issues/1', 'completed' as never)).toThrow('owner acknowledgement');
-    expect(store.proposal('release')?.acknowledgedOutcome).toBeUndefined();
-    expect(store.proposal('release')?.status).toBe('pending filing');
-  });
   it('uses the ordinary outbox and spending boundary without starting a task at presentation', async () => {
     const delivery = await presented();
     expect(delivery.text).toContain('normal task budgeting');
@@ -108,12 +105,11 @@ describe('owner-approved proposal handoff', () => {
     await Promise.all([handoff.approve('U_OWNER', delivery.id, delivery.proposal!.version), handoff.approve('U_OWNER', delivery.id, delivery.proposal!.version)]);
     expect(records.size).toBe(1);
     expect(tasks.start).toHaveBeenCalledTimes(1);
-    const record = store.handoff('release')!;
-    expect(record).toMatchObject({ actor: 'U_OWNER', budget: 'task', state: 'activated', version: proposalVersion(store.proposal('release')!) });
+    const record = store.handoff(proposalId)!;
+    expect(record).toMatchObject({ actor: 'U_OWNER', budget: 'task', state: 'activated', version: proposalVersion(store.proposal(proposalId)!) });
     expect(vi.mocked(tasks.prepare).mock.calls[0][0]).toMatchObject({ taskId: record.task, destination: { channel: 'D_OWNER', thread: delivery.ts } });
     expect(vi.mocked(tasks.prepare).mock.calls[0][0].brief).toContain('untrusted="true"');
-    expect(store.proposal('release')?.status).toBe('pending filing');
-    expect(store.proposal('release')?.acknowledgedOutcome).toBeUndefined();
+    expect(store.pendingProposalCount(NOW)).toBe(0);
   });
 
   it('consumes the original card after durable approval without letting a delayed Starting edit block activation or overwrite it', async () => {
@@ -121,13 +117,13 @@ describe('owner-approved proposal handoff', () => {
     let release!: () => void;
     const slowEdit = new Promise<void>(resolve => { release = resolve; });
     vi.mocked(slack.updateProposal).mockImplementationOnce(async (_delivery, status) => {
-      expect(store.handoff('release')?.actor).toBe('U_OWNER');
+      expect(store.handoff(proposalId)?.actor).toBe('U_OWNER');
       expect(status).toContain('Starting');
       await slowEdit;
     });
     const approval = handoff.approve('U_OWNER', delivery.id, delivery.proposal!.version);
     try {
-      await vi.waitFor(() => expect(store.handoff('release')?.state).toBe('activated'));
+      await vi.waitFor(() => expect(store.handoff(proposalId)?.state).toBe('activated'));
       await approval;
       expect(slack.updateProposal).toHaveBeenCalledTimes(1);
       await handoff.approve('U_OWNER', delivery.id, delivery.proposal!.version);
@@ -137,7 +133,7 @@ describe('owner-approved proposal handoff', () => {
     expect(edits.map(call => call[1])).toEqual([expect.stringContaining('Starting'), expect.stringContaining('Task started')]);
     expect(edits[1][0]).toMatchObject({ id: delivery.id, ts: delivery.ts, text: delivery.text });
     expect(edits[1][2]).toBe(slack.link(delivery.channel, delivery.ts!));
-    expect(store.handoff('release')?.card_state).toBe('activated');
+    expect(store.handoff(proposalId)?.card_state).toBe('activated');
     await handoff.approve('U_OWNER', delivery.id, delivery.proposal!.version);
     await handoff.recover(); await handoff.drainCards();
     expect(slack.updateProposal).toHaveBeenCalledTimes(2);
@@ -151,15 +147,15 @@ describe('owner-approved proposal handoff', () => {
     });
     await handoff.approve('U_OWNER', delivery.id, delivery.proposal!.version);
     await handoff.drainCards();
-    expect(store.handoff('release')).toMatchObject({ state: 'activated', card_retry: expect.any(Number) });
-    expect(store.handoff('release')?.card_state).not.toBe('activated');
+    expect(store.handoff(proposalId)).toMatchObject({ state: 'activated', card_retry: expect.any(Number) });
+    expect(store.handoff(proposalId)?.card_state).not.toBe('activated');
     expect(store.pendingHandoffCards(NOW)).toEqual([]);
     store.close(); store = new InitiativeStore(join(root, 'state.sqlite'), 'T1', Date.now()); handoff = freshHandoff();
     vi.mocked(slack.updateProposal).mockClear(); vi.mocked(slack.updateProposal).mockResolvedValue();
     vi.advanceTimersByTime(60_000);
     await handoff.recover(); await handoff.drainCards();
     expect(slack.updateProposal).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: delivery.id }), expect.stringContaining('Task started'), expect.any(String));
-    expect(store.handoff('release')?.card_state).toBe('activated');
+    expect(store.handoff(proposalId)?.card_state).toBe('activated');
     expect(store.pendingHandoffCards(Date.now())).toEqual([]);
     await handoff.recover(); await handoff.drainCards();
     expect(slack.updateProposal).toHaveBeenCalledTimes(1);
@@ -168,13 +164,13 @@ describe('owner-approved proposal handoff', () => {
 
   it('recovers an abandoned card-write lease independently of approved task activation', async () => {
     const delivery = await presented();
-    store.approveHandoff({ proposal: 'release', version: delivery.proposal!.version, actor: 'U_OWNER', approved: NOW,
+    store.approveHandoff({ proposal: proposalId, version: delivery.proposal!.version, actor: 'U_OWNER', approved: NOW,
       task: 'task-before-restart', state: 'approved', budget: 'task', delivery: delivery.id });
-    expect(store.claimHandoffCard('release', NOW)).not.toBeNull();
-    expect(store.claimHandoffCard('release', NOW)).toBeNull();
+    expect(store.claimHandoffCard(proposalId, NOW)).not.toBeNull();
+    expect(store.claimHandoffCard(proposalId, NOW)).toBeNull();
     store.close(); store = new InitiativeStore(join(root, 'state.sqlite'), 'T1', NOW); handoff = freshHandoff();
     await handoff.recover(); await handoff.drainCards();
-    expect(store.handoff('release')?.state).toBe('activated');
+    expect(store.handoff(proposalId)?.state).toBe('activated');
     expect(slack.updateProposal).not.toHaveBeenCalled();
     vi.advanceTimersByTime(60_000);
     await handoff.recover(); await handoff.drainCards();
@@ -201,13 +197,13 @@ describe('owner-approved proposal handoff', () => {
     vi.mocked(slack.updateProposal).mockImplementationOnce(() => delayedFailure);
     const approval = handoff.approve('U_OWNER', delivery.id, delivery.proposal!.version);
     try {
-      await vi.waitFor(() => expect(store.handoff('release')?.state).toBe('activated'));
+      await vi.waitFor(() => expect(store.handoff(proposalId)?.state).toBe('activated'));
       await approval;
     } finally { fail(); await handoff.drainCards(); }
     vi.advanceTimersByTime(60_000);
     await handoff.recover(); await handoff.drainCards();
     expect(vi.mocked(slack.updateProposal).mock.calls.map(call => call[1])).toEqual([expect.stringContaining('Starting'), expect.stringContaining('Task started')]);
-    expect(store.handoff('release')?.card_state).toBe('activated');
+    expect(store.handoff(proposalId)?.card_state).toBe('activated');
   });
 
   it('leaves valid actions untouched on rejected clicks and consumes stale preparation without claiming activation', async () => {
@@ -221,7 +217,7 @@ describe('owner-approved proposal handoff', () => {
       store.record({ channel: 'C1', thread: TS, ts: TS, version: `${NOW / 1000 + 1}.000000`, author: 'U_AUTHOR', text: 'Cancelled' }, NOW);
     });
     await handoff.approve('U_OWNER', delivery.id, delivery.proposal!.version); await handoff.drainCards();
-    expect(store.handoff('release')).toMatchObject({ state: 'stale', card_state: 'stale' });
+    expect(store.handoff(proposalId)).toMatchObject({ state: 'stale', card_state: 'stale' });
     expect(vi.mocked(slack.updateProposal).mock.calls.at(-1)?.slice(1)).toEqual([expect.stringContaining('stale'), undefined]);
     expect(tasks.start).not.toHaveBeenCalled();
   });
@@ -237,7 +233,12 @@ describe('owner-approved proposal handoff', () => {
     expect(result.state).toBe('prepared');
     expect(tasks.start).not.toHaveBeenCalled();
     await handoff.recover();
-    expect(store.handoff('release')?.state).toBe('activated');
+    expect(store.handoff(proposalId)?.state).toBe('prepared');
+    expect(tasks.start).not.toHaveBeenCalled();
+    store.channel('C1', true, false);
+    store.apply([store.snapshot('C1', TS)!], [], [store.matter('release')!]);
+    await handoff.recover();
+    expect(store.handoff(proposalId)?.state).toBe('activated');
     expect(tasks.start).toHaveBeenCalledTimes(1);
     expect(records.size).toBe(1);
   });
@@ -254,7 +255,6 @@ describe('owner-approved proposal handoff', () => {
     expect(records.get(result.task)?.status).toBe('preparing');
     await handoff.recover();
     expect(tasks.start).not.toHaveBeenCalled();
-    expect(store.proposal('release')?.acknowledgedOutcome).toBeUndefined();
   });
 
   it('reconciles a prepared task after a database reopen without inventing another identity', async () => {
@@ -263,14 +263,14 @@ describe('owner-approved proposal handoff', () => {
     vi.mocked(tasks.prepare).mockImplementationOnce(async input => { await original(input); throw new Error('crash after first task write'); });
     await expect(handoff.approve('U_OWNER', delivery.id, delivery.proposal!.version)).rejects.toThrow('crash');
     await handoff.drainCards();
-    const first = store.handoff('release')!;
+    const first = store.handoff(proposalId)!;
     expect(records.get(first.task)?.status).toBe('preparing');
     store.close(); store = new InitiativeStore(join(root, 'state.sqlite'), 'T1', NOW);
     handoff = freshHandoff();
     await handoff.recover();
     expect(records.size).toBe(1);
     expect(tasks.start).toHaveBeenCalledTimes(1);
-    expect(store.handoff('release')?.task).toBe(first.task);
+    expect(store.handoff(proposalId)?.task).toBe(first.task);
   });
 
   it('reconciles activation before acknowledgement and never treats parking as success', async () => {
@@ -282,53 +282,68 @@ describe('owner-approved proposal handoff', () => {
     store.close(); store = new InitiativeStore(join(root, 'state.sqlite'), 'T1', NOW);
     handoff = freshHandoff(); await handoff.recover();
     expect(tasks.start).toHaveBeenCalledTimes(1);
-    const record = store.handoff('release')!;
+    const record = store.handoff(proposalId)!;
     const metadata = records.get(record.task)!;
     metadata.status = 'completed'; metadata.waiting_for = 'user';
-    expect((await handoff.describe('release')).runtime).toContain('user');
-    expect((await handoff.describe('release')).outcome).toBe('unverified');
+    expect((await handoff.describe(proposalId)).runtime).toContain('user');
+    expect((await handoff.describe(proposalId)).outcome).toBe('unverified');
     metadata.waiting_for = 'edit_mode'; expect(taskRuntimeState(metadata)).toContain('edit_mode');
     metadata.waiting_for = 'time_budget'; expect(taskRuntimeState(metadata)).toContain('time_budget');
     metadata.waiting_for = 'research_budget'; expect(taskRuntimeState(metadata)).toContain('research_budget');
-    await expect(handoff.acknowledge('U_OTHER', 'release', 'released', 'https://github.com/owner/repo/releases/v1', 'Shipped')).rejects.toThrow('Owner');
-    await expect(handoff.acknowledge('U_OWNER', 'release', 'implemented', 'https://github.com/other/repo/pull/1', 'Done')).rejects.toThrow('artifact');
-    await handoff.acknowledge('U_OWNER', 'release', 'implemented', 'https://github.com/owner/repo/pull/1', 'Checklist meets the requested release cases; not released yet.');
-    expect(store.proposal('release')?.acknowledgedOutcome).toMatchObject({ state: 'implemented', actor: 'U_OWNER' });
-    expect(store.proposal('release')?.status).not.toBe('released');
   });
 });
 
-it('presents an ordinary suggestion despite retained deferred learning history', async () => {
-  const seed = store.proposal('release')!;
-  store['run']('DELETE FROM proposals');
-  for (let n = 0; n < 20; n++) {
-    const { origin: _origin, ...legacy } = seed;
-    store['run']('INSERT INTO proposals(id,body) VALUES (?,?)', `000-${n.toString().padStart(2, '0')}`, JSON.stringify(legacy));
-  }
-  store.proposeCapability('zzz-current', { repository: seed.repository, outcome: seed.outcome, evidence: seed.evidence });
-  await handoff.present(NOW);
-  expect(store.deliveries('pending').map(delivery => delivery.proposal?.id)).toEqual(['zzz-current']);
-  expect(store['row']('SELECT count(*) AS n FROM proposals')?.n).toBe(21);
-});
-
 it('persists bounded queue progress past ineligible rows and wraps for earlier arrivals', async () => {
-  const seed = store.proposal('release')!;
+  const seed = store.proposal(proposalId)!;
   store['run']('DELETE FROM proposals');
-  for (let n = 0; n < 20; n++) store.proposeCapability(`000-${n.toString().padStart(2, '0')}`, { ...seed, matter: 'resolved-or-missing' });
-  store.proposeCapability('zzz-current', seed);
+  for (let n = 0; n < 20; n++) store['run']('INSERT INTO proposals VALUES (?,?)', `30-${n.toString().padStart(2, '0')}`, JSON.stringify({ ...seed, matter: 'missing' }));
+  const current = store.proposeCapability(seed);
   const reads = vi.spyOn(store, 'proposal');
   await handoff.present(NOW);
   expect(reads).toHaveBeenCalledTimes(20);
   expect(store.deliveries('pending')).toEqual([]);
-  expect(store.setting('proposal_cursor')).toBe('000-19');
+  expect(store.setting('proposal_cursor')).toBe('30-19');
   store.close(); store = new InitiativeStore(join(root, 'state.sqlite'), 'T1', NOW);
   handoff = freshHandoff();
-  store.proposeCapability('000-00a-new', seed);
+  const matter = { ...store.matter(seed.matter)!, id: 'earlier-0' };
+  store.apply([store.snapshot('C1', TS)!], [], [store.matter(seed.matter)!, matter]);
+  const earlier = store.proposeCapability({ ...seed, matter: matter.id });
+  expect(earlier < current).toBe(true);
   await handoff.present(NOW);
-  expect(store.deliveries('pending').map(delivery => delivery.proposal?.id)).toEqual(['zzz-current']);
+  expect(store.deliveries('pending').map(delivery => delivery.proposal?.id)).toEqual([current]);
   await handoff.present(NOW);
-  expect(store.deliveries('pending').map(delivery => delivery.proposal?.id)).toContain('000-00a-new');
+  expect(store.deliveries('pending').map(delivery => delivery.proposal?.id)).toContain(earlier);
   expect(store['row']('SELECT count(*) AS n FROM proposals')?.n).toBe(22);
+});
+
+it('rechecks the work thread audience even when the model cites only a related source', async () => {
+  store['run']('DELETE FROM proposals');
+  store.channel('C2', true, false);
+  const relatedThread = '1792490403.000001';
+  const evidence = store.record({ channel: 'C2', thread: relatedThread, ts: relatedThread, version: relatedThread, author: 'U_AUTHOR', text: 'Related release requirements.' }, NOW)!;
+  const id = store.proposeCapability({ repository: 'owner/repo', outcome: 'Prepare the release checklist', evidence: [evidence], matter: 'release' });
+  vi.mocked(slack.page).mockImplementation(async (channel, _oldest, _latest, _cursor, thread) => ({ messages: store.snapshot(channel, thread ?? TS)?.evidence ?? [] }));
+  const card = await presented();
+  expect(store.proposalSources(id)).toEqual([{ channel: 'C1', thread: TS }, { channel: 'C2', thread: relatedThread }]);
+  vi.mocked(slack.inspect).mockImplementation(async channel => channel === 'C1' ? null : { shared: false, ownerCanRead: true });
+  await expect(handoff.approve('U_OWNER', card.id, card.proposal!.version)).rejects.toThrow('access');
+  expect(tasks.prepare).not.toHaveBeenCalled();
+});
+
+it('requires a new card approval after fresh work evidence changes a pending suggestion', async () => {
+  const oldCard = await presented();
+  const fresh = store.record({ channel: 'C1', thread: TS, ts: '1792490402.000001', version: '1792490402.000001', author: 'U_AUTHOR', text: 'New scope: prepare a deployment checklist instead.' }, NOW)!;
+  const matter = { ...store.matter('release')!, evidence: [fresh], detail: 'New deployment checklist scope' };
+  store.apply([store.snapshot('C1', TS)!], [], [matter]);
+  const next = store.proposeCapability({ repository: 'owner/repo', outcome: 'Prepare the newly requested deployment checklist', evidence: [fresh], matter: matter.id });
+  expect(next).not.toBe(proposalId);
+  await expect(handoff.approve('U_OWNER', oldCard.id, oldCard.proposal!.version)).rejects.toThrow('context');
+  expect(tasks.prepare).not.toHaveBeenCalled();
+  await handoff.present(NOW);
+  const newCard = store.deliveries('pending').find(delivery => delivery.proposal?.id === next)!;
+  expect(newCard.proposal?.version).not.toBe(oldCard.proposal?.version);
+  expect(store.handoff(next)).toBeNull();
+  expect(store.pendingProposalCount(NOW)).toBe(1);
 });
 
 it('revalidates and requeues a never-sent cancelled card after transient access recovery', async () => {
@@ -340,6 +355,7 @@ it('revalidates and requeues a never-sent cancelled card after transient access 
     await service.deliver(NOW);
     expect(store.delivery(first.id)?.state).toBe('cancelled');
     store.channel('C1', true, false);
+    store.apply([store.snapshot('C1', TS)!], [], [store.matter('release')!]);
     await handoff.present(NOW + 60_000);
     await service.deliver(NOW + 60_000);
     expect(store.delivery(first.id)?.state).toBe('sent');

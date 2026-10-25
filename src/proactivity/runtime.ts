@@ -24,7 +24,6 @@ export async function startInitiative(team: string, mode: 'shadow' | 'live'): Pr
     const slack = new PublicSlack(owner);
     const gateway = new ModelGateway(store);
     const investigationModel = process.env.ARCHIE_PROACTIVITY_INVESTIGATION_MODEL ?? 'claude-sonnet-5-5';
-    store.useBaseline(Date.now());
     const service = new InitiativeService(store, slack, gateway, {
       mode, owner,
       extractionModel: process.env.ARCHIE_PROACTIVITY_EXTRACTION_MODEL ?? 'claude-haiku-5-5',
@@ -33,6 +32,7 @@ export async function startInitiative(team: string, mode: 'shadow' | 'live'): Pr
     const handoff = new ProposalHandoff(store, slack, owner, () => Object.keys(getArchieConfig().repos), source => service.refreshEvidence(source));
     await slack.ownerDm();
     await gateway.verify([service.config.extractionModel, service.config.investigationModel]);
+    // Recheck after network awaits: another startup may have bound an empty database.
     if (store.setting('owner') && store.setting('owner') !== owner) throw new Error('Observation owner mismatch');
     store.set('owner', owner);
     if (!store.setting('activated')) {
@@ -54,7 +54,6 @@ export async function startInitiative(team: string, mode: 'shadow' | 'live'): Pr
     let captures = Promise.resolve();
     let queued = 0;
     let closing = false;
-    const reconciliation = new AbortController();
     let timer: ReturnType<typeof setInterval> | undefined;
     function start(): void {
       if (timer || closing) return;
@@ -63,9 +62,6 @@ export async function startInitiative(team: string, mode: 'shadow' | 'live'): Pr
         if (!recoveringTasks) recoveringTasks = handoff.recover().catch(error => logger.warn('initiative', 'Approved task recovery deferred', error)).finally(() => { recoveringTasks = undefined; });
         if (running) return;
         running = (async () => {
-          try { await gateway.poll(AbortSignal.any([reconciliation.signal, AbortSignal.timeout(45_000)])); }
-          catch (error) { logger.warn('initiative', 'Batch reconciliation deferred', error); }
-          gateway.expire(Date.now());
           if (mode === 'live') await handoff.present(Date.now());
           await service.tick();
         })().catch((error) => logger.warn('initiative', 'Scheduler tick failed', error)).finally(() => { running = undefined; });
@@ -85,13 +81,6 @@ export async function startInitiative(team: string, mode: 'shadow' | 'live'): Pr
         await postSlackMessage({ channel: await slack.ownerDm(), text: JSON.stringify(await handoff.describe(parts[1])) });
         return;
       }
-      if (action === 'outcome' && parts.length >= 5) {
-        const state = parts[2];
-        if (!['implemented', 'released', 'rejected'].includes(state)) throw new Error('Outcome must be implemented, released or rejected');
-        await handoff.acknowledge(user, parts[1], state as 'implemented' | 'released' | 'rejected', parts[3], parts.slice(4).join(' '));
-        await postSlackMessage({ channel: await slack.ownerDm(), text: 'Recorded the owner-acknowledged outcome and supporting artifact.' });
-        return;
-      }
       if (action === 'delivery' && parts.length === 2 && ['on', 'off'].includes(parts[1])) {
         store.set('delivery_enabled', String(parts[1] === 'on'));
         await postSlackMessage({ channel: await slack.ownerDm(), text: `Proactive delivery ${parts[1]}. Source, audience, budget and interruption checks still apply.` });
@@ -101,10 +90,7 @@ export async function startInitiative(team: string, mode: 'shadow' | 'live'): Pr
         const key = ['mute', 'unmute'].includes(action) ? 'mute' : ['pause', 'resume'].includes(action) ? 'pause' : 'stop';
         store.set(key, String(['mute', 'pause', 'stop'].includes(action)));
         if (action === 'pause' || action === 'stop') service.cancelAnalysis();
-        if (action === 'stop') {
-          store.attention.stopAnalysis();
-          await gateway.cancel(AbortSignal.timeout(15_000));
-        }
+        if (action === 'stop') store.attention.stopAnalysis();
         if (action === 'start' || action === 'resume') service.seed();
         await postSlackMessage({ channel: await slack.ownerDm(), text: `Initiative ${action} applied.` });
         return;
@@ -115,7 +101,7 @@ export async function startInitiative(team: string, mode: 'shadow' | 'live'): Pr
         await postSlackMessage({ channel: await slack.ownerDm(), text: `Recorded: ${match[1]}.` });
         return;
       }
-      await postSlackMessage({ channel: await slack.ownerDm(), text: 'Use initiative status, delivery on/off, mute/unmute, pause/resume, stop/start, or handled/later/not useful/stop following followed by a matter ID. Inspect a proposal with initiative proposal <id>; record its outcome with initiative outcome <id> <implemented|released|rejected> <repository artifact URL> <acceptance result>.' });
+      await postSlackMessage({ channel: await slack.ownerDm(), text: 'Use initiative status, delivery on/off, mute/unmute, pause/resume, stop/start, or handled/later/not useful/stop following followed by a matter ID. Inspect a linked task with initiative proposal <id>.' });
     }
 
     async function handleAction(user: string, value: string): Promise<void> {
@@ -231,7 +217,6 @@ export async function startInitiative(team: string, mode: 'shadow' | 'live'): Pr
       async close() {
         clearInterval(timer);
         closing = true;
-        reconciliation.abort();
         installObservationAPI(undefined);
         service.stop();
         await running;

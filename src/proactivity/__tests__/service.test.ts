@@ -39,7 +39,7 @@ async function extract(): Promise<string> {
   const evidence = store.snapshot('C1', TS)!.evidence.map((e) => e.id);
   vi.mocked(model.complete).mockResolvedValueOnce({ threads: [{ channel: 'C1', thread: TS,
     observations: [{ key: 'release', text: 'Release Friday', kind: 'commitment', evidence }],
-    matters: [{ key: 'release', title: 'Release', detail: 'Release Friday', evidence, state: 'open', owner: 'U1', deadline: NOW + 60_000, explicit: true }],
+    matters: [{ key: 'release', title: 'Release', detail: 'Release Friday', evidence, state: 'open', owner: 'U1', deadline: { date: '2026-10-20', time: '11:01', timeZone: 'Europe/Lisbon' }, explicit: true }],
   }] });
   store.schedule('extract', 'global', NOW);
   await service.tick(NOW);
@@ -73,16 +73,15 @@ describe('initiative flow', () => {
     store.set('delivery_enabled', 'true');
     await service.deliver(NOW + 60_000);
     expect(slack.send).toHaveBeenCalledTimes(1);
-    expect(store['rows']('SELECT * FROM evaluations')).toEqual([]);
+    expect(store['row']("SELECT name FROM sqlite_master WHERE name='evaluations'")).toBeUndefined();
   });
 
-  it('does not admit legacy or new reflection jobs while continuing ordinary work', async () => {
-    store.schedule('reflection', 'global', NOW - 1);
+  it('seeds ordinary work without learning state or extra model calls', async () => {
     service.seed(NOW);
     await service.tick(NOW, true);
     expect(model.complete).not.toHaveBeenCalled();
-    expect(store['row']("SELECT attempts FROM jobs WHERE kind='reflection'")?.attempts).toBe(0);
-    expect(store['rows']('SELECT * FROM episodes')).toEqual([]);
+    expect(store['row']("SELECT kind FROM jobs WHERE kind='reflection'")).toBeUndefined();
+    expect(store['row']("SELECT name FROM sqlite_master WHERE name='episodes'")).toBeUndefined();
   });
 
   it('extracts unmentioned activity without creating a task and gates delivery on explicit owner enablement', async () => {
@@ -130,7 +129,7 @@ describe('initiative flow', () => {
     const id = await extract();
     const other = (Number(TS) + .5).toFixed(6);
     const revision = store.record({ channel: 'C1', thread: other, ts: other, version: other, author: 'U_OTHER', text: 'Release checklist ready' }, NOW)!;
-    store.apply([store.snapshot('C1', other)!], [{ id: 'related', channel: 'C1', thread: other, kind: 'change', text: 'Release context', evidence: [revision] }], [], 'base');
+    store.apply([store.snapshot('C1', other)!], [{ id: 'related', channel: 'C1', thread: other, kind: 'change', text: 'Release context', evidence: [revision] }], []);
     vi.mocked(slack.page).mockImplementation(async (_channel, _oldest, _latest, _cursor, thread) => ({ messages: store.snapshot('C1', thread ?? TS)?.evidence ?? [] }));
     vi.mocked(model.complete).mockResolvedValueOnce({ resolved: false, help: 'Checklist is ready.', public: false, evidence: [...store.matter(id)!.evidence, revision] });
     vi.mocked(slack.ownerDm).mockImplementationOnce(async () => {
@@ -210,7 +209,7 @@ describe('initiative flow', () => {
     store.record({ channel: 'C1', thread, ts: thread, version: thread, author: 'U1', text: 'Release needs a checklist' }, NOW);
     const snapshot = store.snapshot('C1', thread)!;
     const evidence = snapshot.evidence.map((e) => e.id);
-    store.apply([snapshot], [{ id: 'related', channel: 'C1', thread, kind: 'question', text: 'Release checklist', evidence }], [], 'base');
+    store.apply([snapshot], [{ id: 'related', channel: 'C1', thread, kind: 'question', text: 'Release checklist', evidence }], []);
     vi.mocked(slack.page).mockImplementation(async (channel, _oldest, _latest, _cursor, source) => ({ messages: store.snapshot(channel, source ?? TS)?.evidence ?? [] }));
     vi.mocked(model.complete).mockResolvedValueOnce({ resolved: false, help: 'I can prepare the checklist.', public: false, evidence });
     await service.tick(NOW + 60_000);
@@ -224,8 +223,8 @@ describe('initiative flow', () => {
   it('bounds large investigation context and preserves the newest end of a message', async () => {
     store.record({ channel: 'C1', thread: TS, ts: TS, version: TS, author: 'U1', text: `${'Context '.repeat(3000)}release cancelled` }, NOW);
     const snapshot = store.snapshot('C1', TS)!;
-    const matter = { id: 'large', channel: 'C1', thread: TS, title: 'Release', detail: 'Friday release', evidence: snapshot.evidence.map((e) => e.id), state: 'open' as const, owner: 'U1', deadline: null, explicit: true, nextCheck: NOW, valid: true, policy: 'base' };
-    store.apply([snapshot], [], [matter], 'base'); store.schedule('investigate', matter.id, NOW);
+    const matter = { id: 'large', channel: 'C1', thread: TS, title: 'Release', detail: 'Friday release', evidence: snapshot.evidence.map((e) => e.id), state: 'open' as const, owner: 'U1', deadline: null, explicit: true, nextCheck: NOW, valid: true };
+    store.apply([snapshot], [], [matter]); store.schedule('investigate', matter.id, NOW);
     vi.mocked(model.complete).mockResolvedValueOnce({ resolved: false, help: null, public: false, evidence: matter.evidence });
     await service.tick(NOW);
     const input = vi.mocked(model.complete).mock.calls[0][0].input as { thread: { gap: string; evidence: Array<{ text: string }> } };
@@ -293,9 +292,9 @@ describe('initiative flow', () => {
     store.record({ channel: 'C1', thread: root, ts: root, version: root, author: 'U1', text: 'Old commitment', context: true }, NOW);
     store.record({ channel: 'C1', thread: root, ts: TS, version: TS, author: 'U1', text: 'New reply' }, NOW);
     const snapshot = store.snapshot('C1', root)!;
-    const matter = { id: 'old-parent', channel: 'C1', thread: root, title: 'Commitment', detail: 'Old commitment', evidence: snapshot.evidence.map((e) => e.id), state: 'open' as const, owner: 'U1', deadline: null, explicit: true, nextCheck: NOW, valid: true, policy: 'base' };
-    store.apply([snapshot], [], [matter], 'base');
-    store.enqueueDelivery({ id: 'parent-reminder', channel: 'D1', thread: null, text: 'Follow up', matters: [matter.id], evidence: matter.evidence, policy: 'base', digest: false, state: 'pending', ts: null, created: NOW });
+    const matter = { id: 'old-parent', channel: 'C1', thread: root, title: 'Commitment', detail: 'Old commitment', evidence: snapshot.evidence.map((e) => e.id), state: 'open' as const, owner: 'U1', deadline: null, explicit: true, nextCheck: NOW, valid: true };
+    store.apply([snapshot], [], [matter]);
+    store.enqueueDelivery({ id: 'parent-reminder', channel: 'D1', thread: null, text: 'Follow up', matters: [matter.id], evidence: matter.evidence, digest: false, state: 'pending', ts: null, created: NOW });
     store.set('delivery_enabled', 'true');
     vi.mocked(slack.page).mockImplementation(async (_channel, _oldest, _latest, _cursor, thread) => ({ messages: thread ? snapshot.evidence.filter((e) => e.ts !== root) : [] }));
     await service.deliver(NOW + 60_000);

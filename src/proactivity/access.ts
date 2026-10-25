@@ -19,10 +19,4 @@ export class SourceAccess {
   }
 
   async check(channel: string, owner = false): Promise<boolean> { return await this.evaluate(channel, owner) === 'allowed'; }
-
-  async all(channels: string[], owner = true): Promise<boolean> {
-    if (!channels.length) return false;
-    for (const channel of new Set(channels)) if (!await this.check(channel, owner)) return false;
-    return true;
-  }
 }

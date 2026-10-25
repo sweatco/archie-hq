@@ -73,7 +73,7 @@ export type DecisionReason = 'unchanged' | 'scheduled' | 'snoozed' | 'resolved' 
   | 'outside_hours' | 'budget_deferred' | 'approval_required' | 'controlled';
 
 export const reasonText: Record<DecisionReason, string> = {
-  unchanged: 'Source revisions, policy, context, inactivity eligibility and reminder phase are unchanged; the previous analysis was reused.',
+  unchanged: 'Source revisions, context, inactivity eligibility and reminder phase are unchanged; the previous analysis was reused.',
   scheduled: 'Waiting for the next evidence check.', snoozed: 'Deferred until the owner’s agreed reminder.',
   resolved: 'Current evidence says this matter is resolved.', dismissed: 'The owner dismissed this matter.',
   source_unavailable: 'Current source access or complete context could not be verified.', source_changed: 'Source revisions changed; fresh extraction is required.',

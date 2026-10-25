@@ -15,9 +15,7 @@ const cardState = (record: TaskHandoffRecord): NonNullable<TaskHandoffRecord['ca
   record.state === 'approved' || record.state === 'prepared' ? 'pending' : record.state;
 const escape = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-export class HandoffRejection extends Error {
-  constructor(readonly reason: 'owner' | 'stale' | 'deferred' | 'controlled', message: string) { super(message); }
-}
+export class HandoffRejection extends Error {}
 
 export class ProposalHandoff {
   private readonly access: SourceAccess;
@@ -31,7 +29,18 @@ export class ProposalHandoff {
   }
 
   private async current(proposal: CapabilityProposal, refresh: boolean): Promise<{ status: 'available' | 'deferred' | 'stale'; reason: string }> {
-    if (!this.repositories().includes(proposal.repository) || !this.store.proposalCurrent(proposal, Date.now(), false)) return { status: 'stale', reason: 'Proposal evidence or repository scope changed' };
+    if (!this.repositories().includes(proposal.repository)) return { status: 'stale', reason: 'Repository scope changed' };
+    if (!this.store.proposalCurrent(proposal, Date.now(), false)) {
+      const matter = this.store.matter(proposal.matter);
+      // Lookup outages invalidate derived matters; keep saved approval inert until extraction revalidates it.
+      const unchanged = proposal.evidence.every(id => {
+        const revision = this.store.attention.revision(id);
+        return revision?.excerpt && this.store.attention.currentMessage(revision.channel, revision.ts)?.id === id;
+      });
+      return matter?.state === 'open' && !matter.valid && unchanged
+        ? { status: 'deferred', reason: 'Matter is awaiting source revalidation' }
+        : { status: 'stale', reason: 'Proposal evidence or work context changed' };
+    }
     const sources = this.store.proposalSources(proposal.id);
     for (const source of sources) {
       const access = await this.access.evaluate(source.channel, true);
@@ -59,31 +68,31 @@ export class ProposalHandoff {
       if (previous && previous.state !== 'cancelled') continue;
       if ((await this.current(proposal, false)).status !== 'available') continue;
       const sources = this.store.proposalSources(proposal.id);
-      const text = `Feature proposal: ${proposal.outcome}\nRepository: ${proposal.repository}\n\n${sources.map(source => this.slack.link(source.channel, source.thread)).join('\n')}\n\nStart task launches one ordinary Archie task using normal task budgeting, outside the $200/day background allowance. Edit mode and GitHub writes still require their normal approvals.`;
+      const text = `Task suggestion: ${proposal.outcome}\nRepository: ${proposal.repository}\n\n${sources.map(source => this.slack.link(source.channel, source.thread)).join('\n')}\n\nStart task launches one ordinary Archie task using normal task budgeting, outside the $200/day background allowance. Edit mode and GitHub writes still require their normal approvals.`;
       this.store.enqueueDelivery({ id: `proposal:${proposal.id}:${version}`, channel: await this.slack.ownerDm(), thread: null, text,
-        matters: [], evidence: proposal.evidence, policy: this.store.setting('policy')!, digest: false, state: 'pending', ts: null, created: now,
+        matters: [], evidence: proposal.evidence, digest: false, state: 'pending', ts: null, created: now,
         proposal: { id: proposal.id, version } });
     }
     if (page.length < 20) this.store.set('proposal_cursor', '');
   }
 
   async approve(actor: string, deliveryId: string, version: string): Promise<TaskHandoffRecord> {
-    if (actor !== this.owner) throw new HandoffRejection('owner', 'Only the configured owner may start a proposal task');
+    if (actor !== this.owner) throw new HandoffRejection('Only the configured owner may start a proposal task');
     const delivery = this.store.delivery(deliveryId);
     if (!delivery?.proposal || delivery.state !== 'sent' || !delivery.ts || delivery.proposal.version !== version
-      || !await this.slack.verifyDm(delivery.channel)) throw new HandoffRejection('stale', 'Proposal action is unavailable or stale');
+      || !await this.slack.verifyDm(delivery.channel)) throw new HandoffRejection('Proposal action is unavailable or stale');
     const previous = this.store.handoff(delivery.proposal.id);
     if (previous) {
-      if (previous.actor !== actor || previous.version !== version || previous.delivery !== deliveryId) throw new HandoffRejection('stale', 'Proposal approval has changed');
+      if (previous.actor !== actor || previous.version !== version || previous.delivery !== deliveryId) throw new HandoffRejection('Proposal approval has changed');
       this.queueCard(previous.proposal);
       await this.continue(previous);
       return this.store.handoff(previous.proposal)!;
     }
     const proposal = this.store.proposal(delivery.proposal.id);
-    if (!proposal || proposalVersion(proposal) !== version) throw new HandoffRejection('stale', 'The proposal version changed; request a fresh proposal.');
+    if (!proposal || proposalVersion(proposal) !== version) throw new HandoffRejection('The proposal version changed; request a fresh proposal.');
     const validation = await this.current(proposal, true);
-    if (validation.status !== 'available') throw new HandoffRejection(validation.status, validation.reason + '; request a fresh proposal or retry after access recovers.');
-    if (this.store.setting('stop') === 'true') throw new HandoffRejection('controlled', 'Initiative is stopped; no proposal task was activated.');
+    if (validation.status !== 'available') throw new HandoffRejection(validation.reason + '; request a fresh proposal or retry after access recovers.');
+    if (this.store.setting('stop') === 'true') throw new HandoffRejection('Initiative is stopped; no proposal task was activated.');
     const record = this.store.approveHandoff({ proposal: proposal.id, version, actor, approved: Date.now(),
       task: proposalTaskId(this.store.setting('team')!, proposal.id), state: 'approved', budget: 'task', delivery: delivery.id });
     this.queueCard(record.proposal);
@@ -182,20 +191,12 @@ export class ProposalHandoff {
   async describe(id: string) {
     const proposal = this.store.proposal(id);
     if (!proposal) throw new Error('Unknown proposal');
-    const validation = await this.current({ ...proposal, status: 'pending filing' }, false);
+    const validation = await this.current(proposal, false);
     const handoff = this.store.handoff(id);
     const metadata = handoff ? await this.tasks.read(handoff.task) : null;
     const delivery = handoff ? this.store.delivery(handoff.delivery) : null;
     return { proposal: validation.status === 'available' ? proposal : { id, sourceState: validation.status, explanation: validation.reason },
-      handoff, runtime: taskRuntimeState(metadata), outcome: proposal.acknowledgedOutcome ?? 'unverified',
+      handoff, runtime: taskRuntimeState(metadata), outcome: 'unverified',
       conversation: delivery?.ts ? this.slack.link(delivery.channel, delivery.ts) : undefined };
-  }
-
-  async acknowledge(actor: string, id: string, state: 'implemented' | 'released' | 'rejected', artifact: string, acceptance: string): Promise<void> {
-    if (actor !== this.owner) throw new Error('Owner acknowledgement required');
-    const proposal = this.store.proposal(id);
-    if (!proposal || !this.store.handoff(id) || !this.repositories().includes(proposal.repository)) throw new Error('Unknown approved proposal task');
-    if (!acceptance.trim() || acceptance.length > 1200 || !artifact.startsWith(`https://github.com/${proposal.repository}/`)) throw new Error('Repository artifact and explicit acceptance result required');
-    this.store.acknowledgeOutcome(id, { state, actor, at: Date.now(), artifact, acceptance });
   }
 }
