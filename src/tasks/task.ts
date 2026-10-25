@@ -84,6 +84,7 @@ import { TaskStatusController, isStatusEnabled } from './status.js';
 import { setSlackThreadStatus } from '../connectors/slack/status.js';
 import { deriveActivityFromEvent } from '../agents/activity.js';
 import { deriveMemoryDestination, isAuthorizedMemoryScope, scopeForSlackChannel } from './memory-scope.js';
+import { approvedReplyConversation } from './destination.js';
 import { isMemoryReady } from '../memory/paths.js';
 
 // ---- Global state ----
@@ -228,10 +229,8 @@ export class Task {
     // Ensure channels/default_channel exist on metadata
     metadata.channels ??= {};
     metadata.default_channel ??= null;
-    metadata.memory_destination ??= deriveMemoryDestination(
-      metadata.channels,
-      metadata.default_channel,
-      metadata.home_channel?.channel_id,
+    if (!metadata.approved_start) metadata.memory_destination ??= deriveMemoryDestination(
+      metadata.channels, metadata.default_channel, metadata.home_channel?.channel_id,
     );
     metadata.memory_authors ??= {};
     metadata.memory_message_authors ??= {};
@@ -247,10 +246,39 @@ export class Task {
    * Task is inert until sendMessage() is called, which activates it.
    */
   static async create(): Promise<Task> {
+    return this.createInternal();
+  }
+
+  static async prepare(input: {
+    taskId: string; correlation: string; version: string; actor: string; brief: string;
+    destination: { channel: string; thread: string; name: string };
+  }): Promise<Task> {
+    return activationLock(input.taskId, async () => {
+      const existing = await loadMetadata(input.taskId);
+      if (existing) {
+        const start = existing.approved_start;
+        const reply = approvedReplyConversation(existing);
+        if (start?.correlation !== input.correlation || start.version !== input.version || start.actor !== input.actor
+          || reply?.channel.channel_id !== input.destination.channel || reply.channel.thread_id !== input.destination.thread) throw new Error('Prepared task identity mismatch');
+        return this.get(input.taskId);
+      }
+      if (!input.destination.channel.startsWith('D') || !/^\d+\.\d+$/.test(input.destination.thread)) throw new Error('Prepared task requires an owner DM thread');
+      const key = `slack:${input.destination.channel}:${input.destination.thread}`;
+      return this.createInternal({
+        task_id: input.taskId, status: 'preparing', default_channel: key,
+        channels: { [key]: { type: 'slack', channel_id: input.destination.channel, thread_id: input.destination.thread,
+          channel_name: input.destination.name, last_processed_ts: input.destination.thread } },
+        memory_destination: { channel_id: input.destination.channel },
+        approved_start: { correlation: input.correlation, version: input.version, actor: input.actor, budget: 'task', phase: 'prepared', brief: input.brief },
+      });
+    });
+  }
+
+  private static async createInternal(preparation?: Pick<TaskMetadata, 'task_id' | 'status' | 'channels' | 'default_channel' | 'memory_destination' | 'approved_start'>): Promise<Task> {
     await syncPlugins();
     await ensureSessionsDir();
 
-    const taskId = generateTaskId();
+    const taskId = preparation?.task_id ?? generateTaskId();
     const sharedPath = getSharedPath(taskId);
 
     // Create task directory structure
@@ -271,6 +299,7 @@ export class Task {
       runtime_version: RUNTIME_VERSION,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
+      ...preparation,
     };
 
     await persistTaskMetadata(taskId, metadata);
@@ -281,6 +310,23 @@ export class Task {
 
     const task = new Task(taskId, metadata, pmDef);
     return task;
+  }
+
+  async startPrepared(): Promise<boolean> {
+    return activationLock(this.taskId, async () => {
+      const persisted = await loadMetadata(this.taskId);
+      if (!persisted?.approved_start) throw new Error('Task has no durable start approval');
+      approvedReplyConversation(persisted);
+      if (persisted.approved_start.phase === 'ready') return false;
+      if (persisted.status !== 'preparing' || !persisted.default_channel || !persisted.approved_start.brief) throw new Error('Task preparation incomplete');
+      this.metadata.approved_start = { ...persisted.approved_start, phase: 'ready' };
+      this.metadata.status = 'in_progress';
+      // This durable transition makes startup recovery safe even if the process
+      // exits before deliver enqueues the first message. Spawn also carries the brief.
+      await persistTaskMetadata(this.taskId, this.metadata);
+      await this.deliver(persisted.approved_start.brief);
+      return true;
+    });
   }
 
   /**
@@ -353,6 +399,7 @@ export class Task {
         return;
       }
       const persisted = await loadMetadata(this.taskId);
+      if (persisted?.status === 'preparing') throw new Error('Task preparation is not ready for activation');
       if (persisted) reconcilePersistedMemoryMetadata(persisted, this.metadata);
       await this.deliver(message);
     });
@@ -402,6 +449,10 @@ export class Task {
   private async deliver(message: string): Promise<void> {
     if (!this.isActive) {
       await this.activate();
+    }
+    if (this.metadata.waiting_for) {
+      delete this.metadata.waiting_for;
+      this.debouncedSave();
     }
     const wake = await this.withMigrationNotice(await this.withCapPauseNotice(message));
     const agent = await this.ensurePm();
@@ -600,6 +651,8 @@ export class Task {
   }
 
   async prepareMemoryDelivery(channelId: string): Promise<void> {
+    const reply = approvedReplyConversation(this.metadata);
+    if (reply && reply.channel.channel_id !== channelId) throw new Error('delivery blocked: this task belongs to a different Slack destination');
     const destination = this.metadata.memory_destination;
     if (!destination || destination.channel_id !== channelId) {
       throw new Error('delivery blocked: this task belongs to a different Slack destination');
@@ -663,6 +716,10 @@ export class Task {
    * that is the only way a new thread is ever opened. Otherwise returns null.
    */
   async postToUser(message: string, agentName?: string, target?: PostTarget): Promise<string | null> {
+    const reply = approvedReplyConversation(this.metadata);
+    if (reply && target && (Object.keys(target).some(key => key !== 'channel') || target.channel !== reply.key)) {
+      throw new Error('Approved task replies are bound to the owner conversation');
+    }
     const sender = agentName || 'system';
     // Grey footer (task id + PM model) appended to every user-facing message:
     // a Slack `context` block, and the same string on the `message` event so the
@@ -674,7 +731,8 @@ export class Task {
       const ch = this.metadata.channels[target.channel];
       if (ch?.type === 'slack') {
         await this.prepareMemoryDelivery(ch.channel_id);
-        await postSlackMessage({ channel: ch.channel_id, threadTs: ch.thread_id, text: message, footer });
+        const ts = await postSlackMessage({ channel: ch.channel_id, threadTs: ch.thread_id, text: message, footer });
+        await this.recordApprovedReply(ts, message, sender);
         this.logOutgoingMessage(sender, message, Task.formatSlackDest(ch).display, ch, footer);
       }
       return null;
@@ -700,12 +758,20 @@ export class Task {
     }
     if (defaultCh.type === 'slack') {
       await this.prepareMemoryDelivery(defaultCh.channel_id);
-      await postSlackMessage({ channel: defaultCh.channel_id, threadTs: defaultCh.thread_id, text: message, footer });
+      const ts = await postSlackMessage({ channel: defaultCh.channel_id, threadTs: defaultCh.thread_id, text: message, footer });
+      await this.recordApprovedReply(ts, message, sender);
       this.logOutgoingMessage(sender, message, Task.formatSlackDest(defaultCh).display, defaultCh, footer);
     } else if (defaultCh.type === 'cli') {
       this.logOutgoingMessage(sender, message, 'cli', undefined, footer);
     }
     return null;
+  }
+
+  private async recordApprovedReply(ts: string | undefined, message: string, sender: string): Promise<void> {
+    const start = this.metadata.approved_start;
+    if (!start || start.owner_reply_delivered || sender !== this.pmDef.id || !ts || !message.trim()) return;
+    start.owner_reply_delivered = true;
+    await persistTaskMetadata(this.taskId, this.metadata);
   }
 
   /**
@@ -769,6 +835,8 @@ export class Task {
    * this to attach files.
    */
   async postFilesToUser(filePaths: readonly string[], agentName?: string, channelKey?: string): Promise<void> {
+    const reply = approvedReplyConversation(this.metadata);
+    if (reply && channelKey !== undefined && channelKey !== reply.key) throw new Error('Approved task replies are bound to the owner conversation');
     if (filePaths.length === 0) return;
     const sender = agentName || 'system';
     const files = filePaths.map((p) => ({ path: p, filename: basename(p) }));
@@ -857,6 +925,8 @@ export class Task {
     // type:'merge'). `ref` is an opaque id the approval applies to (e.g. a
     // trigger id), echoed so the CLI can resolve the exact item when several
     // approvals of the same type are outstanding. Other types omit both.
+    this.metadata.waiting_for = approvalType;
+    this.debouncedSave();
     emitEvent('approval:requested', this.taskId, {
       text,
       approvalType,
@@ -1315,6 +1385,7 @@ export class Task {
    */
   setCompletionIntent(): void {
     this.completionIntent = true;
+    this.metadata.waiting_for ??= 'user';
   }
 
   /**
@@ -2203,6 +2274,7 @@ export class Task {
     // count after a nuclear respawn, which activates the reloaded task too.)
     this.nuclearRecoveryCycles = 0;
     this.metadata.status = 'in_progress';
+    delete this.metadata.waiting_for;
     activeTasks.set(this.taskId, this);
     this.startTaskTimeout();
     emitEvent('task:resumed', this.taskId);
@@ -2243,6 +2315,7 @@ export class Task {
       );
       await this.complete();
       this.metadata.cap_pause_notice_pending = true;
+      this.metadata.waiting_for = 'time_budget';
       await this.save(true);
       // complete() leaves an idle agent's process running while background
       // workers are in flight; past the cap they must not keep working.

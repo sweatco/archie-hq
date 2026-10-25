@@ -28,6 +28,12 @@ describe('shouldCreateNewTask', () => {
   it('@mention still wins even if the root is not the bot', () => {
     expect(shouldCreateNewTask('app_mention', 'C123', false)).toBe(true);
   });
+
+  it('keeps passive proactive-thread replies out of PM while preserving explicit requests', () => {
+    expect(shouldCreateNewTask('message', 'C123', true, true)).toBe(false);
+    expect(shouldCreateNewTask('app_mention', 'C123', true, true)).toBe(true);
+    expect(shouldCreateNewTask('message', 'D123', true, true)).toBe(true);
+  });
 });
 
 describe('group-DM (G…) routing parity', () => {

@@ -192,6 +192,8 @@ export async function postSlackMessage(args: {
    * message (e.g. the task id + PM model). Short and plain — not length-checked.
    */
   footer?: string;
+  correlationId?: string;
+  actions?: unknown[];
 }): Promise<string | undefined> {
   const { channel, text, threadTs, footer } = args;
   if (dryRun) {
@@ -206,11 +208,16 @@ export async function postSlackMessage(args: {
   if (footer) {
     blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: footer }] });
   }
-  const result = await client.chat.postMessage({
+  if (args.actions?.length) blocks.push({ type: 'actions', elements: args.actions });
+  const sender = args.correlationId
+    ? new WebClient(client.token, { retryConfig: { retries: 0 }, rejectRateLimitedCalls: true, timeout: 15_000 })
+    : client;
+  const result = await sender.chat.postMessage({
     channel,
     ...(threadTs ? { thread_ts: threadTs } : {}),
     text: renderedText,
     blocks: blocks as any,
+    ...(args.correlationId ? { metadata: { event_type: 'archie_initiative', event_payload: { delivery: args.correlationId } } } : {}),
   });
   return result.ts;
 }
