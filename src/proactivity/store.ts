@@ -88,7 +88,11 @@ export class InitiativeStore {
     const previous = this.row('SELECT allowed,shared FROM channels WHERE id=?', id);
     if (gap === undefined && previous?.allowed === Number(allowed) && previous.shared === Number(shared)) return;
     this.transaction(() => {
-      this.run(`INSERT INTO channels VALUES (?,?,?,?,NULL,?) ON CONFLICT(id) DO UPDATE SET allowed=excluded.allowed,shared=excluded.shared,gap=CASE WHEN ? THEN excluded.gap ELSE channels.gap END`,
+      this.run(`INSERT INTO channels VALUES (?,?,?,?,NULL,?)
+        ON CONFLICT(id) DO UPDATE SET
+          allowed=excluded.allowed,
+          shared=excluded.shared,
+          gap=CASE WHEN ? THEN excluded.gap ELSE channels.gap END`,
         id, Number(allowed), Number(shared), this.setting('watermark')!, gap ?? null, Number(gap !== undefined));
       if (gap !== undefined) this.writeCoverageGap(id, gap?.includes('lookup failed') ? 'access' : gap === 'Collection pagination pending' ? 'pagination' : 'unknown', gap ?? null);
       if (!allowed) this.invalidate(id);
@@ -115,7 +119,9 @@ export class InitiativeStore {
   }
 
   rememberCheck(id: string, signature: string, kind: 'no_help' | 'notified', now: number): void {
-    this.run('INSERT INTO matter_checks VALUES (?,?,?,?) ON CONFLICT(matter) DO UPDATE SET signature=excluded.signature,kind=excluded.kind,checked=excluded.checked', id, signature, kind, now);
+    this.run(`INSERT INTO matter_checks VALUES (?,?,?,?)
+      ON CONFLICT(matter) DO UPDATE SET
+        signature=excluded.signature,kind=excluded.kind,checked=excluded.checked`, id, signature, kind, now);
   }
 
   recordDecision(matter: Matter, code: DecisionReason, at: number, details: { nextDue?: number; delivery?: string; scope?: string } = {}): void {
@@ -137,10 +143,17 @@ export class InitiativeStore {
       at: row.at, code: row.code, explanation: reasonText[row.code as DecisionReason], nextDue: row.next_due,
       evidence: JSON.parse(String(row.evidence)), delivery: row.delivery, requests: JSON.parse(String(row.requests)),
     }));
-    const deliveries = this.rows("SELECT id,state,created,ts,proposal FROM deliveries WHERE EXISTS (SELECT 1 FROM json_each(matters) WHERE value=?) ORDER BY created DESC LIMIT 10", id);
+    const deliveries = this.rows(`SELECT id,state,created,ts,proposal FROM deliveries
+      WHERE EXISTS (SELECT 1 FROM json_each(matters) WHERE value=?)
+      ORDER BY created DESC LIMIT 10`, id);
     const nextJob = this.row("SELECT due,lease,attempts FROM jobs WHERE kind='investigate' AND target=?", id);
-    const handoffs = this.rows(`SELECT h.proposal,h.version,h.actor,h.approved,h.task,h.state,h.budget FROM handoffs h JOIN proposals p ON p.id=h.proposal
-      WHERE EXISTS (SELECT 1 FROM json_each(p.body,'$.evidence') e JOIN matters m ON m.id=? JOIN json_each(m.body,'$.evidence') linked ON linked.value=e.value) LIMIT 10`, id);
+    const handoffs = this.rows(`SELECT h.proposal,h.version,h.actor,h.approved,h.task,h.state,h.budget
+      FROM handoffs h JOIN proposals p ON p.id=h.proposal
+      WHERE EXISTS (
+        SELECT 1 FROM json_each(p.body,'$.evidence') e
+        JOIN matters m ON m.id=?
+        JOIN json_each(m.body,'$.evidence') linked ON linked.value=e.value
+      ) LIMIT 10`, id);
     const feedback = this.rows('SELECT action,created FROM feedback WHERE matter=? ORDER BY created DESC LIMIT 10', id);
     return { decisions, deliveries, nextJob, handoffs, feedback };
   }
@@ -189,16 +202,21 @@ export class InitiativeStore {
 
   proposalSources(id: string): Array<{ channel: string; thread: string }> {
     const proposal = this.proposal(id);
-    return proposal ? this.rows('SELECT DISTINCT channel,thread FROM revisions JOIN json_each(?) j ON j.value=revisions.id UNION SELECT channel,thread FROM matters WHERE id=?', JSON.stringify(proposal.evidence), proposal.matter)
+    return proposal ? this.rows(`SELECT DISTINCT channel,thread FROM revisions
+      JOIN json_each(?) j ON j.value=revisions.id
+      UNION SELECT channel,thread FROM matters WHERE id=?`, JSON.stringify(proposal.evidence), proposal.matter)
       .map(row => ({ channel: String(row.channel), thread: String(row.thread) })) : [];
   }
 
   delivery(id: string): Delivery | null {
     const row = this.row('SELECT * FROM deliveries WHERE id=?', id);
     if (!row) return null;
-    return { id, channel: String(row.channel), thread: row.thread as string | null, text: String(row.text), matters: JSON.parse(String(row.matters)),
-      evidence: JSON.parse(String(row.evidence)), digest: row.digest === 1, state: row.state as Delivery['state'],
-      ts: row.ts as string | null, created: Number(row.created), proposal: row.proposal ? JSON.parse(String(row.proposal)) : undefined };
+    return {
+      id, channel: String(row.channel), thread: row.thread as string | null,
+      text: String(row.text), matters: JSON.parse(String(row.matters)), evidence: JSON.parse(String(row.evidence)),
+      digest: row.digest === 1, state: row.state as Delivery['state'], ts: row.ts as string | null,
+      created: Number(row.created), proposal: row.proposal ? JSON.parse(String(row.proposal)) : undefined,
+    };
   }
 
   pendingProposalIds(after = ''): string[] {
@@ -344,27 +362,48 @@ export class InitiativeStore {
   }
 
   snapshot(channel: string, thread: string): ThreadSnapshot | null {
-    const row = this.row('SELECT t.*,c.gap AS channel_gap FROM threads t JOIN channels c ON c.id=t.channel WHERE t.channel=? AND t.thread=? AND c.allowed=1', channel, thread);
+    const row = this.row(`SELECT t.*,c.gap AS channel_gap FROM threads t
+      JOIN channels c ON c.id=t.channel
+      WHERE t.channel=? AND t.thread=? AND c.allowed=1`, channel, thread);
     if (!row) return null;
-    const rows = this.rows(`SELECT r.* FROM revisions r JOIN messages m ON m.revision=r.id WHERE r.channel=? AND r.thread=? AND r.deleted=0 ORDER BY CAST(r.ts AS REAL) DESC LIMIT 201`, channel, thread);
+    const rows = this.rows(`SELECT r.* FROM revisions r
+      JOIN messages m ON m.revision=r.id
+      WHERE r.channel=? AND r.thread=? AND r.deleted=0
+      ORDER BY CAST(r.ts AS REAL) DESC LIMIT 201`, channel, thread);
     const truncated = rows.length > 200;
     const evidence = rows.slice(0, 200).reverse()
       .filter((r) => r.text || r.excerpt)
-      .map((r) => ({ id: Number(r.id), channel, thread, ts: String(r.ts), version: String(r.version), author: String(r.author),
-        text: String(r.text || r.excerpt), own: r.own === 1, bot: r.bot === 1, captured: Number(r.captured) }));
+      .map((r) => ({
+        id: Number(r.id), channel, thread, ts: String(r.ts), version: String(r.version), author: String(r.author),
+        text: String(r.text || r.excerpt), own: r.own === 1, bot: r.bot === 1, captured: Number(r.captured),
+      }));
     const gap = [row.channel_gap, row.gap, truncated ? 'Earlier thread context omitted; newest 200 messages retained' : null].filter(Boolean).join('; ') || null;
-    const removed = this.rows('SELECT r.ts,r.version FROM revisions r JOIN messages m ON m.revision=r.id WHERE r.channel=? AND r.thread=? AND r.deleted=1 ORDER BY r.captured DESC LIMIT 20', channel, thread)
+    const removed = this.rows(`SELECT r.ts,r.version FROM revisions r
+      JOIN messages m ON m.revision=r.id
+      WHERE r.channel=? AND r.thread=? AND r.deleted=1
+      ORDER BY r.captured DESC LIMIT 20`, channel, thread)
       .map((r) => ({ ts: String(r.ts), version: String(r.version) }));
     return { channel, thread, generation: Number(row.generation), evidence, gap, removed };
   }
 
   dirty(limit = 16): ThreadSnapshot[] {
-    return this.rows('WITH pending AS (SELECT t.channel,t.thread,t.changed FROM threads t JOIN channels c ON c.id=t.channel WHERE c.allowed=1 AND t.generation>t.processed), source_groups AS (SELECT channel,MIN(changed) AS oldest FROM pending GROUP BY channel) SELECT p.channel,p.thread FROM pending p JOIN source_groups g ON g.channel=p.channel ORDER BY g.oldest,p.channel,p.changed LIMIT ?', limit)
+    return this.rows(`WITH pending AS (
+        SELECT t.channel,t.thread,t.changed FROM threads t
+        JOIN channels c ON c.id=t.channel
+        WHERE c.allowed=1 AND t.generation>t.processed
+      ), source_groups AS (
+        SELECT channel,MIN(changed) AS oldest FROM pending GROUP BY channel
+      )
+      SELECT p.channel,p.thread FROM pending p
+      JOIN source_groups g ON g.channel=p.channel
+      ORDER BY g.oldest,p.channel,p.changed LIMIT ?`, limit)
       .map((r) => this.snapshot(String(r.channel), String(r.thread))!).filter(Boolean);
   }
 
   current(snapshots: ThreadSnapshot[]): boolean {
-    return snapshots.every((s) => this.row('SELECT generation FROM threads t JOIN channels c ON c.id=t.channel WHERE t.channel=? AND t.thread=? AND c.allowed=1', s.channel, s.thread)?.generation === s.generation);
+    return snapshots.every((s) => this.row(`SELECT generation FROM threads t
+      JOIN channels c ON c.id=t.channel
+      WHERE t.channel=? AND t.thread=? AND c.allowed=1`, s.channel, s.thread)?.generation === s.generation);
   }
 
   apply(snapshots: ThreadSnapshot[], observations: Observation[], matters: Matter[], job?: Job): boolean {
@@ -376,7 +415,10 @@ export class InitiativeStore {
         if (!snapshot || !item.evidence.length || item.evidence.some((id) => !allowed.has(id) || !snapshot.evidence.some((e) => e.id === id))) {
           throw new Error('Result cites evidence outside its source thread');
         }
-        if (item.evidence.every((id) => { const e = snapshot.evidence.find((e) => e.id === id)!; return e.own || e.bot; })) throw new Error('Own output or bot output cannot establish an observation');
+        if (item.evidence.every((id) => {
+          const evidence = snapshot.evidence.find((e) => e.id === id)!;
+          return evidence.own || evidence.bot;
+        })) throw new Error('Own output or bot output cannot establish an observation');
         const previous = this.row('SELECT channel,thread FROM observations WHERE id=? UNION ALL SELECT channel,thread FROM matters WHERE id=?', item.id, item.id);
         if (previous && (previous.channel !== item.channel || previous.thread !== item.thread)) throw new Error('Observation identity collision');
       }
@@ -398,7 +440,9 @@ export class InitiativeStore {
         }
         if (previous?.state === 'resolved' && matter.state === 'open') {
           const oldHashes = new Set(previous.evidence.map((id) => this.row('SELECT hash FROM revisions WHERE id=?', id)?.hash));
-          const changed = snapshots.flatMap((s) => s.evidence).some((e) => matter.evidence.includes(e.id) && !e.own && !e.bot && !oldHashes.has(this.row('SELECT hash FROM revisions WHERE id=?', e.id)?.hash));
+          const changed = snapshots.flatMap((s) => s.evidence).some((e) =>
+            matter.evidence.includes(e.id) && !e.own && !e.bot
+            && !oldHashes.has(this.row('SELECT hash FROM revisions WHERE id=?', e.id)?.hash));
           if (!matter.reopen || !changed) matter = { ...matter, state: 'resolved' };
         }
         this.run('INSERT INTO matters VALUES (?,?,?,?,1,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body,valid=1,next_check=excluded.next_check',
@@ -412,9 +456,15 @@ export class InitiativeStore {
     const tokens = query.match(/[\p{L}\p{N}_]+/gu)?.slice(0, 12);
     if (!tokens?.length || (channels !== null && !channels.length)) return [];
     const match = tokens.map((t) => `"${t}"`).join(' OR ');
-    return this.rows(`SELECT o.* FROM observation_search s JOIN observations o ON o.id=s.id JOIN channels c ON c.id=o.channel
-      WHERE observation_search MATCH ? AND o.valid=1 AND c.allowed=1 ${channels === null ? '' : `AND o.channel IN (${channels.map(() => '?').join(',')})`} ORDER BY rank LIMIT ?`, match, ...(channels ?? []), Math.min(20, limit))
-      .map((r) => ({ id: String(r.id), channel: String(r.channel), thread: String(r.thread), text: String(r.text), evidence: JSON.parse(String(r.evidence)), kind: r.kind as Observation['kind'] }));
+    return this.rows(`SELECT o.* FROM observation_search s
+      JOIN observations o ON o.id=s.id JOIN channels c ON c.id=o.channel
+      WHERE observation_search MATCH ? AND o.valid=1 AND c.allowed=1
+        ${channels === null ? '' : `AND o.channel IN (${channels.map(() => '?').join(',')})`}
+      ORDER BY rank LIMIT ?`, match, ...(channels ?? []), Math.min(20, limit))
+      .map((r) => ({
+        id: String(r.id), channel: String(r.channel), thread: String(r.thread), text: String(r.text),
+        evidence: JSON.parse(String(r.evidence)), kind: r.kind as Observation['kind'],
+      }));
   }
 
   matter(id: string): Matter | null {
@@ -452,7 +502,9 @@ export class InitiativeStore {
   }
 
   schedule(kind: string, target: string, due: number, payload = '{}'): void {
-    this.run('INSERT INTO jobs(kind,target,payload,due) VALUES (?,?,?,?) ON CONFLICT(kind,target) DO UPDATE SET due=MIN(jobs.due,excluded.due),payload=excluded.payload,generation=jobs.generation+1', kind, target, payload, due);
+    this.run(`INSERT INTO jobs(kind,target,payload,due) VALUES (?,?,?,?)
+      ON CONFLICT(kind,target) DO UPDATE SET
+        due=MIN(jobs.due,excluded.due),payload=excluded.payload,generation=jobs.generation+1`, kind, target, payload, due);
   }
 
   claim(now: number, leaseMs = 360_000): Job | null {
@@ -486,7 +538,9 @@ export class InitiativeStore {
     return this.transaction(() => {
       const used = this.budget(now);
       if (this.setting('pricing_error')) return null;
-      if (scope && Number(this.row('SELECT COALESCE(SUM(COALESCE(c.actual,c.maximum)),0) AS n FROM charges c JOIN charge_scopes s ON s.charge=c.id WHERE s.scope=?', scope)!.n) + maximum > scopeLimit) return null;
+      if (scope && Number(this.row(`SELECT COALESCE(SUM(COALESCE(c.actual,c.maximum)),0) AS n
+        FROM charges c JOIN charge_scopes s ON s.charge=c.id
+        WHERE s.scope=?`, scope)!.n) + maximum > scopeLimit) return null;
       if (used + maximum > (priority ? 200_000_000 : 150_000_000)) return null;
       const id = randomUUID();
       this.run('INSERT INTO charges VALUES (?,?,?,NULL,NULL)', id, maximum, now);
@@ -546,13 +600,18 @@ export class InitiativeStore {
         WHERE deliveries.state='cancelled' AND excluded.state='pending'
           AND deliveries.ts IS NULL AND deliveries.slot_day IS NULL
           AND excluded.proposal IS NOT NULL AND deliveries.proposal=excluded.proposal`,
-        delivery.id, delivery.channel, delivery.thread, delivery.text, JSON.stringify(delivery.matters), JSON.stringify(delivery.evidence), Number(delivery.digest), delivery.state, null, delivery.created, delivery.proposal ? JSON.stringify(delivery.proposal) : null).changes > 0;
+        delivery.id, delivery.channel, delivery.thread, delivery.text,
+        JSON.stringify(delivery.matters), JSON.stringify(delivery.evidence), Number(delivery.digest),
+        delivery.state, null, delivery.created, delivery.proposal ? JSON.stringify(delivery.proposal) : null).changes > 0;
     });
   }
 
   deliveries(state: Delivery['state'], matters?: string[]): Delivery[] {
     if (matters && !matters.length) return [];
-    return this.rows(`SELECT * FROM deliveries WHERE state=? ${matters ? `AND EXISTS (SELECT 1 FROM json_each(deliveries.matters) j WHERE j.value IN (${matters.map(() => '?').join(',')}))` : ''}
+    return this.rows(`SELECT * FROM deliveries WHERE state=?
+      ${matters ? `AND EXISTS (
+        SELECT 1 FROM json_each(deliveries.matters) j WHERE j.value IN (${matters.map(() => '?').join(',')})
+      )` : ''}
       ORDER BY created ${matters ? '' : 'LIMIT 100'}`, state, ...(matters ?? [])).map((r) => ({
       id: String(r.id), channel: String(r.channel), thread: r.thread as string | null, text: String(r.text),
       matters: JSON.parse(String(r.matters)), evidence: JSON.parse(String(r.evidence)),
@@ -573,7 +632,8 @@ export class InitiativeStore {
       const ineligible = this.row(`SELECT 1 FROM json_each(?) j LEFT JOIN matters m ON m.id=j.value LEFT JOIN channels c ON c.id=m.channel
         WHERE m.id IS NULL OR m.valid=0 OR c.allowed!=1 OR json_extract(m.body,'$.state')!='open' LIMIT 1`, delivery.matters);
       if (ineligible) return false;
-      const count = Number(this.row("SELECT count(*) AS n FROM deliveries WHERE slot_day=? AND digest=? AND state IN ('sending','uncertain','sent')", lisbonDay(now), delivery.digest)!.n);
+      const count = Number(this.row(`SELECT count(*) AS n FROM deliveries
+        WHERE slot_day=? AND digest=? AND state IN ('sending','uncertain','sent')`, lisbonDay(now), delivery.digest)!.n);
       if (count >= (delivery.digest === 1 ? 1 : 2)) return false;
       this.run("UPDATE deliveries SET state='sending',slot_day=? WHERE id=?", lisbonDay(now), id);
       return true;
@@ -588,8 +648,14 @@ export class InitiativeStore {
       this.run('DELETE FROM source_events WHERE seen<?', now - 30 * DAY);
       this.run('DELETE FROM matter_checks WHERE checked<?', now - 90 * DAY);
       this.run("UPDATE revisions SET excerpt='' WHERE captured<?", now - 90 * DAY);
-      this.run(`UPDATE observations SET text='',valid=0 WHERE EXISTS (SELECT 1 FROM json_each(observations.evidence) j LEFT JOIN revisions r ON r.id=j.value WHERE r.excerpt IS NULL OR r.excerpt='')`);
-      this.run(`UPDATE matters SET body=json_set(body,'$.detail','','$.title','Expired evidence'),valid=0 WHERE EXISTS (SELECT 1 FROM json_each(json_extract(matters.body,'$.evidence')) j LEFT JOIN revisions r ON r.id=j.value WHERE r.excerpt IS NULL OR r.excerpt='')`);
+      this.run(`UPDATE observations SET text='',valid=0 WHERE EXISTS (
+        SELECT 1 FROM json_each(observations.evidence) j
+        LEFT JOIN revisions r ON r.id=j.value WHERE r.excerpt IS NULL OR r.excerpt=''
+      )`);
+      this.run(`UPDATE matters SET body=json_set(body,'$.detail','','$.title','Expired evidence'),valid=0 WHERE EXISTS (
+        SELECT 1 FROM json_each(json_extract(matters.body,'$.evidence')) j
+        LEFT JOIN revisions r ON r.id=j.value WHERE r.excerpt IS NULL OR r.excerpt=''
+      )`);
       this.run(`UPDATE deliveries SET text='',state=CASE WHEN state='pending' THEN 'cancelled' ELSE state END WHERE created<? OR EXISTS
         (SELECT 1 FROM json_each(deliveries.evidence) j LEFT JOIN revisions r ON r.id=j.value WHERE r.excerpt IS NULL OR r.excerpt='')`, now - 90 * DAY);
       this.run('DELETE FROM observation_search WHERE id IN (SELECT id FROM observations WHERE valid=0)');
