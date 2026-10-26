@@ -10,6 +10,7 @@ Archie (Autonomous Responsive and Collaborative Hyper Intelligent Employee) is a
 - **Human-like behavior.** To users, Archie presents as a single assistant. Internal mechanics are never exposed — the PM writes as "I", never "my worker".
 - **Mostly reactive, with triggers.** Archie acts on external events, and on **triggers** — persistent, user-approved "do Y when X happens" rules that spawn a fresh task when they fire. Every trigger passes an explicit Approve/Deny gate. See [triggers.md](./triggers.md).
 - **Interruptible.** Tasks can be stopped, parked, resumed and recovered. Code changes require explicit user approval.
+- **Optional remote execution.** When an operator enables a runner profile for the PM, mounted repositories can execute generic commands and repository MCP tools in task-scoped Tart VMs through Orchard. The canonical checkout stays on Archie.
 
 ## System Architecture
 
@@ -176,6 +177,7 @@ src/
 │   ├── trigger-*.ts             # Trigger store, scheduler, matching, visibility
 │   └── oauth/                   # OAuth flow helpers and header injection
 ├── memory/                      # Cross-task memory: extraction, index, injection
+├── runners/                     # Optional Orchard/Tart leases, execution, transfers, tools
 ├── mcp/research-tools.ts        # Web research pipeline
 ├── types/                       # TaskMetadata, AgentDef, channels, triggers
 └── utils/prompt-loader.ts       # Markdown prompt loader with variable substitution
