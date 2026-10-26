@@ -71,14 +71,18 @@ function formatChannelLabel(channelName: string): string {
   return channelName.startsWith('#') || /^[CGD][A-Z0-9]+$/.test(channelName) ? channelName : `#${channelName}`;
 }
 
-/** Explore-read failure → guidance (private refused / not a member). */
-export function formatSlackReadError(err: unknown, channel: string): string {
+/** Explore-read failure → guidance (private refused / not a member); `inDm` swaps in the 1:1-DM-task wording. */
+export function formatSlackReadError(err: unknown, channel: string, inDm = false): string {
   if (err instanceof PrivateChannelError) {
-    return `Couldn't read ${channel}: it's a private channel or DM that isn't this task's own. Reading is limited to public channels (plus the channel this task lives in).`;
+    return inDm
+      ? `Couldn't read ${channel}: it's a DM, a group DM, or a private channel the person in this DM isn't a member of. From a DM, reading reaches public channels Archie's in, this DM, and private channels both Archie and that person belong to.`
+      : `Couldn't read ${channel}: it's a private channel or DM that isn't this task's own. Reading is limited to public channels (plus the channel this task lives in).`;
   }
   const code = slackErrorCode(err);
   if (code === 'not_in_channel' || code === 'channel_not_found') {
-    return `Couldn't read ${channel}: Archie isn't a member of that public channel (or it doesn't exist). Invite it (\`/invite @Archie\`) — Archie can only read public channels it's been added to.`;
+    return inDm
+      ? `Couldn't read ${channel}: Archie isn't a member of that channel (or it doesn't exist). If it's a private channel the person in this DM belongs to, they can invite Archie there (\`/invite @Archie\`) and ask again.`
+      : `Couldn't read ${channel}: Archie isn't a member of that public channel (or it doesn't exist). Invite it (\`/invite @Archie\`) — Archie can only read public channels it's been added to.`;
   }
   const reason = err instanceof Error ? err.message : String(err);
   return `Couldn't read ${channel}: ${reason}`;
