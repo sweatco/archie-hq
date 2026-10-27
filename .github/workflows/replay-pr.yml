@@ -1,0 +1,14 @@
+name: Replay request
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions: {}
+
+jobs:
+  request:
+    name: Request evaluation (not an evaluation result)
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo 'Evaluation requires approval in the Production replay workflow.'

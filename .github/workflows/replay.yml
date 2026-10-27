@@ -1,0 +1,129 @@
+name: Production replay
+
+on:
+  workflow_run:
+    workflows: [Replay request]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+env:
+  REPLAY_HARNESS: ${{ github.workflow_sha }}
+  REPLAY_CONFIG: '{"model":"claude-haiku-4-5-20251001","effort":"low","maxTurns":64,"timeoutMs":600000,"sample":5}'
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      plan: ${{ steps.plan.outputs.plan }}
+      pr: ${{ steps.plan.outputs.pr }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.REPLAY_HARNESS }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPLAY_CORPUS_SHA256: ${{ vars.REPLAY_CORPUS_SHA256 }}
+        run: node tools/replay/ci.ts plan
+
+  pending:
+    needs: plan
+    concurrency:
+      group: production-replay-status-${{ fromJSON(needs.plan.outputs.plan).head }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.REPLAY_HARNESS }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          REPLAY_PLAN: ${{ needs.plan.outputs.plan }}
+        run: node tools/replay/ci.ts pending
+
+  evaluate:
+    needs: [plan, pending]
+    concurrency:
+      group: production-replay-pr-${{ needs.plan.outputs.pr }}
+      cancel-in-progress: true
+    environment: production-replay
+    timeout-minutes: 120
+    runs-on: ubuntu-latest
+    outputs:
+      projection: ${{ steps.replay.outputs.projection }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.REPLAY_HARNESS }}
+          path: harness
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Recheck approval and immutable revisions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPLAY_PLAN: ${{ needs.plan.outputs.plan }}
+        run: node harness/tools/replay/ci.ts verify
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ fromJSON(needs.plan.outputs.plan).base }}
+          path: baseline
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ fromJSON(needs.plan.outputs.plan).head }}
+          path: candidate
+          persist-credentials: false
+      - name: Compare both runtimes privately
+        id: replay
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPLAY_PLAN: ${{ needs.plan.outputs.plan }}
+          REPLAY_CORPUS_KEY: ${{ secrets.REPLAY_CORPUS_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.REPLAY_ANTHROPIC_API_KEY }}
+        run: node harness/tools/replay/ci.ts evaluate
+
+  report:
+    if: ${{ always() && needs.plan.result == 'success' }}
+    needs: [plan, pending, evaluate]
+    concurrency:
+      group: production-replay-status-${{ fromJSON(needs.plan.outputs.plan).head }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.REPLAY_HARNESS }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          REPLAY_PLAN: ${{ needs.plan.outputs.plan }}
+          REPLAY_PROJECTION: ${{ needs.evaluate.outputs.projection }}
+          REPLAY_JOB_RESULT: ${{ needs.evaluate.result }}
+        run: node tools/replay/ci.ts report
