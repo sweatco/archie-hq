@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "rootDir": ".", "noEmit": true },
+  "include": ["tools/replay/**/*.ts", "tools/replay/**/*.mts", "evalite.config.ts"]
+}
