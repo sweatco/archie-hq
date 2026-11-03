@@ -150,8 +150,24 @@ function sameRepo(a: string, b: string): boolean {
 }
 
 /**
+ * GitHub's own naming rules, as far as they matter here. An owner (user or
+ * organisation login) is letters, digits, hyphens — and underscores, which
+ * Enterprise Managed User logins carry — starting with a letter or digit, at
+ * most 39 characters, and never contains a dot. A repository name is letters,
+ * digits, `.`, `-` and `_`, at most 100 characters, and may start with a dot
+ * (`.github`), but `.` and `..` themselves are reserved.
+ */
+const GITHUB_OWNER = /^[A-Za-z0-9][A-Za-z0-9_-]{0,38}$/;
+const GITHUB_REPO = /^[A-Za-z0-9._-]{1,100}$/;
+
+/**
  * Accept what people paste — a clone URL, a browser URL, a trailing `.git` —
  * and return the bare `owner/repo`, or null when it is not one.
+ *
+ * The result becomes a path segment (`getTaskClonePath`, `getBaseCachePath`),
+ * so shapes GitHub itself never issues are refused here rather than left to
+ * the reachability check: in particular a `.` or `..` segment, which would
+ * otherwise turn the clone path into a traversal.
  */
 export function normalizeGithubRef(raw: string): string | null {
   const trimmed = raw
@@ -160,7 +176,12 @@ export function normalizeGithubRef(raw: string): string | null {
     .replace(/^https?:\/\/(?:www\.)?github\.com\//i, '')
     .replace(/\.git$/i, '')
     .replace(/\/+$/, '');
-  return /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(trimmed) ? trimmed : null;
+  const parts = trimmed.split('/');
+  if (parts.length !== 2) return null;
+  const [owner, repo] = parts;
+  if (!GITHUB_OWNER.test(owner) || !GITHUB_REPO.test(repo)) return null;
+  if (repo === '.' || repo === '..') return null;
+  return trimmed;
 }
 
 /**

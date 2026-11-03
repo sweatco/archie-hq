@@ -231,6 +231,44 @@ describe('mount_repo', () => {
     expect(task.metadata.repositories).toHaveLength(0);
   });
 
+  // The identifier becomes a path segment under the task's repos dir and the base cache, so a
+  // shape GitHub never issues is refused before GitHub is even asked — `..` above all.
+  it.each([
+    ['../..'],
+    ['owner/..'],
+    ['../repo'],
+    ['owner/.'],
+    ['./repo'],
+    ['.hidden/repo'],
+    ['-owner/repo'],
+    ['owner/re po'],
+    ['owner/repo/extra'],
+    ['a'.repeat(40) + '/repo'],
+    ['owner/' + 'r'.repeat(101)],
+  ])('refuses %s, which is not a GitHub owner/repo', async (github) => {
+    const task = makeTask();
+    const result = await mountTool(makeAgent(), task)({ github });
+
+    expect(result.content[0].text).toContain('owner/repo');
+    expect(client.resolveRepo).not.toHaveBeenCalled();
+    expect(ensureTaskClone).not.toHaveBeenCalled();
+    expect(task.metadata.repositories).toHaveLength(0);
+  });
+
+  it.each([
+    ['org/.github'],
+    ['org/my.repo'],
+    ['my-org/repo_name'],
+    ['octocat_acme/repo'],
+    ['git@github.com:org/backend.git'],
+  ])('still accepts %s', async (github) => {
+    const task = makeTask();
+    await mountTool(makeAgent(), task)({ github });
+
+    expect(client.resolveRepo).toHaveBeenCalledTimes(1);
+    expect(ensureTaskClone).toHaveBeenCalledTimes(1);
+  });
+
   it('refuses a repo the GitHub App cannot reach, recording nothing', async () => {
     client.resolveRepo.mockResolvedValue(null);
     const task = makeTask();
