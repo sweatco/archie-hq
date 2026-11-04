@@ -331,6 +331,21 @@ export interface PRChecksReport {
 // ---- PM tools ----
 
 function createPostToUserTool(agent: Agent, task: Task) {
+  if (task.metadata.approved_start) return tool(
+    'post_to_user',
+    'Reply in this task\'s approved owner conversation. The destination is fixed by the task; only supply the message.',
+    { message: z.string().describe('The message to send') },
+    async (args) => {
+      if (Object.keys(args).some(key => key !== 'message')) return err('Approved task replies do not accept a target.');
+      const muted = task.metadata.default_channel ? findMutedTarget(task.metadata.channels, task.metadata.default_channel) : null;
+      if (muted) return ok(formatMutedTargetRefusal(muted.channel_name));
+      task.touch();
+      try {
+        await task.postToUser(args.message, agent.def.id);
+        return ok('Message posted.');
+      } catch (e) { return ok(formatSlackSendError(e)); }
+    },
+  );
   return tool(
     'post_to_user',
     'Send a message to the user in this task. Without target, posts to the default channel — wherever this task already lives (use that almost always). ' +
@@ -702,6 +717,10 @@ function createReportCompletionTool(agent: Agent, task: Task) {
       const mutedDefault = task.metadata.default_channel
         ? findMutedTarget(task.metadata.channels, task.metadata.default_channel)
         : null;
+      const needsOwnerReply = !!task.metadata.approved_start && !task.metadata.approved_start.owner_reply_delivered && !mutedDefault;
+      if (needsOwnerReply && !args.message?.trim()) {
+        return err('Cannot finish silently before an owner reply is delivered. Supply a completion message or send a reply first.');
+      }
       if (args.message && !mutedDefault) {
         // Same exception as post_to_user: a trigger-fired task's home channel is a place to post, and the completion message is often the first thing it says — posting it is what opens the task's own thread.
         if (Object.keys(task.metadata.channels).length === 0 && !task.metadata.home_channel) {
@@ -719,6 +738,7 @@ function createReportCompletionTool(agent: Agent, task: Task) {
           return ok(formatSlackSendError(err));
         }
       }
+      if (needsOwnerReply && !task.metadata.approved_start?.owner_reply_delivered) return err('Owner reply delivery was not confirmed; completion was not recorded.');
       logger.agentAction(agentName, 'Reporting completion', '');
       task.touch();
       // Post any changed PR card now, right under the final message. Under the
@@ -974,6 +994,7 @@ function createPostToChannelTool(agent: Agent, task: Task) {
       thread_ts: z.string().optional().describe('Parent message ts to reply inside an existing thread; omit to post a new top-level message'),
     },
     async (args) => {
+      if (task.metadata.approved_start) return err('Public posting is unavailable in an approved owner-conversation task.');
       // Sequencing, checked before anything about the destination: a trigger-fired task has a home channel but no thread of its own yet, and this tool posts WITHOUT linking the channel to the task — which is precisely the detached, unanswerable message that homing a fired task in a channel exists to replace. So while the task has no channel open, the first thing it says has to be its result to the user, which is what opens its thread; only after that is posting elsewhere a coherent act rather than the task's only utterance.
       //
       // This outranks the DM and mandate checks deliberately. Both of those describe something wrong with *this call* (wrong kind of target, no one asked for it), and answering them first would send the agent off to fix the wrong problem — hunting for a mandate quote, or picking a different channel — when the real answer is that nothing may be posted anywhere yet. The sequencing message is the only one that points at the fix.
@@ -2810,7 +2831,7 @@ export function createCommsMcpServer(agent: Agent, task: Task) {
       createListChannelsTool(task),
       createReadChannelHistoryTool(task),
       createReadThreadTool(task),
-      createPostToChannelTool(agent, task),
+      ...(!task.metadata.approved_start ? [createPostToChannelTool(agent, task)] : []),
       createMuteChannelTool(agent, task),
       createReactToMessageTool(agent, task),
       createUnreactFromMessageTool(agent, task),

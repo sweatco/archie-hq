@@ -40,6 +40,7 @@ import { initEventPersistence } from './tasks/persistence.js';
 import { initReminderScheduler } from './system/reminder-scheduler.js';
 import { initTriggerScheduler } from './system/trigger-scheduler.js';
 import { initMemory } from './memory/index.js';
+import { initInitiative, shutdownInitiative, startInitiativeScheduler } from './proactivity/index.js';
 import { getHomeTeamId } from './connectors/slack/client.js';
 
 /**
@@ -190,6 +191,7 @@ async function main(): Promise<void> {
     }
 
     await initMemory(getHomeTeamId());
+    await initInitiative(getHomeTeamId());
 
     // Create the HTTP server but DO NOT listen yet — recover first so a Slack
     // event arriving on startup cannot reach a task before its agent is respawned.
@@ -198,6 +200,7 @@ async function main(): Promise<void> {
     await recoverActiveTasks();
     await initReminderScheduler();
     await initTriggerScheduler();
+    startInitiativeScheduler();
 
     // Now accept events: start the HTTP server and open the Socket Mode WebSocket.
     await new Promise<void>((resolve) => server.listen(config.port, resolve));
@@ -219,6 +222,7 @@ async function main(): Promise<void> {
         }
       }
       server.close();
+      await shutdownInitiative();
       logger.plain('Server closed');
       process.exit(0);
     };

@@ -2,7 +2,7 @@
  * Task-related type definitions
  */
 
-export type TaskStatus = 'in_progress' | 'stopped' | 'completed';
+export type TaskStatus = 'preparing' | 'in_progress' | 'stopped' | 'completed';
 
 export type TaskMemoryScope =
   | { kind: 'public'; channel_id: string }
@@ -268,6 +268,16 @@ export interface AgentSessionState {
 
 export interface TaskMetadata {
   task_id: string;
+  approved_start?: {
+    correlation: string;
+    version: string;
+    actor: string;
+    budget: 'task';
+    phase: 'prepared' | 'ready';
+    brief: string;
+    owner_reply_delivered?: boolean;
+  };
+  initiative_origin?: { delivery_id: string; matter_ids: string[] };
   channels: Record<string, Channel>;   // Active message delivery targets, keyed by channel ID
   default_channel: string | null;      // Channel ID of the originating channel (null for CLI-originated tasks)
   /**

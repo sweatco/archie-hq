@@ -37,7 +37,7 @@ const MESSAGE_NOISE_SUBTYPES = new Set([
  * True when:
  *  - the bot was @mentioned (`app_mention`), or
  *  - the message is a DM (channel id starts with `D`), or
- *  - it's a reply to a thread the bot itself started (`rootAuthorWasBot`).
+ *  - it's a reply to a thread the bot itself started, excluding proactive notifications.
  *
  * A plain reply inside a human-started thread the bot wasn't part of returns
  * false → the event is ignored. (Events for threads that already have a task
@@ -47,8 +47,9 @@ export function shouldCreateNewTask(
   eventType: string,
   channelId: string,
   rootAuthorWasBot: boolean,
+  initiativeOrigin = false,
 ): boolean {
-  return eventType === 'app_mention' || channelId.startsWith('D') || rootAuthorWasBot;
+  return eventType === 'app_mention' || channelId.startsWith('D') || (rootAuthorWasBot && !initiativeOrigin);
 }
 
 /**
