@@ -261,6 +261,7 @@ export interface RepositoryInfo {
  */
 export interface AgentSessionState {
   session_id?: string;       // undefined = no session yet or cleared (fresh start)
+  refusal_recovery?: { prompt_uuid?: string };
   active: boolean;           // true = doing work, false = finished turn / crashed
   last_activity?: string;    // ISO timestamp
 }

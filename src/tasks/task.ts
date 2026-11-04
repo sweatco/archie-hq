@@ -196,7 +196,7 @@ export class Task {
    */
   private pendingMigrationNote?: string;
   /** Drives the "Archie is …" Slack loading indicator from agent activity. */
-  private readonly statusController: TaskStatusController;
+  private statusController: TaskStatusController;
 
   private constructor(taskId: string, metadata: TaskMetadata, pmDef: AgentDef) {
     this.taskId = taskId;
@@ -662,7 +662,7 @@ export class Task {
    * (the message itself becomes the thread root) and returns its channel key —
    * that is the only way a new thread is ever opened. Otherwise returns null.
    */
-  async postToUser(message: string, agentName?: string, target?: PostTarget): Promise<string | null> {
+  async postToUser(message: string, agentName?: string, target?: PostTarget, post = postSlackMessage): Promise<string | null> {
     const sender = agentName || 'system';
     // Grey footer (task id + PM model) appended to every user-facing message:
     // a Slack `context` block, and the same string on the `message` event so the
@@ -674,7 +674,7 @@ export class Task {
       const ch = this.metadata.channels[target.channel];
       if (ch?.type === 'slack') {
         await this.prepareMemoryDelivery(ch.channel_id);
-        await postSlackMessage({ channel: ch.channel_id, threadTs: ch.thread_id, text: message, footer });
+        await post({ channel: ch.channel_id, threadTs: ch.thread_id, text: message, footer });
         this.logOutgoingMessage(sender, message, Task.formatSlackDest(ch).display, ch, footer);
       }
       return null;
@@ -693,14 +693,14 @@ export class Task {
       // trigger was created to deliver, which is exactly what this feature exists to avoid. So only an
       // agent's own message may open a task's thread; a system notice with nowhere to go is still dropped.
       if (this.metadata.home_channel && sender !== 'system') {
-        return this.openHomeThread(message, sender, footer);
+        return this.openHomeThread(message, sender, footer, post);
       }
       logger.warn('task', `postToUser called on task ${this.taskId} with no default channel — message dropped`);
       return null;
     }
     if (defaultCh.type === 'slack') {
       await this.prepareMemoryDelivery(defaultCh.channel_id);
-      await postSlackMessage({ channel: defaultCh.channel_id, threadTs: defaultCh.thread_id, text: message, footer });
+      await post({ channel: defaultCh.channel_id, threadTs: defaultCh.thread_id, text: message, footer });
       this.logOutgoingMessage(sender, message, Task.formatSlackDest(defaultCh).display, defaultCh, footer);
     } else if (defaultCh.type === 'cli') {
       this.logOutgoingMessage(sender, message, 'cli', undefined, footer);
@@ -715,12 +715,12 @@ export class Task {
    *
    * Serialized per task by {@link homeThreadLock}, because a task has exactly one thread and an agent can emit two `post_to_user` calls in one turn. Whoever runs second finds the thread the first one linked and posts into it rather than rooting a second one beside it.
    */
-  private async openHomeThread(message: string, sender: string, footer: string): Promise<string | null> {
-    return homeThreadLock(this.taskId, () => this.rootHomeThread(message, sender, footer));
+  private async openHomeThread(message: string, sender: string, footer: string, post: typeof postSlackMessage): Promise<string | null> {
+    return homeThreadLock(this.taskId, () => this.rootHomeThread(message, sender, footer, post));
   }
 
   /** The body of {@link openHomeThread}, run one at a time per task by it. */
-  private async rootHomeThread(message: string, sender: string, footer: string): Promise<string | null> {
+  private async rootHomeThread(message: string, sender: string, footer: string, post: typeof postSlackMessage): Promise<string | null> {
     const home = this.metadata.home_channel!;
 
     // One thread per channel: if this task already has a thread in the home channel (a reply arrived
@@ -733,7 +733,7 @@ export class Task {
       const [key, ch] = existing;
       this.metadata.default_channel = key;
       await this.prepareMemoryDelivery(ch.channel_id);
-      await postSlackMessage({ channel: ch.channel_id, threadTs: ch.thread_id, text: message, footer });
+      await post({ channel: ch.channel_id, threadTs: ch.thread_id, text: message, footer });
       this.logOutgoingMessage(sender, message, Task.formatSlackDest(ch).display, ch, footer);
       await this.save(true);
       return key;
@@ -741,7 +741,7 @@ export class Task {
 
     // No threadTs — this is a new top-level post in the channel, and its ts becomes the thread root.
     await this.prepareMemoryDelivery(home.channel_id);
-    const ts = await postSlackMessage({ channel: home.channel_id, text: message, footer });
+    const ts = await post({ channel: home.channel_id, text: message, footer });
     if (!ts) {
       // Dry-run mode returns undefined without ever reaching Slack, so there is no thread to link to.
       // Log the message so it still surfaces, but leave the task threadless rather than inventing a key.
@@ -1198,18 +1198,53 @@ export class Task {
     return key;
   }
 
+  async pauseAfterRefusal(agent: Agent, settleInput: () => Promise<void>, reason?: string): Promise<void> {
+    await activationLock(this.taskId, async () => {
+      if (!this.isActive || this.agent !== agent) return;
+      await settleInput();
+      const pendingInput = agent.queue.hasMessages();
+      const notice = `The model declined this request. ${pendingInput ? 'I’ll continue with the next message.' : 'I’ve paused this task.'}\n\nReason: ${reason || 'No reason was provided.'}`;
+      if (!pendingInput) {
+        this.suspendStatus();
+        this.updateAgentState(false);
+      }
+      if (!this.resolveSlackChannel()?.muted) {
+        await this.postToUser(notice, agent.def.id, undefined, (args) => postSlackMessage(args, true)).catch((error) =>
+          logger.error('task', `Failed to post refusal notice for ${this.taskId}`, error),
+        );
+      }
+      if (agent.backgroundTasks.size > 0) agent.handle?.abort();
+      for (const id of agent.backgroundTasks) {
+        emitEvent('agent:bg_task', this.taskId, { action: 'end', key: id, status: 'cancelled', summary: 'Task paused after a model refusal' }, agent.def.id);
+      }
+      agent.backgroundTasks.clear();
+      if (pendingInput) {
+        this.updateAgentState(true);
+        return;
+      }
+      // PR-card delivery must not hold the incoming-message lock.
+      await this.stop(false);
+      // Keep all reopen callers on this instance until its SDK iterator has closed.
+      if (agent.handle) {
+        activeTasks.set(this.taskId, this);
+        void agent.handle.running.then(() => {
+          if (!this.isActive && activeTasks.get(this.taskId) === this) activeTasks.delete(this.taskId);
+        });
+      }
+    });
+  }
+
   /**
    * Stop the task and tear its agent down.
    */
-  async stop(): Promise<void> {
+  async stop(resurfaceCards = true): Promise<void> {
     if (!this.isActive) {
       logger.system(`Task ${this.taskId} already stopped`);
       return;
     }
 
-    // PM has yielded the turn — (re)post any changed PR cards so they land under
-    // the final message. Best-effort; must never block teardown.
-    await this.resurfacePrCards().catch((e) => logger.warn('task', 'PR card resurface failed on stop', e));
+    // Keep changed PR cards below the PM's final message.
+    if (resurfaceCards) await this.resurfacePrCards().catch((e) => logger.warn('task', 'PR card resurface failed on stop', e));
 
     this.isActive = false;
     activeTasks.delete(this.taskId);
@@ -2159,6 +2194,14 @@ export class Task {
    * Ensure the task's agent exists and is spawned. Returns it.
    */
   private async ensurePm(): Promise<Agent> {
+    // A reply can reopen a task before its stopped SDK iterator has exited.
+    if (this.agent?.queue.isStopped()) {
+      await this.agent.handle?.running;
+      this.syncAgentSession();
+      this.agent = undefined;
+      this.statusController.dispose();
+      this.statusController = new TaskStatusController((status) => this.onStatusRendered(status));
+    }
     // Reconcile an agent that booted read-only just as edit mode was approved.
     // The sandbox mount and repo-tool allowlist are frozen from edit_allowed at
     // spawn time (spawn.ts), so a process that came up read-only can never
