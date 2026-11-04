@@ -6,6 +6,8 @@
  * streams them into the SDK session.
  */
 
+import { randomUUID } from 'node:crypto';
+
 interface QueuedMessage {
   content: string;
   timestamp: string;
@@ -155,6 +157,7 @@ export class MessageQueue {
  */
 export interface SDKUserMessageInput {
   type: 'user';
+  uuid: string;
   message: { role: 'user'; content: string };
   parent_tool_use_id: string | null;
   session_id: string;
@@ -166,6 +169,7 @@ export interface SDKUserMessageInput {
 function formatMessageAsInput(msg: QueuedMessage, sessionId: string): SDKUserMessageInput {
   return {
     type: 'user' as const,
+    uuid: randomUUID(),
     message: {
       role: 'user' as const,
       content: msg.content,
@@ -188,8 +192,9 @@ export interface RecoverableInputGenerator {
    * same turn the agent acts on rather than one wake later. A retry that
    * consumed nothing yet still gets the prefix, as its own message, so the
    * notice is never silently dropped.
+   * After refusal, `replayUuids` limits replay to SDK-confirmed cancellations.
    */
-  reset(prefix?: string): void;
+  reset(prefix?: string, replayUuids?: readonly string[]): void;
   /** Create a new generator instance (call for each attempt) */
   generator(): AsyncGenerator<SDKUserMessageInput>;
 }
@@ -212,11 +217,11 @@ export function createRecoverableInputGenerator(
   queue: MessageQueue,
   sessionId: string = ''
 ): RecoverableInputGenerator {
-  let consumed: QueuedMessage[] = [];
+  let consumed: SDKUserMessageInput[] = [];
 
   return {
-    reset(prefix?: string) {
-      const restored = consumed.map((m) => m.content);
+    reset(prefix?: string, replayUuids?: readonly string[]) {
+      const restored = consumed.filter((m) => !replayUuids || replayUuids.includes(m.uuid)).map((m) => m.message.content);
       consumed = [];
       if (prefix && restored.length > 0) {
         restored[0] = `${prefix}\n\n${restored[0]}`;
@@ -233,8 +238,9 @@ export function createRecoverableInputGenerator(
       while (!queue.isStopped()) {
         try {
           const msg = await queue.nextMessage();
-          consumed.push(msg);
-          yield formatMessageAsInput(msg, sessionId);
+          const input = formatMessageAsInput(msg, sessionId);
+          consumed.push(input);
+          yield input;
         } catch (error) {
           // Queue was stopped, exit the generator
           if (queue.isStopped()) {

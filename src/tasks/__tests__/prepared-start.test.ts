@@ -183,6 +183,24 @@ describe('durable prepared task starts', () => {
     expect(task.completionIntent).toBe(false);
   });
 
+  it.each([false, true])('preserves owner binding and delivery receipts with a notice sender (explicit target: %s)', async explicit => {
+    const task = await Task.prepare(input);
+    await task.startPrepared();
+    const post = vi.fn(async (): Promise<string | undefined> => '1792490401.000001');
+    const target = explicit ? { channel: task.metadata.default_channel! } : undefined;
+    await expect(task.postToUser('forged', 'pm-agent', { channel: 'slack:C_PUBLIC:10.0' }, post)).rejects.toThrow('bound');
+    expect(post).not.toHaveBeenCalled();
+
+    post.mockResolvedValueOnce(undefined);
+    await task.postToUser('The model declined this request.', 'pm-agent', target, post);
+    expect(task.metadata.approved_start?.owner_reply_delivered).toBeUndefined();
+    await task.postToUser('The model declined this request.', 'pm-agent', target, post);
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(post).toHaveBeenLastCalledWith(expect.objectContaining({ channel: 'D_OWNER', threadTs: input.destination.thread }));
+    expect((await loadMetadata(input.taskId))?.approved_start?.owner_reply_delivered).toBe(true);
+    expect(fixture.post).not.toHaveBeenCalled();
+  });
+
   it('offers a destination-free reply and withholds public posting after rehydration', async () => {
     await Task.prepare(input);
     const reloaded = await Task.get(input.taskId);

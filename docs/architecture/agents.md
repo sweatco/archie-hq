@@ -19,6 +19,8 @@ One `Agent` instance per task (`Task.agent`), created lazily on the first messag
 
 Precedence resolves narrowest-wins: an env var beats `pm.md`, which beats the built-in default. `pm.md`'s body text — everything after the frontmatter — is appended to the PM's system prompt under a `# Deployment context` heading regardless of which values it overrides; a missing file or malformed frontmatter falls back to the built-ins with no error (see [plugin-system.md](plugin-system.md#pm-overlay-pmmd)).
 
+The PM prompt states behavioral rules directly rather than requiring a generated reasoning transcript. Native thinking and effort remain SDK-controlled: asking for a structured scratchpad in response text can trigger Anthropic's `reasoning_extraction` classifier, even when that text is discarded before reaching Slack. Terminal refusal handling is described in [orchestration.md](orchestration.md#model-refusals).
+
 ### Tools
 
 Six in-process MCP servers are attached at spawn, plus every server in the plugins repo's root `.mcp.json` (see [plugin-system.md](plugin-system.md#the-root-mcp-config)).
