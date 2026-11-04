@@ -31,7 +31,6 @@ export const ordinaryTasks: ApprovedTaskRuntime = {
 export function taskRuntimeState(metadata: TaskMetadata | null): string {
   if (!metadata) return 'not created';
   if (metadata.status === 'preparing') return 'preparing';
-  if (metadata.waiting_for) return `waiting: ${metadata.waiting_for}; outcome unverified`;
   if (metadata.pending_merge_approval || metadata.pending_tool_approval) return 'awaiting approval; outcome unverified';
   if (metadata.status === 'completed') return 'parked or awaiting the user; outcome unverified';
   if (metadata.status === 'stopped') return 'stopped; outcome unverified';

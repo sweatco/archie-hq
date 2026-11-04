@@ -361,7 +361,7 @@ describe('postInteractiveToUser — merge approval event identity (AC8)', () => 
   // route accepts the resolution). resolveSlackChannel is stubbed to null so no
   // Slack delivery happens — only the emitted event matters here.
   function fakeTask() {
-    return { taskId: 'task-123', metadata: { waiting_for: undefined as string | undefined }, debouncedSave: vi.fn(), resolveSlackChannel: () => null };
+    return { taskId: 'task-123', resolveSlackChannel: () => null };
   }
 
   it('emits the PR identity for a merge approval', async () => {
@@ -374,8 +374,6 @@ describe('postInteractiveToUser — merge approval event identity (AC8)', () => 
       undefined,
       { github: 'org/backend', pr_number: 42 },
     );
-    expect(task.metadata.waiting_for).toBe('merge');
-    expect(task.debouncedSave).toHaveBeenCalled();
 
     expect(emitEvent).toHaveBeenCalledWith('approval:requested', 'task-123', {
       text: 'Approve auto-merge for PR #42 (org/backend)?',
@@ -393,7 +391,6 @@ describe('postInteractiveToUser — merge approval event identity (AC8)', () => 
       [],
       'edit_mode',
     );
-    expect(task.metadata.waiting_for).toBe('edit_mode');
 
     expect(emitEvent).toHaveBeenCalledWith('approval:requested', 'task-123', {
       text: 'Edit mode request: apply the fix',

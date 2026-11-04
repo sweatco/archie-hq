@@ -450,10 +450,6 @@ export class Task {
     if (!this.isActive) {
       await this.activate();
     }
-    if (this.metadata.waiting_for) {
-      delete this.metadata.waiting_for;
-      this.debouncedSave();
-    }
     const wake = await this.withMigrationNotice(await this.withCapPauseNotice(message));
     const agent = await this.ensurePm();
     agent.queue.addMessage(wake);
@@ -925,8 +921,6 @@ export class Task {
     // type:'merge'). `ref` is an opaque id the approval applies to (e.g. a
     // trigger id), echoed so the CLI can resolve the exact item when several
     // approvals of the same type are outstanding. Other types omit both.
-    this.metadata.waiting_for = approvalType;
-    this.debouncedSave();
     emitEvent('approval:requested', this.taskId, {
       text,
       approvalType,
@@ -1385,7 +1379,6 @@ export class Task {
    */
   setCompletionIntent(): void {
     this.completionIntent = true;
-    this.metadata.waiting_for ??= 'user';
   }
 
   /**
@@ -2274,7 +2267,6 @@ export class Task {
     // count after a nuclear respawn, which activates the reloaded task too.)
     this.nuclearRecoveryCycles = 0;
     this.metadata.status = 'in_progress';
-    delete this.metadata.waiting_for;
     activeTasks.set(this.taskId, this);
     this.startTaskTimeout();
     emitEvent('task:resumed', this.taskId);
@@ -2315,7 +2307,6 @@ export class Task {
       );
       await this.complete();
       this.metadata.cap_pause_notice_pending = true;
-      this.metadata.waiting_for = 'time_budget';
       await this.save(true);
       // complete() leaves an idle agent's process running while background
       // workers are in flight; past the cap they must not keep working.

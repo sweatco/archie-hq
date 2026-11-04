@@ -324,7 +324,6 @@ export interface TaskMetadata {
    */
   briefed_channels?: string[];
   status: TaskStatus;
-  waiting_for?: 'user' | 'time_budget' | 'edit_mode' | 'research_budget' | 'merge' | 'trigger' | 'max_mode' | 'tool_call';
   /**
    * Which engine generation last wrote this metadata. `2` is the flat single-PM runtime; absent means the folder was written by the pre-flattening multi-agent engine. Stamped on first load by `stampRuntimeVersion` (`src/tasks/task.ts`), set directly by `Task.create`.
    */

@@ -7,7 +7,6 @@ import { InitiativeStore } from '../store.js';
 import { ProposalHandoff } from '../handoff.js';
 import { InitiativeService } from '../service.js';
 import type { ApprovedTaskRuntime, PreparedTaskInput } from '../task-adapter.js';
-import { taskRuntimeState } from '../task-adapter.js';
 import type { ProposalSlack } from '../slack.js';
 import type { TaskMetadata } from '../../types/task.js';
 import { proposalVersion } from '../proposals.js';
@@ -284,12 +283,14 @@ describe('owner-approved proposal handoff', () => {
     expect(tasks.start).toHaveBeenCalledTimes(1);
     const record = store.handoff(proposalId)!;
     const metadata = records.get(record.task)!;
-    metadata.status = 'completed'; metadata.waiting_for = 'user';
-    expect((await handoff.describe(proposalId)).runtime).toContain('user');
+    metadata.pending_merge_approval = {
+      github: 'owner/repo', pr_number: 1, requested_by: 'pm', requested_at: new Date(NOW).toISOString(),
+    };
+    expect((await handoff.describe(proposalId)).runtime).toBe('awaiting approval; outcome unverified');
+    delete metadata.pending_merge_approval;
+    metadata.status = 'completed';
+    expect((await handoff.describe(proposalId)).runtime).toBe('parked or awaiting the user; outcome unverified');
     expect((await handoff.describe(proposalId)).outcome).toBe('unverified');
-    metadata.waiting_for = 'edit_mode'; expect(taskRuntimeState(metadata)).toContain('edit_mode');
-    metadata.waiting_for = 'time_budget'; expect(taskRuntimeState(metadata)).toContain('time_budget');
-    metadata.waiting_for = 'research_budget'; expect(taskRuntimeState(metadata)).toContain('research_budget');
   });
 });
 

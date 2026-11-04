@@ -56,6 +56,45 @@ export function notificationWindow(now: number): boolean {
   return !['Sat', 'Sun'].includes(day) && hour >= 9 && hour < 18;
 }
 
+function validateExtractionPart(
+  findings: ThreadFindings[], batch: ThreadSnapshot[], snapshots: ThreadSnapshot[], supplied: Map<string, Set<number>>,
+): void {
+  const expectedThreads = new Set(batch.map(sourceKey));
+  const seenThreads = new Set<string>();
+  for (const thread of findings) {
+    const key = sourceKey(thread);
+    if (seenThreads.has(key) || !expectedThreads.has(key)) {
+      throw new Error('Unexpected or duplicate extraction source');
+    }
+    seenThreads.add(key);
+    const snapshot = snapshots.find((source) => sourceKey(source) === key)!;
+    const suppliedEvidence = supplied.get(key);
+    for (const item of [...thread.observations, ...thread.matters]) {
+      const hasUnsupportedCitation = item.evidence.some((id) => !suppliedEvidence?.has(id));
+      const hasHumanEvidence = item.evidence.some((id) =>
+        snapshot.evidence.some((evidence) => evidence.id === id && !evidence.own && !evidence.bot));
+      if (!item.evidence.length || hasUnsupportedCitation || !hasHumanEvidence) {
+        throw new Error('Unsupported extraction citations');
+      }
+    }
+  }
+  if (batch.some((thread) => !seenThreads.has(sourceKey(thread)))) {
+    throw new Error('Extraction omitted a supplied thread');
+  }
+}
+
+function consumeExtractionBatch(remaining: ThreadSnapshot[], batch: ThreadSnapshot[]): void {
+  for (const thread of batch) {
+    const pending = remaining.find((source) => sourceKey(source) === sourceKey(thread))!;
+    for (const piece of thread.evidence) {
+      const first = pending.evidence[0];
+      first.text = first.text.slice(piece.text.length);
+      if (!first.text.length) pending.evidence.shift();
+    }
+    if (!pending.evidence.length) remaining.splice(remaining.indexOf(pending), 1);
+  }
+}
+
 export class InitiativeService {
   private readonly access: SourceAccess;
   private readonly collection: SourceCollector;
@@ -67,7 +106,6 @@ export class InitiativeService {
   constructor(readonly store: InitiativeStore, private readonly slack: ObservationSlack, private readonly model: BackgroundModel, readonly config: InitiativeConfig, private readonly clock: () => number = Date.now) {
     this.access = new SourceAccess(store, slack);
     this.collection = new SourceCollector(store, slack, () => this.stopped);
-    store.set('decision_config', decisionConfig(config));
   }
 
   seed(now = Date.now()): void {
@@ -205,51 +243,37 @@ export class InitiativeService {
     const previous = snapshots.flatMap((s) => this.store.threadMatters(s.channel, s.thread));
     const carried = new Map<string, ThreadFindings>();
     const supplied = new Map<string, Set<number>>();
-    const request = (threads: ThreadSnapshot[]) => this.extractionRequest(threads, snapshots, previous, carried);
-    const remaining = snapshots.map((s) => ({ ...s, evidence: s.evidence.map((e) => ({ ...e })) })).sort((a, b) => a.channel.localeCompare(b.channel));
+    const buildRequest = (threads: ThreadSnapshot[]) => this.extractionRequest(threads, snapshots, previous, carried);
+    const remaining = snapshots
+      .map((snapshot) => ({ ...snapshot, evidence: snapshot.evidence.map((evidence) => ({ ...evidence })) }))
+      .sort((a, b) => a.channel.localeCompare(b.channel));
     const keys: string[] = [];
     let applying = false;
     try {
       while (remaining.length) {
         signal.throwIfAborted();
-        const batch = extractionBatch(remaining, (part) => new Set(part.map((s) => s.channel)).size === 1
-          && (this.model.fits?.(request(part)) ?? Buffer.byteLength(JSON.stringify(request(part).input)) < 8000));
-        const req = request(batch);
-        if (!await req.authorize()) return;
+        const batch = extractionBatch(remaining, (part) => {
+          if (new Set(part.map((source) => source.channel)).size !== 1) return false;
+          const request = buildRequest(part);
+          return this.model.fits?.(request) ?? Buffer.byteLength(JSON.stringify(request.input)) < 8000;
+        });
+        const request = buildRequest(batch);
+        if (!await request.authorize()) return;
         for (const thread of batch) {
           const seen = supplied.get(sourceKey(thread)) ?? new Set<number>();
-          for (const e of thread.evidence) seen.add(e.id);
+          for (const evidence of thread.evidence) seen.add(evidence.id);
           supplied.set(sourceKey(thread), seen);
         }
-        const key = createHash('sha256').update(JSON.stringify([req.model, req.system, z.toJSONSchema(Findings), req.input])).digest('hex');
+        const key = createHash('sha256')
+          .update(JSON.stringify([request.model, request.system, z.toJSONSchema(Findings), request.input]))
+          .digest('hex');
         keys.push(key);
         const cached = this.store.attention.extractionPart(key);
-        const part = cached ? Findings.parse(cached) : await this.model.complete({ ...req, scope: `extract:${key}` }, signal);
-        const seenThreads = new Set<string>();
-        for (const thread of part.threads) {
-          const id = sourceKey(thread);
-          if (seenThreads.has(id) || !batch.some((s) => sourceKey(s) === id)) throw new Error('Unexpected or duplicate extraction source');
-          seenThreads.add(id);
-          const snapshot = snapshots.find((s) => sourceKey(s) === id)!;
-          for (const item of [...thread.observations, ...thread.matters]) {
-            if (!item.evidence.length || item.evidence.some((e) => !supplied.get(id)?.has(e))
-              || !item.evidence.some((id) => snapshot.evidence.some((e) => e.id === id && !e.own && !e.bot))) {
-              throw new Error('Unsupported extraction citations');
-            }
-          }
-          carried.set(id, thread);
-        }
-        if (batch.some((t) => !seenThreads.has(sourceKey(t)))) throw new Error('Extraction omitted a supplied thread');
+        const part = cached ? Findings.parse(cached) : await this.model.complete({ ...request, scope: `extract:${key}` }, signal);
+        validateExtractionPart(part.threads, batch, snapshots, supplied);
+        for (const thread of part.threads) carried.set(sourceKey(thread), thread);
         if (!cached) this.store.attention.cacheExtraction(key, now, part);
-        for (const thread of batch) {
-          const pending = remaining.find((s) => sourceKey(s) === sourceKey(thread))!;
-          for (const piece of thread.evidence) {
-            const first = pending.evidence[0];
-            first.text = first.text.slice(piece.text.length);
-            if (!first.text.length) pending.evidence.shift();
-          }
-          if (!pending.evidence.length) remaining.splice(remaining.indexOf(pending), 1);
-        }
+        consumeExtractionBatch(remaining, batch);
       }
       signal.throwIfAborted();
       if (this.store.setting('stop') === 'true') return;

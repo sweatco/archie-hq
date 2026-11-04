@@ -22,6 +22,24 @@ beforeEach(() => {
 });
 
 describe('public-source Slack boundary', () => {
+  it.each([
+    { name: 'public nudge', channel: 'C1' },
+    { name: 'private nudge', channel: 'D_OWNER' },
+    { name: 'task suggestion', channel: 'D_OWNER', proposal: { id: 'proposal', version: 'version' } },
+  ])('restricts $name buttons to the owner while retaining the message destination', async ({ channel, proposal }) => {
+    const slack = new PublicSlack('U_OWNER');
+    await slack.send({ id: 'delivery', channel, thread: '10.000001', text: 'Follow up on the release',
+      matters: ['release'], evidence: [1], digest: false, state: 'pending', ts: null, created: 0, proposal });
+    const message = f.post.mock.calls[0][0];
+    expect(message).toMatchObject({ channel, threadTs: '10.000001', text: 'Follow up on the release' });
+    expect(message.actions.map((button: { action_id: string }) => button.action_id)).toEqual(proposal
+      ? ['initiative_start_task']
+      : ['initiative_handled', 'initiative_later', 'initiative_not_useful', 'initiative_stop_following']);
+    for (const button of message.actions) {
+      expect(button.visible_to_user_ids).toEqual(['U_OWNER']);
+    }
+  });
+
   it('fails closed on private, missing-membership and incomplete source metadata', async () => {
     const slack = new PublicSlack('U_OWNER');
     for (const override of [{ is_private: true }, { is_member: false }, { is_ext_shared: undefined }]) {

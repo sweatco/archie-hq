@@ -21,6 +21,8 @@ For a source runtime, substitute `node --import tsx src/cli/initiative.ts`. Comm
 
 Send commands in the configured owner's verified DM. Other users and bot messages cannot operate them.
 
+Public nudges stay in their source threads. Feedback and Start task buttons are visible only to the configured owner; callbacks also verify the owner before taking action.
+
 | Command | Effect |
 |---|---|
 | `initiative status` | Show delivery, controls, coverage, allowance and unsettled requests. |
@@ -32,7 +34,7 @@ Send commands in the configured owner's verified DM. Other users and bot message
 | `initiative later <matter>` | Snooze to the next weekday 09:00 in Lisbon. |
 | `initiative not useful <matter>` | Dismiss a matter. |
 | `initiative stop following <matter>` | Dismiss and stop following its thread. |
-| `initiative proposal <proposal>` | Inspect the linked task, source availability and waiting reason. |
+| `initiative proposal <proposal>` | Inspect the linked task, source availability and task state. |
 
 After review, select live mode and send `initiative delivery on`. This enables delivery without a learning evaluation; it does not enable an installation automatically. Sending is limited to one weekday digest and two other interventions per Lisbon day, during weekday 09:00–18:00. There is no automatic pause or expiry.
 
@@ -40,7 +42,7 @@ Deadlines use the source’s local date, time and timezone, resolved by host cod
 
 Task suggestions name the repository, intended result, sources and normal-task budget before offering **Start task**. Only the owner can start them. Rephrasing an unchanged suggestion reuses its first scope and identity. Fresh human work-thread context or different work requires a new candidate and approval. One approved task identity survives repeated clicks and crashes. Preparation stays inert until the final source check; changed sources require a fresh proposal or an ordinary mention. Approved task replies stay in their saved private owner thread. A confirmed initial PM reply is required before silent completion. Edit-mode and external-action approvals remain in force; the task uses ordinary budgeting outside the $200 background ceiling.
 
-The card becomes **Starting…**, then **Task started · Open task**. Edits retry independently of activation, at most ten due cards per minute, with a 60-second retry delay and a 15-second Slack edit timeout. If an old Start action remains visible during an outage, the server still reuses the original approval. Inspect the linked task and restore access and allow normal extraction to revalidate the matter; do not clear its handoff to force another start. A parked or waiting task is not proof that a feature shipped. This release adds no external filing or outcome-writing commands.
+The card becomes **Starting…**, then **Task started · Open task**. Edits retry independently of activation, at most ten due cards per minute, with a 60-second retry delay and a 15-second Slack edit timeout. If an old Start action remains visible during an outage, the server still reuses the original approval. Inspect the linked task and restore access and allow normal extraction to revalidate the matter; do not clear its handoff to force another start. Proposal inspection uses the task's existing status and pending approvals; it does not track a separate waiting reason. A parked or waiting task is not proof that a feature shipped. This release adds no external filing or outcome-writing commands.
 
 ## Background spending
 

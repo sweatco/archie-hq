@@ -269,15 +269,4 @@ describe('durable prepared task starts', () => {
     expect(fixture.spawn).toHaveBeenCalledTimes(1);
     expect(await (await Task.get(input.taskId)).startPrepared()).toBe(false);
   });
-
-  it('clears an approval wait when work resumes and records later clarification separately', async () => {
-    const task = await Task.prepare(input);
-    await task.startPrepared();
-    task.metadata.waiting_for = 'tool_call';
-    await task.sendMessage('The owner approved the tool call; continue the scoped work.');
-    expect(task.metadata.waiting_for).toBeUndefined();
-    task.setCompletionIntent();
-    expect(task.metadata.waiting_for).toBe('user');
-    expect(task.metadata.status).toBe('in_progress');
-  });
 });
