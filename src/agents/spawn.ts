@@ -745,9 +745,8 @@ Shared folder: ${sharedPath} [READ-ONLY]
     let hasRetried = false;
     const subagentToolUseIds = new Set<string>();
     let agentQuery: Query;
-    let refusal: SDKAssistantMessage | undefined;
+    let refusal: SDKAssistantMessage | SDKResultMessage | undefined;
     let turnInputId: string | undefined;
-    let lastResult: SDKResultMessage | undefined;
     let refusalSettlement: Promise<void> | undefined;
     const pauseAfterRefusal = () => refusalSettlement ??= (async () => {
       const closedQuery = agentQuery;
@@ -761,14 +760,15 @@ Shared folder: ${sharedPath} [READ-ONLY]
         logger.warn(def.id, `Could not confirm cancelled inputs after refusal: ${error}`);
         return [];
       }).finally(() => clearTimeout(timeout));
-      const category = refusal?.message.stop_details?.category ?? null;
-      const reason = refusal?.message.stop_details?.explanation?.trim() || category?.replaceAll('_', ' ');
+      const assistantRefusal = refusal?.type === 'assistant' ? refusal : undefined;
+      const category = assistantRefusal?.message.stop_details?.category ?? null;
+      const reason = assistantRefusal?.message.stop_details?.explanation?.trim() || category?.replaceAll('_', ' ');
       const finding = `Model refused a turn${category ? ` (${category})` : ''}`;
       logger.warn(def.id, finding);
       emitEvent('agent:log', taskId, {
         finding, type: 'error', stop_reason: 'refusal', category,
-        model: refusal?.message.model ?? model,
-        request_id: refusal?.request_id ?? null,
+        model: assistantRefusal?.message.model ?? model,
+        request_id: assistantRefusal?.request_id ?? null,
       }, def.id);
       await task.pauseAfterRefusal(agent, async () => {
         const confirmed = await cancelled;
@@ -815,7 +815,6 @@ Shared folder: ${sharedPath} [READ-ONLY]
           const queryNonce = randomUUID();
           if (agent.queue.isStopped()) return;
           abortController = new AbortController();
-          lastResult = undefined;
           refusalSettlement = undefined;
           agentQuery = query({
             prompt: recoverable.generator() as any,
@@ -823,10 +822,6 @@ Shared folder: ${sharedPath} [READ-ONLY]
           });
 
           for await (const event of agentQuery) {
-            if (event.type === 'result') {
-              if (event.uuid === (lastResult as SDKResultMessage | undefined)?.uuid) continue;
-              lastResult = event;
-            }
             if (event.type === 'assistant') recordSubagentToolUses(event, subagentToolUseIds);
             if (event.type === 'assistant' && !event.parent_tool_use_id) {
               turnInputId ??= event.user_message_uuids?.[0] ?? event.user_message_uuid;
@@ -961,6 +956,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
               throw new Error(event.errors.join('\n'));
             }
             if (event.stop_reason === 'refusal') {
+              refusal ??= event;
               if (agent.session.refusal_recovery === refusalRecovery) {
                 agent.session.refusal_recovery = { prompt_uuid: turnInputId ?? event.user_message_uuids?.[0] ?? event.user_message_uuid };
               }
@@ -993,14 +989,14 @@ Shared folder: ${sharedPath} [READ-ONLY]
               );
               task.updateAgentState(false);
             }
-            if (refusal || event.stop_reason === 'refusal') break;
+            if (refusal) break;
             turnInputId = undefined;
           }
         } catch (error) {
           // Detach the closed SDK's input reader before restoring or accepting more messages.
           agent.queue.detachWaiters();
           if (agent.queue.isStopped()) return;
-          if (!refusal && lastResult?.stop_reason !== 'refusal' && sessionId && !hasRetried) {
+          if (!refusal && sessionId && !hasRetried) {
             logger.warn(def.id, `Agent failed with session ${sessionId}, retrying fresh`);
             try {
               // The retry starts a session with NO transcript, and the only thing
@@ -1038,12 +1034,12 @@ Shared folder: ${sharedPath} [READ-ONLY]
             continue;
           }
 
-          if (!refusal && lastResult?.stop_reason !== 'refusal') {
+          if (!refusal) {
             logger.error(def.id, 'Error', error);
             return;
           }
         }
-        if ((!refusal && lastResult?.stop_reason !== 'refusal') || agent.queue.isStopped()) return;
+        if (!refusal || agent.queue.isStopped()) return;
         await runPendingTeardown();
         if (!agent.session.refusal_recovery || !agent.queue.hasMessages()) return;
         refusal = undefined;
