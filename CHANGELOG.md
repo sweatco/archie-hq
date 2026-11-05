@@ -4,6 +4,20 @@
 
 <!-- This file is generated automatically — do NOT edit it by hand. The `.github/workflows/daily-changelog.yml` workflow summarizes each day's merged PRs into a dated entry and commits it to `main` on its own. To shape how a change reads here, write a clear PR description — that is the source the automation reads. Quiet days with nothing merged are intentionally skipped (no entry), so gaps between dates are expected. Hand edits drift from the automation and may be overwritten; the only reason to touch this file directly is to repair a mistake the automation made. -->
 
+## 2026-11-04
+
+- **Archie can now notice unresolved requests in public Slack channels it's part of, offer to help privately or in the source thread, and suggest a scoped repository task that only the configured owner can start.** Observation runs independently of existing task and knowledge memory, with its own store, a conservative background-spend cap, and checks for source access, evidence freshness, quiet hours, interruption limits and duplicate suppression before anything is delivered; self-evolution built on this feedback loop is deferred to a follow-up PR. Off by default and not yet activated in production — verified via a 110-test focused suite, a 2,206-test full suite, a 3,210-event synthetic workload, and one live Slack run producing a single correct public reply. _Technical: new SQLite-backed initiative store and task-bound tools, isolated from existing memory SQL; requires Node 24+ and a fresh schema-11 database, rejecting experimental schemas 1–10; owner-only Slack button visibility enforced both natively and with a server-side check. PR #360._
+- **A provider refusal used to be treated like ordinary inactivity, leaving a task stuck without explanation; Archie now posts the refusal reason to Slack and cleanly resumes with the next request.** A later request forks from the refused input's last good checkpoint, preserving earlier context while keeping the original transcript for audit, and consecutive refusals are now tracked correctly instead of just the first. _Technical: replaced a situation-analysis requirement (a source of provider refusals) with direct behavioral rules and concise dependency/failure planning guidance; task and session IDs are restricted to safe path segments and checkpoint reads bounded to known SDK config roots; verified live through Hookdeck and Slack across four refusal scenarios; 2,059 tests across 143 files, typecheck, build and `git diff --check` pass. PR #353._
+
+## 2026-10-25
+
+- _Technical: the initiative service and its queries were simplified for readability, and proactive assistance was refactored to fix live regressions, pushed directly to main ahead of PR #360 landing. Commits 3780d07, 3768258._
+
+## 2026-10-22
+
+- _Technical: initiative storage moved into its own persistence layer with hardened approved-task handling, and self-evolution work was deferred out of the proactive-assistance scope, pushed directly to main ahead of PR #360 landing. Commits 5f67405, 9a85816._
+- _Technical: follow-up fixes preserved baseline behavior across a release rollback, recovered proactive decisions with bounded background progress, and derived provider binding via scrypt, pushed directly to main. Commits fb4a3a3, 0fed3f1, 189bbc2._
+
 ## 2026-10-20
 
 - _Technical: the eight OpenSpec skills are removed from `.claude/skills/` and `.codex/skills/`, while existing specs, archived changes, configuration, `/opsx` commands, and documentation are left unchanged. PR #358._
