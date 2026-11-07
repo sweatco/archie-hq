@@ -63,6 +63,7 @@ export interface Job {
 
 export interface Delivery {
   id: string;
+  recipient?: string | null;
   channel: string;
   thread: string | null;
   text: string;

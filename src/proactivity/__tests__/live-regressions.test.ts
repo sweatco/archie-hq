@@ -44,7 +44,7 @@ function approve(id: string, state: TaskHandoffRecord['state'] = 'approved') {
 }
 
 it('resolves the retained live local deadline on the host instead of accepting model epoch arithmetic', async () => {
-  const slack = { inspect: async () => ({ shared: false, ownerCanRead: true }), page: async () => ({ messages: store.snapshot('C0BL50N2600', TS)!.evidence }), active: () => false } as unknown as ObservationSlack;
+  const slack = { inspect: async () => ({ shared: false, recipientCanRead: true }), page: async () => ({ messages: store.snapshot('C0BL50N2600', TS)!.evidence }), active: () => false } as unknown as ObservationSlack;
   const model = { complete: vi.fn().mockResolvedValueOnce(RESPONSE).mockResolvedValue({ resolved: false, help: null, public: false, evidence: [1] }) };
   const service = new InitiativeService(store, slack, model, { mode: 'shadow', owner: 'U03RQQTE1EF', extractionModel: 'haiku', investigationModel: 'sonnet' }, () => NOW);
   try {

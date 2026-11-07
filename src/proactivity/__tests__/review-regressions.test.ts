@@ -23,9 +23,9 @@ beforeEach(() => {
   messages = [{ channel: 'C1', thread: TS, ts: TS, version: TS, author: 'U1', text: 'I will release today at noon.' }];
   store.record(messages[0], NOW);
   slack = {
-    inspect: vi.fn(async () => ({ shared: false, ownerCanRead: true })),
+    inspect: vi.fn(async () => ({ shared: false, recipientCanRead: true })),
     channels: vi.fn(async () => ['C1']), page: vi.fn(async () => ({ messages })),
-    ownerDm: vi.fn(async () => 'D1'), verifyDm: vi.fn(async (channel) => channel === 'D1'),
+    dm: vi.fn(async () => 'D1'), recipient: vi.fn(async channel => channel === 'D1' ? 'U1' : null), verifyDm: vi.fn(async (channel) => channel === 'D1'),
     send: vi.fn(async () => 'sent-ts'), find: vi.fn(async () => undefined),
     active: vi.fn(() => false), link: (channel, thread) => `https://slack.test/${channel}/${thread}`,
   };
@@ -69,7 +69,7 @@ describe('independent PR review probes', () => {
     const matter: Matter = { id: 'release', channel: 'C1', thread: TS, title: 'Release', detail: 'Prepare release', evidence,
       state: 'open', owner: 'U1', deadline: null, explicit: true, nextCheck: NOW, valid: true };
     store.apply([snapshot], [], [matter]);
-    store.enqueueDelivery({ id: 'previous', channel: 'D1', thread: null, text: 'I can prepare the release.', matters: [matter.id], evidence,
+    store.enqueueDelivery({ id: 'previous', recipient: matter.owner, channel: 'D1', thread: null, text: 'I can prepare the release.', matters: [matter.id], evidence,
       digest: false, state: 'sent', ts: 'prior-ts', created: NOW - 86_400_000 });
     vi.mocked(model.complete).mockResolvedValueOnce({ resolved: false, help: 'I can prepare the release.', public: false, evidence: [...evidence].reverse() });
     store.schedule('investigate', matter.id, NOW);

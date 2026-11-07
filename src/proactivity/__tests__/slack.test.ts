@@ -22,13 +22,25 @@ beforeEach(() => {
 });
 
 describe('public-source Slack boundary', () => {
+  it('omits person-specific buttons on an unowned public follow-up', async () => {
+    await new PublicSlack().send({ id: 'unowned', channel: 'C1', thread: '10.000001', text: 'Useful help',
+      matters: ['release'], recipient: null, evidence: [1], digest: false, state: 'pending', ts: null, created: 0 });
+    expect(f.post.mock.calls[0][0].actions).toBeUndefined();
+  });
+
+  it.each([{ deleted: true }, { is_bot: true }, { is_restricted: true }, { team_id: 'T_OTHER' }])('does not open a DM to an inactive, bot, guest or external user: %o', async override => {
+    f.api.users.info.mockResolvedValue({ user: { team_id: 'T1', is_restricted: false, is_ultra_restricted: false, is_bot: false, is_app_user: false, deleted: false, ...override } });
+    await expect(new PublicSlack().dm('U_OTHER')).rejects.toThrow('Unverified initiative recipient');
+    expect(f.api.conversations.open).not.toHaveBeenCalled();
+  });
+
   it.each([
     { name: 'public nudge', channel: 'C1' },
     { name: 'private nudge', channel: 'D_OWNER' },
     { name: 'task suggestion', channel: 'D_OWNER', proposal: { id: 'proposal', version: 'version' } },
   ])('restricts $name buttons to the owner while retaining the message destination', async ({ channel, proposal }) => {
-    const slack = new PublicSlack('U_OWNER');
-    await slack.send({ id: 'delivery', channel, thread: '10.000001', text: 'Follow up on the release',
+    const slack = new PublicSlack();
+    await slack.send({ id: 'delivery', recipient: 'U_OWNER', channel, thread: '10.000001', text: 'Follow up on the release',
       matters: ['release'], evidence: [1], digest: false, state: 'pending', ts: null, created: 0, proposal });
     const message = f.post.mock.calls[0][0];
     expect(message).toMatchObject({ channel, threadTs: '10.000001', text: 'Follow up on the release' });
@@ -41,7 +53,7 @@ describe('public-source Slack boundary', () => {
   });
 
   it('fails closed on private, missing-membership and incomplete source metadata', async () => {
-    const slack = new PublicSlack('U_OWNER');
+    const slack = new PublicSlack();
     for (const override of [{ is_private: true }, { is_member: false }, { is_ext_shared: undefined }]) {
       f.api.conversations.info.mockResolvedValueOnce({ channel: { ...channel, ...override } });
       expect(await slack.inspect('C1')).toBeNull();
@@ -52,21 +64,21 @@ describe('public-source Slack boundary', () => {
   });
 
   it('keeps shared public evidence source-local and independently verifies owner membership', async () => {
-    const slack = new PublicSlack('U_OWNER');
+    const slack = new PublicSlack();
     f.api.conversations.info.mockResolvedValue({ channel: { ...channel, is_ext_shared: true } });
     f.api.conversations.members.mockResolvedValue({ members: ['U_OTHER'] });
-    expect(await slack.inspect('C1', true)).toEqual({ shared: true, ownerCanRead: false });
+    expect(await slack.inspect('C1', 'U_OWNER')).toEqual({ shared: true, recipientCanRead: false });
   });
 
   it('rejects a page if source access changes during retrieval', async () => {
-    const slack = new PublicSlack('U_OWNER');
+    const slack = new PublicSlack();
     f.api.conversations.info.mockResolvedValueOnce({ channel }).mockResolvedValueOnce({ channel: { ...channel, is_private: true } });
     f.api.conversations.history.mockResolvedValue({ messages: [{ ts: '10.000001', user: 'U1', text: 'Public before conversion' }] });
     await expect(slack.page('C1', '10', '11')).rejects.toThrow('changed audience');
   });
 
   it('preserves pagination and strips attachments/files before rendering evidence', async () => {
-    const slack = new PublicSlack('U_OWNER');
+    const slack = new PublicSlack();
     f.api.conversations.replies.mockResolvedValue({ messages: [{ ts: '10.000001', user: 'U1', text: 'Public body', files: [{ secret: 'file' }], attachments: [{ text: 'Excluded body' }] }], response_metadata: { next_cursor: 'next' } });
     const page = await slack.page('C1', '10', '11', 'cursor', '10.000001');
     expect(page.cursor).toBe('next');
@@ -82,11 +94,11 @@ describe('public-source Slack boundary', () => {
   });
 
   it('verifies the exact human owner before using a DM without reading its history', async () => {
-    const slack = new PublicSlack('U_OWNER');
+    const slack = new PublicSlack();
     f.api.conversations.info.mockResolvedValue({ channel: { is_im: true, user: 'U_OTHER' } });
-    expect(await slack.verifyDm('D1')).toBe(false);
+    expect(await slack.verifyDm('D1', 'U_OWNER')).toBe(false);
     f.api.users.info.mockResolvedValue({ user: { team_id: 'OTHER' } });
-    await expect(slack.verifyDm('D1')).rejects.toThrow('Unverified initiative owner');
+    await expect(slack.verifyDm('D1', 'U_OWNER')).resolves.toBe(false);
     expect(f.api.conversations.history).not.toHaveBeenCalled();
   });
 });

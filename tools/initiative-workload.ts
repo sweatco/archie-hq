@@ -50,7 +50,7 @@ export async function runInitiativeWorkload() {
     }
   }
   events.sort((a, b) => a.at - b.at);
-  const calls = { inspect: 0, channels: 0, page: 0, ownerDm: 0, verifyDm: 0, sends: 0, models: 0 };
+  const calls = { inspect: 0, channels: 0, page: 0, dm: 0, verifyDm: 0, sends: 0, models: 0 };
   const contextBytes: number[] = [];
   const outputBytes: number[] = [];
   const dueLateness: number[] = [];
@@ -64,12 +64,12 @@ export async function runInitiativeWorkload() {
       const input = JSON.parse(params.messages[0].content);
       let answer: unknown;
       if (input.threads) {
-        answer = { threads: input.threads.map((thread: { channel: string; thread: string; evidence: Array<{ id: number; text: string }> }) => {
+        answer = { threads: input.threads.map((thread: { channel: string; thread: string; evidence: Array<{ id: number; text: string; author: string }> }) => {
           const evidence = thread.evidence.slice(-1).map(item => item.id);
           return { channel: thread.channel, thread: thread.thread,
             observations: [{ key: 'discussion', text: 'The public discussion has an evidenced update.', kind: 'change', evidence }],
             matters: thread.evidence.some(item => item.text.includes('[action]')) ? [{ key: 'review', title: 'Release review', detail: 'Review the release decision.', evidence,
-              state: 'open', owner: 'U_OWNER', deadline: { date: new Date(START + 2 * HOUR).toISOString().slice(0, 10), time: new Date(START + 2 * HOUR).toISOString().slice(11, 16), timeZone: 'UTC' }, explicit: true, reopen: false }] : [] };
+              state: 'open', owner: thread.evidence.at(-1)?.author ?? null, deadline: { date: new Date(START + 2 * HOUR).toISOString().slice(0, 10), time: new Date(START + 2 * HOUR).toISOString().slice(11, 16), timeZone: 'UTC' }, explicit: true, reopen: false }] : [] };
         }) };
       } else if (input.matter) {
         dueLateness.push(Math.max(0, now - input.matter.nextCheck));
@@ -84,7 +84,7 @@ export async function runInitiativeWorkload() {
   };
   const gateway = new ModelGateway(store, provider as unknown as Anthropic);
   const slack: ObservationSlack = {
-    inspect: async channel => { calls.inspect++; return channels.includes(channel) ? { shared: false, ownerCanRead: true } : null; },
+    inspect: async channel => { calls.inspect++; return channels.includes(channel) ? { shared: false, recipientCanRead: true } : null; },
     channels: async () => { calls.channels++; return channels; },
     page: async (channel, oldest, latest, cursor, thread) => {
       calls.page++;
@@ -95,7 +95,8 @@ export async function runInitiativeWorkload() {
       const end = Math.min(current.length, start + 40);
       return { messages: current.slice(start, end), cursor: end < current.length ? String(end) : undefined };
     },
-    ownerDm: async () => { calls.ownerDm++; return 'D_OWNER'; }, verifyDm: async channel => { calls.verifyDm++; return channel === 'D_OWNER'; },
+    dm: async user => { calls.dm++; return `D_${user}`; }, recipient: async channel => channel.startsWith('D_') ? channel.slice(2) : null,
+    verifyDm: async (channel, user) => { calls.verifyDm++; return channel === `D_${user}`; },
     send: async () => { calls.sends++; return 'sent'; }, find: async () => undefined, active: () => false,
     link: (channel, thread) => `https://slack.test/${channel}/${thread}`,
   };

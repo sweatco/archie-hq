@@ -29,8 +29,8 @@ beforeEach(() => {
   message = { channel: 'C1', thread: ts, ts, version: ts, author: 'U1', text: 'Please prepare the release checklist.' };
   store.record(message, START);
   slack = {
-    inspect: async () => ({ shared: false, ownerCanRead: true }), channels: async () => ['C1'],
-    page: async () => ({ messages: [message] }), ownerDm: async () => 'D1', verifyDm: async channel => channel === 'D1',
+    inspect: async () => ({ shared: false, recipientCanRead: true }), channels: async () => ['C1'],
+    page: async () => ({ messages: [message] }), dm: async () => 'D1', recipient: async channel => channel === 'D1' ? 'U1' : null, verifyDm: async channel => channel === 'D1',
     send: vi.fn(async () => 'sent'), find: async () => undefined, active: () => false, link: (channel, thread) => `${channel}/${thread}`,
   };
   model = { complete: vi.fn(async request => ({ resolved: false, help: null, public: false, evidence: (request.input as { matter: Matter }).matter.evidence })) as BackgroundModel['complete'] };

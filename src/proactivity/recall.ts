@@ -13,21 +13,25 @@ export class ObservationRecall implements ObservationAPI {
     this.access = new SourceAccess(store, slack);
   }
 
-  private async scope(metadata: TaskMetadata): Promise<{ channels: string[]; owner: boolean }> {
+  private async scope(metadata: TaskMetadata): Promise<{ channels: string[]; recipient?: string }> {
     const destination = metadata.memory_destination?.channel_id
       ?? deriveTaskDestination(metadata.channels ?? {}, metadata.default_channel, metadata.home_channel?.channel_id)?.channel_id;
-    if (!destination) return { channels: [], owner: false };
-    if (await this.slack.verifyDm(destination)) return { channels: [], owner: true };
-    return { channels: await this.access.check(destination) ? [destination] : [], owner: false };
+    if (!destination) return { channels: [] };
+    if (destination.startsWith('D')) {
+      const recipient = await this.slack.recipient(destination);
+      if (recipient && (!metadata.approved_start || metadata.approved_start.actor === recipient)) return { channels: [], recipient };
+      return { channels: [] };
+    }
+    return { channels: await this.access.check(destination) ? [destination] : [] };
   }
 
   async search(metadata: TaskMetadata, query: string, limit: number) {
     const scope = await this.scope(metadata);
-    const hits = this.store.search(query, scope.owner ? null : scope.channels, limit);
+    const hits = this.store.search(query, scope.recipient ? null : scope.channels, limit);
     const allowed = new Map<string, boolean>();
     const results = [];
     for (const observation of hits) {
-      if (!allowed.has(observation.channel)) allowed.set(observation.channel, await this.access.check(observation.channel, scope.owner));
+      if (!allowed.has(observation.channel)) allowed.set(observation.channel, await this.access.check(observation.channel, scope.recipient));
       const current = this.store.attention.observation(observation.id);
       if (allowed.get(observation.channel) && current) results.push({ id: observation.id, text: `${current.text}\n${this.slack.link(observation.channel, observation.thread)}` });
     }
@@ -37,24 +41,25 @@ export class ObservationRecall implements ObservationAPI {
   async read(metadata: TaskMetadata, kind: 'observation' | 'matter' | 'matters', id?: string): Promise<unknown> {
     const scope = await this.scope(metadata);
     if (kind === 'matters') {
-      if (!scope.owner) return 'Owner DM required.';
+      if (!scope.recipient) return 'Verified recipient DM required.';
       const matters = [];
       const allowed = new Map<string, boolean>();
       for (const matter of this.store.matters()) {
-        if (!allowed.has(matter.channel)) allowed.set(matter.channel, await this.access.check(matter.channel, true));
+        if (matter.owner !== scope.recipient) continue;
+        if (!allowed.has(matter.channel)) allowed.set(matter.channel, await this.access.check(matter.channel, scope.recipient));
         const current = this.store.matter(matter.id);
-        if (allowed.get(matter.channel) && current?.valid && ['open', 'snoozed'].includes(current.state)) matters.push(current);
+        if (allowed.get(matter.channel) && current?.valid && current.owner === scope.recipient && ['open', 'snoozed'].includes(current.state)) matters.push(current);
       }
       return matters;
     }
     if (kind === 'matter') {
       const matter = this.store.matter(id ?? '');
-      if (!scope.owner || !matter?.valid || !await this.access.check(matter.channel, true)) return 'Matter unavailable.';
+      if (!scope.recipient || !matter?.valid || matter.owner !== scope.recipient || !await this.access.check(matter.channel, scope.recipient)) return 'Matter unavailable.';
       const current = this.store.matter(matter.id);
-      return current?.valid ? { matter: current, source: this.store.snapshot(matter.channel, matter.thread), explanation: this.store.explain(matter.id) } : 'Matter unavailable.';
+      return current?.valid && current.owner === scope.recipient ? { matter: current, source: this.store.snapshot(matter.channel, matter.thread), explanation: this.store.explain(matter.id) } : 'Matter unavailable.';
     }
     const observation = this.store.attention.observation(id ?? '');
-    if (!observation || (!scope.owner && !scope.channels.includes(String(observation.channel))) || !await this.access.check(String(observation.channel), scope.owner)) return 'Observation unavailable.';
+    if (!observation || (!scope.recipient && !scope.channels.includes(String(observation.channel))) || !await this.access.check(String(observation.channel), scope.recipient)) return 'Observation unavailable.';
     const current = this.store.attention.observation(id ?? '');
     return current ? { observation: current, source: this.store.snapshot(String(current.channel), String(current.thread)) } : 'Observation unavailable.';
   }

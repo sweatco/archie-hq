@@ -9,7 +9,7 @@ import { InitiativeService } from '../service.js';
 import type { InitiativeRuntime } from '../index.js';
 
 const f = vi.hoisted(() => ({ root: `/tmp/archie-runtime-${process.pid}`, post: vi.fn(), slack: {
-  inspect: vi.fn(), channels: vi.fn(), page: vi.fn(), ownerDm: vi.fn(), verifyDm: vi.fn(), send: vi.fn(), find: vi.fn(), active: vi.fn(), link: vi.fn(), updateProposal: vi.fn(),
+  inspect: vi.fn(), channels: vi.fn(), page: vi.fn(), dm: vi.fn(), recipient: vi.fn(), verifyDm: vi.fn(), send: vi.fn(), find: vi.fn(), active: vi.fn(), link: vi.fn(), updateProposal: vi.fn(),
 } }));
 vi.mock('../../system/workdir.js', () => ({ WORKDIR: f.root }));
 vi.mock('../../system/plugin-loader.js', () => ({ getArchieConfig: () => ({ repos: { 'owner/repo': {} } }) }));
@@ -30,9 +30,9 @@ beforeEach(() => {
   vi.useFakeTimers(); vi.setSystemTime(NOW); vi.clearAllMocks();
   rmSync(f.root, { recursive: true, force: true });
   vi.stubEnv('ARCHIE_PROACTIVITY_OWNER', OWNER);
-  f.slack.inspect.mockResolvedValue({ shared: false, ownerCanRead: true });
+  f.slack.inspect.mockResolvedValue({ shared: false, recipientCanRead: true });
   f.slack.channels.mockResolvedValue(['C1']); f.slack.page.mockResolvedValue({ messages: [] });
-  f.slack.ownerDm.mockResolvedValue('D_OWNER'); f.slack.verifyDm.mockImplementation(async (channel) => channel === 'D_OWNER');
+  f.slack.dm.mockResolvedValue('D_OWNER'); f.slack.verifyDm.mockImplementation(async (channel, user) => channel === 'D_OWNER' && user === OWNER); f.slack.recipient.mockImplementation(async channel => channel === 'D_OWNER' ? OWNER : null);
   f.slack.updateProposal.mockResolvedValue(undefined); f.slack.link.mockImplementation((channel, ts) => `https://slack.test/${channel}/${ts}`);
   vi.spyOn(ModelGateway.prototype, 'verify').mockResolvedValue();
   vi.spyOn(InitiativeService.prototype, 'tick').mockResolvedValue();
@@ -43,6 +43,39 @@ afterEach(async () => {
 });
 
 describe('initiative runtime integration', () => {
+  it('authorizes employee feedback per matter while retaining administrator-only global controls', async () => {
+    const employee = 'U000002';
+    f.slack.dm.mockImplementation(async user => user === OWNER ? 'D_OWNER' : 'D_EMPLOYEE');
+    f.slack.verifyDm.mockImplementation(async (channel, user) => channel === (user === OWNER ? 'D_OWNER' : 'D_EMPLOYEE'));
+    runtime = await startInitiative('T1', 'live');
+    const store = openStore();
+    try {
+      const ts = `${NOW / 1000}.000001`;
+      store.channel('C1', true, false);
+      const evidence = store.record({ channel: 'C1', thread: ts, ts, version: ts, author: employee, text: 'Separate commitments in the same discussion.' }, NOW)!;
+      const base = { channel: 'C1', thread: ts, title: 'Read-only test', detail: 'Read-only test', evidence: [evidence], state: 'open' as const, deadline: null, explicit: true, nextCheck: NOW, valid: true };
+      store.apply([store.snapshot('C1', ts)!], [], [{ ...base, id: 'employee', owner: employee }, { ...base, id: 'admin', owner: OWNER }]);
+      store.enqueueDelivery({ id: 'employee-card', recipient: employee, channel: 'D_EMPLOYEE', thread: null, text: 'Employee matter', matters: ['employee'], evidence: [evidence], digest: false, state: 'sent', ts: null, created: NOW });
+      await runtime.action(OWNER, 'employee-card:handled');
+      expect(store.matter('employee')?.state).toBe('open');
+      f.slack.inspect.mockResolvedValueOnce({ shared: false, recipientCanRead: false });
+      await runtime.action(employee, 'employee-card:handled');
+      expect(store.matter('employee')?.state).toBe('open');
+      expect(await runtime.capture({ channel: 'D_EMPLOYEE', user: employee, text: 'initiative stop' })).toBe(true);
+      expect(store.setting('stop')).toBeUndefined();
+      await runtime.action(employee, 'employee-card:stop following');
+      expect(store.matter('employee')?.state).toBe('dismissed');
+      expect(store.matter('admin')?.state).toBe('open');
+      expect(store.setting(`unfollow:C1:${ts}`)).toBeUndefined();
+      const proposal = store.proposeCapability({ repository: 'owner/repo', outcome: 'Other employee task', evidence: [evidence], matter: 'admin' });
+      expect(store.proposalCurrent(store.proposal(proposal)!, NOW)).toBe(true);
+      await runtime.capture({ channel: 'D_EMPLOYEE', user: employee, text: 'initiative handled admin' });
+      expect(store.matter('admin')?.state).toBe('open');
+      await runtime.capture({ channel: 'D_OWNER', user: OWNER, text: 'initiative stop' });
+      expect(store.setting('stop')).toBe('true');
+    } finally { store.close(); }
+  });
+
   it('rechecks owner binding after awaited provider verification', async () => {
     vi.mocked(ModelGateway.prototype.verify).mockImplementationOnce(async () => {
       const other = openStore();
@@ -63,7 +96,7 @@ describe('initiative runtime integration', () => {
       store.apply([store.snapshot('C1', ts)!], [], [{ id: 'test', channel: 'C1', thread: ts, title: 'Read-only test', detail: 'Read-only test', evidence: [evidence], state: 'open', owner: OWNER, deadline: null, explicit: true, nextCheck: NOW, valid: true }]);
       const proposal = store.proposeCapability({ repository: 'owner/repo', outcome: 'Read-only test', evidence: [evidence], matter: 'test' });
       const version = proposalVersion(store.proposal(proposal)!);
-      store.enqueueDelivery({ id: 'card', channel: 'D_OWNER', thread: null, text: 'Proposal and budget context', matters: [], evidence: [evidence], digest: false, state: 'sent', ts: '1792490401.000001', created: NOW, proposal: { id: proposal, version } });
+      store.enqueueDelivery({ id: 'card', recipient: OWNER, channel: 'D_OWNER', thread: null, text: 'Proposal and budget context', matters: [], evidence: [evidence], digest: false, state: 'sent', ts: '1792490401.000001', created: NOW, proposal: { id: proposal, version } });
       store.attention.finishDelivery('sent', '1792490401.000001', 'card');
       let metadata: any;
       vi.spyOn(ordinaryTasks, 'prepare').mockImplementation(async input => { metadata = { approved_start: { ...input, phase: 'prepared' } }; });
@@ -111,7 +144,7 @@ describe('initiative runtime integration', () => {
   it('drains authenticated owner operations before closing their database', async () => {
     runtime = await startInitiative('T1', 'shadow');
     let open!: (channel: string) => void;
-    f.slack.ownerDm.mockReturnValueOnce(new Promise(resolve => { open = resolve; }));
+    f.slack.dm.mockReturnValueOnce(new Promise(resolve => { open = resolve; }));
     const control = runtime.capture({ channel: 'D_OWNER', user: OWNER, text: 'initiative status' });
     await Promise.resolve(); await Promise.resolve();
     let closed = false;
@@ -130,7 +163,7 @@ describe('initiative runtime integration', () => {
     expect(await runtime.capture(event)).toBe(false);
     const closing = runtime.close();
     expect(await runtime.capture({ ...event, text: 'After close' })).toBe(false);
-    allow({ shared: false, ownerCanRead: true });
+    allow({ shared: false, recipientCanRead: true });
     await closing; runtime = undefined;
     expect(hasObservationAPI()).toBe(false);
     const store = openStore();
@@ -141,7 +174,7 @@ describe('initiative runtime integration', () => {
   it('drains observation reads waiting for live authorization before closing SQLite', async () => {
     runtime = await startInitiative('T1', 'shadow');
     let verify!: (value: boolean) => void;
-    f.slack.verifyDm.mockReturnValueOnce(new Promise(resolve => { verify = resolve; }));
+    f.slack.recipient.mockReturnValueOnce(new Promise(resolve => { verify = value => resolve(value ? OWNER : null); }));
     const read = searchObservations({ memory_destination: { channel_id: 'D_OWNER' } } as never, 'release', 10);
     let closed = false;
     const closing = runtime.close().then(() => { closed = true; });
@@ -200,7 +233,7 @@ describe('initiative runtime integration', () => {
   it('recognizes a proactive origin during lookup failures without exposing its cached context', async () => {
     runtime = await startInitiative('T1', 'shadow');
     const store = openStore();
-    try { store['run']("INSERT INTO deliveries VALUES ('delivery','C1','10.000001','Cached source text','[\"secret-matter\"]','[]',0,'sent','11.000001',?,NULL,NULL)", NOW); }
+    try { store['run']("INSERT INTO deliveries(id,channel,thread,text,matters,evidence,digest,state,ts,created,slot_day,proposal) VALUES ('delivery','C1','10.000001','Cached source text','[\"secret-matter\"]','[]',0,'sent','11.000001',?,NULL,NULL)", NOW); }
     finally { store.close(); }
     f.slack.inspect.mockRejectedValueOnce(new Error('Slack unavailable'));
     const origin = await runtime.origin('C1', '10.000001');

@@ -25,7 +25,7 @@ function populate(): Matter {
 }
 
 function delivery(id: string, matter: Matter): Delivery {
-  return { id, channel: 'D1', thread: null, text: matter.title, matters: [matter.id], evidence: matter.evidence,
+  return { id, recipient: matter.owner, channel: 'D1', thread: null, text: matter.title, matters: [matter.id], evidence: matter.evidence,
     digest: false, state: 'pending', ts: null, created: NOW };
 }
 

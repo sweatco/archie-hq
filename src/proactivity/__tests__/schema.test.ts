@@ -8,6 +8,7 @@ import { InitiativeStore } from '../store.js';
 import { SCHEMA_VERSION } from '../persistence/schema.js';
 
 const NOW = Date.parse('2026-10-20T10:00:00Z');
+const DAY = 86_400_000;
 let root: string;
 let path: string;
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'archie-schema-')); path = join(root, 'state.sqlite'); });
@@ -85,4 +86,48 @@ it('rolls back interrupted initialization instead of leaving a partial schema', 
     expect(db.prepare("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").all()).toEqual([]);
   } finally { db.close(); }
   new InitiativeStore(path, 'T1', NOW).close();
+});
+
+function legacyDatabase() {
+  const store = new InitiativeStore(path, 'T1', NOW);
+  store.set('owner', 'U_ADMIN'); store.set('delivery_enabled', 'true');
+  const charge = store.reserve(50_000, false, NOW)!;
+  store.dispatchRequest(charge, 'claude-haiku-5-5', 'unsettled-request');
+  for (const state of ['pending', 'sending', 'uncertain', 'sent']) {
+    store['run']('INSERT INTO deliveries(id,channel,text,matters,evidence,digest,state,created,slot_day) VALUES (?,?,?,?,?,?,?,?,?)',
+      state, 'D_ADMIN', 'Retain this card', '[]', '[]', 0, state, NOW, state === 'pending' ? null : '2026-10-20');
+  }
+  store.approveHandoff({ proposal: 'proposal', version: 'version', actor: 'U_ADMIN', approved: NOW, task: 'task', state: 'approved', budget: 'task', delivery: 'sent' });
+  store.close();
+  const db = new DatabaseSync(path);
+  db.exec('ALTER TABLE deliveries DROP COLUMN recipient; PRAGMA user_version=11'); db.close();
+}
+
+it('migrates supported schema 11 transactionally without reassigning deliveries, approvals or unresolved charges', () => {
+  legacyDatabase();
+  const store = new InitiativeStore(path, 'T1', NOW + DAY, { owner: 'U_ADMIN' });
+  try {
+    for (const state of ['pending', 'sending', 'uncertain', 'sent']) {
+      expect(store.delivery(state)).toMatchObject({ state, channel: 'D_ADMIN', recipient: 'U_ADMIN', text: 'Retain this card' });
+    }
+    expect(store.setting('delivery_enabled')).toBe('true');
+    expect(store.handoff('proposal')).toMatchObject({ actor: 'U_ADMIN', state: 'approved', delivery: 'sent' });
+    expect(store.budget(NOW + DAY)).toBe(50_000);
+    expect(store['row']('PRAGMA user_version')?.user_version).toBe(SCHEMA_VERSION);
+  } finally { store.close(); }
+});
+
+it('leaves schema 11 unchanged for read-only inspection, mismatched identity or an interrupted migration', () => {
+  legacyDatabase();
+  const before = readFileSync(path);
+  expect(() => new InitiativeStore(path, 'T1', NOW, { readOnly: true })).toThrow('requires a fresh database');
+  expect(() => new InitiativeStore(path, 'T_OTHER', NOW)).toThrow('workspace mismatch');
+  expect(() => new InitiativeStore(path, 'T1', NOW, { owner: 'U_OTHER' })).toThrow('owner mismatch');
+  expect(readFileSync(path)).toEqual(before);
+  const exec = DatabaseSync.prototype.exec;
+  vi.spyOn(DatabaseSync.prototype, 'exec').mockImplementation(function (this: DatabaseSync, sql: string) {
+    return exec.call(this, sql.includes('ADD COLUMN recipient') ? sql + '; SELECT interrupted_migration' : sql);
+  });
+  expect(() => new InitiativeStore(path, 'T1', NOW)).toThrow('interrupted_migration');
+  expect(readFileSync(path)).toEqual(before);
 });

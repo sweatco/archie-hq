@@ -12,7 +12,7 @@ export interface ApprovedTaskRuntime {
   read(taskId: string): Promise<TaskMetadata | null>;
 }
 
-// This adapter creates tasks only after the owner-approval handoff authorizes them.
+// This adapter creates tasks only after the recipient-approval handoff authorizes them.
 export const ordinaryTasks: ApprovedTaskRuntime = {
   async prepare(input) {
     const { Task } = await import('../tasks/task.js');

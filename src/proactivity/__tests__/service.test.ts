@@ -23,9 +23,9 @@ beforeEach(() => {
   store = new InitiativeStore(join(root, 'state.sqlite'), 'T1', NOW);
   store.channel('C1', true, false);
   slack = {
-    inspect: vi.fn(async (channel: string) => channel === 'C1' ? { shared: false, ownerCanRead: true } : null),
+    inspect: vi.fn(async (channel: string) => channel === 'C1' ? { shared: false, recipientCanRead: true } : null),
     channels: vi.fn(async () => ['C1']), page: vi.fn(async () => ({ messages: store.snapshot('C1', TS)?.evidence ?? [] })),
-    ownerDm: vi.fn(async () => 'D1'), verifyDm: vi.fn(async (channel) => channel === 'D1'),
+    dm: vi.fn(async () => 'D1'), recipient: vi.fn(async channel => channel === 'D1' ? 'U1' : null), verifyDm: vi.fn(async (channel) => channel === 'D1'),
     send: vi.fn(async () => '1792491000.000001'), find: vi.fn(async () => undefined), active: vi.fn(() => false),
     link: (channel, thread) => `https://slack.test/${channel}/${thread}`,
   };
@@ -132,7 +132,7 @@ describe('initiative flow', () => {
     store.apply([store.snapshot('C1', other)!], [{ id: 'related', channel: 'C1', thread: other, kind: 'change', text: 'Release context', evidence: [revision] }], []);
     vi.mocked(slack.page).mockImplementation(async (_channel, _oldest, _latest, _cursor, thread) => ({ messages: store.snapshot('C1', thread ?? TS)?.evidence ?? [] }));
     vi.mocked(model.complete).mockResolvedValueOnce({ resolved: false, help: 'Checklist is ready.', public: false, evidence: [...store.matter(id)!.evidence, revision] });
-    vi.mocked(slack.ownerDm).mockImplementationOnce(async () => {
+    vi.mocked(slack.dm).mockImplementationOnce(async () => {
       store.record({ channel: 'C1', thread: other, ts: other, version: (Number(other) + 1).toFixed(6), author: 'U_OTHER', text: 'Checklist is cancelled' }, NOW);
       return 'D1';
     });
@@ -192,7 +192,7 @@ describe('initiative flow', () => {
   });
 
   it('keeps extraction requests within one public source channel', async () => {
-    vi.mocked(slack.inspect).mockResolvedValue({ shared: true, ownerCanRead: true });
+    vi.mocked(slack.inspect).mockResolvedValue({ shared: true, recipientCanRead: true });
     for (const channel of ['C1', 'C2']) {
       store.channel(channel, true, channel === 'C2');
       store.record({ channel, thread: TS, ts: TS, version: TS, author: 'U1', text: 'Discussion' }, NOW);
@@ -294,7 +294,7 @@ describe('initiative flow', () => {
     const snapshot = store.snapshot('C1', root)!;
     const matter = { id: 'old-parent', channel: 'C1', thread: root, title: 'Commitment', detail: 'Old commitment', evidence: snapshot.evidence.map((e) => e.id), state: 'open' as const, owner: 'U1', deadline: null, explicit: true, nextCheck: NOW, valid: true };
     store.apply([snapshot], [], [matter]);
-    store.enqueueDelivery({ id: 'parent-reminder', channel: 'D1', thread: null, text: 'Follow up', matters: [matter.id], evidence: matter.evidence, digest: false, state: 'pending', ts: null, created: NOW });
+    store.enqueueDelivery({ id: 'parent-reminder', recipient: matter.owner, channel: 'D1', thread: null, text: 'Follow up', matters: [matter.id], evidence: matter.evidence, digest: false, state: 'pending', ts: null, created: NOW });
     store.set('delivery_enabled', 'true');
     vi.mocked(slack.page).mockImplementation(async (_channel, _oldest, _latest, _cursor, thread) => ({ messages: thread ? snapshot.evidence.filter((e) => e.ts !== root) : [] }));
     await service.deliver(NOW + 60_000);

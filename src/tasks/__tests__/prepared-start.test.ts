@@ -54,26 +54,26 @@ describe('durable prepared task starts', () => {
   const call = (entry: any, args: unknown) => (entry.callback ?? entry.handler)(args, {});
   const completion = (task: Task) => (createOrchestrationMcpServer({ def: { id: 'pm-agent' } } as never, task).instance as any)._registeredTools.report_completion;
 
-  it.each(['normal', 'access recovery'] as const)('starts one ordinary replying task from investigation without a learner: %s', async scenario => {
+  it.each([['normal', 'U_OWNER'], ['access recovery', 'U_OWNER'], ['normal', 'U_EMPLOYEE']] as const)('starts one ordinary replying task from investigation without a learner: %s / %s', async (scenario, actor) => {
     const now = Date.parse('2026-10-20T10:00:00Z');
     vi.setSystemTime(now);
     const store = new InitiativeStore(':memory:', 'T1', now);
     const ts = `${now / 1000}.000001`;
-    const source = { channel: 'C_PUBLIC', thread: ts, ts, version: ts, author: 'U_OWNER', text: 'We need a release checklist in owner/repo.' };
+    const source = { channel: 'C_PUBLIC', thread: ts, ts, version: ts, author: actor, text: 'We need a release checklist in owner/repo.' };
     const slack: ProposalSlack = {
-      inspect: vi.fn(async () => ({ shared: false, ownerCanRead: true })), channels: async () => ['C_PUBLIC'],
-      page: async () => ({ messages: [source] }), ownerDm: async () => 'D_OWNER', verifyDm: async channel => channel === 'D_OWNER',
+      inspect: vi.fn(async () => ({ shared: false, recipientCanRead: true })), channels: async () => ['C_PUBLIC'],
+      page: async () => ({ messages: [source] }), dm: async user => `D_${user}`, recipient: async channel => channel === `D_${actor}` ? actor : null, verifyDm: async (channel, user) => channel === `D_${user}`,
       send: vi.fn(async () => '1792494000.000001'), find: async () => undefined, active: () => false,
       link: (channel, thread) => `https://slack.test/${channel}/${thread}`, updateProposal: vi.fn(async () => {}),
     };
     const model: BackgroundModel = { complete: vi.fn(async request => {
       const evidence = store.snapshot('C_PUBLIC', ts)!.evidence.map(e => e.id);
       return 'threads' in (request.input as object)
-        ? { threads: [{ channel: 'C_PUBLIC', thread: ts, observations: [], matters: [{ key: 'release', title: 'Release checklist', detail: source.text, evidence, state: 'open', owner: 'U_OWNER', deadline: null, explicit: true }] }] }
+        ? { threads: [{ channel: 'C_PUBLIC', thread: ts, observations: [], matters: [{ key: 'release', title: 'Release checklist', detail: source.text, evidence, state: 'open', owner: actor, deadline: null, explicit: true }] }] }
         : { resolved: false, help: null, public: false, evidence, suggestion: { repository: 'owner/repo', outcome: 'Prepare the release checklist', evidence } };
     }) as BackgroundModel['complete'] };
     const service = new InitiativeService(store, slack, model, { mode: 'live', owner: 'U_OWNER', extractionModel: 'test', investigationModel: 'test', repositories: ['owner/repo'] }, Date.now);
-    const handoff = new ProposalHandoff(store, slack, 'U_OWNER', () => ['owner/repo'], source => service.refreshEvidence(source));
+    const handoff = new ProposalHandoff(store, slack, () => ['owner/repo'], source => service.refreshEvidence(source));
     try {
       store.set('delivery_enabled', 'true');
       await service.capture(source, now);
@@ -98,21 +98,21 @@ describe('durable prepared task starts', () => {
       await service.deliver(Date.now());
       const card = store.deliveries('sent')[0];
       expect(card.proposal).toBeDefined();
-      const first = await handoff.approve('U_OWNER', card.id, card.proposal!.version);
-      const replay = await handoff.approve('U_OWNER', card.id, card.proposal!.version);
+      const first = await handoff.approve(actor, card.id, card.proposal!.version);
+      const replay = await handoff.approve(actor, card.id, card.proposal!.version);
       await handoff.drainCards();
       expect(replay.task).toBe(first.task);
       expect(fixture.spawn).toHaveBeenCalledTimes(1);
       const task = await Task.get(first.task);
-      expect(task.metadata.approved_start).toMatchObject({ actor: 'U_OWNER', budget: 'task', phase: 'ready' });
-      expect(task.metadata.memory_destination).toEqual({ channel_id: 'D_OWNER' });
+      expect(task.metadata.approved_start).toMatchObject({ actor, budget: 'task', phase: 'ready' });
+      expect(task.metadata.memory_destination).toEqual({ channel_id: `D_${actor}` });
       expect(comms(task).post_to_channel).toBeUndefined();
       expect((await call(completion(task), {})).content[0].text).toContain('Cannot finish silently');
       await call(comms(task).post_to_user, { message: 'Checklist ACK' });
       await call(completion(task), {});
-      expect(fixture.post).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ channel: 'D_OWNER', threadTs: card.ts, text: 'Checklist ACK' }));
+      expect(fixture.post).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ channel: `D_${actor}`, threadTs: card.ts, text: 'Checklist ACK' }));
       expect(task.metadata.approved_start?.owner_reply_delivered).toBe(true);
-      expect(slack.updateProposal).toHaveBeenLastCalledWith(expect.objectContaining({ id: card.id }), expect.stringContaining('Task started'), slack.link('D_OWNER', card.ts!));
+      expect(slack.updateProposal).toHaveBeenLastCalledWith(expect.objectContaining({ id: card.id }), expect.stringContaining('Task started'), slack.link(`D_${actor}`, card.ts!));
     } finally { service.stop(); service.release(); store.close(); }
   });
 

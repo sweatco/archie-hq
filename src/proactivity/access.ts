@@ -6,11 +6,11 @@ import { logger } from '../system/logger.js';
 export class SourceAccess {
   constructor(private readonly store: InitiativeStore, private readonly slack: ObservationSlack) {}
 
-  async evaluate(channel: string, owner = false): Promise<'allowed' | 'denied' | 'unavailable'> {
+  async evaluate(channel: string, recipient?: string): Promise<'allowed' | 'denied' | 'unavailable'> {
     try {
-      const access = await this.slack.inspect(channel, owner);
+      const access = await this.slack.inspect(channel, recipient);
       this.store.channel(channel, !!access, access?.shared ?? false);
-      return access && (!owner || access.ownerCanRead) ? 'allowed' : 'denied';
+      return access && (!recipient || access.recipientCanRead) ? 'allowed' : 'denied';
     } catch (error) {
       this.store.channel(channel, false, false, 'Access lookup failed; coverage unknown');
       logger.warn('initiative', `Access unavailable for ${channel}`, error);
@@ -18,5 +18,5 @@ export class SourceAccess {
     }
   }
 
-  async check(channel: string, owner = false): Promise<boolean> { return await this.evaluate(channel, owner) === 'allowed'; }
+  async check(channel: string, recipient?: string): Promise<boolean> { return await this.evaluate(channel, recipient) === 'allowed'; }
 }

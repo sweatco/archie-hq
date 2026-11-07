@@ -15,7 +15,7 @@ const delivery: Delivery = { id: 'card', channel: 'D_OWNER', thread: null, ts: '
 beforeEach(() => { f.update.mockReset(); f.update.mockResolvedValue({ ok: true }); });
 describe('proposal card replacement', () => {
   it('replaces all old actions while retaining proposal, sources and budget, then supplies an Open task link', async () => {
-    const slack = new PublicSlack('U_OWNER');
+    const slack = new PublicSlack();
     await slack.updateProposal(delivery, 'Starting… Approval saved.');
     await slack.updateProposal(delivery, 'Task started; outcome unverified.', 'https://slack.test/owner/task');
     const calls = f.update.mock.calls.map(call => call[0]);

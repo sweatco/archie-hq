@@ -212,7 +212,7 @@ export class InitiativeStore {
     const row = this.row('SELECT * FROM deliveries WHERE id=?', id);
     if (!row) return null;
     return {
-      id, channel: String(row.channel), thread: row.thread as string | null,
+      id, recipient: row.recipient as string | null, channel: String(row.channel), thread: row.thread as string | null,
       text: String(row.text), matters: JSON.parse(String(row.matters)), evidence: JSON.parse(String(row.evidence)),
       digest: row.digest === 1, state: row.state as Delivery['state'], ts: row.ts as string | null,
       created: Number(row.created), proposal: row.proposal ? JSON.parse(String(row.proposal)) : undefined,
@@ -227,6 +227,7 @@ export class InitiativeStore {
           SELECT 1 FROM deliveries d
           WHERE json_extract(d.proposal,'$.id')=p.id
             AND json_extract(d.proposal,'$.version')=json_extract(p.body,'$.version')
+            AND d.recipient=(SELECT json_extract(m.body,'$.owner') FROM matters m WHERE m.id=json_extract(p.body,'$.matter'))
             AND d.state IN ('pending','sending','uncertain','sent')
         )
       ORDER BY p.id LIMIT 20`, after).map(row => String(row.id));
@@ -497,7 +498,6 @@ export class InitiativeStore {
       this.run('UPDATE matters SET body=?,next_check=? WHERE id=?', JSON.stringify(matter), matter.nextCheck, id);
       this.run("UPDATE deliveries SET state='cancelled' WHERE state='pending' AND EXISTS (SELECT 1 FROM json_each(matters) WHERE value=?)", id);
       if (action === 'later') this.schedule('investigate', id, later!);
-      if (action === 'stop following') this.set(`unfollow:${matter.channel}:${matter.thread}`, 'true');
     });
   }
 
@@ -593,16 +593,17 @@ export class InitiativeStore {
         return this.setting(`unfollow:${matter.channel}:${matter.thread}`) === 'true';
       })) return false;
       // A cancelled card is retryable only when it never reserved a send slot or received a timestamp.
-      return this.run(`INSERT INTO deliveries(id,channel,thread,text,matters,evidence,digest,state,ts,created,proposal)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)
+      return this.run(`INSERT INTO deliveries(id,channel,thread,text,matters,evidence,digest,state,ts,created,proposal,recipient)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(id) DO UPDATE SET channel=excluded.channel,thread=excluded.thread,text=excluded.text,
           matters=excluded.matters,evidence=excluded.evidence,created=excluded.created,state='pending'
         WHERE deliveries.state='cancelled' AND excluded.state='pending'
           AND deliveries.ts IS NULL AND deliveries.slot_day IS NULL
-          AND excluded.proposal IS NOT NULL AND deliveries.proposal=excluded.proposal`,
+          AND excluded.proposal IS NOT NULL AND deliveries.proposal=excluded.proposal
+          AND deliveries.recipient IS excluded.recipient`,
         delivery.id, delivery.channel, delivery.thread, delivery.text,
         JSON.stringify(delivery.matters), JSON.stringify(delivery.evidence), Number(delivery.digest),
-        delivery.state, null, delivery.created, delivery.proposal ? JSON.stringify(delivery.proposal) : null).changes > 0;
+        delivery.state, null, delivery.created, delivery.proposal ? JSON.stringify(delivery.proposal) : null, delivery.recipient ?? null).changes > 0;
     });
   }
 
@@ -613,7 +614,7 @@ export class InitiativeStore {
         SELECT 1 FROM json_each(deliveries.matters) j WHERE j.value IN (${matters.map(() => '?').join(',')})
       )` : ''}
       ORDER BY created ${matters ? '' : 'LIMIT 100'}`, state, ...(matters ?? [])).map((r) => ({
-      id: String(r.id), channel: String(r.channel), thread: r.thread as string | null, text: String(r.text),
+      id: String(r.id), recipient: r.recipient as string | null, channel: String(r.channel), thread: r.thread as string | null, text: String(r.text),
       matters: JSON.parse(String(r.matters)), evidence: JSON.parse(String(r.evidence)),
       digest: r.digest === 1, state, ts: r.ts as string | null, created: Number(r.created), proposal: r.proposal ? JSON.parse(String(r.proposal)) : undefined,
     }));
@@ -623,6 +624,7 @@ export class InitiativeStore {
     return this.transaction(() => {
       const delivery = this.row("SELECT * FROM deliveries WHERE id=? AND state='pending'", id);
       if (!delivery || !this.evidenceCurrent(JSON.parse(String(delivery.evidence)))) return false;
+      if (!this.deliveryRecipientCurrent(this.delivery(id)!)) return false;
       if (delivery.proposal) {
         const ref = JSON.parse(String(delivery.proposal));
         const proposal = this.proposal(ref.id);
@@ -633,11 +635,17 @@ export class InitiativeStore {
         WHERE m.id IS NULL OR m.valid=0 OR c.allowed!=1 OR json_extract(m.body,'$.state')!='open' LIMIT 1`, delivery.matters);
       if (ineligible) return false;
       const count = Number(this.row(`SELECT count(*) AS n FROM deliveries
-        WHERE slot_day=? AND digest=? AND state IN ('sending','uncertain','sent')`, lisbonDay(now), delivery.digest)!.n);
+        WHERE slot_day=? AND digest=? AND channel=? AND state IN ('sending','uncertain','sent')`, lisbonDay(now), delivery.digest, delivery.channel)!.n);
       if (count >= (delivery.digest === 1 ? 1 : 2)) return false;
       this.run("UPDATE deliveries SET state='sending',slot_day=? WHERE id=?", lisbonDay(now), id);
       return true;
     });
+  }
+
+  deliveryRecipientCurrent(delivery: Delivery): boolean {
+    if (!delivery.recipient) return !delivery.channel.startsWith('D') && !delivery.proposal;
+    const ids = delivery.proposal ? [this.proposal(delivery.proposal.id)?.matter] : delivery.matters;
+    return ids.length > 0 && ids.every(id => id && this.matter(id)?.owner === delivery.recipient);
   }
 
   expire(now: number): void {

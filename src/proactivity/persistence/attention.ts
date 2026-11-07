@@ -135,7 +135,7 @@ export class AttentionRecords {
   }
 
   deliveryOrigin(channel: string, thread: string, timestamp: string) {
-    return this.row<{ id: string; matters: string }>("SELECT id,matters FROM deliveries WHERE channel=? AND (thread=? OR ts=?) AND state='sent' ORDER BY created DESC LIMIT 1", channel, thread, timestamp);
+    return this.row<{ id: string; matters: string; recipient: string | null }>("SELECT id,matters,recipient FROM deliveries WHERE channel=? AND (thread=? OR ts=?) AND state='sent' ORDER BY created DESC LIMIT 1", channel, thread, timestamp);
   }
 
   statistics() {

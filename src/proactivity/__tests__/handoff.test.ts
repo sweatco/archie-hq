@@ -25,7 +25,7 @@ let proposalId: string;
 
 function freshHandoff() {
   const collection = new SourceCollector(store, slack);
-  return new ProposalHandoff(store, slack, 'U_OWNER', () => repositories, source => collection.refresh(source, Date.now()), tasks);
+  return new ProposalHandoff(store, slack, () => repositories, source => collection.refresh(source, Date.now()), tasks);
 }
 
 async function presented() {
@@ -45,7 +45,7 @@ beforeEach(() => {
   store.set('owner', 'U_OWNER'); store.set('delivery_enabled', 'true');
   store.channel('C1', true, false);
   const evidence = store.record({ channel: 'C1', thread: TS, ts: TS, version: TS, author: 'U_AUTHOR', text: 'We need a release checklist.' }, NOW)!;
-  store.apply([store.snapshot('C1', TS)!], [], [{ id: 'release', channel: 'C1', thread: TS, title: 'Release checklist', detail: 'Prepare checklist', evidence: [evidence], state: 'open', owner: null, deadline: null, explicit: true, nextCheck: NOW, valid: true }]);
+  store.apply([store.snapshot('C1', TS)!], [], [{ id: 'release', channel: 'C1', thread: TS, title: 'Release checklist', detail: 'Prepare checklist', evidence: [evidence], state: 'open', owner: 'U_OWNER', deadline: null, explicit: true, nextCheck: NOW, valid: true }]);
   proposalId = store.proposeCapability({ repository: 'owner/repo', outcome: 'Build a release checklist', evidence: [evidence], matter: 'release' });
   repositories = ['owner/repo']; records = new Map();
   tasks = {
@@ -58,9 +58,9 @@ beforeEach(() => {
     read: vi.fn(async id => records.get(id) ?? null),
   };
   slack = {
-    inspect: vi.fn(async () => ({ shared: false, ownerCanRead: true })), channels: vi.fn(async () => ['C1']),
+    inspect: vi.fn(async () => ({ shared: false, recipientCanRead: true })), channels: vi.fn(async () => ['C1']),
     page: vi.fn(async () => ({ messages: store.snapshot('C1', TS)?.evidence ?? [] })),
-    ownerDm: vi.fn(async () => 'D_OWNER'), verifyDm: vi.fn(async channel => channel === 'D_OWNER'),
+    dm: vi.fn(async () => 'D_OWNER'), recipient: vi.fn(async channel => channel === 'D_OWNER' ? 'U_OWNER' : null), verifyDm: vi.fn(async channel => channel === 'D_OWNER'),
     send: vi.fn(async () => '1792490500.000001'), find: vi.fn(async () => undefined), active: vi.fn(() => false), link: (channel, ts) => `https://slack.test/${channel}/${ts}`,
     updateProposal: vi.fn(async () => {}),
   };
@@ -69,6 +69,47 @@ beforeEach(() => {
 afterEach(async () => { await handoff.drainCards(); store.close(); vi.useRealTimers(); rmSync(root, { recursive: true, force: true }); });
 
 describe('owner-approved proposal handoff', () => {
+  it.each(['pending', 'uncertain', 'sent'] as const)('presents a fresh card to the new employee without resending the former employee’s %s card', async state => {
+    await handoff.present(NOW);
+    const first = store.deliveries('pending')[0];
+    if (state !== 'pending') store.attention.finishDelivery(state, state === 'sent' ? '1792490500.000001' : null, first.id);
+    store.attention.saveMatter({ ...store.matter('release')!, owner: 'U_OTHER' });
+    vi.mocked(slack.dm).mockImplementation(async user => user === 'U_OTHER' ? 'D_OTHER' : 'D_OWNER');
+    await handoff.present(NOW);
+    expect(store.deliveries('pending').filter(delivery => delivery.recipient === 'U_OTHER')).toMatchObject([{ channel: 'D_OTHER' }]);
+    expect(store.delivery(first.id)).toMatchObject({ recipient: 'U_OWNER', state });
+    expect(tasks.prepare).not.toHaveBeenCalled();
+  });
+
+  it('retains an existing same-recipient legacy card without announcing it again', async () => {
+    const proposal = store.proposal(proposalId)!;
+    const version = proposalVersion(proposal);
+    const id = `proposal:${proposal.id}:${version}`;
+    store.enqueueDelivery({ id, recipient: 'U_OWNER', channel: 'D_OWNER', thread: null, text: 'Existing card', matters: [], evidence: proposal.evidence,
+      digest: false, state: 'pending', ts: null, created: NOW, proposal: { id: proposal.id, version } });
+    store.attention.finishDelivery('sent', '1792490500.000001', id);
+    await handoff.present(NOW);
+    expect(store.deliveries('pending')).toEqual([]);
+    expect(store.deliveries('sent')).toHaveLength(1);
+  });
+
+  it('does not transfer a sent card or saved approval when responsibility changes', async () => {
+    const delivery = await presented();
+    const version = delivery.proposal!.version;
+    await expect(handoff.describe(proposalId, 'U_OTHER')).rejects.toThrow('unavailable');
+    vi.mocked(tasks.prepare).mockRejectedValueOnce(new Error('Interrupted preparation'));
+    await expect(handoff.approve('U_OWNER', delivery.id, version)).rejects.toThrow('Interrupted preparation');
+    expect(store.handoff(proposalId)?.actor).toBe('U_OWNER');
+    store.attention.saveMatter({ ...store.matter('release')!, owner: 'U_OTHER' });
+    await expect(handoff.approve('U_OTHER', delivery.id, version)).rejects.toThrow('responsible employee');
+    await expect(handoff.approve('U_OWNER', delivery.id, version)).rejects.toThrow('responsible employee');
+    await handoff.recover();
+    expect(store.handoff(proposalId)).toMatchObject({ actor: 'U_OWNER', state: 'stale' });
+    expect(store.delivery(delivery.id)?.recipient).toBe('U_OWNER');
+    expect(tasks.start).not.toHaveBeenCalled();
+    expect(await handoff.describe(proposalId, 'U_OTHER')).toMatchObject({ handoff: null, conversation: undefined });
+  });
+
   it('uses the ordinary outbox and spending boundary without starting a task at presentation', async () => {
     const delivery = await presented();
     expect(delivery.text).toContain('normal task budgeting');
@@ -84,7 +125,7 @@ describe('owner-approved proposal handoff', () => {
   it('requires the verified owner, a sent action and the exact current proposal version', async () => {
     const delivery = await presented();
     const version = delivery.proposal!.version;
-    await expect(handoff.approve('U_OTHER', delivery.id, version)).rejects.toThrow('owner');
+    await expect(handoff.approve('U_OTHER', delivery.id, version)).rejects.toThrow('responsible employee');
     await expect(handoff.approve('U_OWNER', 'forged-delivery', version)).rejects.toThrow('stale');
     await expect(handoff.approve('U_OWNER', delivery.id, 'old-version')).rejects.toThrow('stale');
     repositories = [];
@@ -207,7 +248,7 @@ describe('owner-approved proposal handoff', () => {
 
   it('leaves valid actions untouched on rejected clicks and consumes stale preparation without claiming activation', async () => {
     const delivery = await presented();
-    await expect(handoff.approve('U_OTHER', delivery.id, delivery.proposal!.version)).rejects.toThrow('owner');
+    await expect(handoff.approve('U_OTHER', delivery.id, delivery.proposal!.version)).rejects.toThrow('responsible employee');
     await expect(handoff.approve('U_OWNER', delivery.id, 'forged-version')).rejects.toThrow('stale');
     expect(slack.updateProposal).not.toHaveBeenCalled();
     const original = vi.mocked(tasks.prepare).getMockImplementation()!;
@@ -286,11 +327,11 @@ describe('owner-approved proposal handoff', () => {
     metadata.pending_merge_approval = {
       github: 'owner/repo', pr_number: 1, requested_by: 'pm', requested_at: new Date(NOW).toISOString(),
     };
-    expect((await handoff.describe(proposalId)).runtime).toBe('awaiting approval; outcome unverified');
+    expect((await handoff.describe(proposalId, 'U_OWNER')).runtime).toBe('awaiting approval; outcome unverified');
     delete metadata.pending_merge_approval;
     metadata.status = 'completed';
-    expect((await handoff.describe(proposalId)).runtime).toBe('parked or awaiting the user; outcome unverified');
-    expect((await handoff.describe(proposalId)).outcome).toBe('unverified');
+    expect((await handoff.describe(proposalId, 'U_OWNER')).runtime).toBe('parked or awaiting the user; outcome unverified');
+    expect((await handoff.describe(proposalId, 'U_OWNER')).outcome).toBe('unverified');
   });
 });
 
@@ -326,7 +367,7 @@ it('rechecks the work thread audience even when the model cites only a related s
   vi.mocked(slack.page).mockImplementation(async (channel, _oldest, _latest, _cursor, thread) => ({ messages: store.snapshot(channel, thread ?? TS)?.evidence ?? [] }));
   const card = await presented();
   expect(store.proposalSources(id)).toEqual([{ channel: 'C1', thread: TS }, { channel: 'C2', thread: relatedThread }]);
-  vi.mocked(slack.inspect).mockImplementation(async channel => channel === 'C1' ? null : { shared: false, ownerCanRead: true });
+  vi.mocked(slack.inspect).mockImplementation(async channel => channel === 'C1' ? null : { shared: false, recipientCanRead: true });
   await expect(handoff.approve('U_OWNER', card.id, card.proposal!.version)).rejects.toThrow('access');
   expect(tasks.prepare).not.toHaveBeenCalled();
 });
