@@ -62,4 +62,26 @@ describe('formatSlackReadError', () => {
   it('falls back to the underlying error message', () => {
     expect(formatSlackReadError(new Error('weird failure'), 'C1')).toContain('weird failure');
   });
+
+  it('keeps the non-DM wording byte-identical', () => {
+    expect(formatSlackReadError(new PrivateChannelError('C9'), 'C9')).toBe(
+      "Couldn't read C9: it's a private channel or DM that isn't this task's own. Reading is limited to public channels (plus the channel this task lives in).",
+    );
+    const notMember =
+      "Couldn't read C1: Archie isn't a member of that public channel (or it doesn't exist). Invite it (`/invite @Archie`) — Archie can only read public channels it's been added to.";
+    expect(formatSlackReadError(apiErr('not_in_channel'), 'C1')).toBe(notMember);
+    expect(formatSlackReadError(apiErr('channel_not_found'), 'C1')).toBe(notMember);
+  });
+
+  it('uses DM wording for a private-channel refusal in a DM task', () => {
+    expect(formatSlackReadError(new PrivateChannelError('C9'), 'C9', true)).toContain('person in this DM');
+  });
+
+  it('tells a DM task how to get Archie into a private channel', () => {
+    for (const code of ['not_in_channel', 'channel_not_found']) {
+      const msg = formatSlackReadError(apiErr(code), 'C1', true);
+      expect(msg).toContain('/invite @Archie');
+      expect(msg).toContain('private channel');
+    }
+  });
 });
