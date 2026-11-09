@@ -68,7 +68,7 @@ describe('pm.md precedence', () => {
 
     expect(def.model).toBe('opus');
     expect(def.effort).toBe('medium');
-    expect(def.maxMode).toEqual({ model: 'claude-fable-5-1', effort: 'high' });
+    expect(def.maxMode).toEqual({ model: 'claude-fable-5-2', effort: 'high' });
   });
 
   it('lets pm.md override the defaults', () => {
@@ -85,14 +85,14 @@ describe('pm.md precedence', () => {
     writePmMd('---\nmodel: sonnet\neffort: high\nmaxMode:\n  model: claude-opus-5\n  effort: xhigh\n---\n');
     process.env.ARCHIE_PM_MODEL = 'haiku';
     process.env.ARCHIE_PM_EFFORT = 'low';
-    process.env.ARCHIE_PM_MAX_MODEL = 'claude-fable-5-1';
+    process.env.ARCHIE_PM_MAX_MODEL = 'claude-fable-5-2';
     process.env.ARCHIE_PM_MAX_EFFORT = 'max';
 
     const def = scanPmDef();
 
     expect(def.model).toBe('haiku');
     expect(def.effort).toBe('low');
-    expect(def.maxMode).toEqual({ model: 'claude-fable-5-1', effort: 'max' });
+    expect(def.maxMode).toEqual({ model: 'claude-fable-5-2', effort: 'max' });
   });
 
   it('takes each field independently — pm.md still decides what the env leaves unset', () => {
