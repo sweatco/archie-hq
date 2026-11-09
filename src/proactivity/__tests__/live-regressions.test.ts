@@ -44,9 +44,9 @@ function approve(id: string, state: TaskHandoffRecord['state'] = 'approved') {
 }
 
 it('resolves the retained live local deadline on the host instead of accepting model epoch arithmetic', async () => {
-  const slack = { inspect: async () => ({ shared: false, ownerCanRead: true }), page: async () => ({ messages: store.snapshot('C0BL50N2600', TS)!.evidence }), active: () => false } as unknown as ObservationSlack;
+  const slack = { inspect: async () => ({ shared: false, recipientCanRead: true }), page: async () => ({ messages: store.snapshot('C0BL50N2600', TS)!.evidence }), active: () => false } as unknown as ObservationSlack;
   const model = { complete: vi.fn().mockResolvedValueOnce(RESPONSE).mockResolvedValue({ resolved: false, help: null, public: false, evidence: [1] }) };
-  const service = new InitiativeService(store, slack, model, { mode: 'shadow', owner: 'U03RQQTE1EF', extractionModel: 'haiku', investigationModel: 'sonnet' }, () => NOW);
+  const service = new InitiativeService(store, slack, model, { mode: 'shadow', extractionModel: 'haiku', investigationModel: 'sonnet' }, () => NOW);
   try {
     store.schedule('extract', 'global', NOW);
     await service.tick(NOW, true);
@@ -62,7 +62,7 @@ it.each([false, true])('keeps one immutable scope for retained model paraphrases
   for (const outcome of OUTCOMES.slice(1)) expect(suggest(matter, outcome)).toBe(id);
   expect(store.listProposals()).toHaveLength(1);
   expect(store.proposal(id)?.outcome).toBe(OUTCOMES[0]);
-  expect(store.pendingProposalCount(NOW)).toBe(approved ? 0 : 1);
+  expect(store.pendingProposalIds()).toEqual(approved ? [] : [id]);
   expect(store.matter(matter.id)?.state).toBe('open');
 });
 
@@ -82,12 +82,11 @@ it.each([false, true])('requires a new identity and approval for fresh evidence,
   const fresh = store.record({ channel: 'C0BL50N2600', thread: TS, ts: '1792935289.000001', version: '1792935289.000001', author: 'U03RQQTE1EF', text: 'Change the task: acknowledge the new scope as NEW ACK.' }, NOW)!;
   const updated = populate([1, fresh]);
   expect(store.proposalCurrent(store.proposal(previous)!, NOW)).toBe(false);
-  expect(store.pendingProposalCount(NOW)).toBe(0);
   const next = suggest(updated, 'Send NEW ACK for the changed scope', [fresh]);
   expect(next).not.toBe(previous);
   expect(proposalVersion(store.proposal(next)!)).not.toBe(version);
   expect(store.handoff(next)).toBeNull();
-  expect(store.pendingProposalCount(NOW)).toBe(1);
+  expect(store.proposalCurrent(store.proposal(next)!, NOW)).toBe(true);
   expect(store.handoff(previous)?.version).toBe(approved ? version : undefined);
 });
 
@@ -100,33 +99,30 @@ it('keeps genuinely different matters and repositories distinct', () => {
 
 it.each(['approved', 'prepared', 'activated', 'stale'] as const)('excludes a %s handoff from awaiting approval', state => {
   const matter = populate(); const id = suggest(matter);
-  expect(store.pendingProposalCount(NOW)).toBe(1);
+  expect(store.pendingProposalIds()).toEqual([id]);
   approve(id, state);
-  expect(store.pendingProposalCount(NOW)).toBe(0);
+  expect(store.pendingProposalIds()).toEqual([]);
 });
 
 it.each(['resolved', 'dismissed', 'snoozed'] as const)('excludes an obsolete %s candidate', state => {
-  const matter = populate(); suggest(matter);
+  const matter = populate(); const id = suggest(matter);
   store.attention.saveMatter({ ...matter, state });
-  expect(store.pendingProposalCount(NOW)).toBe(0);
+  expect(store.proposalCurrent(store.proposal(id)!, NOW)).toBe(false);
 });
 
 it('excludes unavailable and expired source evidence without changing approval state', () => {
-  const matter = populate(); suggest(matter);
-  expect(store.pendingProposalCount(NOW + 91 * 86_400_000)).toBe(0);
+  const matter = populate(); const id = suggest(matter);
+  expect(store.proposalCurrent(store.proposal(id)!, NOW + 91 * 86_400_000)).toBe(false);
   store.channel(matter.channel, false, false);
-  expect(store.pendingProposalCount(NOW)).toBe(0);
+  expect(store.proposalCurrent(store.proposal(id)!, NOW)).toBe(false);
 });
 
-it('reports the current awaiting-approval count without treating task activation as feature completion', () => {
+it('keeps a matter open after activating its approved task', () => {
   const matter = populate(); const id = suggest(matter);
-  const service = new InitiativeService(store, {} as ObservationSlack, { complete: vi.fn() }, { mode: 'shadow', owner: 'U03RQQTE1EF', extractionModel: 'haiku', investigationModel: 'sonnet' });
-  try {
-    expect(service.status(NOW)).toContain('Task suggestions awaiting approval: 1.');
-    approve(id, 'activated');
-    expect(service.status(NOW)).toContain('Task suggestions awaiting approval: 0.');
-    expect(store.matter(matter.id)?.state).toBe('open');
-  } finally { service.stop(); service.release(); }
+  expect(store.pendingProposalIds()).toEqual([id]);
+  approve(id, 'activated');
+  expect(store.pendingProposalIds()).toEqual([]);
+  expect(store.matter(matter.id)?.state).toBe('open');
 });
 
 it('changes the approval version when host evidence context grows even if model wording and citations stay the same', () => {
@@ -149,5 +145,5 @@ it.each([false, true])('ignores changes in selected already-known work-thread ci
   expect(suggest(matter, OUTCOMES[1], [known, 1])).toBe(first);
   expect(store.listProposals()).toHaveLength(1);
   expect(proposalVersion(store.proposal(first)!)).toBe(version);
-  expect(store.pendingProposalCount(NOW)).toBe(approved ? 0 : 1);
+  expect(store.pendingProposalIds()).toEqual(approved ? [] : [first]);
 });

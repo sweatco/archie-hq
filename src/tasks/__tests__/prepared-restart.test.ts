@@ -10,6 +10,7 @@ describe('prepared task process restarts', () => {
     const root = mkdtempSync(join(tmpdir(), 'archie-prepared-restart-'));
     const input = { taskId: 'task-20261021-1000-restart', correlation: 'initiative:release', version: 'v1', actor: 'U_OWNER',
       brief: 'Owner-approved scoped proposal; normal task budgets and existing external-action approvals apply.',
+      evidence: 'Complete source context.\n'.repeat(500) + 'Final source requirement.',
       destination: { channel: 'D_OWNER', thread: '1792490400.000001', name: 'Owner proposal' } };
     const environment = { ...process.env, ARCHIE_WORKDIR: root, ARCHIE_MEMORY: 'false', ARCHIE_PLUGINS: '', SLACK_DRY_RUN: 'true',
       ANTHROPIC_API_KEY: '', ANTHROPIC_AUTH_TOKEN: '', SLACK_BOT_TOKEN: '', SLACK_APP_TOKEN: '' };
@@ -24,16 +25,19 @@ describe('prepared task process restarts', () => {
         syncBuiltinESMExports(); ${imports} await Task.prepare(input);`);
       expect(first.stderr).not.toContain('Error:');
       expect(first.status).toBe(37);
-      expect(metadata()).toMatchObject({ status: 'preparing', approved_start: { correlation: input.correlation, phase: 'prepared', brief: input.brief }, memory_destination: { channel_id: 'D_OWNER' } });
+      const evidencePath = join(root, 'sessions', input.taskId, 'shared/proposal-evidence.md');
+      expect(readFileSync(evidencePath, 'utf8')).toBe(input.evidence);
+      expect(metadata()).toMatchObject({ status: 'preparing', approved_start: { correlation: input.correlation, phase: 'prepared', brief: expect.stringContaining(evidencePath) }, memory_destination: { channel_id: 'D_OWNER' } });
       const second = run(`${imports} const task = await Task.prepare(input);
         const { recoverActiveTasks } = await import(${JSON.stringify(resolve('src/tasks/recovery.ts'))});
         await recoverActiveTasks(); if (task.metadata.status !== 'preparing') process.exit(1);`);
       expect(second.status, second.stderr).toBe(0);
       const third = run(`${imports} const task = await Task.prepare(input); task.deliver = async () => process.exit(39); await task.startPrepared();`);
       expect(third.status, third.stderr).toBe(39);
-      expect(metadata()).toMatchObject({ status: 'in_progress', approved_start: { phase: 'ready', correlation: input.correlation, brief: input.brief } });
+      expect(metadata()).toMatchObject({ status: 'in_progress', approved_start: { phase: 'ready', correlation: input.correlation, brief: expect.stringContaining(input.brief) } });
       const fourth = run(`${imports} const task = await Task.prepare(input); if (await task.startPrepared()) process.exit(1);`);
       expect(fourth.status, fourth.stderr).toBe(0);
+      expect(readFileSync(evidencePath, 'utf8')).toBe(input.evidence);
     } finally { rmSync(root, { recursive: true, force: true }); }
   }, 30_000);
 });

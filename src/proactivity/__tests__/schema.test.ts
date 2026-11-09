@@ -11,20 +11,22 @@ const NOW = Date.parse('2026-10-20T10:00:00Z');
 let root: string;
 let path: string;
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'archie-schema-')); path = join(root, 'state.sqlite'); });
-afterEach(() => { vi.restoreAllMocks(); rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); rmSync(root, { recursive: true, force: true }); });
 
-it('creates only the base schema and reopens without resetting evidence, owner enablement or liability', () => {
+it('reopens current state without resetting evidence, approvals or unresolved liability', () => {
   const store = new InitiativeStore(path, 'T1', NOW);
   store.channel('C1', true, false);
   store.record({ channel: 'C1', thread: '1792490401.000001', ts: '1792490401.000001', version: '1792490401.000001', author: 'U1', text: 'Review the release.' }, NOW);
-  store.set('owner', 'U1'); store.set('delivery_enabled', 'true');
+  store['run']("INSERT INTO deliveries(id,channel,text,matters,evidence,digest,state,created,recipient) VALUES ('card','D1','Task suggestion','[]','[]',0,'sent',?,'U1')", NOW);
+  store.approveHandoff({ proposal: 'proposal', version: 'v1', actor: 'U1', approved: NOW, task: 'task', state: 'approved', budget: 'task', delivery: 'card' });
   const charge = store.reserve(50_000, false, NOW)!;
   store.dispatchRequest(charge, 'claude-haiku-5-5', 'request-fingerprint');
   store.close();
-  const reopened = new InitiativeStore(path, 'T1', NOW + 86_400_000, { owner: 'U1' });
+  const reopened = new InitiativeStore(path, 'T1', NOW + 86_400_000);
   try {
     expect(reopened.setting('watermark')).toBe(String(NOW / 1000));
-    expect(reopened.setting('delivery_enabled')).toBe('true');
+    expect(reopened.delivery('card')).toMatchObject({ channel: 'D1', recipient: 'U1', state: 'sent' });
+    expect(reopened.handoff('proposal')).toMatchObject({ task: 'task', actor: 'U1', state: 'approved' });
     expect(reopened.snapshot('C1', '1792490401.000001')?.evidence[0].text).toBe('Review the release.');
     expect(reopened.budget(NOW + 86_400_000)).toBe(50_000);
     expect(reopened['row']('PRAGMA user_version')?.user_version).toBe(SCHEMA_VERSION);
@@ -36,7 +38,7 @@ it('creates only the base schema and reopens without resetting evidence, owner e
   } finally { reopened.close(); }
 });
 
-it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, SCHEMA_VERSION + 1])('rejects unsupported schema %i without changing its data or journal mode', version => {
+it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, SCHEMA_VERSION + 1])('rejects unsupported schema %i without changing its data or journal mode', version => {
   const old = new DatabaseSync(path);
   old.exec(`CREATE TABLE old_state (payload TEXT); INSERT INTO old_state VALUES ('Keep this evidence and unresolved charge'); PRAGMA user_version=${version}`);
   old.close();
@@ -55,13 +57,12 @@ it('does not overwrite an unversioned database that already contains data', () =
   expect(readFileSync(path)).toEqual(before);
 });
 
-it('keeps diagnostics read-only and rejects a different workspace or owner', () => {
+it('keeps diagnostics read-only and rejects a different workspace', () => {
   const store = new InitiativeStore(path, 'T1', NOW);
-  store.set('owner', 'U1'); store.close();
+  store.close();
   const before = readFileSync(path);
   for (const readOnly of [false, true]) {
     expect(() => new InitiativeStore(path, 'T_OTHER', NOW, { readOnly })).toThrow('workspace mismatch');
-    expect(() => new InitiativeStore(path, 'T1', NOW, { readOnly, owner: 'U_OTHER' })).toThrow('owner mismatch');
     expect(readFileSync(path)).toEqual(before);
   }
   const reader = new InitiativeStore(path, 'T1', NOW, { readOnly: true });

@@ -25,7 +25,7 @@ function populate(): Matter {
 }
 
 function delivery(id: string, matter: Matter): Delivery {
-  return { id, channel: 'D1', thread: null, text: matter.title, matters: [matter.id], evidence: matter.evidence,
+  return { id, recipient: matter.owner, channel: 'D1', thread: null, text: matter.title, matters: [matter.id], evidence: matter.evidence,
     digest: false, state: 'pending', ts: null, created: NOW };
 }
 
@@ -184,7 +184,6 @@ describe('durable admission', () => {
   });
 
   it('reserves at most two extra notification slots and reconciles interrupted sending', () => {
-    store.set('delivery_enabled', 'true');
     const matter = populate();
     for (let i = 0; i < 3; i++) store.enqueueDelivery(delivery(String(i), matter));
     expect(store.admitDelivery('0', NOW)).toBe(true);

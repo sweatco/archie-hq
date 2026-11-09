@@ -3,6 +3,7 @@ import type { TaskMetadata } from '../types/task.js';
 
 export interface PreparedTaskInput {
   taskId: string; correlation: string; version: string; actor: string; brief: string;
+  evidence?: string;
   destination: { channel: string; thread: string; name: string };
 }
 
@@ -12,7 +13,7 @@ export interface ApprovedTaskRuntime {
   read(taskId: string): Promise<TaskMetadata | null>;
 }
 
-// This adapter creates tasks only after the owner-approval handoff authorizes them.
+// This adapter creates tasks only after the recipient-approval handoff authorizes them.
 export const ordinaryTasks: ApprovedTaskRuntime = {
   async prepare(input) {
     const { Task } = await import('../tasks/task.js');

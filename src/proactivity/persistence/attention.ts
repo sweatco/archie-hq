@@ -30,16 +30,6 @@ export class AttentionRecords {
 
   revision(id: number) { return this.row<RevisionRecord>('SELECT * FROM revisions WHERE id=?', id); }
 
-  stopAnalysis(): void {
-    this.atomic(() => {
-      this.run(`DELETE FROM matter_checks WHERE kind='notified' AND matter IN (
-        SELECT j.value FROM deliveries d,json_each(d.matters) j WHERE d.state='pending'
-      )`);
-      this.run("UPDATE deliveries SET state='cancelled' WHERE state='pending'");
-      this.run("DELETE FROM jobs WHERE kind IN ('extract','investigate','digest')");
-    });
-  }
-
   scheduledJob(kind: string, target: string) {
     return this.row<{ kind: string }>('SELECT kind FROM jobs WHERE kind=? AND target=?', kind, target);
   }
@@ -121,10 +111,6 @@ export class AttentionRecords {
     return row ? { ...row, evidence: JSON.parse(row.evidence) as number[] } : undefined;
   }
 
-  channelStatus() {
-    return this.rows<Pick<ChannelRecord, 'id' | 'allowed' | 'gap' | 'checkpoint'>>('SELECT id,allowed,gap,checkpoint FROM channels');
-  }
-
   messageKnown(channel: string, timestamp: string) {
     return this.row<{ revision: number }>('SELECT revision FROM messages WHERE channel=? AND ts=?', channel, timestamp);
   }
@@ -135,7 +121,7 @@ export class AttentionRecords {
   }
 
   deliveryOrigin(channel: string, thread: string, timestamp: string) {
-    return this.row<{ id: string; matters: string }>("SELECT id,matters FROM deliveries WHERE channel=? AND (thread=? OR ts=?) AND state='sent' ORDER BY created DESC LIMIT 1", channel, thread, timestamp);
+    return this.row<{ id: string; matters: string; recipient: string | null }>("SELECT id,matters,recipient FROM deliveries WHERE channel=? AND (thread=? OR ts=?) AND state='sent' ORDER BY created DESC LIMIT 1", channel, thread, timestamp);
   }
 
   statistics() {

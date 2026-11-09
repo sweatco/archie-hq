@@ -6,7 +6,10 @@ const f = vi.hoisted(() => ({ loaded: false, runtime: { start: vi.fn(), capture:
 vi.mock('../runtime.js', () => { f.loaded = true; return { startInitiative: f.start }; });
 import { initInitiative, observeSlack, startInitiativeScheduler, shutdownInitiative, attachInitiativeOrigin } from '../index.js';
 
-beforeEach(() => { vi.clearAllMocks(); f.start.mockResolvedValue(f.runtime); vi.stubEnv('ARCHIE_PROACTIVITY_MODE', 'off'); });
+beforeEach(() => {
+  vi.clearAllMocks(); f.start.mockResolvedValue(f.runtime); f.runtime.capture.mockResolvedValue(false);
+  vi.stubEnv('ARCHIE_PROACTIVITY_MODE', 'off');
+});
 afterEach(async () => { await shutdownInitiative(); vi.unstubAllEnvs(); });
 
 describe('optional initiative boundary', () => {
@@ -15,6 +18,8 @@ describe('optional initiative boundary', () => {
     expect(f.loaded).toBe(false);
     expect(f.start).not.toHaveBeenCalled();
     expect(await observeSlack({ channel: 'C1' })).toBe(false);
+    expect(await observeSlack({ channel: 'D_HUMAN', user: 'U_HUMAN', text: 'initiative stop' })).toBe(false);
+    expect(f.runtime.capture).not.toHaveBeenCalled();
   });
 
   it('keeps ordinary routing available after invalid mode or missing Slack identity', async () => {
@@ -22,6 +27,12 @@ describe('optional initiative boundary', () => {
     vi.stubEnv('ARCHIE_PROACTIVITY_MODE', 'shadow'); await initInitiative(null);
     expect(f.start).not.toHaveBeenCalled();
     expect(await observeSlack({ channel: 'C1' })).toBe(false);
+  });
+
+  it('skips initiative task recovery and callbacks while off', async () => {
+    await initInitiative('T1'); startInitiativeScheduler();
+    expect(f.start).not.toHaveBeenCalled();
+    expect(f.runtime.start).not.toHaveBeenCalled();
   });
 
   it('initializes once, starts explicitly, and contains intake failures', async () => {

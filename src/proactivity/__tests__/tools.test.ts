@@ -28,8 +28,8 @@ beforeEach(() => {
     const evidence = store.record({ channel, thread: ts, ts, version: ts, author: 'U_AUTHOR', text: `Source in ${channel}` }, NOW)!;
     store.apply([store.snapshot(channel, ts)!], [{ id: channel, channel, thread: ts, text: `Release in ${channel}`, evidence: [evidence], kind: 'change' }], []);
   }
-  slack = { inspect: vi.fn(async channel => ['C1', 'C2'].includes(channel) ? { shared: false, ownerCanRead: true } : null),
-    verifyDm: vi.fn(async channel => channel === 'D_OWNER'), link: (channel: string, thread: string) => `https://slack.test/${channel}/${thread}` } as unknown as ObservationSlack;
+  slack = { inspect: vi.fn(async channel => ['C1', 'C2'].includes(channel) ? { shared: false, recipientCanRead: true } : null),
+    recipient: vi.fn(async channel => channel === 'D_OWNER' ? 'U_OWNER' : null), verifyDm: vi.fn(async channel => channel === 'D_OWNER'), link: (channel: string, thread: string) => `https://slack.test/${channel}/${thread}` } as unknown as ObservationSlack;
   recall = new ObservationRecall(store, slack);
   installObservationAPI(recall);
   vi.stubEnv('ARCHIE_MEMORY', 'false');
@@ -58,7 +58,7 @@ describe('independent observation tools', () => {
     expect(await recall.search(destination('C1'), 'Release', 20)).toHaveLength(1);
     expect(await recall.search(destination('D_OTHER'), 'Release', 20)).toEqual([]);
     expect(await recall.search(destination('C_PRIVATE'), 'Release', 20)).toEqual([]);
-    expect(await recall.read(destination('C1'), 'matters')).toBe('Owner DM required.');
+    expect(await recall.read(destination('C1'), 'matters')).toBe('Verified recipient DM required.');
     expect(await recall.search(destination('D_OWNER'), 'Release', 20)).toHaveLength(2);
   });
 
@@ -93,13 +93,13 @@ describe('independent observation tools', () => {
     vi.mocked(slack.inspect).mockImplementationOnce(async channel => {
       const source = store.snapshot(channel, (NOW / 1000).toFixed(6))!;
       store.record({ ...source.evidence[0], version: (NOW / 1000 + 1).toFixed(6), deleted: true, text: '' }, NOW);
-      return { shared: false, ownerCanRead: true };
+      return { shared: false, recipientCanRead: true };
     });
     expect(await recall.read(destination('D_OWNER'), 'observation', 'C1')).toBe('Observation unavailable.');
     vi.mocked(slack.inspect).mockImplementationOnce(async channel => {
       const source = store.snapshot(channel, (NOW / 1000).toFixed(6))!;
       store.record({ ...source.evidence[0], version: (NOW / 1000 + 1).toFixed(6), deleted: true, text: '' }, NOW);
-      return { shared: false, ownerCanRead: true };
+      return { shared: false, recipientCanRead: true };
     });
     expect(await recall.search(destination('D_OWNER'), 'Release', 20)).toEqual([]);
   });

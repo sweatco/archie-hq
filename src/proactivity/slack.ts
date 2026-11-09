@@ -5,15 +5,16 @@ import { WebClient } from '@slack/web-api';
 import { getActiveTaskIds, getTask } from '../tasks/task.js';
 import type { Delivery, SourceMessage } from './types.js';
 
-export interface SourceAccess { shared: boolean; ownerCanRead: boolean }
+export interface SourceAccess { shared: boolean; recipientCanRead: boolean }
 export interface SlackPage { messages: SourceMessage[]; cursor?: string }
 
 export interface ObservationSlack {
-  inspect(channel: string, verifyOwner?: boolean): Promise<SourceAccess | null>;
+  inspect(channel: string, recipient?: string): Promise<SourceAccess | null>;
   channels(): Promise<string[]>;
   page(channel: string, oldest: string, latest: string, cursor?: string, thread?: string): Promise<SlackPage>;
-  ownerDm(): Promise<string>;
-  verifyDm(channel: string): Promise<boolean>;
+  dm(user: string): Promise<string>;
+  recipient(channel: string): Promise<string | null>;
+  verifyDm(channel: string, user: string): Promise<boolean>;
   send(delivery: Delivery): Promise<string | undefined>;
   find(delivery: Delivery): Promise<string | undefined>;
   active(channel: string, thread: string): boolean;
@@ -43,23 +44,22 @@ export interface ProposalSlack extends ObservationSlack {
 
 export class PublicSlack implements ProposalSlack {
   private readonly client = new WebClient(getSlackClient().token, { retryConfig: { retries: 0 }, rejectRateLimitedCalls: true, timeout: 15_000 });
-  constructor(private readonly owner: string) {}
-
-  async inspect(channel: string, verifyOwner = false): Promise<SourceAccess | null> {
+  async inspect(channel: string, recipient?: string): Promise<SourceAccess | null> {
     if (!/^C[A-Z0-9]+$/.test(channel) || !getHomeTeamId()) return null;
     const result = await this.client.conversations.info({ channel });
     const c = result.channel;
     if (!c || c.is_private !== false || c.is_im !== false || c.is_mpim !== false || c.is_member !== true || c.is_archived !== false
       || typeof c.is_shared !== 'boolean' || typeof c.is_ext_shared !== 'boolean' || typeof c.is_pending_ext_shared !== 'boolean') return null;
     let cursor: string | undefined;
-    let ownerCanRead = false;
-    while (verifyOwner) {
+    let recipientCanRead = false;
+    if (recipient && !await this.human(recipient)) return { shared: c.is_shared || c.is_ext_shared || c.is_pending_ext_shared, recipientCanRead: false };
+    while (recipient) {
       const page = await this.client.conversations.members({ channel, cursor, limit: 200 });
-      ownerCanRead ||= page.members?.includes(this.owner) === true;
+      recipientCanRead ||= page.members?.includes(recipient) === true;
       cursor = page.response_metadata?.next_cursor || undefined;
-      if (!cursor || ownerCanRead) break;
+      if (!cursor || recipientCanRead) break;
     }
-    return { shared: c.is_shared || c.is_ext_shared || c.is_pending_ext_shared, ownerCanRead };
+    return { shared: c.is_shared || c.is_ext_shared || c.is_pending_ext_shared, recipientCanRead };
   }
 
   async channels(): Promise<string[]> {
@@ -88,38 +88,40 @@ export class PublicSlack implements ProposalSlack {
     return { messages, cursor: page.response_metadata?.next_cursor || undefined };
   }
 
-  private async verifyOwner(): Promise<void> {
-    const result = await this.client.users.info({ user: this.owner });
+  private async human(id: string): Promise<boolean> {
+    const result = await this.client.users.info({ user: id });
     const user = result.user;
     if (!user || user.team_id !== getHomeTeamId() || user.is_restricted !== false || user.is_ultra_restricted !== false
-      || user.is_bot !== false || user.is_app_user === true || user.deleted !== false) throw new Error('Unverified initiative owner');
+      || user.is_bot !== false || user.is_app_user === true || user.deleted !== false) return false;
+    return true;
   }
 
-  async ownerDm(): Promise<string> {
-    await this.verifyOwner();
-    const result = await this.client.conversations.open({ users: this.owner });
-    if (!result.channel?.id || !await this.verifyDm(result.channel.id)) throw new Error('Owner DM unavailable');
+  async dm(user: string): Promise<string> {
+    if (!await this.human(user)) throw new Error('Unverified initiative recipient');
+    const result = await this.client.conversations.open({ users: user });
+    if (!result.channel?.id || !await this.verifyDm(result.channel.id, user)) throw new Error('Recipient DM unavailable');
     return result.channel.id;
   }
 
-  async verifyDm(channel: string): Promise<boolean> {
-    if (!/^D[A-Z0-9]+$/.test(channel)) return false;
-    await this.verifyOwner();
+  async recipient(channel: string): Promise<string | null> {
+    if (!/^D[A-Z0-9]+$/.test(channel)) return null;
     const result = await this.client.conversations.info({ channel });
     const conversation = result.channel as { is_im?: boolean; user?: string } | undefined;
-    return conversation?.is_im === true && conversation.user === this.owner;
+    return conversation?.is_im === true && conversation.user && await this.human(conversation.user) ? conversation.user : null;
   }
+
+  async verifyDm(channel: string, user: string): Promise<boolean> { return await this.recipient(channel) === user; }
 
   send(delivery: Delivery): Promise<string | undefined> {
     if (isSlackDryRun()) return Promise.resolve(undefined);
     return postSlackMessage({ channel: delivery.channel, threadTs: delivery.thread ?? undefined,
       text: delivery.text.replace(/<!(?:channel|here|everyone)>/g, '[group mention]'), correlationId: delivery.id,
-      actions: delivery.proposal ? [{
+      actions: !delivery.channel.startsWith('D') || !delivery.recipient ? undefined : delivery.proposal ? [{
         type: 'button', text: { type: 'plain_text', text: 'Start task' }, action_id: 'initiative_start_task',
-        value: `${delivery.id}:start:${delivery.proposal.version}`, visible_to_user_ids: [this.owner],
+        value: `${delivery.id}:start:${delivery.proposal.version}`, visible_to_user_ids: [delivery.recipient],
       }] : delivery.matters.length === 1 ? ['handled', 'later', 'not useful', 'stop following'].map((action) => ({
         type: 'button', text: { type: 'plain_text', text: action }, action_id: `initiative_${action.replaceAll(' ', '_')}`,
-        value: `${delivery.id}:${action}`, visible_to_user_ids: [this.owner],
+        value: `${delivery.id}:${action}`, visible_to_user_ids: [delivery.recipient!],
       })) : undefined,
     });
   }
@@ -133,8 +135,8 @@ export class PublicSlack implements ProposalSlack {
   }
 
   async find(delivery: Delivery): Promise<string | undefined> {
-    // Owner-DM reconciliation examines only our outbound correlation IDs; no DM content is ingested.
-    if (delivery.channel.startsWith('D') ? !await this.verifyDm(delivery.channel) : !await this.inspect(delivery.channel)) return undefined;
+    // DM reconciliation examines only our outbound correlation IDs; no DM content is ingested.
+    if (delivery.channel.startsWith('D') ? !delivery.recipient || !await this.verifyDm(delivery.channel, delivery.recipient) : !await this.inspect(delivery.channel)) return undefined;
     let cursor: string | undefined;
     for (let pageNo = 0; pageNo < 10; pageNo++) {
       const args = { channel: delivery.channel, cursor, oldest: String(delivery.created / 1000 - 60), include_all_metadata: true, limit: 200 };

@@ -15,26 +15,20 @@ import { getArchieConfig } from '../system/plugin-loader.js';
 import type { InitiativeRuntime } from './index.js';
 
 export async function startInitiative(team: string, mode: 'shadow' | 'live'): Promise<InitiativeRuntime> {
-  const owner = process.env.ARCHIE_PROACTIVITY_OWNER;
-  if (!owner || !/^[UW][A-Z0-9]{6,}$/.test(owner)) throw new Error('ARCHIE_PROACTIVITY_OWNER must be a human Slack ID');
   const dir = join(WORKDIR, 'initiative');
   await mkdir(dir, { recursive: true, mode: 0o700 });
-  const store = new InitiativeStore(join(dir, 'state.sqlite'), team, Date.now(), { owner });
+  const store = new InitiativeStore(join(dir, 'state.sqlite'), team);
   try {
-    const slack = new PublicSlack(owner);
+    const slack = new PublicSlack();
     const gateway = new ModelGateway(store);
     const investigationModel = process.env.ARCHIE_PROACTIVITY_INVESTIGATION_MODEL ?? 'claude-sonnet-5-5';
     const service = new InitiativeService(store, slack, gateway, {
-      mode, owner,
+      mode,
       extractionModel: process.env.ARCHIE_PROACTIVITY_EXTRACTION_MODEL ?? 'claude-haiku-5-5',
       investigationModel, repositories: Object.keys(getArchieConfig().repos),
     }, Date.now);
-    const handoff = new ProposalHandoff(store, slack, owner, () => Object.keys(getArchieConfig().repos), source => service.refreshEvidence(source));
-    await slack.ownerDm();
+    const handoff = new ProposalHandoff(store, slack, () => Object.keys(getArchieConfig().repos), source => service.refreshEvidence(source));
     await gateway.verify([service.config.extractionModel, service.config.investigationModel]);
-    // Recheck after network awaits: another startup may have bound an empty database.
-    if (store.setting('owner') && store.setting('owner') !== owner) throw new Error('Observation owner mismatch');
-    store.set('owner', owner);
     if (!store.setting('activated')) {
       store.set('watermark', String(Date.now() / 1000));
       store.set('activated', 'true');
@@ -70,43 +64,35 @@ export async function startInitiative(team: string, mode: 'shadow' | 'live'): Pr
     }
 
     async function control(user: string, command: string): Promise<void> {
-      if (user !== owner) return;
       const parts = command.trim().split(/\s+/);
       const action = parts[0];
-      if (action === 'status') {
-        await postSlackMessage({ channel: await slack.ownerDm(), text: service.status() });
-        return;
-      }
+      const channel = await slack.dm(user);
       if (action === 'proposal' && parts.length === 2) {
-        await postSlackMessage({ channel: await slack.ownerDm(), text: JSON.stringify(await handoff.describe(parts[1])) });
-        return;
-      }
-      if (action === 'delivery' && parts.length === 2 && ['on', 'off'].includes(parts[1])) {
-        store.set('delivery_enabled', String(parts[1] === 'on'));
-        await postSlackMessage({ channel: await slack.ownerDm(), text: `Proactive delivery ${parts[1]}. Source, audience, budget and interruption checks still apply.` });
-        return;
-      }
-      if (['mute', 'unmute', 'pause', 'resume', 'stop', 'start'].includes(action)) {
-        const key = ['mute', 'unmute'].includes(action) ? 'mute' : ['pause', 'resume'].includes(action) ? 'pause' : 'stop';
-        store.set(key, String(['mute', 'pause', 'stop'].includes(action)));
-        if (action === 'pause' || action === 'stop') service.cancelAnalysis();
-        if (action === 'stop') store.attention.stopAnalysis();
-        if (action === 'start' || action === 'resume') service.seed();
-        await postSlackMessage({ channel: await slack.ownerDm(), text: `Initiative ${action} applied.` });
+        await postSlackMessage({ channel, text: JSON.stringify(await handoff.describe(parts[1], user)) });
         return;
       }
       const match = command.match(/^(handled|later|not useful|stop following)\s+(.+)$/);
       if (match) {
-        store.feedback(match[2], match[1], Date.now(), nextMorning(Date.now()));
-        await postSlackMessage({ channel: await slack.ownerDm(), text: `Recorded: ${match[1]}.` });
+        const matter = store.matter(match[2]);
+        if (!matter?.valid || matter.owner !== user) return;
+        const access = await slack.inspect(matter.channel, user);
+        const current = store.matter(matter.id);
+        if (!access?.recipientCanRead || !current?.valid || current.owner !== user) return;
+        store.feedback(matter.id, match[1], Date.now(), nextMorning(Date.now()));
+        await postSlackMessage({ channel, text: `Recorded: ${match[1]}.` });
         return;
       }
-      await postSlackMessage({ channel: await slack.ownerDm(), text: 'Use initiative status, delivery on/off, mute/unmute, pause/resume, stop/start, or handled/later/not useful/stop following followed by a matter ID. Inspect a linked task with initiative proposal <id>.' });
+      await postSlackMessage({ channel, text: 'Use initiative handled/later/not useful/stop following followed by a matter ID for your own matters. Inspect your linked task with initiative proposal <id>. Proactivity is configured through ARCHIE_PROACTIVITY_MODE=off|shadow|live.' });
     }
 
     async function handleAction(user: string, value: string): Promise<void> {
-      if (closing || user !== owner) return;
+      if (closing) return;
       const start = value.match(/^(.{1,240}):start:([a-f0-9]{24})$/);
+      const feedback = value.match(/^(.{1,240}):(handled|later|not useful|stop following)$/);
+      const id = start?.[1] ?? feedback?.[1];
+      if (!id) return;
+      const delivery = store.delivery(id);
+      if (!delivery || !delivery.channel.startsWith('D') || delivery.state !== 'sent' || delivery.recipient !== user || !store.deliveryRecipientCurrent(delivery)) return;
       if (start) {
         try { await handoff.approve(user, start[1], start[2]); }
         catch (error) {
@@ -117,13 +103,14 @@ export async function startInitiative(team: string, mode: 'shadow' | 'live'): Pr
         }
         return;
       }
-      const split = value.indexOf(':');
-      if (split < 0) return;
-      const id = value.slice(0, split);
-      const action = value.slice(split + 1);
-      const matters = store.attention.deliveryMatters(id);
-      if (!matters || !['handled', 'later', 'not useful', 'stop following'].includes(action)) return;
-      for (const matter of matters) store.feedback(matter, action, Date.now(), nextMorning(Date.now()));
+      if (!feedback) return;
+      for (const id of delivery.matters) {
+        const matter = store.matter(id);
+        if (!matter?.valid || matter.owner !== user || !(await slack.inspect(matter.channel, user))?.recipientCanRead) return;
+      }
+      if (!store.deliveryRecipientCurrent(delivery)) return;
+      if (delivery.matters.some(id => !store.matter(id)?.valid)) return;
+      for (const matter of delivery.matters) store.feedback(matter, feedback[2], Date.now(), nextMorning(Date.now()));
     }
 
     async function capturePublic(event: Record<string, unknown>): Promise<void> {
@@ -161,11 +148,11 @@ export async function startInitiative(team: string, mode: 'shadow' | 'live'): Pr
         if (closing) return false;
         return operation(async () => {
           const channel = typeof event.channel === 'string' ? event.channel : '';
-          if (event.user === owner && !event.bot_id && !event.bot_profile && !event.subtype && typeof event.text === 'string' && /^initiative\s/i.test(event.text) && await slack.verifyDm(channel)) {
-            try { await control(owner, String(event.text).replace(/^initiative\s+/i, '')); }
+          if (typeof event.user === 'string' && !event.bot_id && !event.bot_profile && !event.subtype && typeof event.text === 'string' && /^initiative\s/i.test(event.text) && await slack.verifyDm(channel, event.user)) {
+            try { await control(event.user, String(event.text).replace(/^initiative\s+/i, '')); }
             catch (error) {
-              logger.warn('initiative', 'Owner control rejected', error);
-              await postSlackMessage({ channel, text: 'That initiative control could not be applied. Its sources or review may be unavailable or out of date. Use initiative status to inspect the current state.' });
+              logger.warn('initiative', 'Employee control rejected', error);
+              await postSlackMessage({ channel, text: 'That initiative control could not be applied. Its sources or review may be unavailable or out of date. Use initiative proposal <id> to inspect your linked task.' });
             }
             return true;
           }
@@ -186,10 +173,12 @@ export async function startInitiative(team: string, mode: 'shadow' | 'live'): Pr
         return operation(async () => {
           try { await handleAction(user, value); }
           catch (error) {
-            if (user !== owner || closing) return;
+            if (closing) return;
+            const delivery = store.delivery(value.split(':start:')[0]);
+            if (delivery?.recipient !== user || !await slack.verifyDm(delivery.channel, user)) return;
             const message = error instanceof HandoffRejection ? error.message
               : 'The task start could not be confirmed. Use initiative proposal followed by the proposal ID to inspect its linked task before retrying.';
-            await postSlackMessage({ channel: await slack.ownerDm(), text: message });
+            await postSlackMessage({ channel: delivery.channel, text: message });
           }
         });
       },
@@ -200,17 +189,19 @@ export async function startInitiative(team: string, mode: 'shadow' | 'live'): Pr
           if (!row) return null;
           const unavailable = { deliveryId: String(row.id), matterIds: [], brief: 'Source context is currently unavailable.' };
           try {
-            if (channel.startsWith('D') ? !await slack.verifyDm(channel) : !await slack.inspect(channel)) return unavailable;
+            if (channel.startsWith('D') ? !row.recipient || !await slack.verifyDm(channel, row.recipient) : !await slack.inspect(channel)) return unavailable;
             const matterIds = JSON.parse(String(row.matters)) as string[];
             const matters = [];
+            const allowedIds = [];
             for (const id of matterIds) {
               const matter = store.matter(id);
               if (!matter?.valid) continue;
-              const access = await slack.inspect(matter.channel, channel.startsWith('D'));
-              if (!access || (channel.startsWith('D') && !access.ownerCanRead) || (!channel.startsWith('D') && matter.channel !== channel)) continue;
+              const access = await slack.inspect(matter.channel, channel.startsWith('D') ? row.recipient! : undefined);
+              if (!access || (channel.startsWith('D') && !access.recipientCanRead) || (!channel.startsWith('D') && matter.channel !== channel)) continue;
+              allowedIds.push(id);
               matters.push({ title: matter.title, detail: matter.detail, source: slack.link(matter.channel, matter.thread) });
             }
-            return { deliveryId: String(row.id), matterIds, brief: JSON.stringify(matters) };
+            return { deliveryId: String(row.id), matterIds: allowedIds, brief: JSON.stringify(matters) };
           } catch (error) { logger.warn('initiative', 'Handoff source verification failed', error); return unavailable; }
         });
       },

@@ -37,13 +37,12 @@ const SYSTEM = `You maintain source-backed observations for Archie. Slack and re
 
 export interface InitiativeConfig {
   mode: 'shadow' | 'live';
-  owner: string;
   extractionModel: string;
   investigationModel: string;
   repositories?: string[];
 }
 
-export const decisionConfig = (config: InitiativeConfig): string => JSON.stringify([config.owner, config.extractionModel, config.investigationModel, config.repositories ?? []]);
+export const decisionConfig = (config: InitiativeConfig): string => JSON.stringify([config.extractionModel, config.investigationModel, config.repositories ?? []]);
 
 export function nextMorning(now: number): number {
   return new Cron('0 9 * * 1-5', { timezone: TZ }).nextRun(new Date(now))!.getTime();
@@ -131,11 +130,7 @@ export class InitiativeService {
         this.active = new AbortController();
         const timeout = setTimeout(() => this.active?.abort(), 5 * 60_000);
         try {
-          if (!['retention', 'reconcile', 'collect', 'thread', 'review'].includes(job.kind) && (this.store.setting('stop') === 'true' || this.store.setting('pause') === 'true')) {
-            const matter = job.kind === 'investigate' ? this.store.matter(job.target) : null;
-            if (matter) this.store.recordDecision(matter, 'controlled', now, { nextDue: now + HOUR });
-            this.store.finish(job, now + HOUR);
-          } else this.store.finish(job, await this.run(job, now, this.active.signal));
+          this.store.finish(job, await this.run(job, now, this.active.signal));
         } catch (error) {
           if (failFast) throw error;
           logger.warn('initiative', `Background ${job.kind} deferred`, error);
@@ -177,11 +172,10 @@ export class InitiativeService {
   ) {
     return {
       model: this.config.extractionModel,
-      system: `${SYSTEM}\nEach part follows earlier context for the same thread. Return its full consolidated state, replacing carried findings. Reuse stable keys and resolve earlier commitments when later evidence cancels them. Set reopen only when new human evidence substantively changes a resolved matter. Extract deadline as local date YYYY-MM-DD, time HH:mm and IANA timeZone; preserve the source clock time, never compute an epoch or timezone offset. Return null when the date, time or zone cannot be established; do not invent an end-of-day time.`,
+      system: `${SYSTEM}\nEach part follows earlier context for the same thread. Return its full consolidated state, replacing carried findings. Reuse stable keys and resolve earlier commitments when later evidence cancels them. Set reopen only when new human evidence substantively changes a resolved matter. Set owner to a human Slack ID only when cited human evidence explicitly establishes their responsibility: use the author's ID for a first-person commitment or an explicit Slack mention for an assignment. Otherwise owner=null. Never infer responsibility from display names, participation or administration. Extract deadline as local date YYYY-MM-DD, time HH:mm and IANA timeZone; preserve the source clock time, never compute an epoch or timezone offset. Return null when the date, time or zone cannot be established; do not invent an end-of-day time.`,
       schema: Findings,
       input: {
         now: Math.max(...threads.flatMap((s) => s.evidence.map((e) => e.captured)), 0),
-        owner: this.config.owner,
         threads,
         existing: previous.filter((m) => threads.some((s) => s.channel === m.channel && s.thread === m.thread)).slice(-10)
           .map(({ id, title, state, evidence }) => ({ id, title: title.slice(0, 80), state, evidence: evidence.slice(-4) })),
@@ -225,7 +219,12 @@ export class InitiativeService {
         if (!identity && overlapping.length > 1) throw new Error('Ambiguous reconciliation against existing matters');
         const deadline = deadlineAt(m.deadline);
         matters.push({
-          ...m, deadline, id: identity?.id ?? `${thread.channel}:${thread.thread}:m:${m.key}`,
+          ...m, owner: m.owner && m.evidence.some(id => {
+            const source = this.store.attention.revision(id);
+            return source && !source.own && !source.bot && (source.author === m.owner
+              || source.excerpt.includes(`<@${m.owner}>`) || source.excerpt.includes(`<@${m.owner}:`));
+          }) ? m.owner : null,
+          deadline, id: identity?.id ?? `${thread.channel}:${thread.thread}:m:${m.key}`,
           channel: thread.channel, thread: thread.thread,
           nextCheck: reconciledCheck(identity, deadline, now), valid: true,
         });
@@ -276,7 +275,6 @@ export class InitiativeService {
         consumeExtractionBatch(remaining, batch);
       }
       signal.throwIfAborted();
-      if (this.store.setting('stop') === 'true') return;
       applying = true;
       const { observations, matters } = this.reconcileFindings(carried.values(), previous, now);
       if (this.store.apply(snapshots, observations, matters, job)) {
@@ -302,10 +300,6 @@ export class InitiativeService {
     if (matter.nextCheck > now) {
       explain(matter.state === 'snoozed' ? 'snoozed' : 'scheduled', matter.nextCheck);
       return matter.nextCheck;
-    }
-    if (this.store.setting(`unfollow:${matter.channel}:${matter.thread}`) === 'true') {
-      explain('dismissed');
-      return;
     }
     if (this.slack.active(matter.channel, matter.thread)) {
       const next = nextMatterCheck(matter, now);
@@ -345,7 +339,7 @@ export class InitiativeService {
     const bounded = [request.input.thread, ...request.input.related];
     const assessment = await this.model.complete(request, signal);
     signal.throwIfAborted();
-    if (!this.store.owns(job) || !this.store.current(sources) || this.store.setting('stop') === 'true') return;
+    if (!this.store.owns(job) || !this.store.current(sources)) return;
     const currentMatter = this.store.matter(matter.id);
     if (!currentMatter?.valid || ['resolved', 'dismissed'].includes(currentMatter.state)) {
       explain(currentMatter?.state === 'resolved' ? 'resolved' : currentMatter?.state === 'dismissed' ? 'dismissed' : 'source_changed');
@@ -371,9 +365,8 @@ export class InitiativeService {
         || suggestion.evidence.some(id => !evidence.some(e => e.id === id && !e.own && !e.bot))) {
         throw new Error('Unsupported task suggestion');
       }
-      if (await this.access.check(matter.channel, true) && this.store.current(sources) && this.store.owns(job)
-        && this.store.matter(matter.id)?.valid && this.store.matter(matter.id)?.state === 'open'
-        && this.store.setting('stop') !== 'true' && this.store.setting('pause') !== 'true') {
+      if (matter.owner && await this.access.check(matter.channel, matter.owner) && this.store.current(sources) && this.store.owns(job)
+        && this.store.matter(matter.id)?.valid && this.store.matter(matter.id)?.state === 'open') {
         this.store.proposeCapability({ ...suggestion, matter: matter.id });
       }
     }
@@ -385,10 +378,14 @@ export class InitiativeService {
       return nextCheck;
     }
     const publicReply = assessment.public && bounded.every((s) => !s.gap) && inactivityPhase(snapshot, now) === 'abandoned';
-    if (!publicReply && !await this.access.check(matter.channel, true)) return nextCheck;
+    const recipient = !publicReply && matter.owner && await this.access.check(matter.channel, matter.owner) ? matter.owner : null;
+    if (!publicReply && !recipient) return nextCheck;
     const previous = ['pending', 'sending', 'uncertain', 'sent'].flatMap(state => this.store.deliveries(state as Delivery['state'], [matter.id]));
     const reminder = this.store.latestReminder(matter.id);
-    if (previous.some(delivery => citationIdentity(delivery.evidence) === citationIdentity(assessment.evidence)
+    if (previous.some(delivery => (publicReply
+      ? delivery.channel === matter.channel && delivery.thread === matter.thread
+      : delivery.channel.startsWith('D') && delivery.recipient === recipient)
+      && citationIdentity(delivery.evidence) === citationIdentity(assessment.evidence)
       && reminderPhase(matter, delivery.created) === reminderPhase(matter, now)
       && (!reminder || delivery.created >= reminder))) {
       this.store.rememberCheck(matter.id, signature, 'notified', now);
@@ -396,7 +393,7 @@ export class InitiativeService {
       return nextCheck;
     }
     const delivery: Delivery = {
-      id: randomUUID(), channel: publicReply ? matter.channel : await this.slack.ownerDm(), thread: publicReply ? matter.thread : null,
+      id: randomUUID(), recipient, channel: publicReply ? matter.channel : await this.slack.dm(recipient!), thread: publicReply ? matter.thread : null,
       text: `${assessment.help}\n\n${this.slack.link(matter.channel, matter.thread)}`, matters: [matter.id], evidence: assessment.evidence,
       digest: false, state: 'pending', ts: null, created: now,
     };
@@ -416,7 +413,7 @@ export class InitiativeService {
         instruction: 'Check whether resolved using cited current evidence, never missing context. Offer concrete useful help only. Public follow-ups need an evidenced unresolved request and two business days of inactivity. No help is better than repetition. When ordinary repository work would help, suggest one scoped task with an allowed repository, intended result and supplied human evidence IDs; otherwise suggestion=null. A suggestion never authorizes execution.',
       },
       schema: Assessment,
-      priority: matter.owner === this.config.owner,
+      priority: true,
       authorize: async () => await this.access.check(matter.channel) && this.store.current(sources),
     };
     const fits = () => this.model.fits?.(request) ?? Buffer.byteLength(JSON.stringify(request.input)) < 8000;
@@ -438,17 +435,21 @@ export class InitiativeService {
   }
 
   private async digest(now: number): Promise<void> {
-    const matters: Matter[] = [];
+    const recipients = new Map<string, Matter[]>();
     for (const matter of this.store.matters()) {
-      if (matter.state === 'snoozed') continue;
-      if (await this.access.check(matter.channel, true)) matters.push(matter);
-      if (matters.length === 5) break;
+      if (matter.state === 'snoozed' || !matter.owner) continue;
+      const matters = recipients.get(matter.owner) ?? [];
+      if (matters.length < 5 && await this.access.check(matter.channel, matter.owner)) {
+        matters.push(matter);
+        recipients.set(matter.owner, matters);
+      }
     }
-    if (!matters.length) return;
-    this.store.enqueueDelivery({ id: `digest:${lisbonDay(now)}`, channel: await this.slack.ownerDm(), thread: null,
-      text: matters.map((m) => `• ${m.title}: ${m.detail}\n${this.slack.link(m.channel, m.thread)}`).join('\n\n'),
-      matters: matters.map((m) => m.id), evidence: matters.flatMap((m) => m.evidence),
-      digest: true, state: 'pending', ts: null, created: now });
+    for (const [recipient, matters] of recipients) {
+      this.store.enqueueDelivery({ id: `digest:${lisbonDay(now)}:${recipient}`, recipient, channel: await this.slack.dm(recipient), thread: null,
+        text: matters.map((m) => `• ${m.title}: ${m.detail}\n${this.slack.link(m.channel, m.thread)}`).join('\n\n'),
+        matters: matters.map((m) => m.id), evidence: matters.flatMap((m) => m.evidence),
+        digest: true, state: 'pending', ts: null, created: now });
+    }
   }
 
   async deliver(now: number): Promise<void> {
@@ -457,9 +458,8 @@ export class InitiativeService {
       const ts = await this.slack.find(delivery);
       if (ts) this.store.attention.reconcileDelivery(ts, delivery.id);
     }
-    const suppression: DecisionReason | undefined = this.config.mode !== 'live' || this.store.setting('delivery_enabled') !== 'true'
-      ? 'approval_required' : !notificationWindow(now) ? 'outside_hours'
-        : ['mute', 'pause', 'stop'].some(key => this.store.setting(key) === 'true') ? 'controlled' : undefined;
+    const suppression: DecisionReason | undefined = this.config.mode !== 'live'
+      ? 'approval_required' : !notificationWindow(now) ? 'outside_hours' : undefined;
     if (suppression) {
       for (const delivery of this.store.deliveries('pending')) for (const id of delivery.matters) {
         const matter = this.store.matter(id);
@@ -469,6 +469,7 @@ export class InitiativeService {
     }
     for (const delivery of this.store.deliveries('pending')) {
       if (this.stopped) return;
+      if (!this.store.deliveryRecipientCurrent(delivery)) { this.store.attention.cancelDelivery(delivery.id); continue; }
       if (delivery.proposal) {
         const proposal = this.store.proposal(delivery.proposal.id);
         if (!proposal || !this.store.proposalCurrent(proposal, now) || this.store.handoff(proposal.id)) { this.store.attention.cancelDelivery(delivery.id); continue; }
@@ -481,16 +482,16 @@ export class InitiativeService {
           eligible = false; break;
         }
         const snapshot = await this.collection.refresh(matter, now);
-        if (!snapshot || !this.store.matter(id)?.valid || (delivery.channel.startsWith('D') && !await this.access.check(matter.channel, true))) { eligible = false; break; }
+        if (!snapshot || !this.store.matter(id)?.valid || (delivery.channel.startsWith('D') && !await this.access.check(matter.channel, delivery.recipient!))) { eligible = false; break; }
       }
       const roots = delivery.matters.map((id) => this.store.matter(id)).filter((m): m is Matter => !!m);
       for (const source of this.store.attention.evidenceSources(delivery.evidence)) {
         if (roots.some((m) => m.channel === source.channel && m.thread === source.thread)) continue;
         if (!await this.collection.refresh({ channel: String(source.channel), thread: String(source.thread) }, now, undefined, 2)
-          || (delivery.channel.startsWith('D') && !await this.access.check(String(source.channel), true))) { eligible = false; break; }
+          || (delivery.channel.startsWith('D') ? !await this.access.check(String(source.channel), delivery.recipient!) : source.channel !== delivery.channel)) { eligible = false; break; }
       }
       if (!eligible) { this.store.attention.cancelDelivery(delivery.id); continue; }
-      if (delivery.channel.startsWith('D') && !await this.slack.verifyDm(delivery.channel)) continue;
+      if (delivery.channel.startsWith('D') && !await this.slack.verifyDm(delivery.channel, delivery.recipient!)) continue;
       const sendTime = this.clock();
       if (this.stopped || !notificationWindow(sendTime)) break;
       if (delivery.matters.some((id) => {
@@ -512,22 +513,6 @@ export class InitiativeService {
     }
   }
 
-  status(now = Date.now()): string {
-    const sources = this.store.attention.channelStatus();
-    const stats = this.store.attention.statistics();
-    return [
-      `Initiative: ${this.config.mode}; delivery ${this.store.setting('delivery_enabled') === 'true' ? 'enabled' : 'disabled; owner can use initiative delivery on'}.`,
-      `Public channels: ${sources.filter((r) => r.allowed === 1).length}; coverage gaps: ${sources.filter((r) => r.gap).length}. Open matters: ${this.store.matters().length}.`,
-      `Today’s conservative spending and reservations: $${(this.store.budget(now) / 1_000_000).toFixed(2)} / $200. Unsettled requests: ${stats.unsettled}.`,
-      `Controls: muted=${this.store.setting('mute') === 'true'}, research paused=${this.store.setting('pause') === 'true'}, stopped=${this.store.setting('stop') === 'true'}.`,
-      `Task suggestions awaiting approval: ${this.store.pendingProposalCount(now)}.`,
-      ...sources.filter((r) => r.gap).slice(0, 5).map((r) => `${r.id}: ${r.gap}`),
-      this.store.setting('intake_gap') ?? '',
-      this.store.setting('review_report') ?? '',
-    ].filter(Boolean).join('\n');
-  }
-
   stop(): void { this.stopped = true; this.active?.abort(); }
   release(): void { this.store.releaseRunner(this.runner); }
-  cancelAnalysis(): void { this.active?.abort(); }
 }

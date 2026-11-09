@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import type { DatabaseSync } from 'node:sqlite';
 
-// Earlier versions belonged to the retired experimental schema.
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 12;
 
-export function initializeSchema(db: DatabaseSync, team: string, now: number, owner?: string): void {
+export function initializeSchema(db: DatabaseSync, team: string, now: number): void {
   db.exec('BEGIN IMMEDIATE');
   try {
     const version = Number(db.prepare('PRAGMA user_version').get()!.user_version);
@@ -21,7 +20,7 @@ export function initializeSchema(db: DatabaseSync, team: string, now: number, ow
         CREATE VIRTUAL TABLE observation_search USING fts5(id UNINDEXED,text);
         CREATE TABLE matters (id TEXT PRIMARY KEY, channel TEXT NOT NULL, thread TEXT NOT NULL, body TEXT NOT NULL, valid INTEGER NOT NULL, next_check INTEGER NOT NULL);
         CREATE TABLE jobs (kind TEXT NOT NULL, target TEXT NOT NULL, payload TEXT NOT NULL, due INTEGER NOT NULL, lease INTEGER NOT NULL DEFAULT 0, token TEXT, attempts INTEGER NOT NULL DEFAULT 0, generation INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(kind,target));
-        CREATE TABLE deliveries (id TEXT PRIMARY KEY, channel TEXT NOT NULL, thread TEXT, text TEXT NOT NULL, matters TEXT NOT NULL, evidence TEXT NOT NULL, digest INTEGER NOT NULL, state TEXT NOT NULL, ts TEXT, created INTEGER NOT NULL, slot_day TEXT, proposal TEXT);
+        CREATE TABLE deliveries (id TEXT PRIMARY KEY, channel TEXT NOT NULL, thread TEXT, text TEXT NOT NULL, matters TEXT NOT NULL, evidence TEXT NOT NULL, digest INTEGER NOT NULL, state TEXT NOT NULL, ts TEXT, created INTEGER NOT NULL, slot_day TEXT, proposal TEXT, recipient TEXT);
         CREATE TABLE charges (id TEXT PRIMARY KEY, maximum INTEGER NOT NULL CHECK(maximum>=0), admitted INTEGER NOT NULL, settled INTEGER, actual INTEGER);
         CREATE TABLE charge_scopes (charge TEXT PRIMARY KEY REFERENCES charges(id), scope TEXT NOT NULL);
         CREATE TABLE debits (charge TEXT NOT NULL, day TEXT NOT NULL, amount INTEGER NOT NULL, PRIMARY KEY(charge,day));
@@ -41,19 +40,17 @@ export function initializeSchema(db: DatabaseSync, team: string, now: number, ow
           WHERE card_state IS NOT CASE WHEN state IN ('approved','prepared') THEN 'pending' ELSE state END;
       `);
       const set = db.prepare('INSERT INTO settings VALUES (?,?)');
-      for (const [key, value] of [['team', team], ['watermark', String(now / 1000)], ['delivery_enabled', 'false']]) set.run(key, value);
+      for (const [key, value] of [['team', team], ['watermark', String(now / 1000)]]) set.run(key, value);
       db.exec('PRAGMA user_version=' + SCHEMA_VERSION);
     }
-    validateSchema(db, team, owner);
+    validateSchema(db, team);
     db.exec('COMMIT');
   } catch (error) { db.exec('ROLLBACK'); throw error; }
 }
 
-export function validateSchema(db: DatabaseSync, team: string, owner?: string): void {
+export function validateSchema(db: DatabaseSync, team: string): void {
   const version = Number(db.prepare('PRAGMA user_version').get()!.user_version);
   if (version > SCHEMA_VERSION) throw new Error('Observation database is newer than this binary');
   if (version !== SCHEMA_VERSION) throw new Error(`Unsupported initiative schema ${version}; this build requires a fresh database`);
   if (db.prepare("SELECT value FROM settings WHERE key='team'").get()?.value !== team) throw new Error('Observation workspace mismatch');
-  const savedOwner = db.prepare("SELECT value FROM settings WHERE key='owner'").get()?.value;
-  if (owner && savedOwner && owner !== savedOwner) throw new Error('Observation owner mismatch');
 }

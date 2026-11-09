@@ -12,7 +12,6 @@ let proposal: string;
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'initiative-operator-')); path = join(root, 'state.sqlite');
   const store = new InitiativeStore(path, 'T1');
-  store.set('delivery_enabled', 'true');
   const now = Date.now(); const ts = (now / 1000).toFixed(6);
   store.channel('C1', true, false);
   const evidence = store.record({ channel: 'C1', thread: ts, ts, version: ts, author: 'U1', text: 'Review the release' }, now)!;
