@@ -10,7 +10,7 @@ A task runs one agent, the PM, so max mode is the **PM's** upgrade. When `metada
 
 | | Normal | Max mode | Override |
 |---|---|---|---|
-| Model | `opus` | `claude-fable-5-1` | `ARCHIE_PM_MODEL` / `ARCHIE_PM_MAX_MODEL` |
+| Model | `opus` | `claude-fable-5-2` | `ARCHIE_PM_MODEL` / `ARCHIE_PM_MAX_MODEL` |
 | Effort | `medium` | `high` | `ARCHIE_PM_EFFORT` / `ARCHIE_PM_MAX_EFFORT` |
 
 The upgrade is a model swap and an effort raise by default. It is deliberately the upgrade the *repo agents* carried before the flattening, because the PM now does the coding and investigation work those agents used to do: leaving the PM on its normal model would have made the approval a no-op for exactly the work the upgrade exists for.
@@ -41,7 +41,7 @@ Model and effort are per-request options: `buildQueryOptions` in `src/agents/spa
 
 ## Where it surfaces
 
-- The grey message footer (`buildUserFooter` in `src/tasks/task.ts`) reflects the swap — it shows `Fable 5.1` once the upgraded turn has run. It prefers the concrete model the SDK reported at `init` (`recordResolvedModel`), falling back to the configured alias until that arrives, so it can briefly name the upgrade before a turn has confirmed it. An effort-only change is not shown; the footer names a model, not an effort.
+- The grey message footer (`buildUserFooter` in `src/tasks/task.ts`) reflects the swap — it shows `Fable 5.2` once the upgraded turn has run. It prefers the concrete model the SDK reported at `init` (`recordResolvedModel`), falling back to the configured alias until that arrives, so it can briefly name the upgrade before a turn has confirmed it. An effort-only change is not shown; the footer names a model, not an effort.
 - The session's `system/init` log line (`Model: …`) shows the model it actually spawned on.
 
 ## Related

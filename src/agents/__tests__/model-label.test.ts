@@ -16,6 +16,7 @@ describe('modelDisplayLabel', () => {
     expect(modelDisplayLabel('claude-sonnet-5')).toBe('Sonnet 5');
     expect(modelDisplayLabel('claude-fable-5')).toBe('Fable 5');
     expect(modelDisplayLabel('claude-fable-5-1')).toBe('Fable 5.1');
+    expect(modelDisplayLabel('claude-fable-5-2')).toBe('Fable 5.2');
     expect(modelDisplayLabel('claude-haiku-4-5')).toBe('Haiku 4.5');
   });
 
@@ -88,9 +89,9 @@ describe('resolveAgentModel', () => {
   });
 
   it('max mode: an explicit maxMode.model wins for any agent', () => {
-    expect(resolveAgentModel(def({ model: 'opus', maxMode: { model: 'claude-fable-5-1' } }), true)).toBe('claude-fable-5-1');
-    expect(resolveAgentModel(def({ isPm: true, maxMode: { model: 'claude-fable-5-1' } }), true)).toBe('claude-fable-5-1');
-    expect(resolveAgentModel(def({ model: 'opus', maxMode: { model: 'claude-fable-5-1' } }), false)).toBe('opus'); // off → ignored
+    expect(resolveAgentModel(def({ model: 'opus', maxMode: { model: 'claude-fable-5-2' } }), true)).toBe('claude-fable-5-2');
+    expect(resolveAgentModel(def({ isPm: true, maxMode: { model: 'claude-fable-5-2' } }), true)).toBe('claude-fable-5-2');
+    expect(resolveAgentModel(def({ model: 'opus', maxMode: { model: 'claude-fable-5-2' } }), false)).toBe('opus'); // off → ignored
   });
 });
 

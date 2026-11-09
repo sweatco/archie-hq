@@ -13,7 +13,7 @@ One `Agent` instance per task (`Task.agent`), created lazily on the first messag
 | Agent id / key | `pm-agent` / `pm` | — | — |
 | Model | `opus` | `model` | `ARCHIE_PM_MODEL` |
 | Effort | `medium` | `effort` | `ARCHIE_PM_EFFORT` |
-| Max-mode model | `claude-fable-5-1` | `maxMode.model` | `ARCHIE_PM_MAX_MODEL` |
+| Max-mode model | `claude-fable-5-2` | `maxMode.model` | `ARCHIE_PM_MAX_MODEL` |
 | Max-mode effort | `high` | `maxMode.effort` | `ARCHIE_PM_MAX_EFFORT` |
 | Max turns per query | 100 | — | — |
 

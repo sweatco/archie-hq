@@ -36,7 +36,7 @@ import { deniedToolNames } from './tool-approval-gate.js';
 
 const DEFAULT_PM_MODEL = 'opus';
 const DEFAULT_PM_EFFORT = 'medium';
-const DEFAULT_PM_MAX_MODEL = 'claude-fable-5-1';
+const DEFAULT_PM_MAX_MODEL = 'claude-fable-5-2';
 const DEFAULT_PM_MAX_EFFORT = 'high';
 
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;

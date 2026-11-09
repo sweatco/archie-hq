@@ -38,7 +38,7 @@ export interface AgentHandle {
  * max mode approved. See resolveAgentModel / resolveAgentEffort.
  */
 export interface MaxModeSpec {
-  /** Model to run on in max mode (e.g. 'claude-fable-5-1'). Omit to keep the normal model. */
+  /** Model to run on in max mode (e.g. 'claude-fable-5-2'). Omit to keep the normal model. */
   model?: string;
   /** Reasoning effort in max mode. Omit to keep the normal effort. */
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
