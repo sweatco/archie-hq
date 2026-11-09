@@ -1,7 +1,9 @@
 import { execFileSync } from 'node:child_process';
+import { once } from 'node:events';
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import express from 'express';
 import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -149,17 +151,23 @@ describe('GitHub workflow identity', () => {
     await expect(verifyWorkflowIdentity(forged, config, keys)).rejects.toThrow();
   });
 
-  it('does not expose feedback without a workflow identity', async () => {
-    let handler: any;
-    mountWorkflowFeedback({
-      get: (_path: string, fn: any) => {
-        handler = fn;
-      },
-    } as any);
-    const res = { set: vi.fn(), status: vi.fn().mockReturnThis(), json: vi.fn() };
-    await handler({ headers: {}, query: {} }, res);
-    expect(res.status).toHaveBeenCalledWith(401);
-    expect(mocks.getTask).not.toHaveBeenCalled();
+  it('rejects unauthenticated requests and rate-limits repeated attempts before reading feedback', async () => {
+    const app = express();
+    mountWorkflowFeedback(app);
+    const server = app.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const address = server.address() as { port: number };
+    const url = `http://127.0.0.1:${address.port}/webhooks/github/research-feedback`;
+    try {
+      for (let i = 0; i < 30; i++) expect((await fetch(url)).status).toBe(401);
+      const limited = await fetch(url);
+      expect(limited.status).toBe(429);
+      expect(limited.headers.get('retry-after')).toBeTruthy();
+      expect(mocks.getTask).not.toHaveBeenCalled();
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
 

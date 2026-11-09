@@ -23,7 +23,7 @@ GET /webhooks/github/research-feedback?base_run_id=<restored-history-run-id>
 Authorization: Bearer <GitHub OIDC token>
 ```
 
-This narrow endpoint sits under the existing public webhook ingress; `/api` remains protected. It verifies GitHub's signature, issuer, audience, expiry, configured repository/workflow/branch and a scheduled or manual-dispatch event. Only that workload can read the research feedback; it cannot choose another task, repository or path. GitHub's short-lived workflow identity replaces a shared CI/operator secret.
+This narrow endpoint sits under the existing public webhook ingress; `/api` remains protected. It verifies GitHub's signature, issuer, audience, expiry, configured repository/workflow/branch and a scheduled or manual-dispatch event. Only that workload can read the research feedback; it cannot choose another task, repository or path. GitHub's short-lived workflow identity replaces a shared CI/operator secret. A shared in-memory limit of 30 requests per minute per Archie process applies before authentication; the low-volume workflow needs no client-IP trust or external rate-limit store.
 
 The response captures pending filenames and decisions once per run. Repeated requests return that same capture; feedback arriving later stays pending. The workflow records the response as `submission.json`, validates its decisions against restored history and applies them before research. A feedback outage stops the job before model execution.
 

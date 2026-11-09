@@ -1,4 +1,5 @@
 import type { Application } from 'express';
+import { rateLimit } from 'express-rate-limit';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
@@ -52,7 +53,7 @@ async function reportTarget(config: WorkflowReportConfig) {
   const channel = task.metadata.default_channel && task.metadata.channels[task.metadata.default_channel];
   if (!channel || channel.type !== 'slack' || !channel.channel_id.startsWith('D'))
     throw new Error('Workflow reports require an existing DM task');
-  const store = workflowReportStore(task.taskId);
+  const store = workflowReportStore(config.taskId);
   await Promise.all(['pending', 'applied'].map((name) => mkdir(join(store, name), { recursive: true })));
   return { task, store };
 }
@@ -89,7 +90,9 @@ export async function captureWorkflowFeedback(store: string, runId: string, base
 export function mountWorkflowFeedback(app: Application): void {
   const config = workflowReportConfig();
   if (!config) return;
-  app.get('/webhooks/github/research-feedback', async (req, res) => {
+  // One low-volume workflow shares a bucket, without trusting proxy-supplied client IPs.
+  const limiter = rateLimit({ windowMs: 60_000, limit: 30, keyGenerator: () => 'workflow-feedback' });
+  app.get('/webhooks/github/research-feedback', limiter, async (req, res) => {
     res.set('Cache-Control', 'no-store');
     let runId: string;
     try {
