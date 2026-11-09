@@ -75,7 +75,6 @@ describe('durable prepared task starts', () => {
     const service = new InitiativeService(store, slack, model, { mode: 'live', extractionModel: 'test', investigationModel: 'test', repositories: ['owner/repo'] }, Date.now);
     const handoff = new ProposalHandoff(store, slack, () => ['owner/repo'], source => service.refreshEvidence(source));
     try {
-      store.set('delivery_enabled', 'true');
       await service.capture(source, now);
       service.seed(now);
       vi.setSystemTime(now + 3_600_000);

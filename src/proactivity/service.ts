@@ -301,10 +301,6 @@ export class InitiativeService {
       explain(matter.state === 'snoozed' ? 'snoozed' : 'scheduled', matter.nextCheck);
       return matter.nextCheck;
     }
-    if (this.store.setting(`unfollow:${matter.channel}:${matter.thread}`) === 'true') {
-      explain('dismissed');
-      return;
-    }
     if (this.slack.active(matter.channel, matter.thread)) {
       const next = nextMatterCheck(matter, now);
       if (next !== undefined) this.store.attention.setNextCheck(next, matter.id);

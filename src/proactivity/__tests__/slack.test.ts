@@ -22,9 +22,9 @@ beforeEach(() => {
 });
 
 describe('public-source Slack boundary', () => {
-  it.each([null, 'U_OWNER'])('omits person-specific buttons on public follow-ups regardless of historical recipient: %s', async recipient => {
+  it('omits person-specific buttons on public follow-ups', async () => {
     await new PublicSlack().send({ id: 'unowned', channel: 'C1', thread: '10.000001', text: 'Useful help',
-      matters: ['release'], recipient, evidence: [1], digest: false, state: 'pending', ts: null, created: 0 });
+      matters: ['release'], recipient: null, evidence: [1], digest: false, state: 'pending', ts: null, created: 0 });
     expect(f.post.mock.calls[0][0].actions).toBeUndefined();
   });
 

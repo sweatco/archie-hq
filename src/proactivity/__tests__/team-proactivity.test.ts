@@ -27,7 +27,6 @@ function matter(id: string, owner: string | null, age = 0, channel = 'C1'): Matt
 
 beforeEach(() => {
   store = new InitiativeStore(':memory:', 'T1', NOW - 10 * DAY);
-  store.set('owner', 'U_ADMIN'); store.set('delivery_enabled', 'true');
   slack = {
     inspect: vi.fn(async (_channel, recipient) => ({ shared: false, recipientCanRead: recipient !== 'U_BLOCKED' })),
     channels: async () => ['C1'],
@@ -117,23 +116,14 @@ it.each(['unavailable', 'missing', 'denied'])('preserves public help when an opt
   expect(slack.dm).not.toHaveBeenCalled();
 });
 
-it.each([null, 'U_ALICE'])('sends a pending public reply after responsibility changes, preserving historical recipient=%s', async recipient => {
+it('sends a pending public reply after responsibility changes', async () => {
   const current = matter('alpha', 'U_ALICE', 5 * DAY);
   store.enqueueDelivery({ id: 'public', channel: 'C1', thread: current.thread, text: 'Useful public help', matters: [current.id],
-    recipient, evidence: current.evidence, digest: false, state: 'pending', ts: null, created: NOW });
+    recipient: null, evidence: current.evidence, digest: false, state: 'pending', ts: null, created: NOW });
   store.attention.saveMatter({ ...current, owner: 'U_BOB' });
   await service.deliver(NOW);
-  expect(store.delivery('public')).toMatchObject({ state: 'sent', recipient });
+  expect(store.delivery('public')).toMatchObject({ state: 'sent', recipient: null });
   expect(slack.dm).not.toHaveBeenCalled();
-});
-
-it('preserves historical thread-wide stop-following intent alongside current matter dismissals', async () => {
-  const current = matter('alpha', 'U_ALICE', 5 * DAY);
-  store.set(`unfollow:${current.channel}:${current.thread}`, 'true');
-  store.schedule('investigate', current.id, NOW); await service.tick(NOW, true);
-  expect(model.complete).not.toHaveBeenCalled();
-  expect(slack.send).not.toHaveBeenCalled();
-  expect(store.explain(current.id).decisions[0].code).toBe('dismissed');
 });
 
 it('uses the existing priority reserve for every investigation, including non-admin and unowned matters', async () => {

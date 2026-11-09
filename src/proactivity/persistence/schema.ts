@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import type { DatabaseSync } from 'node:sqlite';
 
-// Earlier versions belonged to the retired experimental schema.
 export const SCHEMA_VERSION = 12;
 
 export function initializeSchema(db: DatabaseSync, team: string, now: number): void {
@@ -42,14 +41,6 @@ export function initializeSchema(db: DatabaseSync, team: string, now: number): v
       `);
       const set = db.prepare('INSERT INTO settings VALUES (?,?)');
       for (const [key, value] of [['team', team], ['watermark', String(now / 1000)]]) set.run(key, value);
-      db.exec('PRAGMA user_version=' + SCHEMA_VERSION);
-    }
-    if (version === 11) {
-      if (db.prepare("SELECT value FROM settings WHERE key='team'").get()?.value !== team) throw new Error('Observation workspace mismatch');
-      const savedOwner = db.prepare("SELECT value FROM settings WHERE key='owner'").get()?.value;
-      if (!savedOwner && db.prepare("SELECT 1 FROM deliveries WHERE channel LIKE 'D%' LIMIT 1").get()) throw new Error('Legacy private delivery recipient unavailable');
-      db.exec('ALTER TABLE deliveries ADD COLUMN recipient TEXT');
-      db.prepare("UPDATE deliveries SET recipient=? WHERE channel LIKE 'D%'").run(savedOwner ?? null);
       db.exec('PRAGMA user_version=' + SCHEMA_VERSION);
     }
     validateSchema(db, team);

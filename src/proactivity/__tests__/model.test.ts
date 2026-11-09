@@ -45,12 +45,6 @@ describe('paid model admission and accounting', () => {
     expect(store.budget(NOW)).toBe(0);
   });
 
-  it('ignores retired global pause and stop flags during model admission', async () => {
-    store.set('pause', 'true'); store.set('stop', 'true');
-    expect(await gateway.complete(request, new AbortController().signal)).toEqual({ answer: 'ok' });
-    expect(create).toHaveBeenCalledTimes(1);
-  });
-
   it('caps concurrent direct calls at four', async () => {
     let resolve!: (value: ReturnType<typeof result>) => void;
     const pending = new Promise<ReturnType<typeof result>>((done) => { resolve = done; });

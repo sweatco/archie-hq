@@ -29,7 +29,6 @@ const openStore = () => new InitiativeStore(join(f.root, 'initiative/state.sqlit
 beforeEach(() => {
   vi.useFakeTimers(); vi.setSystemTime(NOW); vi.clearAllMocks();
   rmSync(f.root, { recursive: true, force: true });
-  vi.stubEnv('ARCHIE_PROACTIVITY_OWNER', OWNER);
   f.slack.inspect.mockResolvedValue({ shared: false, recipientCanRead: true });
   f.slack.channels.mockResolvedValue(['C1']); f.slack.page.mockResolvedValue({ messages: [] });
   f.slack.dm.mockResolvedValue('D_OWNER'); f.slack.verifyDm.mockImplementation(async (channel, user) => channel === 'D_OWNER' && user === OWNER); f.slack.recipient.mockImplementation(async channel => channel === 'D_OWNER' ? OWNER : null);
@@ -56,49 +55,31 @@ describe('initiative runtime integration', () => {
       const base = { channel: 'C1', thread: ts, title: 'Read-only test', detail: 'Read-only test', evidence: [evidence], state: 'open' as const, deadline: null, explicit: true, nextCheck: NOW, valid: true };
       store.apply([store.snapshot('C1', ts)!], [], [{ ...base, id: 'employee', owner: employee }, { ...base, id: 'admin', owner: OWNER }]);
       store.enqueueDelivery({ id: 'employee-card', recipient: employee, channel: 'D_EMPLOYEE', thread: null, text: 'Employee matter', matters: ['employee'], evidence: [evidence], digest: false, state: 'sent', ts: null, created: NOW });
-      store.enqueueDelivery({ id: 'historical-public', recipient: employee, channel: 'C1', thread: ts, text: 'Public matter', matters: ['employee'], evidence: [evidence], digest: false, state: 'sent', ts: null, created: NOW });
-      await runtime.action(employee, 'historical-public:handled');
+      store.enqueueDelivery({ id: 'public', recipient: null, channel: 'C1', thread: ts, text: 'Public matter', matters: ['employee'], evidence: [evidence], digest: false, state: 'sent', ts: null, created: NOW });
+      await runtime.action(employee, 'public:handled');
       expect(store.matter('employee')?.state).toBe('open');
       await runtime.action(OWNER, 'employee-card:handled');
       expect(store.matter('employee')?.state).toBe('open');
       f.slack.inspect.mockResolvedValueOnce({ shared: false, recipientCanRead: false });
       await runtime.action(employee, 'employee-card:handled');
       expect(store.matter('employee')?.state).toBe('open');
-      expect(await runtime.capture({ channel: 'D_EMPLOYEE', user: employee, text: 'initiative stop' })).toBe(true);
-      expect(store.setting('stop')).toBeUndefined();
       await runtime.action(employee, 'employee-card:stop following');
       expect(store.matter('employee')?.state).toBe('dismissed');
       expect(store.matter('admin')?.state).toBe('open');
-      expect(store.setting(`unfollow:C1:${ts}`)).toBeUndefined();
       const proposal = store.proposeCapability({ repository: 'owner/repo', outcome: 'Other employee task', evidence: [evidence], matter: 'admin' });
       expect(store.proposalCurrent(store.proposal(proposal)!, NOW)).toBe(true);
       await runtime.capture({ channel: 'D_EMPLOYEE', user: employee, text: 'initiative handled admin' });
       expect(store.matter('admin')?.state).toBe('open');
-      await runtime.capture({ channel: 'D_OWNER', user: OWNER, text: 'initiative stop' });
-      expect(store.setting('stop')).toBeUndefined();
     } finally { store.close(); }
   });
 
-  it('preserves an inert historical owner written during provider verification', async () => {
-    vi.mocked(ModelGateway.prototype.verify).mockImplementationOnce(async () => {
-      const other = openStore();
-      try { other.set('owner', 'U000002'); } finally { other.close(); }
-    });
-    runtime = await startInitiative('T1', 'shadow');
-    expect(hasObservationAPI()).toBe(true);
-    const store = openStore();
-    try { expect(store.setting('owner')).toBe('U000002'); } finally { store.close(); }
-    expect(f.slack.dm).not.toHaveBeenCalled();
-  });
-
-  it.each([undefined, 'invalid', 'U_DIFFERENT'])('starts without consulting the obsolete owner variable: %s', async owner => {
-    vi.stubEnv('ARCHIE_PROACTIVITY_OWNER', owner);
+  it('starts in shadow mode without opening a private conversation', async () => {
     runtime = await startInitiative('T1', 'shadow');
     expect(ModelGateway.prototype.verify).toHaveBeenCalled();
     expect(f.slack.dm).not.toHaveBeenCalled();
     expect(f.post).not.toHaveBeenCalled();
     const store = openStore();
-    try { expect(store.setting('owner')).toBeUndefined(); } finally { store.close(); }
+    try { expect(store.setting('activated')).toBe('true'); } finally { store.close(); }
   });
 
   it.each([
@@ -108,7 +89,6 @@ describe('initiative runtime integration', () => {
     runtime = await startInitiative('T1', mode);
     const store = openStore();
     try {
-      store.set('stop', 'true'); store.set('pause', 'true'); store.set('mute', 'true'); store.set('delivery_enabled', 'false');
       const ts = `${NOW / 1000}.000001`;
       store.channel('C1', true, false);
       const evidence = store.record({ channel: 'C1', thread: ts, ts, version: ts, author: OWNER, text: 'Read-only test' }, NOW)!;
@@ -237,25 +217,10 @@ describe('initiative runtime integration', () => {
     finally { store.close(); }
   });
 
-  it('consumes deferred learning commands without falling through to PM task creation', async () => {
+  it('provides employee-command help for an unknown initiative command', async () => {
     runtime = await startInitiative('T1', 'shadow');
-    expect(await runtime.capture({ channel: 'D_OWNER', user: OWNER, text: 'initiative approve missing missing' })).toBe(true);
+    expect(await runtime.capture({ channel: 'D_OWNER', user: OWNER, text: 'initiative unknown' })).toBe(true);
     expect(f.post).toHaveBeenCalledWith(expect.objectContaining({ channel: 'D_OWNER', text: expect.stringContaining('ARCHIE_PROACTIVITY_MODE') }));
-  });
-
-  it('never changes historical delivery settings from Slack commands', async () => {
-    runtime = await startInitiative('T1', 'shadow');
-    await runtime.capture({ channel: 'D_OWNER', user: 'U000002', text: 'initiative delivery on' });
-    await runtime.capture({ channel: 'D_OTHER', user: OWNER, text: 'initiative delivery on' });
-    const store = openStore();
-    try {
-      store.set('delivery_enabled', 'false');
-      expect(store.setting('delivery_enabled')).toBe('false');
-      expect(await runtime.capture({ channel: 'D_OWNER', user: OWNER, text: 'initiative delivery on' })).toBe(true);
-      expect(store.setting('delivery_enabled')).toBe('false');
-      await runtime.capture({ channel: 'D_OWNER', user: OWNER, text: 'initiative delivery off' });
-      expect(store.setting('delivery_enabled')).toBe('false');
-    } finally { store.close(); }
   });
 
   it('recognizes a proactive origin during lookup failures without exposing its cached context', async () => {

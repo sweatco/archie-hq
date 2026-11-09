@@ -55,9 +55,7 @@ async function investigate(help: string | null = 'I can prepare the release chec
 }
 
 describe('initiative flow', () => {
-  it('uses mode alone for new delivery despite retired global settings', async () => {
-    store.set('delivery_enabled', 'false');
-    for (const key of ['mute', 'pause', 'stop']) store.set(key, 'true');
+  it('permits new delivery only in live mode', async () => {
     await investigate();
     expect(model.complete).toHaveBeenCalledTimes(3);
     expect(store.deliveries('pending')).toHaveLength(1);
@@ -66,8 +64,6 @@ describe('initiative flow', () => {
     service.config.mode = 'live';
     await service.deliver(NOW + 60_000);
     expect(slack.send).toHaveBeenCalledTimes(1);
-    expect(store.setting('delivery_enabled')).toBe('false');
-    for (const key of ['mute', 'pause', 'stop']) expect(store.setting(key)).toBe('true');
     expect(store['row']("SELECT name FROM sqlite_master WHERE name='evaluations'")).toBeUndefined();
   });
 

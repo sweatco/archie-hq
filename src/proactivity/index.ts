@@ -28,25 +28,12 @@ export async function initInitiative(team: string | null): Promise<void> {
 export function startInitiativeScheduler(): void { runtime?.start(); }
 
 export async function observeSlack(event: Record<string, unknown>): Promise<boolean> {
-  let consumed = false;
-  try {
-    if (typeof event.channel === 'string' && event.channel.startsWith('D') && typeof event.user === 'string'
-      && !event.bot_id && !event.bot_profile && !event.subtype && typeof event.text === 'string'
-      && /^initiative\s+(?:status|delivery\s+(?:on|off)|mute|unmute|pause|resume|stop|start)\s*$/i.test(event.text.trim())) {
-      consumed = true;
-      const { PublicSlack } = await import('./slack.js');
-      if (await new PublicSlack().verifyDm(event.channel, event.user)) {
-        const { postSlackMessage } = await import('../connectors/slack/client.js');
-        await postSlackMessage({ channel: event.channel, text: 'Global initiative commands have retired. Configure ARCHIE_PROACTIVITY_MODE=off|shadow|live in the deployment: off skips proactivity, shadow analyzes without new proactive messages, live permits eligible sends. Private feedback and Start task approvals still belong to the responsible employee.' });
-      }
-      return true;
-    }
-    return runtime ? await runtime.capture(event) : false;
-  }
+  if (!runtime) return false;
+  try { return await runtime.capture(event); }
   catch (error) {
     const { logger } = await import('../system/logger.js');
-    logger.warn('initiative', consumed ? 'Retired command consumed; deployment help unavailable' : 'Slack observation failed; normal task routing continues', error);
-    return consumed;
+    logger.warn('initiative', 'Slack observation failed; normal task routing continues', error);
+    return false;
   }
 }
 

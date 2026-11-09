@@ -70,7 +70,7 @@ export function reminderPhase(matter: Matter, now: number): string {
 
 export type DecisionReason = 'unchanged' | 'scheduled' | 'snoozed' | 'resolved' | 'dismissed' | 'source_unavailable' | 'source_changed'
   | 'no_help' | 'already_notified' | 'queued' | 'delivered' | 'delivery_uncertain' | 'active_task'
-  | 'outside_hours' | 'budget_deferred' | 'approval_required' | 'controlled';
+  | 'outside_hours' | 'budget_deferred' | 'approval_required';
 
 export const reasonText: Record<DecisionReason, string> = {
   unchanged: 'Source revisions, context, inactivity eligibility and reminder phase are unchanged; the previous analysis was reused.',
@@ -81,5 +81,5 @@ export const reasonText: Record<DecisionReason, string> = {
   queued: 'A source-backed intervention is queued.', delivered: 'Slack acknowledged this intervention.',
   delivery_uncertain: 'Slack may have accepted the message; reconciliation is required.', active_task: 'An ordinary task is already handling this discussion.',
   outside_hours: 'Delivery is waiting for Lisbon business hours.', budget_deferred: 'Background spending or request capacity is unavailable.',
-  approval_required: 'New proactive delivery requires live mode.', controlled: 'A retired global control suppressed this historical intervention.',
+  approval_required: 'New proactive delivery requires live mode.',
 };

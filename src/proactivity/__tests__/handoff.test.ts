@@ -42,7 +42,6 @@ beforeEach(() => {
   vi.useFakeTimers(); vi.setSystemTime(NOW);
   root = mkdtempSync(join(tmpdir(), 'archie-handoff-'));
   store = new InitiativeStore(join(root, 'state.sqlite'), 'T1', NOW - 60_000);
-  store.set('owner', 'U_OWNER'); store.set('delivery_enabled', 'true');
   store.channel('C1', true, false);
   const evidence = store.record({ channel: 'C1', thread: TS, ts: TS, version: TS, author: 'U_AUTHOR', text: 'We need a release checklist.' }, NOW)!;
   store.apply([store.snapshot('C1', TS)!], [], [{ id: 'release', channel: 'C1', thread: TS, title: 'Release checklist', detail: 'Prepare checklist', evidence: [evidence], state: 'open', owner: 'U_OWNER', deadline: null, explicit: true, nextCheck: NOW, valid: true }]);
@@ -79,18 +78,6 @@ describe('owner-approved proposal handoff', () => {
     expect(store.deliveries('pending').filter(delivery => delivery.recipient === 'U_OTHER')).toMatchObject([{ channel: 'D_OTHER' }]);
     expect(store.delivery(first.id)).toMatchObject({ recipient: 'U_OWNER', state });
     expect(tasks.prepare).not.toHaveBeenCalled();
-  });
-
-  it('retains an existing same-recipient legacy card without announcing it again', async () => {
-    const proposal = store.proposal(proposalId)!;
-    const version = proposalVersion(proposal);
-    const id = `proposal:${proposal.id}:${version}`;
-    store.enqueueDelivery({ id, recipient: 'U_OWNER', channel: 'D_OWNER', thread: null, text: 'Existing card', matters: [], evidence: proposal.evidence,
-      digest: false, state: 'pending', ts: null, created: NOW, proposal: { id: proposal.id, version } });
-    store.attention.finishDelivery('sent', '1792490500.000001', id);
-    await handoff.present(NOW);
-    expect(store.deliveries('pending')).toEqual([]);
-    expect(store.deliveries('sent')).toHaveLength(1);
   });
 
   it('does not transfer a sent card or saved approval when responsibility changes', async () => {

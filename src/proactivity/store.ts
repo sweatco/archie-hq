@@ -185,8 +185,7 @@ export class InitiativeStore {
 
   proposalCurrent(proposal: CapabilityProposal, now: number, checkAccess = true): boolean {
     const matter = this.matter(proposal.matter);
-    if (!matter?.valid || matter.state !== 'open' || this.setting(`unfollow:${matter.channel}:${matter.thread}`) === 'true'
-      || proposal.id !== this.proposalId(proposal.repository, matter)) return false;
+    if (!matter?.valid || matter.state !== 'open' || proposal.id !== this.proposalId(proposal.repository, matter)) return false;
     return proposal.evidence.length > 0 && proposal.evidence.length <= 20 && proposal.evidence.every(id =>
       Number.isSafeInteger(id) && this.row(`SELECT r.id FROM revisions r JOIN messages m ON m.revision=r.id JOIN channels c ON c.id=r.channel
         WHERE r.id=? AND r.deleted=0 AND r.bot=0 AND r.own=0 AND r.excerpt!='' AND r.captured>=? AND (?=0 OR c.allowed=1)`, id, now - 90 * DAY, Number(checkAccess)));
@@ -580,10 +579,6 @@ export class InitiativeStore {
         if (!proposal || !this.proposalCurrent(proposal, delivery.created) || proposalVersion(proposal) !== delivery.proposal.version || this.handoff(proposal.id)) return false;
       }
       if (delivery.matters.some((id) => !this.matter(id)?.valid)) return false;
-      if (delivery.matters.some((id) => {
-        const matter = this.matter(id)!;
-        return this.setting(`unfollow:${matter.channel}:${matter.thread}`) === 'true';
-      })) return false;
       // A cancelled card is retryable only when it never reserved a send slot or received a timestamp.
       return this.run(`INSERT INTO deliveries(id,channel,thread,text,matters,evidence,digest,state,ts,created,proposal,recipient)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)

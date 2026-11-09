@@ -4,7 +4,7 @@ Use Node 24+, configured Slack and `ARCHIE_PROACTIVITY_MODE=shadow` to collect a
 
 ## Storage and diagnostics
 
-Startup creates `WORKDIR/initiative/state.sqlite` with schema 12. Restarts preserve its watermark, evidence, charges, deliveries and approved tasks. Schema 11 upgrades transactionally: private deliveries use only the historical owner saved in the database, while public deliveries receive null recipients. Missing saved identity for private history fails without mutation; an environment owner cannot repair it. Existing schema-12 public recipients remain stored but do not impose employee checks. Old experimental and optional-learner databases are not supported or migrated; attempting to open one leaves it unchanged. Keep historical test snapshots with their original verification artifacts. Do not replace an existing file just to bypass a schema error. Wrong workspace or newer schema also fails.
+Startup creates `WORKDIR/initiative/state.sqlite` with schema 12. Restarts preserve its watermark, evidence, charges, deliveries and approved tasks. There are no upgrade migrations; older schemas and unknown nonempty databases are rejected unchanged. Keep archived test snapshots with their original verification artifacts. Wrong workspace or newer schema also fails.
 
 Use SQLite-aware backups or stop Archie before copying the database; a live copy without its WAL is incomplete.
 
@@ -21,7 +21,7 @@ For a source runtime, substitute `node --import tsx src/cli/initiative.ts`. Comm
 
 Employees send feedback and inspect their own proposals in their verified human DM. Other employees and bot messages cannot act on their matters or approvals.
 
-Public nudges are plain source-thread replies with no recipient or buttons; historical public callbacks are rejected. Private feedback and Start task buttons are restricted to the saved responsible employee, with the same identity and source checks enforced on callbacks. Failed employee lookups block private help without invalidating valid public discussions.
+Public nudges are plain source-thread replies with no recipient or buttons. Private feedback and Start task buttons are restricted to the saved responsible employee, with the same identity and source checks enforced on callbacks. Failed employee lookups block private help without invalidating valid public discussions.
 
 | Command | Effect |
 |---|---|
@@ -33,9 +33,8 @@ Public nudges are plain source-thread replies with no recipient or buttons; hist
 
 After review, configure live mode in the deployment to permit new proactive delivery. Changing the mode requires restarting Archie. Source, audience, budget and interruption checks still apply. Sending is limited to one weekday digest and two other interventions per destination per Lisbon day, during weekday 09:00–18:00. There is no automatic pause or expiry.
 
-The global `initiative status`, `delivery on/off`, `mute/unmute`, `pause/resume` and `stop/start` commands are retired. Exact forms are consumed even when off, without creating observation storage or ordinary tasks; verified human DMs receive deployment-config help. Historical `owner`, `delivery_enabled`, `mute`, `pause` and `stop` settings are preserved but ignored. Previously saved thread-wide `unfollow` exclusions remain effective.
 
-Shadow continues valid existing private-card approvals, approved/prepared task recovery and their card updates. Historical stop flags no longer defer saved valid approvals, so deploying shadow can resume them. Off skips initiative recovery; already activated ordinary tasks retain their normal lifecycle and controls.
+Shadow continues valid existing private-card approvals, approved/prepared task recovery and their card updates. Off skips initiative recovery; already activated ordinary tasks retain their normal lifecycle and controls.
 
 Deadlines use the source’s local date, time and timezone, resolved by host code. Incomplete, invalid, skipped or repeated local times stay unknown and receive ordinary checks; they do not acquire a guessed instant. An unknown deadline does not mean the matter is resolved.
 
@@ -47,6 +46,6 @@ The card becomes **Starting…**, then **Task started · Open task**. Edits retr
 
 Each background attempt reserves its maximum cost before dispatch. Routine work can use $150/day; priority work has the remaining $50 up to $200, by Lisbon calendar day. Missing usage remains reserved across possible execution days. Exhaustion defers work without stopping collection. Ordinary approved tasks have separate budgets.
 
-This base sends direct requests only. Unknown usage remains reserved because an interrupted request may have executed. Do not refund a charge by age or treat missing usage as zero. Persistent uncertainty may need external provider/accounting evidence. Legacy batch discovery, credential rebinding and recovery commands are removed.
+This base sends direct requests only. Unknown usage remains reserved because an interrupted request may have executed. Do not refund a charge by age or treat missing usage as zero. Persistent uncertainty may need external provider/accounting evidence.
 
 Reflection, training episodes, guidance, cohorts, replay and evaluations belong to the deferred self-evolution change and have no tables in this base. That future change needs its own storage integration. See [verification and limits](initiative-verification.md).
