@@ -100,7 +100,7 @@ export async function runInitiativeWorkload() {
     send: async () => { calls.sends++; return 'sent'; }, find: async () => undefined, active: () => false,
     link: (channel, thread) => `https://slack.test/${channel}/${thread}`,
   };
-  const service = new InitiativeService(store, slack, gateway, { mode: 'shadow', owner: 'U_OWNER', extractionModel: 'claude-haiku-5-5', investigationModel: 'claude-sonnet-5-5' }, () => now);
+  const service = new InitiativeService(store, slack, gateway, { mode: 'shadow', extractionModel: 'claude-haiku-5-5', investigationModel: 'claude-sonnet-5-5' }, () => now);
   let peakQueue = 0;
   let peakDue = 0;
   let cursor = 0;

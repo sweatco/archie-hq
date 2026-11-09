@@ -72,7 +72,7 @@ describe('durable prepared task starts', () => {
         ? { threads: [{ channel: 'C_PUBLIC', thread: ts, observations: [], matters: [{ key: 'release', title: 'Release checklist', detail: source.text, evidence, state: 'open', owner: actor, deadline: null, explicit: true }] }] }
         : { resolved: false, help: null, public: false, evidence, suggestion: { repository: 'owner/repo', outcome: 'Prepare the release checklist', evidence } };
     }) as BackgroundModel['complete'] };
-    const service = new InitiativeService(store, slack, model, { mode: 'live', owner: 'U_OWNER', extractionModel: 'test', investigationModel: 'test', repositories: ['owner/repo'] }, Date.now);
+    const service = new InitiativeService(store, slack, model, { mode: 'live', extractionModel: 'test', investigationModel: 'test', repositories: ['owner/repo'] }, Date.now);
     const handoff = new ProposalHandoff(store, slack, () => ['owner/repo'], source => service.refreshEvidence(source));
     try {
       store.set('delivery_enabled', 'true');

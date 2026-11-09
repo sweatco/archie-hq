@@ -33,7 +33,7 @@ export class ProposalHandoff {
     if (!this.repositories().includes(proposal.repository)) return { status: 'stale', reason: 'Repository scope changed' };
     if (!this.store.proposalCurrent(proposal, Date.now(), false)) {
       const matter = this.store.matter(proposal.matter);
-      // Lookup outages invalidate derived matters; keep saved approval inert until extraction revalidates it.
+      // Channel access loss invalidates derived matters until extraction revalidates them.
       const unchanged = proposal.evidence.every(id => {
         const revision = this.store.attention.revision(id);
         return revision?.excerpt && this.store.attention.currentMessage(revision.channel, revision.ts)?.id === id;
@@ -57,8 +57,7 @@ export class ProposalHandoff {
   }
 
   async present(now: number): Promise<void> {
-    if (!notificationWindow(now) || this.store.setting('delivery_enabled') !== 'true'
-      || ['stop', 'mute', 'pause'].some(control => this.store.setting(control) === 'true')) return;
+    if (!notificationWindow(now)) return;
     const page = this.store.pendingProposalIds(this.store.setting('proposal_cursor'));
     for (const id of page) {
       this.store.set('proposal_cursor', id);
@@ -96,7 +95,6 @@ export class ProposalHandoff {
     if (!proposal || proposalVersion(proposal) !== version) throw new HandoffRejection('The proposal version changed; request a fresh proposal.');
     const validation = await this.current(proposal, actor, true);
     if (validation.status !== 'available') throw new HandoffRejection(validation.reason + '; request a fresh proposal or retry after access recovers.');
-    if (this.store.setting('stop') === 'true') throw new HandoffRejection('Initiative is stopped; no proposal task was activated.');
     const record = this.store.approveHandoff({ proposal: proposal.id, version, actor, approved: Date.now(),
       task: proposalTaskId(this.store.setting('team')!, proposal.id), state: 'approved', budget: 'task', delivery: delivery.id });
     this.queueCard(record.proposal);
@@ -119,7 +117,6 @@ export class ProposalHandoff {
           || !await this.slack.verifyDm(delivery.channel, record.actor)) { state = 'stale'; return; }
         const source = await this.current(proposal, record.actor, true);
         if (source.status !== 'available') { if (source.status === 'stale') state = 'stale'; return; }
-        if (this.store.setting('stop') === 'true') return;
         const evidence = this.store.proposalSources(proposal.id).flatMap(source => {
           const snapshot = this.store.snapshot(source.channel, source.thread);
           return (snapshot?.evidence ?? []).filter(item => proposal.evidence.includes(item.id)).map(item => ({
@@ -132,7 +129,6 @@ export class ProposalHandoff {
         if (!this.store.prepareHandoff(record.proposal, token)) return;
         const refreshed = await this.current(proposal, record.actor, true);
         if (refreshed.status !== 'available') { if (refreshed.status === 'stale') state = 'stale'; return; }
-        if (this.store.setting('stop') === 'true') return;
         await this.tasks.start(record.task);
         state = 'activated';
       } catch (error) {

@@ -30,7 +30,7 @@ beforeEach(() => {
     link: (channel, thread) => `https://slack.test/${channel}/${thread}`,
   };
   model = { complete: vi.fn(async (request) => ({ resolved: false, help: null, public: false, evidence: (request.input as { matter?: { evidence: number[] } }).matter?.evidence ?? [] })) as BackgroundModel['complete'] };
-  service = new InitiativeService(store, slack, model, { mode: 'live', owner: 'U1', extractionModel: 'haiku', investigationModel: 'sonnet' }, () => NOW);
+  service = new InitiativeService(store, slack, model, { mode: 'shadow', extractionModel: 'haiku', investigationModel: 'sonnet' }, () => NOW);
 });
 afterEach(() => { service.stop(); store.close(); rmSync(root, { recursive: true, force: true }); });
 
@@ -55,24 +55,19 @@ async function investigate(help: string | null = 'I can prepare the release chec
 }
 
 describe('initiative flow', () => {
-  it('keeps shadow, mute, pause, stop and explicit delivery disablement independent of learning', async () => {
-    await investigate();
-    store.set('delivery_enabled', 'true');
-    for (const key of ['mute', 'pause', 'stop']) {
-      store.set(key, 'true');
-      await service.deliver(NOW + 60_000);
-      expect(slack.send).not.toHaveBeenCalled();
-      store.set(key, 'false');
-    }
-    const shadow = new InitiativeService(store, slack, model, { ...service.config, mode: 'shadow' }, () => NOW);
-    await shadow.deliver(NOW + 60_000);
-    expect(slack.send).not.toHaveBeenCalled();
+  it('uses mode alone for new delivery despite retired global settings', async () => {
     store.set('delivery_enabled', 'false');
+    for (const key of ['mute', 'pause', 'stop']) store.set(key, 'true');
+    await investigate();
+    expect(model.complete).toHaveBeenCalledTimes(3);
+    expect(store.deliveries('pending')).toHaveLength(1);
     await service.deliver(NOW + 60_000);
     expect(slack.send).not.toHaveBeenCalled();
-    store.set('delivery_enabled', 'true');
+    service.config.mode = 'live';
     await service.deliver(NOW + 60_000);
     expect(slack.send).toHaveBeenCalledTimes(1);
+    expect(store.setting('delivery_enabled')).toBe('false');
+    for (const key of ['mute', 'pause', 'stop']) expect(store.setting(key)).toBe('true');
     expect(store['row']("SELECT name FROM sqlite_master WHERE name='evaluations'")).toBeUndefined();
   });
 
@@ -84,12 +79,12 @@ describe('initiative flow', () => {
     expect(store['row']("SELECT name FROM sqlite_master WHERE name='episodes'")).toBeUndefined();
   });
 
-  it('extracts unmentioned activity without creating a task and gates delivery on explicit owner enablement', async () => {
+  it('extracts unmentioned activity in shadow and sends after selecting live mode', async () => {
     await investigate();
     expect(store.search('release', ['C1'])).toHaveLength(1);
     expect(store.deliveries('pending')).toHaveLength(1);
     expect(slack.send).not.toHaveBeenCalled();
-    store.set('delivery_enabled', 'true');
+    service.config.mode = 'live';
     await service.deliver(NOW + 60_000);
     expect(slack.send).toHaveBeenCalledTimes(1);
   });
@@ -143,24 +138,24 @@ describe('initiative flow', () => {
 
   it('lets cancellation invalidate pending delivery before sending', async () => {
     await investigate();
-    store.set('delivery_enabled', 'true');
+    service.config.mode = 'live';
     vi.mocked(slack.page).mockResolvedValue({ messages: [{ channel: 'C1', thread: TS, ts: TS, version: '1792491000.000001', author: 'U1', text: 'Cancelled' }] });
     await service.deliver(NOW + 60_000);
     expect(slack.send).not.toHaveBeenCalled();
     expect(store.deliveries('pending')).toEqual([]);
   });
 
-  it('rechecks mute after asynchronous thread validation', async () => {
+  it('aborts delivery when shutdown starts during asynchronous thread validation', async () => {
     await investigate();
-    store.set('delivery_enabled', 'true');
-    vi.mocked(slack.page).mockImplementation(async () => { store.set('mute', 'true'); return { messages: [] }; });
+    service.config.mode = 'live';
+    vi.mocked(slack.page).mockImplementation(async () => { service.stop(); return { messages: store.snapshot('C1', TS)!.evidence }; });
     await service.deliver(NOW + 60_000);
     expect(slack.send).not.toHaveBeenCalled();
   });
 
   it('does not race a normal PM task and does not retry uncertain Slack sends', async () => {
     await investigate();
-    store.set('delivery_enabled', 'true');
+    service.config.mode = 'live';
     vi.mocked(slack.active).mockReturnValue(true);
     await service.deliver(NOW + 60_000);
     expect(slack.send).not.toHaveBeenCalled();
@@ -250,11 +245,13 @@ describe('initiative flow', () => {
     store.record({ channel: 'C1', thread: TS, ts: TS, version: TS, author: 'U1', text: 'Long context. '.repeat(1600) }, NOW);
     let calls = 0;
     vi.mocked(model.complete).mockImplementation(async (req) => {
-      if (++calls === 2) { service.cancelAnalysis(); throw new Error('interrupted'); }
+      if (++calls === 2) { service.stop(); throw new Error('interrupted'); }
       return { threads: (req.input as { threads: Array<{ channel: string; thread: string }> }).threads.map((s) => ({ channel: s.channel, thread: s.thread, observations: [], matters: [] })) } as never;
     });
     store.schedule('extract', 'global', NOW); await service.tick(NOW);
     expect(store['rows']('SELECT id FROM extractions')).toHaveLength(1);
+    service.release();
+    service = new InitiativeService(store, slack, model, service.config, () => NOW);
     await service.tick(NOW + 5 * 60_000);
     expect(store.dirty()).toEqual([]);
     expect(vi.mocked(model.complete).mock.calls.filter(([r]) => (r.input as { carried: unknown[] }).carried.length === 0)).toHaveLength(1);
@@ -280,7 +277,7 @@ describe('initiative flow', () => {
 
   it('detects a missed deletion from a fully paginated thread before delivery', async () => {
     const id = await investigate();
-    store.set('delivery_enabled', 'true');
+    service.config.mode = 'live';
     vi.mocked(slack.page).mockResolvedValue({ messages: [] });
     await service.deliver(NOW + 60_000);
     expect(store.matter(id)?.valid).toBe(false);
@@ -295,7 +292,7 @@ describe('initiative flow', () => {
     const matter = { id: 'old-parent', channel: 'C1', thread: root, title: 'Commitment', detail: 'Old commitment', evidence: snapshot.evidence.map((e) => e.id), state: 'open' as const, owner: 'U1', deadline: null, explicit: true, nextCheck: NOW, valid: true };
     store.apply([snapshot], [], [matter]);
     store.enqueueDelivery({ id: 'parent-reminder', recipient: matter.owner, channel: 'D1', thread: null, text: 'Follow up', matters: [matter.id], evidence: matter.evidence, digest: false, state: 'pending', ts: null, created: NOW });
-    store.set('delivery_enabled', 'true');
+    service.config.mode = 'live';
     vi.mocked(slack.page).mockImplementation(async (_channel, _oldest, _latest, _cursor, thread) => ({ messages: thread ? snapshot.evidence.filter((e) => e.ts !== root) : [] }));
     await service.deliver(NOW + 60_000);
     expect(slack.page).toHaveBeenCalledWith('C1', root, root);
@@ -345,7 +342,7 @@ describe('Lisbon notification scheduling', () => {
 
 it('reconsiders an unsent nudge after a temporary ordinary task leaves the discussion', async () => {
   await investigate();
-  store.set('delivery_enabled', 'true');
+  service.config.mode = 'live';
   vi.mocked(slack.active).mockReturnValue(true);
   await service.deliver(NOW + 60_000);
   expect(store.deliveries('cancelled')).toHaveLength(1);
@@ -360,7 +357,7 @@ it('reconsiders an unsent nudge after a temporary ordinary task leaves the discu
 
 it.each(['sent', 'uncertain'] as const)('keeps %s nudge evidence and cached duplicate suppression across cancellation attempts', async state => {
   await investigate();
-  store.set('delivery_enabled', 'true');
+  service.config.mode = 'live';
   if (state === 'uncertain') vi.mocked(slack.send).mockResolvedValueOnce(undefined);
   await service.deliver(NOW + 60_000);
   const delivery = store.deliveries(state)[0];

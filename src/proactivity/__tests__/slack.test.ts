@@ -22,9 +22,9 @@ beforeEach(() => {
 });
 
 describe('public-source Slack boundary', () => {
-  it('omits person-specific buttons on an unowned public follow-up', async () => {
+  it.each([null, 'U_OWNER'])('omits person-specific buttons on public follow-ups regardless of historical recipient: %s', async recipient => {
     await new PublicSlack().send({ id: 'unowned', channel: 'C1', thread: '10.000001', text: 'Useful help',
-      matters: ['release'], recipient: null, evidence: [1], digest: false, state: 'pending', ts: null, created: 0 });
+      matters: ['release'], recipient, evidence: [1], digest: false, state: 'pending', ts: null, created: 0 });
     expect(f.post.mock.calls[0][0].actions).toBeUndefined();
   });
 
@@ -35,10 +35,9 @@ describe('public-source Slack boundary', () => {
   });
 
   it.each([
-    { name: 'public nudge', channel: 'C1' },
     { name: 'private nudge', channel: 'D_OWNER' },
     { name: 'task suggestion', channel: 'D_OWNER', proposal: { id: 'proposal', version: 'version' } },
-  ])('restricts $name buttons to the owner while retaining the message destination', async ({ channel, proposal }) => {
+  ])('restricts $name buttons to the responsible employee while retaining the message destination', async ({ channel, proposal }) => {
     const slack = new PublicSlack();
     await slack.send({ id: 'delivery', recipient: 'U_OWNER', channel, thread: '10.000001', text: 'Follow up on the release',
       matters: ['release'], evidence: [1], digest: false, state: 'pending', ts: null, created: 0, proposal });

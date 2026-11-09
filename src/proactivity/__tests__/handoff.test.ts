@@ -31,7 +31,7 @@ function freshHandoff() {
 async function presented() {
   await handoff.present(NOW);
   const delivery = store.deliveries('pending')[0];
-  const service = new InitiativeService(store, slack, { complete: vi.fn() }, { mode: 'live', owner: 'U_OWNER', extractionModel: 'haiku', investigationModel: 'sonnet' }, () => NOW);
+  const service = new InitiativeService(store, slack, { complete: vi.fn() }, { mode: 'live', extractionModel: 'haiku', investigationModel: 'sonnet' }, () => NOW);
   await service.deliver(NOW);
   service.stop();
   expect(store.delivery(delivery.id)?.state).toBe('sent');
@@ -149,7 +149,7 @@ describe('owner-approved proposal handoff', () => {
     expect(record).toMatchObject({ actor: 'U_OWNER', budget: 'task', state: 'activated', version: proposalVersion(store.proposal(proposalId)!) });
     expect(vi.mocked(tasks.prepare).mock.calls[0][0]).toMatchObject({ taskId: record.task, destination: { channel: 'D_OWNER', thread: delivery.ts } });
     expect(vi.mocked(tasks.prepare).mock.calls[0][0].brief).toContain('untrusted="true"');
-    expect(store.pendingProposalCount(NOW)).toBe(0);
+    expect(store.pendingProposalIds()).toEqual([]);
   });
 
   it('consumes the original card after durable approval without letting a delayed Starting edit block activation or overwrite it', async () => {
@@ -272,11 +272,7 @@ describe('owner-approved proposal handoff', () => {
     const result = await handoff.approve('U_OWNER', delivery.id, delivery.proposal!.version);
     expect(result.state).toBe('prepared');
     expect(tasks.start).not.toHaveBeenCalled();
-    await handoff.recover();
-    expect(store.handoff(proposalId)?.state).toBe('prepared');
-    expect(tasks.start).not.toHaveBeenCalled();
-    store.channel('C1', true, false);
-    store.apply([store.snapshot('C1', TS)!], [], [store.matter('release')!]);
+    expect(store.matter('release')?.valid).toBe(true);
     await handoff.recover();
     expect(store.handoff(proposalId)?.state).toBe('activated');
     expect(tasks.start).toHaveBeenCalledTimes(1);
@@ -385,13 +381,13 @@ it('requires a new card approval after fresh work evidence changes a pending sug
   const newCard = store.deliveries('pending').find(delivery => delivery.proposal?.id === next)!;
   expect(newCard.proposal?.version).not.toBe(oldCard.proposal?.version);
   expect(store.handoff(next)).toBeNull();
-  expect(store.pendingProposalCount(NOW)).toBe(1);
+  expect(store.proposalCurrent(store.proposal(next)!, NOW)).toBe(true);
 });
 
 it('revalidates and requeues a never-sent cancelled card after transient access recovery', async () => {
   await handoff.present(NOW);
   const first = store.deliveries('pending')[0];
-  const service = new InitiativeService(store, slack, { complete: vi.fn() }, { mode: 'live', owner: 'U_OWNER', extractionModel: 'test', investigationModel: 'test' }, () => NOW);
+  const service = new InitiativeService(store, slack, { complete: vi.fn() }, { mode: 'live', extractionModel: 'test', investigationModel: 'test' }, () => NOW);
   try {
     vi.mocked(slack.inspect).mockRejectedValueOnce(new Error('temporary metadata outage'));
     await service.deliver(NOW);

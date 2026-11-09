@@ -43,7 +43,7 @@ afterEach(async () => {
 });
 
 describe('initiative runtime integration', () => {
-  it('authorizes employee feedback per matter while retaining administrator-only global controls', async () => {
+  it('authorizes employee feedback per matter without global controls', async () => {
     const employee = 'U000002';
     f.slack.dm.mockImplementation(async user => user === OWNER ? 'D_OWNER' : 'D_EMPLOYEE');
     f.slack.verifyDm.mockImplementation(async (channel, user) => channel === (user === OWNER ? 'D_OWNER' : 'D_EMPLOYEE'));
@@ -56,6 +56,9 @@ describe('initiative runtime integration', () => {
       const base = { channel: 'C1', thread: ts, title: 'Read-only test', detail: 'Read-only test', evidence: [evidence], state: 'open' as const, deadline: null, explicit: true, nextCheck: NOW, valid: true };
       store.apply([store.snapshot('C1', ts)!], [], [{ ...base, id: 'employee', owner: employee }, { ...base, id: 'admin', owner: OWNER }]);
       store.enqueueDelivery({ id: 'employee-card', recipient: employee, channel: 'D_EMPLOYEE', thread: null, text: 'Employee matter', matters: ['employee'], evidence: [evidence], digest: false, state: 'sent', ts: null, created: NOW });
+      store.enqueueDelivery({ id: 'historical-public', recipient: employee, channel: 'C1', thread: ts, text: 'Public matter', matters: ['employee'], evidence: [evidence], digest: false, state: 'sent', ts: null, created: NOW });
+      await runtime.action(employee, 'historical-public:handled');
+      expect(store.matter('employee')?.state).toBe('open');
       await runtime.action(OWNER, 'employee-card:handled');
       expect(store.matter('employee')?.state).toBe('open');
       f.slack.inspect.mockResolvedValueOnce({ shared: false, recipientCanRead: false });
@@ -72,23 +75,40 @@ describe('initiative runtime integration', () => {
       await runtime.capture({ channel: 'D_EMPLOYEE', user: employee, text: 'initiative handled admin' });
       expect(store.matter('admin')?.state).toBe('open');
       await runtime.capture({ channel: 'D_OWNER', user: OWNER, text: 'initiative stop' });
-      expect(store.setting('stop')).toBe('true');
+      expect(store.setting('stop')).toBeUndefined();
     } finally { store.close(); }
   });
 
-  it('rechecks owner binding after awaited provider verification', async () => {
+  it('preserves an inert historical owner written during provider verification', async () => {
     vi.mocked(ModelGateway.prototype.verify).mockImplementationOnce(async () => {
       const other = openStore();
       try { other.set('owner', 'U000002'); } finally { other.close(); }
     });
-    await expect(startInitiative('T1', 'shadow')).rejects.toThrow('Observation owner mismatch');
-    expect(hasObservationAPI()).toBe(false);
+    runtime = await startInitiative('T1', 'shadow');
+    expect(hasObservationAPI()).toBe(true);
+    const store = openStore();
+    try { expect(store.setting('owner')).toBe('U000002'); } finally { store.close(); }
+    expect(f.slack.dm).not.toHaveBeenCalled();
   });
 
-  it('updates the original card instead of posting a confirmation for every valid callback', async () => {
-    runtime = await startInitiative('T1', 'live');
+  it.each([undefined, 'invalid', 'U_DIFFERENT'])('starts without consulting the obsolete owner variable: %s', async owner => {
+    vi.stubEnv('ARCHIE_PROACTIVITY_OWNER', owner);
+    runtime = await startInitiative('T1', 'shadow');
+    expect(ModelGateway.prototype.verify).toHaveBeenCalled();
+    expect(f.slack.dm).not.toHaveBeenCalled();
+    expect(f.post).not.toHaveBeenCalled();
+    const store = openStore();
+    try { expect(store.setting('owner')).toBeUndefined(); } finally { store.close(); }
+  });
+
+  it.each([
+    { mode: 'shadow', recovery: undefined }, { mode: 'live', recovery: undefined },
+    { mode: 'shadow', recovery: 'approved' }, { mode: 'shadow', recovery: 'prepared' },
+  ] as const)('continues private-card approvals and card updates in $mode, recovery=$recovery', async ({ mode, recovery }) => {
+    runtime = await startInitiative('T1', mode);
     const store = openStore();
     try {
+      store.set('stop', 'true'); store.set('pause', 'true'); store.set('mute', 'true'); store.set('delivery_enabled', 'false');
       const ts = `${NOW / 1000}.000001`;
       store.channel('C1', true, false);
       const evidence = store.record({ channel: 'C1', thread: ts, ts, version: ts, author: OWNER, text: 'Read-only test' }, NOW)!;
@@ -102,8 +122,15 @@ describe('initiative runtime integration', () => {
       vi.spyOn(ordinaryTasks, 'prepare').mockImplementation(async input => { metadata = { approved_start: { ...input, phase: 'prepared' } }; });
       const start = vi.spyOn(ordinaryTasks, 'start').mockImplementation(async () => { metadata.approved_start.phase = 'ready'; });
       vi.spyOn(ordinaryTasks, 'read').mockImplementation(async () => metadata ?? null);
-      await Promise.all([runtime.action(OWNER, `card:start:${version}`), runtime.action(OWNER, `card:start:${version}`)]);
-      await runtime.action(OWNER, `card:start:${version}`);
+      if (recovery) {
+        store.approveHandoff({ proposal, version, actor: OWNER, approved: NOW, task: 'saved-task', state: recovery, budget: 'task', delivery: 'card' });
+        runtime.start();
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(store.handoff(proposal)?.task).toBe('saved-task');
+      } else {
+        await Promise.all([runtime.action(OWNER, `card:start:${version}`), runtime.action(OWNER, `card:start:${version}`)]);
+        await runtime.action(OWNER, `card:start:${version}`);
+      }
       await runtime.close(); runtime = undefined;
       expect(start).toHaveBeenCalledTimes(1);
       expect(f.post).not.toHaveBeenCalled();
@@ -122,7 +149,7 @@ describe('initiative runtime integration', () => {
     expect(InitiativeService.prototype.tick).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects forged owner controls and consumes a verified owner command', async () => {
+  it('rejects forged employee controls and consumes a verified employee command', async () => {
     runtime = await startInitiative('T1', 'shadow');
     expect(await runtime.capture({ channel: 'D_OWNER', user: 'U000002', text: 'initiative stop' })).toBe(false);
     expect(await runtime.capture({ channel: 'D_OTHER', user: OWNER, text: 'initiative stop' })).toBe(false);
@@ -130,29 +157,29 @@ describe('initiative runtime integration', () => {
     expect(f.post).not.toHaveBeenCalled();
     expect(await runtime.capture({ channel: 'D_OWNER', user: OWNER, text: 'initiative stop' })).toBe(true);
     const store = openStore();
-    try { expect(store.setting('stop')).toBe('true'); }
+    try { expect(store.setting('stop')).toBeUndefined(); }
     finally { store.close(); }
   });
 
-  it('does not accept a bot-authored message as an owner control', async () => {
+  it('does not accept a bot-authored message as an employee control', async () => {
     runtime = await startInitiative('T1', 'shadow');
     expect(await runtime.capture({ channel: 'D_OWNER', user: OWNER, bot_id: 'B1', text: 'initiative stop' })).toBe(false);
     const store = openStore();
     try { expect(store.setting('stop')).toBeUndefined(); } finally { store.close(); }
   });
 
-  it('drains authenticated owner operations before closing their database', async () => {
+  it('drains authenticated employee operations before closing their database', async () => {
     runtime = await startInitiative('T1', 'shadow');
     let open!: (channel: string) => void;
     f.slack.dm.mockReturnValueOnce(new Promise(resolve => { open = resolve; }));
-    const control = runtime.capture({ channel: 'D_OWNER', user: OWNER, text: 'initiative status' });
+    const control = runtime.capture({ channel: 'D_OWNER', user: OWNER, text: 'initiative help' });
     await Promise.resolve(); await Promise.resolve();
     let closed = false;
     const closing = runtime.close().then(() => { closed = true; });
     await Promise.resolve(); expect(closed).toBe(false);
     open('D_OWNER');
     await control; await closing; runtime = undefined;
-    expect(f.post.mock.calls[0][0].text).toContain('Initiative: shadow');
+    expect(f.post.mock.calls[0][0].text).toContain('your own matters');
   });
 
   it('drains previously admitted intake during shutdown and rejects new intake', async () => {
@@ -213,18 +240,19 @@ describe('initiative runtime integration', () => {
   it('consumes deferred learning commands without falling through to PM task creation', async () => {
     runtime = await startInitiative('T1', 'shadow');
     expect(await runtime.capture({ channel: 'D_OWNER', user: OWNER, text: 'initiative approve missing missing' })).toBe(true);
-    expect(f.post).toHaveBeenCalledWith(expect.objectContaining({ channel: 'D_OWNER', text: expect.stringContaining('delivery on/off') }));
+    expect(f.post).toHaveBeenCalledWith(expect.objectContaining({ channel: 'D_OWNER', text: expect.stringContaining('ARCHIE_PROACTIVITY_MODE') }));
   });
 
-  it('requires an authenticated owner DM to enable delivery and leaves shadow analysis separate', async () => {
+  it('never changes historical delivery settings from Slack commands', async () => {
     runtime = await startInitiative('T1', 'shadow');
     await runtime.capture({ channel: 'D_OWNER', user: 'U000002', text: 'initiative delivery on' });
     await runtime.capture({ channel: 'D_OTHER', user: OWNER, text: 'initiative delivery on' });
     const store = openStore();
     try {
+      store.set('delivery_enabled', 'false');
       expect(store.setting('delivery_enabled')).toBe('false');
       expect(await runtime.capture({ channel: 'D_OWNER', user: OWNER, text: 'initiative delivery on' })).toBe(true);
-      expect(store.setting('delivery_enabled')).toBe('true');
+      expect(store.setting('delivery_enabled')).toBe('false');
       await runtime.capture({ channel: 'D_OWNER', user: OWNER, text: 'initiative delivery off' });
       expect(store.setting('delivery_enabled')).toBe('false');
     } finally { store.close(); }

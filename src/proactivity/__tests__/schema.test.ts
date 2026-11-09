@@ -12,20 +12,24 @@ const DAY = 86_400_000;
 let root: string;
 let path: string;
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'archie-schema-')); path = join(root, 'state.sqlite'); });
-afterEach(() => { vi.restoreAllMocks(); rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); rmSync(root, { recursive: true, force: true }); });
 
-it('creates only the base schema and reopens without resetting evidence, owner enablement or liability', () => {
+it('reopens schema 12 without resetting evidence, historical settings or unresolved liability', () => {
   const store = new InitiativeStore(path, 'T1', NOW);
   store.channel('C1', true, false);
   store.record({ channel: 'C1', thread: '1792490401.000001', ts: '1792490401.000001', version: '1792490401.000001', author: 'U1', text: 'Review the release.' }, NOW);
   store.set('owner', 'U1'); store.set('delivery_enabled', 'true');
+  for (const key of ['mute', 'pause', 'stop']) store.set(key, 'true');
   const charge = store.reserve(50_000, false, NOW)!;
   store.dispatchRequest(charge, 'claude-haiku-5-5', 'request-fingerprint');
   store.close();
-  const reopened = new InitiativeStore(path, 'T1', NOW + 86_400_000, { owner: 'U1' });
+  vi.stubEnv('ARCHIE_PROACTIVITY_OWNER', 'U_OTHER');
+  const reopened = new InitiativeStore(path, 'T1', NOW + 86_400_000);
   try {
     expect(reopened.setting('watermark')).toBe(String(NOW / 1000));
     expect(reopened.setting('delivery_enabled')).toBe('true');
+    expect(reopened.setting('owner')).toBe('U1');
+    for (const key of ['mute', 'pause', 'stop']) expect(reopened.setting(key)).toBe('true');
     expect(reopened.snapshot('C1', '1792490401.000001')?.evidence[0].text).toBe('Review the release.');
     expect(reopened.budget(NOW + 86_400_000)).toBe(50_000);
     expect(reopened['row']('PRAGMA user_version')?.user_version).toBe(SCHEMA_VERSION);
@@ -56,13 +60,12 @@ it('does not overwrite an unversioned database that already contains data', () =
   expect(readFileSync(path)).toEqual(before);
 });
 
-it('keeps diagnostics read-only and rejects a different workspace or owner', () => {
+it('keeps diagnostics read-only and rejects a different workspace', () => {
   const store = new InitiativeStore(path, 'T1', NOW);
   store.set('owner', 'U1'); store.close();
   const before = readFileSync(path);
   for (const readOnly of [false, true]) {
     expect(() => new InitiativeStore(path, 'T_OTHER', NOW, { readOnly })).toThrow('workspace mismatch');
-    expect(() => new InitiativeStore(path, 'T1', NOW, { readOnly, owner: 'U_OTHER' })).toThrow('owner mismatch');
     expect(readFileSync(path)).toEqual(before);
   }
   const reader = new InitiativeStore(path, 'T1', NOW, { readOnly: true });
@@ -105,7 +108,8 @@ function legacyDatabase() {
 
 it('migrates supported schema 11 transactionally without reassigning deliveries, approvals or unresolved charges', () => {
   legacyDatabase();
-  const store = new InitiativeStore(path, 'T1', NOW + DAY, { owner: 'U_ADMIN' });
+  vi.stubEnv('ARCHIE_PROACTIVITY_OWNER', 'U_OTHER');
+  const store = new InitiativeStore(path, 'T1', NOW + DAY);
   try {
     for (const state of ['pending', 'sending', 'uncertain', 'sent']) {
       expect(store.delivery(state)).toMatchObject({ state, channel: 'D_ADMIN', recipient: 'U_ADMIN', text: 'Retain this card' });
@@ -117,12 +121,11 @@ it('migrates supported schema 11 transactionally without reassigning deliveries,
   } finally { store.close(); }
 });
 
-it('leaves schema 11 unchanged for read-only inspection, mismatched identity or an interrupted migration', () => {
+it('leaves schema 11 unchanged for read-only inspection, mismatched workspace or an interrupted migration', () => {
   legacyDatabase();
   const before = readFileSync(path);
   expect(() => new InitiativeStore(path, 'T1', NOW, { readOnly: true })).toThrow('requires a fresh database');
   expect(() => new InitiativeStore(path, 'T_OTHER', NOW)).toThrow('workspace mismatch');
-  expect(() => new InitiativeStore(path, 'T1', NOW, { owner: 'U_OTHER' })).toThrow('owner mismatch');
   expect(readFileSync(path)).toEqual(before);
   const exec = DatabaseSync.prototype.exec;
   vi.spyOn(DatabaseSync.prototype, 'exec').mockImplementation(function (this: DatabaseSync, sql: string) {
@@ -130,4 +133,52 @@ it('leaves schema 11 unchanged for read-only inspection, mismatched identity or 
   });
   expect(() => new InitiativeStore(path, 'T1', NOW)).toThrow('interrupted_migration');
   expect(readFileSync(path)).toEqual(before);
+});
+
+it.each([false, true])('migrates schema 11 public-only history with null recipients, historical owner=%s', savedOwner => {
+  legacyDatabase();
+  const db = new DatabaseSync(path);
+  db.exec("UPDATE deliveries SET channel='C1',thread='1792490401.000001'");
+  if (!savedOwner) db.exec("DELETE FROM settings WHERE key='owner'");
+  db.close();
+  const store = new InitiativeStore(path, 'T1', NOW + DAY);
+  try {
+    expect(store['rows']('SELECT recipient FROM deliveries')).toEqual(Array(4).fill({ recipient: null }));
+    expect(store.handoff('proposal')).toMatchObject({ actor: 'U_ADMIN', state: 'approved' });
+    expect(store.budget(NOW + DAY)).toBe(50_000);
+  } finally { store.close(); }
+});
+
+it('rejects schema 11 private history without saved identity transactionally, even with an obsolete environment owner', () => {
+  legacyDatabase();
+  const db = new DatabaseSync(path);
+  db.exec("DELETE FROM settings WHERE key='owner'"); db.close();
+  vi.stubEnv('ARCHIE_PROACTIVITY_OWNER', 'U_ADMIN');
+  const before = readFileSync(path);
+  expect(() => new InitiativeStore(path, 'T1', NOW)).toThrow('Legacy private delivery recipient unavailable');
+  expect(readFileSync(path)).toEqual(before);
+  const unchanged = new DatabaseSync(path, { readOnly: true });
+  try {
+    expect(unchanged.prepare('PRAGMA user_version').get()?.user_version).toBe(11);
+    expect(unchanged.prepare('SELECT count(*) AS n FROM deliveries').get()?.n).toBe(4);
+    expect(unchanged.prepare('SELECT state FROM handoffs').get()?.state).toBe('approved');
+    expect(unchanged.prepare('SELECT settled FROM charges').get()?.settled).toBeNull();
+    expect(unchanged.prepare('PRAGMA table_info(deliveries)').all().map(column => column.name)).not.toContain('recipient');
+  } finally { unchanged.close(); }
+});
+
+it('preserves schema 12 deliveries, approvals and financial records exactly when reopening without an administrator', () => {
+  legacyDatabase();
+  const migrated = new InitiativeStore(path, 'T1', NOW);
+  migrated.set('pause', 'true'); migrated.set('stop', 'true'); migrated.set('mute', 'true');
+  const tables = ['settings', 'deliveries', 'handoffs', 'charges', 'charge_scopes', 'requests', 'debits'];
+  const before = tables.map(table => migrated['rows'](`SELECT * FROM ${table} ORDER BY rowid`));
+  migrated.close();
+  vi.stubEnv('ARCHIE_PROACTIVITY_OWNER', 'invalid');
+  const reopened = new InitiativeStore(path, 'T1', NOW + DAY);
+  try {
+    expect(tables.map(table => reopened['rows'](`SELECT * FROM ${table} ORDER BY rowid`))).toEqual(before);
+    expect(reopened['row']('PRAGMA user_version')?.user_version).toBe(12);
+    expect(reopened.budget(NOW + DAY)).toBe(50_000);
+  } finally { reopened.close(); }
 });

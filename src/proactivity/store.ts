@@ -16,15 +16,15 @@ export class InitiativeStore {
   private readonly db: DatabaseSync;
   readonly attention: AttentionRecords;
 
-  constructor(path: string, team: string, now = Date.now(), options: { readOnly?: boolean; owner?: string } = {}) {
+  constructor(path: string, team: string, now = Date.now(), options: { readOnly?: boolean } = {}) {
     this.db = new DatabaseSync(path, { readOnly: options.readOnly === true });
     try {
       this.db.exec('PRAGMA busy_timeout=5000');
       if (options.readOnly) {
         this.db.exec('PRAGMA query_only=ON');
-        validateSchema(this.db, team, options.owner);
+        validateSchema(this.db, team);
       } else {
-        initializeSchema(this.db, team, now, options.owner);
+        initializeSchema(this.db, team, now);
         this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;');
       }
       this.attention = new AttentionRecords(this.db);
@@ -190,14 +190,6 @@ export class InitiativeStore {
     return proposal.evidence.length > 0 && proposal.evidence.length <= 20 && proposal.evidence.every(id =>
       Number.isSafeInteger(id) && this.row(`SELECT r.id FROM revisions r JOIN messages m ON m.revision=r.id JOIN channels c ON c.id=r.channel
         WHERE r.id=? AND r.deleted=0 AND r.bot=0 AND r.own=0 AND r.excerpt!='' AND r.captured>=? AND (?=0 OR c.allowed=1)`, id, now - 90 * DAY, Number(checkAccess)));
-  }
-
-  pendingProposalCount(now: number): number {
-    return this.rows('SELECT p.id FROM proposals p WHERE NOT EXISTS (SELECT 1 FROM handoffs WHERE proposal=p.id)')
-      .filter(row => {
-        const proposal = this.proposal(String(row.id));
-        return proposal && this.proposalCurrent(proposal, now);
-      }).length;
   }
 
   proposalSources(id: string): Array<{ channel: string; thread: string }> {
@@ -630,7 +622,6 @@ export class InitiativeStore {
         const proposal = this.proposal(ref.id);
         if (!proposal || !this.proposalCurrent(proposal, now) || proposalVersion(proposal) !== ref.version || this.handoff(proposal.id)) return false;
       }
-      if (this.setting('delivery_enabled') !== 'true' || ['mute', 'pause', 'stop'].some(key => this.setting(key) === 'true')) return false;
       const ineligible = this.row(`SELECT 1 FROM json_each(?) j LEFT JOIN matters m ON m.id=j.value LEFT JOIN channels c ON c.id=m.channel
         WHERE m.id IS NULL OR m.valid=0 OR c.allowed!=1 OR json_extract(m.body,'$.state')!='open' LIMIT 1`, delivery.matters);
       if (ineligible) return false;
@@ -643,7 +634,8 @@ export class InitiativeStore {
   }
 
   deliveryRecipientCurrent(delivery: Delivery): boolean {
-    if (!delivery.recipient) return !delivery.channel.startsWith('D') && !delivery.proposal;
+    if (!delivery.channel.startsWith('D')) return !delivery.proposal;
+    if (!delivery.recipient) return false;
     const ids = delivery.proposal ? [this.proposal(delivery.proposal.id)?.matter] : delivery.matters;
     return ids.length > 0 && ids.every(id => id && this.matter(id)?.owner === delivery.recipient);
   }

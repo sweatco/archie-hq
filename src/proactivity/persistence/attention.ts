@@ -30,16 +30,6 @@ export class AttentionRecords {
 
   revision(id: number) { return this.row<RevisionRecord>('SELECT * FROM revisions WHERE id=?', id); }
 
-  stopAnalysis(): void {
-    this.atomic(() => {
-      this.run(`DELETE FROM matter_checks WHERE kind='notified' AND matter IN (
-        SELECT j.value FROM deliveries d,json_each(d.matters) j WHERE d.state='pending'
-      )`);
-      this.run("UPDATE deliveries SET state='cancelled' WHERE state='pending'");
-      this.run("DELETE FROM jobs WHERE kind IN ('extract','investigate','digest')");
-    });
-  }
-
   scheduledJob(kind: string, target: string) {
     return this.row<{ kind: string }>('SELECT kind FROM jobs WHERE kind=? AND target=?', kind, target);
   }
@@ -119,10 +109,6 @@ export class AttentionRecords {
   observation(id: string) {
     const row = this.row<Omit<Observation, 'evidence'> & { evidence: string }>('SELECT * FROM observations WHERE id=? AND valid=1', id);
     return row ? { ...row, evidence: JSON.parse(row.evidence) as number[] } : undefined;
-  }
-
-  channelStatus() {
-    return this.rows<Pick<ChannelRecord, 'id' | 'allowed' | 'gap' | 'checkpoint'>>('SELECT id,allowed,gap,checkpoint FROM channels');
   }
 
   messageKnown(channel: string, timestamp: string) {

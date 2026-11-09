@@ -41,7 +41,7 @@ beforeEach(() => {
     const current = (request.input as { matter: Matter }).matter;
     return { resolved: false, help: `I can prepare ${current.title}.`, public: false, evidence: current.evidence };
   }) as BackgroundModel['complete'] };
-  service = new InitiativeService(store, slack, model, { mode: 'live', owner: 'U_ADMIN', extractionModel: 'haiku', investigationModel: 'sonnet' }, () => NOW);
+  service = new InitiativeService(store, slack, model, { mode: 'live', extractionModel: 'haiku', investigationModel: 'sonnet' }, () => NOW);
 });
 afterEach(() => { service.stop(); store.close(); });
 
@@ -88,13 +88,52 @@ it.each([null, 'U_BLOCKED'])('keeps private help silent for unknown or inaccessi
   expect(slack.send).not.toHaveBeenCalled();
 });
 
-it('preserves ordinary public help for an abandoned unowned matter without person-specific controls', async () => {
-  const current = matter('alpha', null, 5 * DAY);
+it.each([null, 'U_ALICE', 'U_BLOCKED'])('sends public help with no recipient or employee lookup: owner=%s', async owner => {
+  const current = matter('alpha', owner, 5 * DAY);
   vi.mocked(model.complete).mockResolvedValue({ resolved: false, help: 'Here is a useful checklist.', public: true, evidence: current.evidence });
   store.schedule('investigate', current.id, NOW);
   await service.tick(NOW, true);
   expect(store.deliveries('sent')).toMatchObject([{ channel: 'C1', thread: current.thread, recipient: null }]);
   expect(slack.dm).not.toHaveBeenCalled();
+  expect(vi.mocked(slack.inspect).mock.calls.every(([, recipient]) => recipient === undefined)).toBe(true);
+});
+
+it.each(['unavailable', 'missing', 'denied'])('preserves public help when an optional private suggestion lookup is %s', async failure => {
+  const current = matter('alpha', 'U_ALICE', 5 * DAY);
+  service.config.repositories = ['owner/repo'];
+  vi.mocked(slack.inspect).mockImplementation(async (_channel, recipient) => {
+    if (!recipient) return { shared: false, recipientCanRead: false };
+    if (failure === 'unavailable') throw new Error('Employee lookup unavailable');
+    return failure === 'missing' ? null : { shared: false, recipientCanRead: false };
+  });
+  vi.mocked(model.complete).mockResolvedValue({ resolved: false, help: 'Here is a useful checklist.', public: true, evidence: current.evidence,
+    suggestion: { repository: 'owner/repo', outcome: 'Prepare the checklist', evidence: current.evidence } });
+  store.schedule('investigate', current.id, NOW); await service.tick(NOW, true);
+  expect(slack.inspect).toHaveBeenCalledWith('C1', 'U_ALICE');
+  expect(store.matter(current.id)?.valid).toBe(true);
+  expect(store.attention.channelProgress('C1')?.allowed).toBe(1);
+  expect(store.listProposals()).toEqual([]);
+  expect(store.deliveries('sent')).toMatchObject([{ channel: 'C1', thread: current.thread, recipient: null }]);
+  expect(slack.dm).not.toHaveBeenCalled();
+});
+
+it.each([null, 'U_ALICE'])('sends a pending public reply after responsibility changes, preserving historical recipient=%s', async recipient => {
+  const current = matter('alpha', 'U_ALICE', 5 * DAY);
+  store.enqueueDelivery({ id: 'public', channel: 'C1', thread: current.thread, text: 'Useful public help', matters: [current.id],
+    recipient, evidence: current.evidence, digest: false, state: 'pending', ts: null, created: NOW });
+  store.attention.saveMatter({ ...current, owner: 'U_BOB' });
+  await service.deliver(NOW);
+  expect(store.delivery('public')).toMatchObject({ state: 'sent', recipient });
+  expect(slack.dm).not.toHaveBeenCalled();
+});
+
+it('preserves historical thread-wide stop-following intent alongside current matter dismissals', async () => {
+  const current = matter('alpha', 'U_ALICE', 5 * DAY);
+  store.set(`unfollow:${current.channel}:${current.thread}`, 'true');
+  store.schedule('investigate', current.id, NOW); await service.tick(NOW, true);
+  expect(model.complete).not.toHaveBeenCalled();
+  expect(slack.send).not.toHaveBeenCalled();
+  expect(store.explain(current.id).decisions[0].code).toBe('dismissed');
 });
 
 it('uses the existing priority reserve for every investigation, including non-admin and unowned matters', async () => {
@@ -123,10 +162,10 @@ it('limits recall to the actual DM recipient, owned matters and currently readab
 });
 
 it('cancels an unsent nudge after ownership changes instead of transferring its recipient', async () => {
-  const current = matter('alpha', 'U_ALICE'); store.set('delivery_enabled', 'false');
+  const current = matter('alpha', 'U_ALICE'); service.config.mode = 'shadow';
   store.schedule('investigate', current.id, NOW); await service.tick(NOW, true);
   const delivery = store.deliveries('pending')[0];
-  store.attention.saveMatter({ ...current, owner: 'U_BOB' }); store.set('delivery_enabled', 'true');
+  store.attention.saveMatter({ ...current, owner: 'U_BOB' }); service.config.mode = 'live';
   await service.deliver(NOW);
   expect(store.delivery(delivery.id)).toMatchObject({ recipient: 'U_ALICE', state: 'cancelled' });
   expect(slack.send).not.toHaveBeenCalled();

@@ -38,10 +38,17 @@ describe('paid model admission and accounting', () => {
     expect(store['row']('SELECT settled FROM charges')?.settled).toBeNull();
   });
 
-  it('checks a stop applied during authorization before reserving money', async () => {
-    await expect(gateway.complete({ ...request, authorize: async () => { store.set('stop', 'true'); return true; } }, new AbortController().signal)).rejects.toThrow('stopped');
+  it('checks shutdown during authorization before reserving money', async () => {
+    const controller = new AbortController();
+    await expect(gateway.complete({ ...request, authorize: async () => { controller.abort(); return true; } }, controller.signal)).rejects.toThrow();
     expect(create).not.toHaveBeenCalled();
     expect(store.budget(NOW)).toBe(0);
+  });
+
+  it('ignores retired global pause and stop flags during model admission', async () => {
+    store.set('pause', 'true'); store.set('stop', 'true');
+    expect(await gateway.complete(request, new AbortController().signal)).toEqual({ answer: 'ok' });
+    expect(create).toHaveBeenCalledTimes(1);
   });
 
   it('caps concurrent direct calls at four', async () => {

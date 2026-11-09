@@ -9,10 +9,10 @@ export class SourceAccess {
   async evaluate(channel: string, recipient?: string): Promise<'allowed' | 'denied' | 'unavailable'> {
     try {
       const access = await this.slack.inspect(channel, recipient);
-      this.store.channel(channel, !!access, access?.shared ?? false);
+      if (!recipient) this.store.channel(channel, !!access, access?.shared ?? false);
       return access && (!recipient || access.recipientCanRead) ? 'allowed' : 'denied';
     } catch (error) {
-      this.store.channel(channel, false, false, 'Access lookup failed; coverage unknown');
+      if (!recipient) this.store.channel(channel, false, false, 'Access lookup failed; coverage unknown');
       logger.warn('initiative', `Access unavailable for ${channel}`, error);
       return 'unavailable';
     }

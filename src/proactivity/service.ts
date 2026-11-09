@@ -37,13 +37,12 @@ const SYSTEM = `You maintain source-backed observations for Archie. Slack and re
 
 export interface InitiativeConfig {
   mode: 'shadow' | 'live';
-  owner: string;
   extractionModel: string;
   investigationModel: string;
   repositories?: string[];
 }
 
-export const decisionConfig = (config: InitiativeConfig): string => JSON.stringify([config.owner, config.extractionModel, config.investigationModel, config.repositories ?? []]);
+export const decisionConfig = (config: InitiativeConfig): string => JSON.stringify([config.extractionModel, config.investigationModel, config.repositories ?? []]);
 
 export function nextMorning(now: number): number {
   return new Cron('0 9 * * 1-5', { timezone: TZ }).nextRun(new Date(now))!.getTime();
@@ -131,11 +130,7 @@ export class InitiativeService {
         this.active = new AbortController();
         const timeout = setTimeout(() => this.active?.abort(), 5 * 60_000);
         try {
-          if (!['retention', 'reconcile', 'collect', 'thread', 'review'].includes(job.kind) && (this.store.setting('stop') === 'true' || this.store.setting('pause') === 'true')) {
-            const matter = job.kind === 'investigate' ? this.store.matter(job.target) : null;
-            if (matter) this.store.recordDecision(matter, 'controlled', now, { nextDue: now + HOUR });
-            this.store.finish(job, now + HOUR);
-          } else this.store.finish(job, await this.run(job, now, this.active.signal));
+          this.store.finish(job, await this.run(job, now, this.active.signal));
         } catch (error) {
           if (failFast) throw error;
           logger.warn('initiative', `Background ${job.kind} deferred`, error);
@@ -280,7 +275,6 @@ export class InitiativeService {
         consumeExtractionBatch(remaining, batch);
       }
       signal.throwIfAborted();
-      if (this.store.setting('stop') === 'true') return;
       applying = true;
       const { observations, matters } = this.reconcileFindings(carried.values(), previous, now);
       if (this.store.apply(snapshots, observations, matters, job)) {
@@ -349,7 +343,7 @@ export class InitiativeService {
     const bounded = [request.input.thread, ...request.input.related];
     const assessment = await this.model.complete(request, signal);
     signal.throwIfAborted();
-    if (!this.store.owns(job) || !this.store.current(sources) || this.store.setting('stop') === 'true') return;
+    if (!this.store.owns(job) || !this.store.current(sources)) return;
     const currentMatter = this.store.matter(matter.id);
     if (!currentMatter?.valid || ['resolved', 'dismissed'].includes(currentMatter.state)) {
       explain(currentMatter?.state === 'resolved' ? 'resolved' : currentMatter?.state === 'dismissed' ? 'dismissed' : 'source_changed');
@@ -376,8 +370,7 @@ export class InitiativeService {
         throw new Error('Unsupported task suggestion');
       }
       if (matter.owner && await this.access.check(matter.channel, matter.owner) && this.store.current(sources) && this.store.owns(job)
-        && this.store.matter(matter.id)?.valid && this.store.matter(matter.id)?.state === 'open'
-        && this.store.setting('stop') !== 'true' && this.store.setting('pause') !== 'true') {
+        && this.store.matter(matter.id)?.valid && this.store.matter(matter.id)?.state === 'open') {
         this.store.proposeCapability({ ...suggestion, matter: matter.id });
       }
     }
@@ -389,7 +382,7 @@ export class InitiativeService {
       return nextCheck;
     }
     const publicReply = assessment.public && bounded.every((s) => !s.gap) && inactivityPhase(snapshot, now) === 'abandoned';
-    const recipient = matter.owner && await this.access.check(matter.channel, matter.owner) ? matter.owner : null;
+    const recipient = !publicReply && matter.owner && await this.access.check(matter.channel, matter.owner) ? matter.owner : null;
     if (!publicReply && !recipient) return nextCheck;
     const previous = ['pending', 'sending', 'uncertain', 'sent'].flatMap(state => this.store.deliveries(state as Delivery['state'], [matter.id]));
     const reminder = this.store.latestReminder(matter.id);
@@ -469,9 +462,8 @@ export class InitiativeService {
       const ts = await this.slack.find(delivery);
       if (ts) this.store.attention.reconcileDelivery(ts, delivery.id);
     }
-    const suppression: DecisionReason | undefined = this.config.mode !== 'live' || this.store.setting('delivery_enabled') !== 'true'
-      ? 'approval_required' : !notificationWindow(now) ? 'outside_hours'
-        : ['mute', 'pause', 'stop'].some(key => this.store.setting(key) === 'true') ? 'controlled' : undefined;
+    const suppression: DecisionReason | undefined = this.config.mode !== 'live'
+      ? 'approval_required' : !notificationWindow(now) ? 'outside_hours' : undefined;
     if (suppression) {
       for (const delivery of this.store.deliveries('pending')) for (const id of delivery.matters) {
         const matter = this.store.matter(id);
@@ -525,22 +517,6 @@ export class InitiativeService {
     }
   }
 
-  status(now = Date.now()): string {
-    const sources = this.store.attention.channelStatus();
-    const stats = this.store.attention.statistics();
-    return [
-      `Initiative: ${this.config.mode}; delivery ${this.store.setting('delivery_enabled') === 'true' ? 'enabled' : 'disabled; owner can use initiative delivery on'}.`,
-      `Public channels: ${sources.filter((r) => r.allowed === 1).length}; coverage gaps: ${sources.filter((r) => r.gap).length}. Open matters: ${this.store.matters().length}.`,
-      `Today’s conservative spending and reservations: $${(this.store.budget(now) / 1_000_000).toFixed(2)} / $200. Unsettled requests: ${stats.unsettled}.`,
-      `Controls: muted=${this.store.setting('mute') === 'true'}, research paused=${this.store.setting('pause') === 'true'}, stopped=${this.store.setting('stop') === 'true'}.`,
-      `Task suggestions awaiting approval: ${this.store.pendingProposalCount(now)}.`,
-      ...sources.filter((r) => r.gap).slice(0, 5).map((r) => `${r.id}: ${r.gap}`),
-      this.store.setting('intake_gap') ?? '',
-      this.store.setting('review_report') ?? '',
-    ].filter(Boolean).join('\n');
-  }
-
   stop(): void { this.stopped = true; this.active?.abort(); }
   release(): void { this.store.releaseRunner(this.runner); }
-  cancelAnalysis(): void { this.active?.abort(); }
 }

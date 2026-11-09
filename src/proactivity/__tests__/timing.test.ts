@@ -18,7 +18,7 @@ let service: InitiativeService;
 let slack: ObservationSlack;
 let model: BackgroundModel;
 let message: SourceMessage;
-const freshService = () => new InitiativeService(store, slack, model, { mode: 'shadow', owner: 'U1', extractionModel: 'haiku', investigationModel: 'sonnet' }, Date.now);
+const freshService = () => new InitiativeService(store, slack, model, { mode: 'shadow', extractionModel: 'haiku', investigationModel: 'sonnet' }, Date.now);
 
 beforeEach(() => {
   vi.useFakeTimers(); vi.setSystemTime(START);

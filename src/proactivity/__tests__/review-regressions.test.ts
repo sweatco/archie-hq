@@ -30,7 +30,7 @@ beforeEach(() => {
     active: vi.fn(() => false), link: (channel, thread) => `https://slack.test/${channel}/${thread}`,
   };
   model = { complete: vi.fn(async (request) => ({ resolved: false, help: null, public: false, evidence: (request.input as { matter: Matter }).matter.evidence })) as BackgroundModel['complete'] };
-  service = new InitiativeService(store, slack, model, { mode: 'shadow', owner: 'U1', extractionModel: 'haiku', investigationModel: 'sonnet' }, () => NOW);
+  service = new InitiativeService(store, slack, model, { mode: 'shadow', extractionModel: 'haiku', investigationModel: 'sonnet' }, () => NOW);
 });
 afterEach(() => { service.stop(); store.close(); vi.useRealTimers(); });
 

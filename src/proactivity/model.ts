@@ -87,10 +87,8 @@ export class ModelGateway implements BackgroundModel {
     try {
       for (let attempt = 0; attempt < 3; attempt++) {
         signal.throwIfAborted();
-        if (this.store.setting('stop') === 'true' || this.store.setting('pause') === 'true') throw new AdmissionDeferred('Background analysis was stopped or paused');
         if (request.authorize && !await request.authorize()) throw new AdmissionDeferred('Source access changed before dispatch');
         signal.throwIfAborted();
-        if (this.store.setting('stop') === 'true' || this.store.setting('pause') === 'true') throw new AdmissionDeferred('Background analysis was stopped or paused');
         const charge = this.store.reserve(maximum, request.priority === true, Date.now(), request.scope);
         if (!charge) throw new AdmissionDeferred('Background daily allowance unavailable');
         this.store.dispatchRequest(charge, request.model, createHash('sha256').update(JSON.stringify(params)).digest('hex'));

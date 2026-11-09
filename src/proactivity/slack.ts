@@ -116,7 +116,7 @@ export class PublicSlack implements ProposalSlack {
     if (isSlackDryRun()) return Promise.resolve(undefined);
     return postSlackMessage({ channel: delivery.channel, threadTs: delivery.thread ?? undefined,
       text: delivery.text.replace(/<!(?:channel|here|everyone)>/g, '[group mention]'), correlationId: delivery.id,
-      actions: !delivery.recipient ? undefined : delivery.proposal ? [{
+      actions: !delivery.channel.startsWith('D') || !delivery.recipient ? undefined : delivery.proposal ? [{
         type: 'button', text: { type: 'plain_text', text: 'Start task' }, action_id: 'initiative_start_task',
         value: `${delivery.id}:start:${delivery.proposal.version}`, visible_to_user_ids: [delivery.recipient],
       }] : delivery.matters.length === 1 ? ['handled', 'later', 'not useful', 'stop following'].map((action) => ({
