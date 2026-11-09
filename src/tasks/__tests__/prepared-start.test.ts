@@ -20,7 +20,7 @@ vi.mock('../../connectors/slack/client.js', async (original) => ({
 }));
 
 import { Task, activeTasks } from '../task.js';
-import { findTaskIdsByStatus, getMetadataPath, loadMetadata } from '../persistence.js';
+import { findTaskIdsByStatus, getMetadataPath, getSharedPath, loadMetadata } from '../persistence.js';
 import { recoverActiveTasks } from '../recovery.js';
 import { MessageQueue } from '../../agents/message-queue.js';
 import { createCommsMcpServer, createOrchestrationMcpServer } from '../../agents/tools.js';
@@ -105,6 +105,9 @@ describe('durable prepared task starts', () => {
       expect(fixture.spawn).toHaveBeenCalledTimes(1);
       const task = await Task.get(first.task);
       expect(task.metadata.approved_start).toMatchObject({ actor, budget: 'task', phase: 'ready' });
+      const evidencePath = join(getSharedPath(first.task), 'proposal-evidence.md');
+      expect(await readFile(evidencePath, 'utf8')).toContain(source.text);
+      expect(task.metadata.approved_start?.brief).toContain(evidencePath);
       expect(task.metadata.memory_destination).toEqual({ channel_id: `D_${actor}` });
       expect(comms(task).post_to_channel).toBeUndefined();
       expect((await call(completion(task), {})).content[0].text).toContain('Cannot finish silently');
@@ -262,6 +265,38 @@ describe('durable prepared task starts', () => {
     await recoverActiveTasks();
     expect(fixture.spawn).not.toHaveBeenCalled();
     await expect((await Task.get(input.taskId)).sendMessage('ordinary wake before preparation finishes')).rejects.toThrow('not ready');
+  });
+
+  it('saves complete evidence once and keeps its file reference through restart and activation', async () => {
+    const evidence = 'Read-only checklist context.\n'.repeat(500) + 'Final restriction: do not create issues.';
+    const path = join(getSharedPath(input.taskId), 'proposal-evidence.md');
+    await Task.prepare({ ...input, evidence });
+    expect(await readFile(path, 'utf8')).toBe(evidence);
+    const brief = (await loadMetadata(input.taskId))!.approved_start!.brief;
+    expect(brief).toContain(path);
+    expect(brief).toContain('untrusted evidence');
+    expect(brief).toContain(input.brief);
+    expect(brief).not.toContain(evidence);
+    activeTasks.clear();
+    const task = await Task.prepare({ ...input, evidence: 'A retry must not replace approved evidence.' });
+    await expect(Task.prepare({ ...input, actor: 'U_OTHER', evidence: 'forged evidence' })).rejects.toThrow('identity mismatch');
+    expect(await readFile(path, 'utf8')).toBe(evidence);
+    const messages = vi.spyOn(MessageQueue.prototype, 'addMessage');
+    await task.startPrepared();
+    expect(messages).toHaveBeenCalledWith(brief);
+    expect(fixture.spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves preparation retryable if the evidence write fails before metadata is saved', async () => {
+    const path = join(getSharedPath(input.taskId), 'proposal-evidence.md');
+    await mkdir(path, { recursive: true });
+    await expect(Task.prepare({ ...input, evidence: 'Complete source' })).rejects.toThrow();
+    expect(await loadMetadata(input.taskId)).toBeNull();
+    expect(fixture.spawn).not.toHaveBeenCalled();
+    await rm(path, { recursive: true });
+    await Task.prepare({ ...input, evidence: 'Complete source' });
+    expect(await readFile(path, 'utf8')).toBe('Complete source');
+    expect((await loadMetadata(input.taskId))?.status).toBe('preparing');
   });
 
   it('reuses the prepared identity after reload and starts it only once across double clicks', async () => {

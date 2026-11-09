@@ -3,6 +3,7 @@ import type { TaskMetadata } from '../types/task.js';
 
 export interface PreparedTaskInput {
   taskId: string; correlation: string; version: string; actor: string; brief: string;
+  evidence?: string;
   destination: { channel: string; thread: string; name: string };
 }
 

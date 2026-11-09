@@ -119,13 +119,13 @@ export class ProposalHandoff {
         if (source.status !== 'available') { if (source.status === 'stale') state = 'stale'; return; }
         const evidence = this.store.proposalSources(proposal.id).flatMap(source => {
           const snapshot = this.store.snapshot(source.channel, source.thread);
-          return (snapshot?.evidence ?? []).filter(item => proposal.evidence.includes(item.id)).map(item => ({
-            id: item.id, revision: item.version, source: this.slack.link(item.channel, item.thread), text: item.text.slice(0, 200),
-          }));
+          return (snapshot?.evidence ?? []).filter(item => proposal.evidence.includes(item.id)).map(item =>
+            `Evidence ${item.id} (revision ${item.version})\nSource: ${this.slack.link(item.channel, item.thread)}\n${item.text}`);
         });
-        const brief = `The responsible employee explicitly approved starting the scoped proposal below. Normal task budgeting applies. Existing edit-mode and external-action approvals still apply. Starting or parking this task does not establish that the feature is implemented or released.\n<proposal_evidence untrusted="true">${escape(JSON.stringify({ repository: proposal.repository, intendedResult: proposal.outcome, evidence })).slice(0, 6000)}</proposal_evidence>`;
+        const brief = `The responsible employee explicitly approved starting the scoped proposal below. Normal task budgeting applies. Existing edit-mode and external-action approvals still apply. Starting or parking this task does not establish that the feature is implemented or released.\n<proposal_evidence untrusted="true">${escape(proposal.outcome)}</proposal_evidence>`;
         await this.tasks.prepare({ taskId: record.task, correlation: `initiative:${proposal.id}`, version: record.version, actor: record.actor,
-          brief, destination: { channel: delivery.channel, thread: delivery.ts, name: 'Approved proposal discussion' } });
+          brief, evidence: `Repository: ${proposal.repository}\nIntended result: ${proposal.outcome}\n\n${evidence.join('\n\n')}`,
+          destination: { channel: delivery.channel, thread: delivery.ts, name: 'Approved proposal discussion' } });
         if (!this.store.prepareHandoff(record.proposal, token)) return;
         const refreshed = await this.current(proposal, record.actor, true);
         if (refreshed.status !== 'available') { if (refreshed.status === 'stale') state = 'stale'; return; }
