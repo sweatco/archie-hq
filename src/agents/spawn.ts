@@ -56,6 +56,7 @@ import { emitEvent } from '../system/event-bus.js';
 import { getProbeBaseUrl } from '../system/context-probe.js';
 import { buildSandboxConfig, buildManagedNetworkPolicy, buildPackageManagerCacheEnv, buildRepoGrants, createFilesystemGuardHooks, createPmOnlyToolGuardHooks, TRUSTED_PACKAGE_REGISTRY_DOMAINS, type SandboxOptions } from './sandbox.js';
 import { grantTriggerDataAccess, buildTriggerDataPromptSection } from './trigger-data.js';
+import { grantWorkflowReportData } from './workflow-report-data.js';
 import { applyOAuthBindings } from '../system/oauth/inject.js';
 import { enrichPromptWithMemory } from '../memory/index.js';
 import { getAuthorizedMemoryAuthors } from '../memory/task-authors.js';
@@ -540,6 +541,8 @@ Shared folder: ${sharedPath} [READ-ONLY]
     });
     systemPrompt = `${systemPrompt}\n\n${buildTriggerDataPromptSection(triggerId, triggerDataPath, triggerDataEntries)}`;
   }
+
+  sandboxOpts = await grantWorkflowReportData(sandboxOpts, taskId);
 
   // ---- Organizational memory (one authorized attachment for the PM session) ----
   if (memoryAuthorization) {

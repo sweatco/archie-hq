@@ -30,11 +30,13 @@ import { extractTaskIdFromBranch } from './branch-naming.js';
 import { logger } from '../../system/logger.js';
 import { getIsShuttingDown } from '../../system/shutdown.js';
 import { WORKDIR } from '../../system/workdir.js';
+import { handleWorkflowReport, mountWorkflowFeedback } from './workflow-reports.js';
 
 /**
  * Mount the GitHub webhook endpoint on an Express router
  */
 export function mountGitHubWebhook(app: Application, secret: string): void {
+  mountWorkflowFeedback(app);
   logger.plain('GitHub webhook: POST /webhooks/github');
   app.post(
     '/webhooks/github',
@@ -106,6 +108,7 @@ async function handleGitHubWebhook(
   eventType: string,
   payload: Record<string, unknown>
 ): Promise<void> {
+  if (await handleWorkflowReport(eventType, payload)) return;
   const context = formatGitHubContext(eventType, payload);
 
   logger.system(

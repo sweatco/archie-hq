@@ -1015,6 +1015,21 @@ export class GitHubClient {
     };
   }
 
+  async downloadWorkflowArtifact(githubRepo: string, runId: number, name: string) {
+    const octokit = await this.getOctokit();
+    const { owner, repo } = this.parseRepo(githubRepo);
+    const { data: run } = await octokit.request('GET /repos/{owner}/{repo}/actions/runs/{run_id}', { owner, repo, run_id: runId });
+    const { data } = await octokit.request('GET /repos/{owner}/{repo}/actions/runs/{run_id}/artifacts', { owner, repo, run_id: runId, per_page: 100 });
+    const matches = data.artifacts.filter(artifact => artifact.name === name && !artifact.expired);
+    if (matches.length !== 1 || matches[0].size_in_bytes > 32 * 1024 * 1024) throw new Error('Expected one unexpired report artifact under 32 MiB');
+    const archive = await octokit.request('GET /repos/{owner}/{repo}/actions/artifacts/{artifact_id}/{archive_format}', {
+      owner, repo, artifact_id: matches[0].id, archive_format: 'zip',
+    });
+    const bytes = Buffer.from(archive.data as ArrayBuffer);
+    if (bytes.length > 32 * 1024 * 1024) throw new Error('Report archive exceeds 32 MiB');
+    return { run, bytes };
+  }
+
   /**
    * Normalize a raw code-scanning alert payload (list item or single alert)
    * into the trimmed shape agents consume.

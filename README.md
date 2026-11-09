@@ -181,6 +181,7 @@ See [Security Architecture](docs/architecture/security.md) for the full threat m
 - [Persistence](docs/architecture/persistence.md) — session storage and recovery
 - [Slack Integration](docs/architecture/slack-integration.md) — UX layer
 - [GitHub Integration](docs/architecture/github-integration.md) — PR workflow
+- [Scheduled workflow reports](docs/architecture/workflow-reports.md) — GitHub-scheduled research, DM processing and feedback
 - [Web Research](docs/architecture/web-research.md) — the controlled `web_research` pipeline
 
 **Guides:**
