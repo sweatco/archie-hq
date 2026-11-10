@@ -21,8 +21,15 @@ vi.mock('../persistence.js', async (importOriginal) => {
 
 vi.mock('../../system/logger.js', () => ({
   logger: {
-    system: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), info: vi.fn(),
-    slack: vi.fn(), agentAction: vi.fn(), agentFinding: vi.fn(), agentToSlack: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    warn: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    slack: vi.fn(),
+    agentAction: vi.fn(),
+    agentFinding: vi.fn(),
+    agentToSlack: vi.fn(),
   },
 }));
 
@@ -79,7 +86,14 @@ function trigger(status: TriggerStatus): Trigger {
     created_by: 'U1',
     created_at: '2026-07-29T10:56:00.000Z',
     binding: { type: 'channel', channel_id: 'C1', channel_name: 'growth-operations' },
-    conditions: [{ type: 'schedule', tz: 'Europe/London', next_run_at: '2026-07-30T08:00:00.000Z', cron: '0 9 * * *' }],
+    conditions: [
+      {
+        type: 'schedule',
+        tz: 'Europe/London',
+        next_run_at: '2026-07-30T08:00:00.000Z',
+        cron: '0 9 * * *',
+      },
+    ],
     action: { prompt: 'do it' },
   };
 }
@@ -113,7 +127,10 @@ describe('handleTriggerDenial', () => {
     loadTrigger.mockResolvedValue(trigger('enabled'));
     const task = makeFakeTask();
 
-    await expect(deny(task, TRIGGER_ID)).resolves.toEqual({ outcome: 'already_live', status: 'enabled' });
+    await expect(deny(task, TRIGGER_ID)).resolves.toEqual({
+      outcome: 'already_live',
+      status: 'enabled',
+    });
 
     expect(deleteTrigger).not.toHaveBeenCalled();
   });
@@ -121,7 +138,10 @@ describe('handleTriggerDenial', () => {
   it('reports a paused trigger as paused, so the card can avoid telling the user to pause it', async () => {
     loadTrigger.mockResolvedValue(trigger('paused'));
 
-    await expect(deny(makeFakeTask(), TRIGGER_ID)).resolves.toEqual({ outcome: 'already_live', status: 'paused' });
+    await expect(deny(makeFakeTask(), TRIGGER_ID)).resolves.toEqual({
+      outcome: 'already_live',
+      status: 'paused',
+    });
 
     expect(deleteTrigger).not.toHaveBeenCalled();
   });
@@ -156,7 +176,7 @@ describe('handleTriggerDenial', () => {
     expect(deleteTrigger).not.toHaveBeenCalled();
   });
 
-  it('falls back to the task\'s own pending id when no id is passed', async () => {
+  it("falls back to the task's own pending id when no id is passed", async () => {
     loadTrigger.mockResolvedValue(trigger('pending'));
     const task = makeFakeTask(TRIGGER_ID);
 

@@ -47,6 +47,7 @@ export async function registerClient(
 
   return {
     client_id: registered.client_id,
-    client_secret: typeof registered.client_secret === 'string' ? registered.client_secret : undefined,
+    client_secret:
+      typeof registered.client_secret === 'string' ? registered.client_secret : undefined,
   };
 }

@@ -4,12 +4,7 @@
  * be unit-tested with a fake; the real ArchieClient satisfies TaskClient structurally.
  */
 
-export type WaitState =
-  | 'completed'
-  | 'stopped'
-  | 'approval_requested'
-  | 'pending'
-  | 'not_found';
+export type WaitState = 'completed' | 'stopped' | 'approval_requested' | 'pending' | 'not_found';
 
 /** Every approval type the engine raises and the API accepts on resolution. */
 export const APPROVAL_TYPES = [

@@ -12,14 +12,14 @@
 
 display_information:
   name: Archie
-  description: "Autonomous Responsive and Collaborative Hyper Intelligent Employee"
-  background_color: "#2c2d30"
+  description: 'Autonomous Responsive and Collaborative Hyper Intelligent Employee'
+  background_color: '#2c2d30'
 features:
   bot_user:
     display_name: Archie
     always_online: true
   assistant_view:
-    assistant_description: "Autonomous Responsive and Collaborative Hyper Intelligent Employee"
+    assistant_description: 'Autonomous Responsive and Collaborative Hyper Intelligent Employee'
     suggested_prompts: []
 oauth_config:
   scopes:

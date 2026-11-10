@@ -20,7 +20,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../../system/logger.js', () => ({
-  logger: { warn: vi.fn(), system: vi.fn(), error: vi.fn(), debug: vi.fn(), agent: vi.fn(), plain: vi.fn() },
+  logger: {
+    warn: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    agent: vi.fn(),
+    plain: vi.fn(),
+  },
 }));
 vi.mock('fs/promises', () => ({
   writeFile: vi.fn().mockResolvedValue(undefined),
@@ -58,7 +65,14 @@ function metadata(): TaskMetadata {
 }
 
 const pmDef = () =>
-  ({ id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', isPm: true, pluginName: 'pm' }) as AgentDef;
+  ({
+    id: 'pm-agent',
+    key: 'pm',
+    role: 'PM',
+    expertise: '',
+    isPm: true,
+    pluginName: 'pm',
+  }) as AgentDef;
 
 // Mock spawn: assign a handle and record what edit mode the process booted
 // under, mirroring the real spawner (agent.editModeAtSpawn = editAllowed).

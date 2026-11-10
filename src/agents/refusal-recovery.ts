@@ -10,8 +10,10 @@ export async function findRefusalCheckpoint(
 ): Promise<string | undefined> {
   if (!promptUuid || !/^[A-Za-z0-9_-]+$/.test(sessionId)) return;
   // Older tasks use the shared SDK config instead of a per-task directory.
-  const root = configDir === join(process.env.HOME!, '.claude')
-    ? resolve(process.env.HOME!, '.claude') : resolve(SESSIONS_DIR);
+  const root =
+    configDir === join(process.env.HOME!, '.claude')
+      ? resolve(process.env.HOME!, '.claude')
+      : resolve(SESSIONS_DIR);
   const projects = resolve(configDir, 'projects');
   if (!projects.startsWith(`${root}${sep}`)) return;
   const dirs = await readdir(projects, { withFileTypes: true });

@@ -34,7 +34,9 @@ describe('buildTaskPeopleSection', () => {
     const section = await buildTaskPeopleSection('task-1');
 
     // Framing precedes the element — attributes carry parameters, not paragraphs.
-    expect(section.indexOf('Titles set register only')).toBeLessThan(section.indexOf('<people_in_task>'));
+    expect(section.indexOf('Titles set register only')).toBeLessThan(
+      section.indexOf('<people_in_task>'),
+    );
     expect(section).toContain('\n<@U1:Irina Ashkenazy> Head of Growth Marketing, London\n');
     expect(section).toContain('\n<@U2:Nikita Sidorin> Full Stack Engineer | DAU Squad\n');
     expect(section.endsWith('\n</people_in_task>')).toBe(true);

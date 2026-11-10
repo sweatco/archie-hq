@@ -26,7 +26,9 @@ vi.mock('../../connectors/github/client.js', () => ({
 
 vi.mock('../../connectors/github/repo-clone.js', () => ({
   gitExec: vi.fn().mockResolvedValue(''),
-  setupSharedClone: vi.fn().mockResolvedValue({ clone_path: '/wt', branch: 'feat/x', base_branch: 'main' }),
+  setupSharedClone: vi
+    .fn()
+    .mockResolvedValue({ clone_path: '/wt', branch: 'feat/x', base_branch: 'main' }),
   cloneExists: vi.fn().mockResolvedValue(false),
   isWorktree: vi.fn().mockResolvedValue(false),
   fetchOrigin: vi.fn().mockResolvedValue(undefined),
@@ -39,8 +41,12 @@ vi.mock('../../tasks/persistence.js', () => ({
 
 vi.mock('../../system/logger.js', () => ({
   logger: {
-    agentAction: vi.fn(), agentFinding: vi.fn(), agentToSlack: vi.fn(),
-    system: vi.fn(), error: vi.fn(), warn: vi.fn(),
+    agentAction: vi.fn(),
+    agentFinding: vi.fn(),
+    agentToSlack: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    warn: vi.fn(),
   },
 }));
 
@@ -58,8 +64,12 @@ vi.mock('../../connectors/slack/client.js', () => ({
 function makeAgent(overrides: Partial<AgentDef> = {}): Agent {
   return {
     def: {
-      id: 'backend-agent', key: 'backend', role: 'Backend', expertise: 'Node',
-      pluginName: 'engineering', visibility: 'global',
+      id: 'backend-agent',
+      key: 'backend',
+      role: 'Backend',
+      expertise: 'Node',
+      pluginName: 'engineering',
+      visibility: 'global',
       ...overrides,
     },
     queue: {} as any,
@@ -72,28 +82,42 @@ function makeTask(): Task {
     taskId: 'task-123',
     pmDef: { id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', isPm: true, pluginName: 'pm' },
     metadata: {
-      repositories: [{
-        github: 'org/backend',
-        clone_path: '/wt/backend',
-        current_branch: 'feat/x',
-        branch_states: {
-          'feat/x': { base_branch: 'main' },
+      repositories: [
+        {
+          github: 'org/backend',
+          clone_path: '/wt/backend',
+          current_branch: 'feat/x',
+          branch_states: {
+            'feat/x': { base_branch: 'main' },
+          },
         },
-      }],
-      edit_allowed: true, status: 'active', channels: {}, agent_sessions: {},
+      ],
+      edit_allowed: true,
+      status: 'active',
+      channels: {},
+      agent_sessions: {},
     },
-    touch: vi.fn(), debouncedSave: vi.fn(), suspendStatus: vi.fn(),
-    postToUser: vi.fn(), postInteractiveToUser: vi.fn(),
-    stop: vi.fn(), complete: vi.fn(),
-    updateAgentState: vi.fn(), checkResearchBudget: vi.fn(), incrementResearchCount: vi.fn(), onResearchBudgetExceeded: vi.fn(),
+    touch: vi.fn(),
+    debouncedSave: vi.fn(),
+    suspendStatus: vi.fn(),
+    postToUser: vi.fn(),
+    postInteractiveToUser: vi.fn(),
+    stop: vi.fn(),
+    complete: vi.fn(),
+    updateAgentState: vi.fn(),
+    checkResearchBudget: vi.fn(),
+    incrementResearchCount: vi.fn(),
+    onResearchBudgetExceeded: vi.fn(),
   } as unknown as Task;
 }
 
 function getRegisteredTools(
   server: ReturnType<typeof createRepoToolsMcpServer>,
 ): Record<string, { description?: string }> {
-  return (server.instance as any)._registeredTools
-    ?? Object.fromEntries((server.instance as any)._tools ?? []);
+  return (
+    (server.instance as any)._registeredTools ??
+    Object.fromEntries((server.instance as any)._tools ?? [])
+  );
 }
 
 function getRegisteredToolNames(server: ReturnType<typeof createRepoToolsMcpServer>): string[] {
@@ -198,7 +222,7 @@ describe('PM MCP server contracts', () => {
   // Max mode upgrades the agent that holds the problem, not the hands it delegates
   // to. The description used to promise "a premium model such as Fable" for coding
   // agents, which is the one model a worker must never be spawned on.
-  it('request_max_mode describes the upgrade as the PM\'s own, never a worker model', () => {
+  it("request_max_mode describes the upgrade as the PM's own, never a worker model", () => {
     const server = createOrchestrationMcpServer(pmAgent(), makeTask());
     const description = getRegisteredTools(server)['request_max_mode']?.description ?? '';
     expect(description).toContain('YOUR OWN model');

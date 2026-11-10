@@ -27,19 +27,33 @@ function trigger(over: Partial<Trigger> = {}): Trigger {
     created_by: 'U_REQ',
     created_at: '2026-08-24T09:00:00.000Z',
     binding: { type: 'channel', channel_id: 'C_STANDUP', channel_name: 'standup' },
-    conditions: [{ type: 'schedule', cron: '0 9 * * 1-5', tz: 'Europe/London', next_run_at: '2026-08-25T08:00:00.000Z' }],
+    conditions: [
+      {
+        type: 'schedule',
+        cron: '0 9 * * 1-5',
+        tz: 'Europe/London',
+        next_run_at: '2026-08-25T08:00:00.000Z',
+      },
+    ],
     action: { prompt: 'post the digest' },
     ...over,
   } as Trigger;
 }
 
-type Block = { type: string; text?: { text: string }; fields?: Array<{ text: string }>; elements?: Array<{ action_id: string; value: string }> };
+type Block = {
+  type: string;
+  text?: { text: string };
+  fields?: Array<{ text: string }>;
+  elements?: Array<{ action_id: string; value: string }>;
+};
 
 const actionsOf = (blocks: unknown[]) => (blocks as Block[]).find((b) => b.type === 'actions');
 
 describe('buildTriggerApprovalBlocks', () => {
   it('describes what, when and where as separate fields rather than raw cron', () => {
-    const fields = (buildTriggerApprovalBlocks(trigger()) as Block[]).find((b) => b.fields)!.fields!;
+    const fields = (buildTriggerApprovalBlocks(trigger()) as Block[]).find(
+      (b) => b.fields,
+    )!.fields!;
     const text = fields.map((f) => f.text).join('\n');
 
     expect(text).toContain('*What*\nthe standup digest');
@@ -75,7 +89,9 @@ describe('buildTriggerApprovalBlocks', () => {
   });
 
   it('falls back to a clipped action prompt when the PM wrote no summary', () => {
-    const fields = (buildTriggerApprovalBlocks(trigger({ summary: undefined })) as Block[]).find((b) => b.fields)!.fields!;
+    const fields = (buildTriggerApprovalBlocks(trigger({ summary: undefined })) as Block[]).find(
+      (b) => b.fields,
+    )!.fields!;
     expect(fields[0]!.text).toContain('post the digest');
   });
 });

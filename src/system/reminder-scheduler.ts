@@ -93,7 +93,11 @@ type Recurrence = { cron?: string; tz?: string; until?: string };
  * silently in the background. Nothing is posted per run. Never throws: it sits on the paths
  * that stop a reminder.
  */
-export function announceRecurrence(task: Task, kind: 'set' | 'ended' | 'cancelled', r: Recurrence): void {
+export function announceRecurrence(
+  task: Task,
+  kind: 'set' | 'ended' | 'cancelled',
+  r: Recurrence,
+): void {
   if (!r.cron) return;
   const cron = r.cron;
   void Promise.resolve()
@@ -101,16 +105,30 @@ export function announceRecurrence(task: Task, kind: 'set' | 'ended' | 'cancelle
       const tz = r.tz ?? 'UTC';
       const cadence = describeSchedule(cron, tz);
       const until = r.until
-        ? new Date(r.until).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: tz, timeZoneName: 'short' })
+        ? new Date(r.until).toLocaleString('en-GB', {
+            day: 'numeric',
+            month: 'short',
+            hour: '2-digit',
+            minute: '2-digit',
+            timeZone: tz,
+            timeZoneName: 'short',
+          })
         : '';
-      const line = kind === 'set'
-        ? `⏰ I'll check this ${cadence}${until ? ` until ${until}` : ''}.`
-        : kind === 'ended'
-          ? `⏰ Last scheduled check — this ends the reminder that ran ${cadence}.`
-          : `⏰ Stopped the reminder that ran ${cadence}.`;
+      const line =
+        kind === 'set'
+          ? `⏰ I'll check this ${cadence}${until ? ` until ${until}` : ''}.`
+          : kind === 'ended'
+            ? `⏰ Last scheduled check — this ends the reminder that ran ${cadence}.`
+            : `⏰ Stopped the reminder that ran ${cadence}.`;
       return task.postToUser(line);
     })
-    .catch((err) => logger.warn('reminder-scheduler', `Could not post the reminder notice for ${task.taskId}`, err));
+    .catch((err) =>
+      logger.warn(
+        'reminder-scheduler',
+        `Could not post the reminder notice for ${task.taskId}`,
+        err,
+      ),
+    );
 }
 
 export function cancelReminder(task: Task): void {
@@ -186,7 +204,10 @@ export function planReminderRearm(
   const tz = reminder.tz || 'UTC';
   const next = computeNextRun(reminder.cron, tz, firedAt);
   if (!next) {
-    logger.warn('reminder-scheduler', `Recurring reminder cron "${reminder.cron}" (${tz}) no longer computes — dropping the recurrence`);
+    logger.warn(
+      'reminder-scheduler',
+      `Recurring reminder cron "${reminder.cron}" (${tz}) no longer computes — dropping the recurrence`,
+    );
     return null;
   }
   // A bounded recurrence expires by itself once the next slot falls past `until`,
@@ -194,7 +215,10 @@ export function planReminderRearm(
   if (reminder.until) {
     const until = new Date(reminder.until);
     if (isNaN(until.getTime())) {
-      logger.warn('reminder-scheduler', `Recurring reminder has an unparseable until "${reminder.until}" — dropping the recurrence rather than running unbounded`);
+      logger.warn(
+        'reminder-scheduler',
+        `Recurring reminder has an unparseable until "${reminder.until}" — dropping the recurrence rather than running unbounded`,
+      );
       return null;
     }
     if (next > until) {
@@ -236,10 +260,18 @@ export async function checkDueReminders(): Promise<void> {
         if (taskExistsOnDisk(taskId) && failures < MAX_LOAD_FAILURES) {
           loadFailures.set(taskId, failures);
           pendingReminders.set(taskId, reminder);
-          logger.warn('reminder-scheduler', `Could not load task ${taskId} to fire its reminder (attempt ${failures}/${MAX_LOAD_FAILURES}) — retrying next tick`, err);
+          logger.warn(
+            'reminder-scheduler',
+            `Could not load task ${taskId} to fire its reminder (attempt ${failures}/${MAX_LOAD_FAILURES}) — retrying next tick`,
+            err,
+          );
         } else {
           loadFailures.delete(taskId);
-          logger.error('reminder-scheduler', `Dropping the reminder for task ${taskId} — it ${taskExistsOnDisk(taskId) ? `could not be loaded after ${MAX_LOAD_FAILURES} attempts` : 'no longer exists on disk'}`, err);
+          logger.error(
+            'reminder-scheduler',
+            `Dropping the reminder for task ${taskId} — it ${taskExistsOnDisk(taskId) ? `could not be loaded after ${MAX_LOAD_FAILURES} attempts` : 'no longer exists on disk'}`,
+            err,
+          );
         }
         continue;
       }
@@ -248,17 +280,36 @@ export async function checkDueReminders(): Promise<void> {
       // 3. Re-arm or clear, flush, then wake — on the canonical instance (see Task.fireReminder).
       const rearm = planReminderRearm(reminder, now);
       const next = rearm
-        ? { trigger_at: rearm.trigger_at.toISOString(), reason: reminder.reason, cron: rearm.cron, tz: rearm.tz, until: rearm.until }
+        ? {
+            trigger_at: rearm.trigger_at.toISOString(),
+            reason: reminder.reason,
+            cron: rearm.cron,
+            tz: rearm.tz,
+            until: rearm.until,
+          }
         : undefined;
       // Index the re-arm BEFORE the flush so a failed save still retries, but never over a
       // replacement scheduled since this tick removed the entry.
-      const rearmEntry = rearm && !pendingReminders.has(taskId)
-        ? { trigger_at: rearm.trigger_at, reason: reminder.reason, cron: rearm.cron, tz: rearm.tz, until: rearm.until }
-        : undefined;
+      const rearmEntry =
+        rearm && !pendingReminders.has(taskId)
+          ? {
+              trigger_at: rearm.trigger_at,
+              reason: reminder.reason,
+              cron: rearm.cron,
+              tz: rearm.tz,
+              until: rearm.until,
+            }
+          : undefined;
       if (rearmEntry) pendingReminders.set(taskId, rearmEntry);
       logger.system(`Reminder fired for ${taskId}: ${reminder.reason}`);
       const fired = await task.fireReminder(
-        { trigger_at: reminder.trigger_at.toISOString(), reason: reminder.reason, cron: reminder.cron, tz: reminder.tz, until: reminder.until },
+        {
+          trigger_at: reminder.trigger_at.toISOString(),
+          reason: reminder.reason,
+          cron: reminder.cron,
+          tz: reminder.tz,
+          until: reminder.until,
+        },
         next,
         () => {
           // Fire before re-arm: the CLI folds events in order and reads reminder:fired as "nothing
@@ -270,7 +321,8 @@ export async function checkDueReminders(): Promise<void> {
       );
       if (fired && !rearm) announceRecurrence(task, 'ended', reminder);
       if (!fired) {
-        if (rearmEntry && pendingReminders.get(taskId) === rearmEntry) pendingReminders.delete(taskId);
+        if (rearmEntry && pendingReminders.get(taskId) === rearmEntry)
+          pendingReminders.delete(taskId);
         logger.system(`Reminder for ${taskId} was cancelled or replaced before it fired — skipped`);
       }
     } catch (err) {

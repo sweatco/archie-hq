@@ -32,7 +32,12 @@ const PENDING = {
   last_fired_at: null,
   action_prompt: 'watch stock',
 };
-const LIVE = { ...PENDING, id: 'trg-20260723-1401-live', status: 'enabled', summary: 'Weekday card-stock review' };
+const LIVE = {
+  ...PENDING,
+  id: 'trg-20260723-1401-live',
+  status: 'enabled',
+  summary: 'Weekday card-stock review',
+};
 
 /** Let the component's load() promise settle and the frame re-render. */
 const settle = () => new Promise((r) => setTimeout(r, 20));
@@ -77,7 +82,9 @@ describe('TriggerList — pending proposals', () => {
   it('[p] on a pending proposal explains itself instead of calling PATCH and surfacing a 409', async () => {
     fetchTriggers.mockResolvedValue({ triggers: [PENDING] });
 
-    const { stdin, lastFrame } = render(<TriggerList onBack={() => {}} active refreshTrigger={0} />);
+    const { stdin, lastFrame } = render(
+      <TriggerList onBack={() => {}} active refreshTrigger={0} />,
+    );
     await settle();
     stdin.write('p');
     await settle();

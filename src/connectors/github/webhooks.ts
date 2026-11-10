@@ -27,7 +27,7 @@ import { logger } from '../../system/logger.js';
 export function verifyWebhookSignature(
   payload: string,
   signature: string,
-  secret: string
+  secret: string,
 ): boolean {
   const expectedSignature =
     'sha256=' + crypto.createHmac('sha256', secret).update(payload).digest('hex');
@@ -58,10 +58,10 @@ export interface GitHubEventContext {
  */
 export function formatGitHubContext(
   eventType: string,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
 ): GitHubEventContext {
   const repository = payload.repository as Record<string, unknown> | undefined;
-  const githubRepo = repository?.full_name as string || 'unknown/unknown';
+  const githubRepo = (repository?.full_name as string) || 'unknown/unknown';
   const sender = payload.sender as Record<string, unknown> | undefined;
   const user = (sender?.login as string) || 'unknown';
   const action = (payload.action as string) || '';
@@ -92,7 +92,7 @@ export function formatGitHubContext(
     context.prNumber = pullRequest?.number as number | undefined;
     // Only meaningful for the `closed` action — don't label an opened/synchronized
     // PR as 'closed' (a trap for any future consumer of `context.state`).
-    if (action === 'closed') context.state = pullRequest?.merged as boolean ? 'merged' : 'closed';
+    if (action === 'closed') context.state = (pullRequest?.merged as boolean) ? 'merged' : 'closed';
     context.branch = (pullRequest?.head as Record<string, unknown>)?.ref as string | undefined;
   } else if (eventType === 'issue_comment') {
     const issue = payload.issue as Record<string, unknown> | undefined;
@@ -115,7 +115,8 @@ export function formatGitHubContext(
   } else if (eventType === 'check_suite') {
     const checkSuite = payload.check_suite as Record<string, unknown> | undefined;
     context.branch = checkSuite?.head_branch as string | undefined;
-    context.state = (checkSuite?.conclusion as string | undefined) ?? (checkSuite?.status as string | undefined);
+    context.state =
+      (checkSuite?.conclusion as string | undefined) ?? (checkSuite?.status as string | undefined);
     const prs = checkSuite?.pull_requests as Array<Record<string, unknown>> | undefined;
     const firstPr = prs && prs.length > 0 ? prs[0] : undefined;
     if (firstPr?.number !== undefined) {
@@ -125,8 +126,10 @@ export function formatGitHubContext(
     const checkRun = payload.check_run as Record<string, unknown> | undefined;
     const suite = checkRun?.check_suite as Record<string, unknown> | undefined;
     context.branch = suite?.head_branch as string | undefined;
-    context.state = (checkRun?.conclusion as string | undefined) ?? (checkRun?.status as string | undefined);
-    const prs = (checkRun?.pull_requests ?? suite?.pull_requests) as Array<Record<string, unknown>> | undefined;
+    context.state =
+      (checkRun?.conclusion as string | undefined) ?? (checkRun?.status as string | undefined);
+    const prs = (checkRun?.pull_requests ?? suite?.pull_requests) as
+      Array<Record<string, unknown>> | undefined;
     const firstPr = prs && prs.length > 0 ? prs[0] : undefined;
     if (firstPr?.number !== undefined) context.prNumber = firstPr.number as number;
   } else if (eventType === 'status') {
@@ -134,7 +137,8 @@ export function formatGitHubContext(
     // API). No PR number; `branches` lists branches whose head is this commit.
     context.state = payload.state as string | undefined; // pending | success | failure | error
     const branches = payload.branches as Array<Record<string, unknown>> | undefined;
-    context.branch = branches && branches.length > 0 ? (branches[0].name as string | undefined) : undefined;
+    context.branch =
+      branches && branches.length > 0 ? (branches[0].name as string | undefined) : undefined;
   }
 
   return context;
@@ -145,7 +149,7 @@ export function formatGitHubContext(
  */
 export function extractBranchFromPayload(
   eventType: string,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
 ): string | undefined {
   const pullRequest = payload.pull_request as Record<string, unknown> | undefined;
   if (pullRequest) {
@@ -215,20 +219,40 @@ export function formatGitHubEvent(context: GitHubEventContext): FormattedGitHubE
       if (state === 'approved') {
         return { from: user, destination: prDest, message: 'approved' };
       } else if (state === 'changes_requested') {
-        return { from: user, destination: prDest, message: body ? `requested changes: ${body}` : 'requested changes' };
+        return {
+          from: user,
+          destination: prDest,
+          message: body ? `requested changes: ${body}` : 'requested changes',
+        };
       } else {
-        return { from: user, destination: prDest, message: body ? `commented: ${body}` : 'commented' };
+        return {
+          from: user,
+          destination: prDest,
+          message: body ? `commented: ${body}` : 'commented',
+        };
       }
 
     case 'pull_request_review_comment':
-      return { from: user, destination: prDest, message: body ? `commented on code${cidTag}: ${body}` : `commented on code${cidTag}` };
+      return {
+        from: user,
+        destination: prDest,
+        message: body ? `commented on code${cidTag}: ${body}` : `commented on code${cidTag}`,
+      };
 
     case 'issue_comment':
-      return { from: user, destination: prDest, message: body ? `${body}${cidTag}` : `(empty)${cidTag}` };
+      return {
+        from: user,
+        destination: prDest,
+        message: body ? `${body}${cidTag}` : `(empty)${cidTag}`,
+      };
 
     case 'pull_request':
       if (action === 'closed') {
-        return { from: user, destination: prDest, message: state === 'merged' ? 'merged' : 'closed' };
+        return {
+          from: user,
+          destination: prDest,
+          message: state === 'merged' ? 'merged' : 'closed',
+        };
       }
       return { from: user, destination: prDest, message: action };
 
@@ -308,7 +332,7 @@ const CHECKS_READY_DEBOUNCE_MS = 20_000;
 export function handleChecksReadyDirect(
   taskId: string,
   githubRepo: string,
-  prNumber: number
+  prNumber: number,
 ): void {
   const key = `${taskId}:${githubRepo}#${prNumber}`;
   const existingTimer = checksReadyTimers.get(key);
@@ -432,7 +456,7 @@ function getGitHubAppBotUsername(): string | null {
  */
 export async function routeGitHubEvent(
   eventType: string,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
 ): Promise<GitHubRouteResult> {
   const context = formatGitHubContext(eventType, payload);
 
@@ -443,9 +467,7 @@ export async function routeGitHubEvent(
   // loop — so we must process them.
   const ourBotUsername = getGitHubAppBotUsername();
   const isMachineEvent =
-    eventType === 'check_suite' ||
-    eventType === 'workflow_run' ||
-    eventType === 'push';
+    eventType === 'check_suite' || eventType === 'workflow_run' || eventType === 'push';
   if (ourBotUsername && context.user === ourBotUsername && !isMachineEvent) {
     return { action: 'discard', reason: 'Own bot event' };
   }
@@ -456,13 +478,13 @@ export async function routeGitHubEvent(
 
   // For issue_comment, branch isn't in payload - find task by PR number
   if (!taskId && eventType === 'issue_comment' && context.prNumber) {
-    taskId = await findTaskByPRNumber(context.githubRepo, context.prNumber) ?? undefined;
+    taskId = (await findTaskByPRNumber(context.githubRepo, context.prNumber)) ?? undefined;
   }
 
   // For check_suite events, fall back to PR-number lookup if the branch
   // doesn't match our {prefix}/{taskId} pattern (e.g. suite attached to base).
   if (!taskId && eventType === 'check_suite' && context.prNumber) {
-    taskId = await findTaskByPRNumber(context.githubRepo, context.prNumber) ?? undefined;
+    taskId = (await findTaskByPRNumber(context.githubRepo, context.prNumber)) ?? undefined;
   }
 
   // No task found - discard

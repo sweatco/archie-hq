@@ -51,7 +51,9 @@ export function readMcpServerUrl(serverName: string): string {
   }
   const raw = readFileSync(path, 'utf-8');
   const substituted = raw.replace(/\$\{(MCP_[A-Z0-9_]+)\}/g, (_, name) => process.env[name] ?? '');
-  const parsed = JSON.parse(substituted) as { mcpServers?: Record<string, { type?: string; url?: string }> };
+  const parsed = JSON.parse(substituted) as {
+    mcpServers?: Record<string, { type?: string; url?: string }>;
+  };
   const entry = parsed.mcpServers?.[serverName];
   if (!entry) {
     throw new Error(`MCP server "${serverName}" not found in ${path}`);
@@ -76,10 +78,12 @@ export async function beginConnect(input: ConnectInput): Promise<ConnectResult> 
   if (!resourceMetadataUrl) {
     throw new Error(
       `MCP server "${serverName}" did not advertise a WWW-Authenticate header with resource_metadata. ` +
-      `It may not require OAuth or may not be spec-compliant.`,
+        `It may not require OAuth or may not be spec-compliant.`,
     );
   }
-  logger.system(`OAuth connect "${serverName}": fetching resource metadata from ${resourceMetadataUrl}`);
+  logger.system(
+    `OAuth connect "${serverName}": fetching resource metadata from ${resourceMetadataUrl}`,
+  );
   const resource = await fetchProtectedResourceMetadata(resourceMetadataUrl, serverUrl);
 
   const authServerUrl = resource.authorization_servers?.[0];
@@ -88,7 +92,9 @@ export async function beginConnect(input: ConnectInput): Promise<ConnectResult> 
       `Protected-resource metadata at ${resourceMetadataUrl} did not advertise any authorization_servers`,
     );
   }
-  logger.system(`OAuth connect "${serverName}": fetching auth-server metadata from ${authServerUrl}`);
+  logger.system(
+    `OAuth connect "${serverName}": fetching auth-server metadata from ${authServerUrl}`,
+  );
   const authServer = await fetchAuthServerMetadata(authServerUrl);
 
   // Acquire client credentials: prefer caller-supplied, otherwise DCR.
@@ -98,7 +104,7 @@ export async function beginConnect(input: ConnectInput): Promise<ConnectResult> 
     if (!authServer.registration_endpoint) {
       throw new Error(
         `Server "${serverName}" does not expose a registration_endpoint. ` +
-        `Re-run with --client-id and --client-secret using a manually-registered client.`,
+          `Re-run with --client-id and --client-secret using a manually-registered client.`,
       );
     }
     logger.system(`OAuth connect "${serverName}": registering dynamic client`);
@@ -122,9 +128,7 @@ export async function beginConnect(input: ConnectInput): Promise<ConnectResult> 
     );
   }
   if (!authServer.authorization_endpoint || !authServer.token_endpoint) {
-    throw new Error(
-      `Authorization server at ${authServer.issuer} is missing required endpoints`,
-    );
+    throw new Error(`Authorization server at ${authServer.issuer} is missing required endpoints`);
   }
 
   const pkce = await generatePkcePair();

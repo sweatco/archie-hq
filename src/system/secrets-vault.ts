@@ -17,8 +17,8 @@ import { dirname, join } from 'path';
 
 export interface EncryptedEnvelope {
   ciphertext: string; // base64
-  iv: string;         // base64 (12 bytes)
-  tag: string;        // base64 (16 bytes)
+  iv: string; // base64 (12 bytes)
+  tag: string; // base64 (16 bytes)
 }
 
 const KEY_BYTES = 32;
@@ -33,8 +33,7 @@ export function loadMasterKey(): Buffer {
   const raw = process.env.ARCHIE_SECRETS_KEY;
   if (!raw) {
     throw new Error(
-      'ARCHIE_SECRETS_KEY is not set. Generate one with: ' +
-      'openssl rand -base64 32'
+      'ARCHIE_SECRETS_KEY is not set. Generate one with: ' + 'openssl rand -base64 32',
     );
   }
   let buf: Buffer;
@@ -46,7 +45,7 @@ export function loadMasterKey(): Buffer {
   if (buf.length !== KEY_BYTES) {
     throw new Error(
       `ARCHIE_SECRETS_KEY must decode to ${KEY_BYTES} bytes; got ${buf.length}. ` +
-      'Use 32 random bytes encoded as base64.'
+        'Use 32 random bytes encoded as base64.',
     );
   }
   return buf;
@@ -80,7 +79,10 @@ export function encryptJson(plaintext: unknown, key: Buffer = loadMasterKey()): 
  * Decrypt an envelope. Throws if the master key is wrong, the data is
  * tampered, or the envelope is malformed.
  */
-export function decryptJson<T = unknown>(envelope: EncryptedEnvelope, key: Buffer = loadMasterKey()): T {
+export function decryptJson<T = unknown>(
+  envelope: EncryptedEnvelope,
+  key: Buffer = loadMasterKey(),
+): T {
   const iv = Buffer.from(envelope.iv, 'base64');
   const tag = Buffer.from(envelope.tag, 'base64');
   const ciphertext = Buffer.from(envelope.ciphertext, 'base64');
@@ -150,12 +152,14 @@ export function withKeyMutex<T>(key: string, fn: () => Promise<T>): Promise<T> {
   const next = previous.then(fn, fn);
   // Store a swallowed copy so the chain never rejects (avoids breaking the
   // queue) and never triggers an unhandled-rejection event.
-  const chain = next.then(
-    () => undefined,
-    () => undefined,
-  ).finally(() => {
-    if (locks.get(key) === chain) locks.delete(key);
-  });
+  const chain = next
+    .then(
+      () => undefined,
+      () => undefined,
+    )
+    .finally(() => {
+      if (locks.get(key) === chain) locks.delete(key);
+    });
   locks.set(key, chain);
   return next;
 }

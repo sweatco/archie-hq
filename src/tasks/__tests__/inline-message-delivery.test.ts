@@ -33,8 +33,14 @@ vi.mock('../../system/workdir.js', () => ({
 
 vi.mock('../../system/logger.js', () => ({
   logger: {
-    warn: vi.fn(), system: vi.fn(), error: vi.fn(), debug: vi.fn(), info: vi.fn(),
-    agent: vi.fn(), slack: vi.fn(), agentToSlack: vi.fn(),
+    warn: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    agent: vi.fn(),
+    slack: vi.fn(),
+    agentToSlack: vi.fn(),
   },
 }));
 

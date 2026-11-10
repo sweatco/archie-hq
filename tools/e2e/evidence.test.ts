@@ -172,8 +172,14 @@ describe('parseEvidenceJson', () => {
 
 describe('parseArgs', () => {
   it('accepts both flag forms', () => {
-    expect(parseArgs(['--in', 'p.json', '--out-dir', 'out'])).toEqual({ inFile: 'p.json', outDir: 'out' });
-    expect(parseArgs(['--in=p.json', '--out-dir=out'])).toEqual({ inFile: 'p.json', outDir: 'out' });
+    expect(parseArgs(['--in', 'p.json', '--out-dir', 'out'])).toEqual({
+      inFile: 'p.json',
+      outDir: 'out',
+    });
+    expect(parseArgs(['--in=p.json', '--out-dir=out'])).toEqual({
+      inFile: 'p.json',
+      outDir: 'out',
+    });
     expect(parseArgs([])).toEqual({});
   });
 
@@ -227,16 +233,30 @@ function fakeFs(opts: { failRename?: (to: string) => boolean } = {}) {
 const io = () => {
   const logs: string[] = [];
   const errors: string[] = [];
-  return { log: (l: string) => void logs.push(l), error: (l: string) => void errors.push(l), logs, errors };
+  return {
+    log: (l: string) => void logs.push(l),
+    error: (l: string) => void errors.push(l),
+    logs,
+    errors,
+  };
 };
 
 describe('runEvidenceWriter — all-or-nothing', () => {
   it('writes the json/md pair for a valid payload', async () => {
     const { fs, disk } = fakeFs();
     const out = io();
-    const code = await runEvidenceWriter(JSON.stringify(validPayload()), 'stdin', '/evidence', fs, out);
+    const code = await runEvidenceWriter(
+      JSON.stringify(validPayload()),
+      'stdin',
+      '/evidence',
+      fs,
+      out,
+    );
     expect(code).toBe(0);
-    expect([...disk.keys()].sort()).toEqual(['/evidence/edit-mode-approval.json', '/evidence/edit-mode-approval.md']);
+    expect([...disk.keys()].sort()).toEqual([
+      '/evidence/edit-mode-approval.json',
+      '/evidence/edit-mode-approval.md',
+    ]);
     const roundTripped: unknown = JSON.parse(disk.get('/evidence/edit-mode-approval.json')!);
     expect(validateEvidence(roundTripped).ok).toBe(true);
   });
@@ -244,7 +264,13 @@ describe('runEvidenceWriter — all-or-nothing', () => {
   it('truncated stdin → classed error, non-zero exit, zero filesystem writes', async () => {
     const { fs, disk, writeCount } = fakeFs();
     const out = io();
-    const code = await runEvidenceWriter('{"schema": "archie-e2e-ev', 'stdin', '/evidence', fs, out);
+    const code = await runEvidenceWriter(
+      '{"schema": "archie-e2e-ev',
+      'stdin',
+      '/evidence',
+      fs,
+      out,
+    );
     expect(code).toBe(1);
     expect(out.errors.join('\n')).toContain('truncated JSON input from stdin');
     expect(writeCount()).toBe(0);
@@ -285,7 +311,9 @@ describe('writeEvidencePair — transactional', () => {
         disk.delete(path);
       },
     };
-    await expect(writeEvidencePair(failingFs, '/evidence', validPayload())).rejects.toThrow(/ENOSPC/);
+    await expect(writeEvidencePair(failingFs, '/evidence', validPayload())).rejects.toThrow(
+      /ENOSPC/,
+    );
     expect(disk.size).toBe(0);
   });
 });

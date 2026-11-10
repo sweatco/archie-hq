@@ -47,7 +47,9 @@ vi.mock('../channel-canvas.js', () => ({ ensureChannelCanvas: vi.fn() }));
 vi.mock('../channel-pins.js', () => ({ ensureChannelPins: vi.fn() }));
 vi.mock('../title.js', () => ({ setAssistantThreadTitle: vi.fn() }));
 vi.mock('../../../tasks/title-generator.js', () => ({ generateTaskTitle: vi.fn() }));
-vi.mock('../../../system/shutdown.js', () => ({ getIsShuttingDown: vi.fn().mockReturnValue(false) }));
+vi.mock('../../../system/shutdown.js', () => ({
+  getIsShuttingDown: vi.fn().mockReturnValue(false),
+}));
 vi.mock('../../../system/event-bus.js', () => ({
   onEvent: vi.fn(),
   offEvent: vi.fn(),
@@ -70,8 +72,14 @@ vi.mock('../../../tasks/persistence.js', () => ({
 
 vi.mock('../../../system/logger.js', () => ({
   logger: {
-    system: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), info: vi.fn(),
-    plain: vi.fn(), server: vi.fn(), slack: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    warn: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    plain: vi.fn(),
+    server: vi.fn(),
+    slack: vi.fn(),
   },
 }));
 
@@ -95,8 +103,14 @@ describe('mpim external-author bail-out (AC4)', () => {
   // Two shapes of external author on a `G…` conversation: a different-team
   // Slack Connect user, and a single-channel guest. Both classify as external.
   const externalAuthors = [
-    { label: 'different-team user', info: { name: 'ext', realName: 'Ext Ernal', teamId: 'T_OTHER' } },
-    { label: 'single-channel guest', info: { name: 'guest', realName: 'A Guest', teamId: HOME_TEAM, isUltraRestricted: true } },
+    {
+      label: 'different-team user',
+      info: { name: 'ext', realName: 'Ext Ernal', teamId: 'T_OTHER' },
+    },
+    {
+      label: 'single-channel guest',
+      info: { name: 'guest', realName: 'A Guest', teamId: HOME_TEAM, isUltraRestricted: true },
+    },
   ];
 
   // Both events a `G…` conversation produces resolve to the same handleSlackEvent.
@@ -112,7 +126,13 @@ describe('mpim external-author bail-out (AC4)', () => {
             type,
             channel: groupDm,
             user: 'U_EXTERNAL',
-            raw: { type, channel: groupDm, user: 'U_EXTERNAL', text: 'hey archie', ts: '1700000000.000100' },
+            raw: {
+              type,
+              channel: groupDm,
+              user: 'U_EXTERNAL',
+              text: 'hey archie',
+              ts: '1700000000.000100',
+            },
             ts: '1700000000.000100',
           });
 

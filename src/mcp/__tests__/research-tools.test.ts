@@ -38,30 +38,32 @@ describe('Perplexity Agent API integration', () => {
   });
 
   it('parses text and dedupes citations from the response envelope', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse({
-      output: [
-        {
-          type: 'search_results',
-          results: [
-            { url: 'https://example.com/a' },
-            { url: 'https://example.com/b' },
-          ],
-        },
-        {
-          type: 'message',
-          content: [
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        okResponse({
+          output: [
             {
-              type: 'output_text',
-              text: 'Report body.',
-              annotations: [
-                { type: 'url_citation', url: 'https://example.com/a' },
-                { type: 'url_citation', url: 'https://example.com/c' },
+              type: 'search_results',
+              results: [{ url: 'https://example.com/a' }, { url: 'https://example.com/b' }],
+            },
+            {
+              type: 'message',
+              content: [
+                {
+                  type: 'output_text',
+                  text: 'Report body.',
+                  annotations: [
+                    { type: 'url_citation', url: 'https://example.com/a' },
+                    { type: 'url_citation', url: 'https://example.com/c' },
+                  ],
+                },
               ],
             },
           ],
-        },
-      ],
-    })));
+        }),
+      ),
+    );
 
     const result = await callPerplexity('high', 'q');
 
@@ -74,10 +76,15 @@ describe('Perplexity Agent API integration', () => {
   });
 
   it('falls back to the top-level text and citations', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse({
-      output_text: 'Answer',
-      citations: ['https://example.com/source'],
-    })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        okResponse({
+          output_text: 'Answer',
+          citations: ['https://example.com/source'],
+        }),
+      ),
+    );
 
     await expect(callPerplexity('low', 'q')).resolves.toEqual({
       output_text: 'Answer',
@@ -86,9 +93,14 @@ describe('Perplexity Agent API integration', () => {
   });
 
   it('surfaces the status and body when the Agent API rejects the request', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ error: { message: 'invalid request' } }), { status: 400 }),
-    ));
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ error: { message: 'invalid request' } }), { status: 400 }),
+        ),
+    );
 
     await expect(callPerplexity('fast', 'q')).rejects.toThrow(/400.*invalid request/);
   });

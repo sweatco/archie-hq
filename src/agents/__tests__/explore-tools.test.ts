@@ -13,7 +13,9 @@ vi.mock('../../connectors/github/client.js', () => ({
 }));
 vi.mock('../../connectors/github/repo-clone.js', () => ({
   gitExec: vi.fn().mockResolvedValue(''),
-  setupSharedClone: vi.fn().mockResolvedValue({ clone_path: '/wt', branch: 'feat/x', base_branch: 'main' }),
+  setupSharedClone: vi
+    .fn()
+    .mockResolvedValue({ clone_path: '/wt', branch: 'feat/x', base_branch: 'main' }),
   cloneExists: vi.fn().mockResolvedValue(false),
   isWorktree: vi.fn().mockResolvedValue(false),
   fetchOrigin: vi.fn().mockResolvedValue(undefined),
@@ -25,7 +27,14 @@ vi.mock('../../tasks/persistence.js', () => ({
   isThreadMuted,
 }));
 vi.mock('../../system/logger.js', () => ({
-  logger: { agentAction: vi.fn(), agentFinding: vi.fn(), agentToSlack: vi.fn(), system: vi.fn(), error: vi.fn(), warn: vi.fn() },
+  logger: {
+    agentAction: vi.fn(),
+    agentFinding: vi.fn(),
+    agentToSlack: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    warn: vi.fn(),
+  },
 }));
 vi.mock('../registry.js', () => ({
   getAgentIds: vi.fn().mockReturnValue([]),
@@ -36,7 +45,13 @@ vi.mock('../registry.js', () => ({
 // Partial-mock the Slack client: keep the REAL error classes (format-errors uses
 // `instanceof`) and just stub the network call. `vi.hoisted` makes the mock fn
 // available to the hoisted vi.mock factory.
-const { postSlackMessage, listBotChannels, assertPostableChannel, fetchChannelHistory, fetchExploreThread } = vi.hoisted(() => ({
+const {
+  postSlackMessage,
+  listBotChannels,
+  assertPostableChannel,
+  fetchChannelHistory,
+  fetchExploreThread,
+} = vi.hoisted(() => ({
   postSlackMessage: vi.fn(),
   listBotChannels: vi.fn(),
   assertPostableChannel: vi.fn(),
@@ -45,7 +60,14 @@ const { postSlackMessage, listBotChannels, assertPostableChannel, fetchChannelHi
 }));
 vi.mock('../../connectors/slack/client.js', async (importActual) => {
   const actual = await importActual<typeof import('../../connectors/slack/client.js')>();
-  return { ...actual, postSlackMessage, listBotChannels, assertPostableChannel, fetchChannelHistory, fetchExploreThread };
+  return {
+    ...actual,
+    postSlackMessage,
+    listBotChannels,
+    assertPostableChannel,
+    fetchChannelHistory,
+    fetchExploreThread,
+  };
 });
 
 const {
@@ -74,7 +96,11 @@ import type { Agent } from '../agent.js';
 import type { Task } from '../../tasks/task.js';
 
 function makeAgent(): Agent {
-  return { def: { id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', pluginName: 'pm', isPm: true }, queue: {} as any, session: { active: false } } as unknown as Agent;
+  return {
+    def: { id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', pluginName: 'pm', isPm: true },
+    queue: {} as any,
+    session: { active: false },
+  } as unknown as Agent;
 }
 function makeTask(originChannelId?: string, opts: { muted?: boolean } = {}): Task {
   const channels: Record<string, unknown> = {};
@@ -82,18 +108,25 @@ function makeTask(originChannelId?: string, opts: { muted?: boolean } = {}): Tas
   if (originChannelId) {
     const key = `slack:${originChannelId}:1.0`;
     channels[key] = {
-      type: 'slack', channel_id: originChannelId, thread_id: '1.0', channel_name: 'origin',
+      type: 'slack',
+      channel_id: originChannelId,
+      thread_id: '1.0',
+      channel_name: 'origin',
       ...(opts.muted ? { muted: true } : {}),
     };
     default_channel = key;
   }
   let audience = originChannelId;
   return {
-    taskId: 'task-1', metadata: { channels, default_channel },
-    touch: vi.fn(), debouncedSave: vi.fn(), save: vi.fn().mockResolvedValue(undefined),
+    taskId: 'task-1',
+    metadata: { channels, default_channel },
+    touch: vi.fn(),
+    debouncedSave: vi.fn(),
+    save: vi.fn().mockResolvedValue(undefined),
     prepareMemoryDelivery: vi.fn(async (channelId: string) => {
       audience ??= channelId;
-      if (audience !== channelId) throw new Error('delivery blocked: this task belongs to a different Slack audience');
+      if (audience !== channelId)
+        throw new Error('delivery blocked: this task belongs to a different Slack audience');
       return { kind: 'public', channel_id: audience };
     }),
     // post_to_user / post_files_to_user route through the Task, not the Slack
@@ -105,9 +138,14 @@ function makeTask(originChannelId?: string, opts: { muted?: boolean } = {}): Tas
 }
 
 /** Build the comms server and pull a tool's invokable handler out of the MCP registry. */
-function getHandler(name: string, task: Task = makeTask()): (args: Record<string, unknown>) => Promise<{ content: { text: string }[] }> {
+function getHandler(
+  name: string,
+  task: Task = makeTask(),
+): (args: Record<string, unknown>) => Promise<{ content: { text: string }[] }> {
   const server = createCommsMcpServer(makeAgent(), task);
-  const raw = (server.instance as any)._registeredTools ?? Object.fromEntries((server.instance as any)._tools ?? []);
+  const raw =
+    (server.instance as any)._registeredTools ??
+    Object.fromEntries((server.instance as any)._tools ?? []);
   const entry = raw[name];
   const fn = entry.callback ?? entry.handler ?? entry.cb;
   return (args) => fn(args, {});
@@ -135,12 +173,23 @@ describe('post_to_channel handler', () => {
     const task = makeTask();
     const post = getHandler('post_to_channel', task);
 
-    const out = await textOf(await post({ channel: 'C123', message: 'heads up', mandate: 'Sergei: "can you flag this in that channel"' }));
+    const out = await textOf(
+      await post({
+        channel: 'C123',
+        message: 'heads up',
+        mandate: 'Sergei: "can you flag this in that channel"',
+      }),
+    );
 
-    expect(postSlackMessage).toHaveBeenCalledWith({ channel: 'C123', text: 'heads up', threadTs: undefined });
+    expect(postSlackMessage).toHaveBeenCalledWith({
+      channel: 'C123',
+      text: 'heads up',
+      threadTs: undefined,
+    });
     expect(task.prepareMemoryDelivery).toHaveBeenCalledWith('C123');
-    expect(vi.mocked(task.prepareMemoryDelivery).mock.invocationCallOrder[0]!)
-      .toBeLessThan(postSlackMessage.mock.invocationCallOrder[0]!);
+    expect(vi.mocked(task.prepareMemoryDelivery).mock.invocationCallOrder[0]!).toBeLessThan(
+      postSlackMessage.mock.invocationCallOrder[0]!,
+    );
     expect(out).toContain('1716998400.123456');
     expect(out).toMatch(/not linked to this task/i);
   });
@@ -148,8 +197,20 @@ describe('post_to_channel handler', () => {
   it('rejects a DM / user-id target without calling Slack', async () => {
     const post = getHandler('post_to_channel');
 
-    const dm = await textOf(await post({ channel: 'D999', message: 'hi', mandate: 'Sergei: "can you flag this in that channel"' }));
-    const user = await textOf(await post({ channel: 'U999', message: 'hi', mandate: 'Sergei: "can you flag this in that channel"' }));
+    const dm = await textOf(
+      await post({
+        channel: 'D999',
+        message: 'hi',
+        mandate: 'Sergei: "can you flag this in that channel"',
+      }),
+    );
+    const user = await textOf(
+      await post({
+        channel: 'U999',
+        message: 'hi',
+        mandate: 'Sergei: "can you flag this in that channel"',
+      }),
+    );
 
     expect(dm).toMatch(/channel-only|never touches DMs/i);
     expect(user).toMatch(/channel-only|never touches DMs/i);
@@ -161,7 +222,13 @@ describe('post_to_channel handler', () => {
     assertPostableChannel.mockRejectedValue(new DmPostError('G777'));
     const post = getHandler('post_to_channel');
 
-    const out = await textOf(await post({ channel: 'G777', message: 'sensitive', mandate: 'Sergei: "can you flag this in that channel"' }));
+    const out = await textOf(
+      await post({
+        channel: 'G777',
+        message: 'sensitive',
+        mandate: 'Sergei: "can you flag this in that channel"',
+      }),
+    );
 
     expect(assertPostableChannel).toHaveBeenCalledWith('G777');
     expect(postSlackMessage).not.toHaveBeenCalled();
@@ -172,20 +239,31 @@ describe('post_to_channel handler', () => {
     postSlackMessage.mockRejectedValue({ data: { error: 'not_in_channel' } });
     const post = getHandler('post_to_channel');
 
-    const out = await textOf(await post({ channel: 'C123', message: 'hi', mandate: 'Sergei: "can you flag this in that channel"' }));
+    const out = await textOf(
+      await post({
+        channel: 'C123',
+        message: 'hi',
+        mandate: 'Sergei: "can you flag this in that channel"',
+      }),
+    );
 
     expect(out).toContain('/invite @Archie');
   });
 
   it('does not post when the fixed task audience blocks the destination', async () => {
     const task = makeTask();
-    vi.mocked(task.prepareMemoryDelivery).mockRejectedValue(new Error('delivery blocked: incompatible memory audience'));
+    vi.mocked(task.prepareMemoryDelivery).mockRejectedValue(
+      new Error('delivery blocked: incompatible memory audience'),
+    );
     const post = getHandler('post_to_channel', task);
 
-    const out = await textOf(await post({
-      channel: 'C123', message: 'memory-derived detail',
-      mandate: 'Sergei: "can you flag this in that channel"',
-    }));
+    const out = await textOf(
+      await post({
+        channel: 'C123',
+        message: 'memory-derived detail',
+        mandate: 'Sergei: "can you flag this in that channel"',
+      }),
+    );
 
     expect(out).toMatch(/delivery blocked/i);
     expect(postSlackMessage).not.toHaveBeenCalled();
@@ -200,7 +278,13 @@ describe('post_to_channel handler', () => {
   it('refuses a NEW top-level post in a channel whose thread is muted', async () => {
     const post = getHandler('post_to_channel', makeTask('C123', { muted: true }));
 
-    const out = await textOf(await post({ channel: 'C123', message: 'one more thing', mandate: 'Sergei: "can you flag this in that channel"' }));
+    const out = await textOf(
+      await post({
+        channel: 'C123',
+        message: 'one more thing',
+        mandate: 'Sergei: "can you flag this in that channel"',
+      }),
+    );
 
     expect(postSlackMessage).not.toHaveBeenCalled();
     expect(out).toMatch(/muted/i);
@@ -237,7 +321,9 @@ describe('post_to_channel handler', () => {
       isThreadMuted.mockResolvedValue(true);
       const post = getHandler('post_to_channel');
 
-      const out = await textOf(await post({ channel: 'C123', message: 'hi', thread_ts: '999.0', mandate: MANDATE }));
+      const out = await textOf(
+        await post({ channel: 'C123', message: 'hi', thread_ts: '999.0', mandate: MANDATE }),
+      );
 
       expect(isThreadMuted).toHaveBeenCalledWith('C123', '999.0');
       expect(postSlackMessage).not.toHaveBeenCalled();
@@ -259,7 +345,13 @@ describe('post_to_channel handler', () => {
     postSlackMessage.mockResolvedValue('1.5');
     const post = getHandler('post_to_channel', makeTask('C123', { muted: true }));
 
-    const out = await textOf(await post({ channel: 'C999', message: 'unrelated', mandate: 'Sergei: "can you flag this in that channel"' }));
+    const out = await textOf(
+      await post({
+        channel: 'C999',
+        message: 'unrelated',
+        mandate: 'Sergei: "can you flag this in that channel"',
+      }),
+    );
 
     expect(postSlackMessage).not.toHaveBeenCalled();
     expect(out).toMatch(/different Slack audience/i);
@@ -274,7 +366,9 @@ describe('mute blocks outbound posts, not just inbound routing', () => {
 
   it('post_to_user refuses the muted default channel', async () => {
     const task = makeTask('C123', { muted: true });
-    const out = await textOf(await getHandler('post_to_user', task)({ message: 'correcting myself' }));
+    const out = await textOf(
+      await getHandler('post_to_user', task)({ message: 'correcting myself' }),
+    );
 
     expect(task.postToUser).not.toHaveBeenCalled();
     expect(out).toMatch(/muted/i);
@@ -285,7 +379,10 @@ describe('mute blocks outbound posts, not just inbound routing', () => {
   it('post_to_user refuses an explicitly targeted muted thread', async () => {
     const task = makeTask('C123', { muted: true });
     const out = await textOf(
-      await getHandler('post_to_user', task)({ message: 'hi', target: { channel: 'slack:C123:1.0' } }),
+      await getHandler(
+        'post_to_user',
+        task,
+      )({ message: 'hi', target: { channel: 'slack:C123:1.0' } }),
     );
 
     expect(task.postToUser).not.toHaveBeenCalled();
@@ -302,7 +399,10 @@ describe('mute blocks outbound posts, not just inbound routing', () => {
 
   it('post_files_to_user refuses a muted channel before touching the filesystem', async () => {
     const out = await textOf(
-      await getHandler('post_files_to_user', makeTask('C123', { muted: true }))({ paths: ['/nope.png'] }),
+      await getHandler(
+        'post_files_to_user',
+        makeTask('C123', { muted: true }),
+      )({ paths: ['/nope.png'] }),
     );
 
     // No sandbox error — the mute is checked first, so the path is never read.
@@ -311,7 +411,7 @@ describe('mute blocks outbound posts, not just inbound routing', () => {
   });
 });
 
-describe('list_channels handler — public channels + this task\'s own channel', () => {
+describe("list_channels handler — public channels + this task's own channel", () => {
   beforeEach(() => {
     listBotChannels.mockReset();
     listBotChannels.mockResolvedValue([{ id: 'C1', name: 'general', isPrivate: false, topic: '' }]);
@@ -326,8 +426,8 @@ describe('list_channels handler — public channels + this task\'s own channel',
   it("appends this task's OWN private channel (not in the public list)", async () => {
     // Task lives in a private channel C_priv that users.conversations won't return.
     const out = await textOf(await getHandler('list_channels', makeTask('C_priv'))({}));
-    expect(out).toContain('#general');               // public
-    expect(out).toContain('C_priv');                 // the task's own private channel
+    expect(out).toContain('#general'); // public
+    expect(out).toContain('C_priv'); // the task's own private channel
     expect(out).toMatch(/this task's own channel/i);
   });
 
@@ -342,7 +442,10 @@ describe('list_channels handler — public channels + this task\'s own channel',
   // listing the channel would leave the first turn told about context it has no way to go and look at.
   it("appends a trigger-fired task's home channel before it has a thread there", async () => {
     const task = makeTask();
-    (task.metadata as unknown as { home_channel: unknown }).home_channel = { channel_id: 'C_HOME', channel_name: 'ops-private' };
+    (task.metadata as unknown as { home_channel: unknown }).home_channel = {
+      channel_id: 'C_HOME',
+      channel_name: 'ops-private',
+    };
 
     const out = await textOf(await getHandler('list_channels', task)({}));
 
@@ -353,7 +456,10 @@ describe('list_channels handler — public channels + this task\'s own channel',
 
   it('does not list a home channel twice once its thread is linked', async () => {
     const task = makeTask('C_HOME');
-    (task.metadata as unknown as { home_channel: unknown }).home_channel = { channel_id: 'C_HOME', channel_name: 'ops-private' };
+    (task.metadata as unknown as { home_channel: unknown }).home_channel = {
+      channel_id: 'C_HOME',
+      channel_name: 'ops-private',
+    };
 
     const out = await textOf(await getHandler('list_channels', task)({}));
 
@@ -378,7 +484,8 @@ describe('list_channels handler — public channels + this task\'s own channel',
 // agent arrives carrying only its own channel's context.
 describe('post_to_channel — destination brief preflight', () => {
   const MANDATE = 'Sergei: "can you flag this in that channel"';
-  const BRIEF = '<other_channel_context channel="#incidents" id="C123">rules</other_channel_context>';
+  const BRIEF =
+    '<other_channel_context channel="#incidents" id="C123">rules</other_channel_context>';
 
   beforeEach(() => {
     postSlackMessage.mockReset();
@@ -398,14 +505,22 @@ describe('post_to_channel — destination brief preflight', () => {
     const task = makeTask();
     const post = getHandler('post_to_channel', task);
 
-    const first = await textOf(await post({ channel: 'C123', message: 'heads up', mandate: MANDATE }));
+    const first = await textOf(
+      await post({ channel: 'C123', message: 'heads up', mandate: MANDATE }),
+    );
     expect(postSlackMessage).not.toHaveBeenCalled();
     expect(first).toContain(BRIEF);
     expect(first).toMatch(/not posted yet/i);
     expect(task.prepareMemoryDelivery).toHaveBeenCalledWith('C123');
 
-    const second = await textOf(await post({ channel: 'C123', message: 'heads up', mandate: MANDATE }));
-    expect(postSlackMessage).toHaveBeenCalledWith({ channel: 'C123', text: 'heads up', threadTs: undefined });
+    const second = await textOf(
+      await post({ channel: 'C123', message: 'heads up', mandate: MANDATE }),
+    );
+    expect(postSlackMessage).toHaveBeenCalledWith({
+      channel: 'C123',
+      text: 'heads up',
+      threadTs: undefined,
+    });
     expect(task.prepareMemoryDelivery).toHaveBeenCalledTimes(2);
     expect(second).toContain('1716998400.123456');
   });
@@ -415,7 +530,9 @@ describe('post_to_channel — destination brief preflight', () => {
     postSlackMessage.mockResolvedValue('1716998400.123456');
     const post = getHandler('post_to_channel');
 
-    const out = await textOf(await post({ channel: 'C123', message: 'heads up', mandate: MANDATE }));
+    const out = await textOf(
+      await post({ channel: 'C123', message: 'heads up', mandate: MANDATE }),
+    );
 
     expect(postSlackMessage).toHaveBeenCalledTimes(1);
     expect(out).toContain('1716998400.123456');
@@ -431,8 +548,8 @@ describe('post_to_channel — destination brief preflight', () => {
     const task = makeTask();
     const post = getHandler('post_to_channel', task);
 
-    await post({ channel: 'C123', message: 'a', mandate: MANDATE });   // briefed
-    await post({ channel: 'C123', message: 'b', mandate: MANDATE });   // posts
+    await post({ channel: 'C123', message: 'a', mandate: MANDATE }); // briefed
+    await post({ channel: 'C123', message: 'b', mandate: MANDATE }); // posts
     ensureChannelCanvas.mockClear();
     buildOtherChannelContextSection.mockClear();
     const third = await textOf(await post({ channel: 'C123', message: 'c', mandate: MANDATE }));
@@ -458,7 +575,9 @@ describe('post_to_channel — destination brief preflight', () => {
     buildOtherChannelContextSection.mockResolvedValue(BRIEF);
     const post = getHandler('post_to_channel');
 
-    const out = await textOf(await post({ channel: 'C123', message: 'hi', mandate: MANDATE, thread_ts: '1.0' }));
+    const out = await textOf(
+      await post({ channel: 'C123', message: 'hi', mandate: MANDATE, thread_ts: '1.0' }),
+    );
 
     expect(postSlackMessage).not.toHaveBeenCalled();
     expect(out).toContain(BRIEF);
@@ -534,9 +653,12 @@ describe('an explore read names a DM by its label, not by a #-prefixed id', () =
     });
   });
 
-  it('uses the home DM\'s own label when the task is homed there', async () => {
+  it("uses the home DM's own label when the task is homed there", async () => {
     const task = makeTask();
-    (task.metadata as unknown as { home_channel: unknown }).home_channel = { channel_id: 'D0DANA', channel_name: 'DM with Dana' };
+    (task.metadata as unknown as { home_channel: unknown }).home_channel = {
+      channel_id: 'D0DANA',
+      channel_name: 'DM with Dana',
+    };
 
     const out = await textOf(await getHandler('read_channel_history', task)({ channel: 'D0DANA' }));
 
@@ -550,9 +672,14 @@ describe('an explore read names a DM by its label, not by a #-prefixed id', () =
       messages: [{ user: { username: 'dana', realName: 'Dana' }, text: 'hi', ts: '1.0' }],
     });
     const task = makeTask();
-    (task.metadata as unknown as { home_channel: unknown }).home_channel = { channel_id: 'D0DANA', channel_name: 'DM with Dana' };
+    (task.metadata as unknown as { home_channel: unknown }).home_channel = {
+      channel_id: 'D0DANA',
+      channel_name: 'DM with Dana',
+    };
 
-    const out = await textOf(await getHandler('read_thread', task)({ channel: 'D0DANA', thread_ts: '1.0' }));
+    const out = await textOf(
+      await getHandler('read_thread', task)({ channel: 'D0DANA', thread_ts: '1.0' }),
+    );
 
     expect(out).toContain('DM with Dana');
     expect(out).not.toContain('#D0DANA');
@@ -564,7 +691,9 @@ describe('an explore read names a DM by its label, not by a #-prefixed id', () =
       messages: [{ user: { username: 'dana', realName: 'Dana' }, text: 'hi', ts: '1.0' }],
     });
 
-    const out = await textOf(await getHandler('read_thread', makeTask('C_PUB'))({ channel: 'C_PUB', thread_ts: '1.0' }));
+    const out = await textOf(
+      await getHandler('read_thread', makeTask('C_PUB'))({ channel: 'C_PUB', thread_ts: '1.0' }),
+    );
 
     expect(out).toContain('#general');
   });
@@ -575,7 +704,9 @@ describe('an explore read names a DM by its label, not by a #-prefixed id', () =
       messages: [{ user: { username: 'dana', realName: 'Dana' }, text: 'hi', ts: '1.0' }],
     });
 
-    const out = await textOf(await getHandler('read_channel_history', makeTask('C_PUB'))({ channel: 'C_PUB' }));
+    const out = await textOf(
+      await getHandler('read_channel_history', makeTask('C_PUB'))({ channel: 'C_PUB' }),
+    );
 
     expect(out).toContain('#general');
   });

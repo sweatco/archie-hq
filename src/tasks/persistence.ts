@@ -22,7 +22,13 @@ import { createInterface } from 'readline';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { join, resolve, relative, isAbsolute, sep } from 'path';
-import type { TaskMetadata, LogEntry, FindingType, SlackFile, SlackAuthor } from '../types/index.js';
+import type {
+  TaskMetadata,
+  LogEntry,
+  FindingType,
+  SlackFile,
+  SlackAuthor,
+} from '../types/index.js';
 import type { SystemEvent } from '../system/event-bus.js';
 import { activeTasks } from './task.js';
 import { SESSIONS_DIR } from '../system/workdir.js';
@@ -39,9 +45,9 @@ export function reconcilePersistedMemoryMetadata(
   pending: TaskMetadata,
 ): void {
   if (
-    persisted.memory_destination
-    && pending.memory_destination
-    && persisted.memory_destination.channel_id !== pending.memory_destination.channel_id
+    persisted.memory_destination &&
+    pending.memory_destination &&
+    persisted.memory_destination.channel_id !== pending.memory_destination.channel_id
   ) {
     throw new Error('task metadata has conflicting Slack destinations');
   }
@@ -209,7 +215,7 @@ export function getArtifactsPath(taskId: string): string {
  */
 export async function downloadMessageFiles(
   taskId: string,
-  files: SlackFile[]
+  files: SlackFile[],
 ): Promise<SlackFile[]> {
   if (!files || files.length === 0) {
     return [];
@@ -350,7 +356,7 @@ export async function appendSlackMessage(
   threadId: string,
   userInfo: SlackAuthor,
   renderedBody: string,
-  options?: { redacted?: boolean; ts?: string }
+  options?: { redacted?: boolean; ts?: string },
 ): Promise<string> {
   const redacted = options?.redacted === true;
 
@@ -438,7 +444,7 @@ export async function appendAgentFinding(
   taskId: string,
   agentName: string,
   finding: string,
-  type?: FindingType
+  type?: FindingType,
 ): Promise<void> {
   const entry: LogEntry = {
     timestamp: new Date().toISOString(),
@@ -489,7 +495,7 @@ export async function appendMessageToUser(
 export async function appendGitHubEvent(
   taskId: string,
   githubRepo: string,
-  event: { from: string; destination: string; message: string }
+  event: { from: string; destination: string; message: string },
 ): Promise<string> {
   const destination = `github:${githubRepo}/${event.destination}`;
   const entry: LogEntry = {
@@ -514,10 +520,7 @@ export async function appendGitHubEvent(
  *
  * Returns the written line so the caller can hand the PM the same text inline.
  */
-export async function appendCliMessage(
-  taskId: string,
-  message: string,
-): Promise<string> {
+export async function appendCliMessage(taskId: string, message: string): Promise<string> {
   const entry: LogEntry = {
     timestamp: new Date().toISOString(),
     source: 'cli',
@@ -617,8 +620,8 @@ function assertNeedleForm(needle: string): void {
     const at = control.index;
     throw new Error(
       `scanMetadataFiles: needle must be a single line of printable text — ` +
-      `found control character 0x${needle.charCodeAt(at).toString(16).padStart(2, '0')} at index ${at}. ` +
-      `Needles are JSON-encoded fragments; encode the value before scanning.`,
+        `found control character 0x${needle.charCodeAt(at).toString(16).padStart(2, '0')} at index ${at}. ` +
+        `Needles are JSON-encoded fragments; encode the value before scanning.`,
     );
   }
 }
@@ -631,7 +634,7 @@ export async function findTaskByThread(threadId: string): Promise<string | null>
   // Fast: check in-memory active tasks (channels keyed by channel ID containing thread_id)
   for (const [taskId, runtime] of activeTasks.entries()) {
     const found = Object.values(runtime.metadata.channels).some(
-      (ch) => ch.type === 'slack' && ch.thread_id === threadId
+      (ch) => ch.type === 'slack' && ch.thread_id === threadId,
     );
     if (found) return taskId;
   }
@@ -652,7 +655,7 @@ export async function findTaskByThread(threadId: string): Promise<string | null>
  */
 export async function findTaskByPRNumber(
   githubRepo: string,
-  prNumber: number
+  prNumber: number,
 ): Promise<string | null> {
   await ensureSessionsDir();
 
@@ -696,10 +699,7 @@ export async function findTaskByPRNumber(
  * the branch isn't the `archie/{taskId}` pattern and no PR number is in the
  * payload (e.g. `workflow_run`). Returns null if none match.
  */
-export async function findTaskByBranch(
-  githubRepo: string,
-  branch: string
-): Promise<string | null> {
+export async function findTaskByBranch(githubRepo: string, branch: string): Promise<string | null> {
   await ensureSessionsDir();
   if (!branch) return null;
 
@@ -771,7 +771,7 @@ export async function isThreadMuted(channelId: string, threadTs: string): Promis
  * migrated when it is activated, not when it is counted.
  */
 export async function findTaskIdsByStatus(
-  status: 'in_progress' | 'stopped' | 'completed'
+  status: 'in_progress' | 'stopped' | 'completed',
 ): Promise<string[]> {
   await ensureSessionsDir();
 
@@ -897,8 +897,12 @@ export async function appendUsageRecord(record: TaskUsageRecord): Promise<void> 
       const rel = relative(root, abs);
       const relDir = relative(root, dir);
       if (
-        rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel) ||
-        relDir === '..' || relDir.startsWith('..' + sep) || isAbsolute(relDir)
+        rel === '..' ||
+        rel.startsWith('..' + sep) ||
+        isAbsolute(rel) ||
+        relDir === '..' ||
+        relDir.startsWith('..' + sep) ||
+        isAbsolute(relDir)
       )
         return;
       if (!existsSync(dir)) return;
@@ -929,8 +933,11 @@ export async function readEvents(
   for await (const line of rl) {
     if (!line.trim()) continue;
     if (lineNum++ < start) continue;
-    try { events.push(JSON.parse(line)); }
-    catch { /* skip malformed */ }
+    try {
+      events.push(JSON.parse(line));
+    } catch {
+      /* skip malformed */
+    }
   }
 
   return { events, total: lineNum };
@@ -941,5 +948,7 @@ export async function readEvents(
  * Call once at startup after initRegistry().
  */
 export function initEventPersistence(): void {
-  onEvent((event: SystemEvent) => { void appendEvent(event); });
+  onEvent((event: SystemEvent) => {
+    void appendEvent(event);
+  });
 }

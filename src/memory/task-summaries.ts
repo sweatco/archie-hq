@@ -50,8 +50,8 @@ export async function rebuildTaskOverview(
 ): Promise<string> {
   await ensureChannelDirectory(getTaskChannelDir(visibility, channelId));
   const records = await readTaskSummariesFromChannel(visibility, channelId);
-  records.sort((a, b) =>
-    b.extractionAt.localeCompare(a.extractionAt) || a.taskId.localeCompare(b.taskId)
+  records.sort(
+    (a, b) => b.extractionAt.localeCompare(a.extractionAt) || a.taskId.localeCompare(b.taskId),
   );
   const rows = records.slice(0, OVERVIEW_LIMIT).map((record) => {
     const excerpt = escapeTableCell(normalizeExcerpt(record.summary, 200));
@@ -79,12 +79,15 @@ export async function readPublicTaskSummaries(taskId?: string): Promise<TaskSumm
     throw error;
   }
   const channelIds = entries
-    .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink() && isSlackConversationId(entry.name))
+    .filter(
+      (entry) =>
+        entry.isDirectory() && !entry.isSymbolicLink() && isSlackConversationId(entry.name),
+    )
     .map((entry) => entry.name)
     .sort();
   const records: TaskSummaryRecord[] = [];
   for (const channelId of channelIds) {
-    records.push(...await readTaskSummariesFromChannel('public', channelId, taskId));
+    records.push(...(await readTaskSummariesFromChannel('public', channelId, taskId)));
   }
   return records;
 }
@@ -129,7 +132,8 @@ export async function readTaskSummariesFromChannel(
     const markdown = await readFile(path, 'utf-8');
     const record = parseTaskSummary(markdown, visibility, channelId, stem);
     if (record) records.push(record);
-    else logger.warn('memory', `skipping malformed task summary ${visibility}/${channelId}/${name}`);
+    else
+      logger.warn('memory', `skipping malformed task summary ${visibility}/${channelId}/${name}`);
   }
   return records;
 }
@@ -149,13 +153,14 @@ function parseTaskSummary(
   }
   const data = parsed.data as Record<string, unknown>;
   if (
-    data.task_id !== taskId
-    || data.channel_id !== channelId
-    || typeof data.status !== 'string'
-    || !VALID_STATUSES.has(data.status as TaskStatus)
-    || !validTimestamp(data.created_at)
-    || !validTimestamp(data.extraction_at)
-  ) return null;
+    data.task_id !== taskId ||
+    data.channel_id !== channelId ||
+    typeof data.status !== 'string' ||
+    !VALID_STATUSES.has(data.status as TaskStatus) ||
+    !validTimestamp(data.created_at) ||
+    !validTimestamp(data.extraction_at)
+  )
+    return null;
   const summary = extractSummary(parsed.content);
   if (!summary) return null;
   return {

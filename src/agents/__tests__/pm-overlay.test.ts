@@ -42,7 +42,12 @@ import { readPmOverlay, appendDeploymentContext, scanPmDef } from '../registry.j
 const ROOT_MCP: LoadedMcpConfig = { servers: {}, descriptions: {}, policies: {} };
 const ARCHIE_CONFIG: ArchieConfig = { allowedNetworkDomains: [], repos: {} };
 
-const PM_ENV = ['ARCHIE_PM_MODEL', 'ARCHIE_PM_EFFORT', 'ARCHIE_PM_MAX_MODEL', 'ARCHIE_PM_MAX_EFFORT'];
+const PM_ENV = [
+  'ARCHIE_PM_MODEL',
+  'ARCHIE_PM_EFFORT',
+  'ARCHIE_PM_MAX_MODEL',
+  'ARCHIE_PM_MAX_EFFORT',
+];
 
 function writePmMd(contents: string): void {
   writeFileSync(join(PLUGINS_DIR, 'pm.md'), contents);
@@ -72,7 +77,9 @@ describe('pm.md precedence', () => {
   });
 
   it('lets pm.md override the defaults', () => {
-    writePmMd('---\nmodel: sonnet\neffort: high\nmaxMode:\n  model: claude-opus-5\n  effort: xhigh\n---\n\nBody.\n');
+    writePmMd(
+      '---\nmodel: sonnet\neffort: high\nmaxMode:\n  model: claude-opus-5\n  effort: xhigh\n---\n\nBody.\n',
+    );
 
     const def = scanPmDef();
 
@@ -82,7 +89,9 @@ describe('pm.md precedence', () => {
   });
 
   it('lets the environment override pm.md', () => {
-    writePmMd('---\nmodel: sonnet\neffort: high\nmaxMode:\n  model: claude-opus-5\n  effort: xhigh\n---\n');
+    writePmMd(
+      '---\nmodel: sonnet\neffort: high\nmaxMode:\n  model: claude-opus-5\n  effort: xhigh\n---\n',
+    );
     process.env.ARCHIE_PM_MODEL = 'haiku';
     process.env.ARCHIE_PM_EFFORT = 'low';
     process.env.ARCHIE_PM_MAX_MODEL = 'claude-fable-5-2';
@@ -130,7 +139,9 @@ describe('pm.md body', () => {
 
     const prompt = appendDeploymentContext('SYSTEM PROMPT');
 
-    expect(prompt).toBe('SYSTEM PROMPT\n\n# Deployment context\n\nArchie runs for the Sweatcoin platform team.');
+    expect(prompt).toBe(
+      'SYSTEM PROMPT\n\n# Deployment context\n\nArchie runs for the Sweatcoin platform team.',
+    );
   });
 
   it('takes the whole file as body when there is no frontmatter', () => {

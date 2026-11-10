@@ -16,7 +16,11 @@ const SESSIONS_ROOT = await vi.hoisted(async () => {
 });
 
 vi.mock('../../connectors/slack/client.js', () => ({
-  isExternalUser: (user: { teamId?: string; isRestricted?: boolean; isUltraRestricted?: boolean }) => {
+  isExternalUser: (user: {
+    teamId?: string;
+    isRestricted?: boolean;
+    isUltraRestricted?: boolean;
+  }) => {
     if (user.isRestricted || user.isUltraRestricted) return true;
     if (user.teamId && user.teamId !== 'T_HOME') return true;
     return false;
@@ -45,7 +49,14 @@ vi.mock('./task.js', () => ({
   activeTasks: new Map(),
 }));
 
-import { renderAttachmentsSuffix, renderEditForContext, loadMetadata, getMetadataPath, taskExistsOnDisk, findTaskOnDisk } from '../persistence.js';
+import {
+  renderAttachmentsSuffix,
+  renderEditForContext,
+  loadMetadata,
+  getMetadataPath,
+  taskExistsOnDisk,
+  findTaskOnDisk,
+} from '../persistence.js';
 import { renderMessageBody } from '../../connectors/slack/message-body.js';
 import type { SlackFile } from '../../types/index.js';
 import type { TaskMetadata } from '../../types/task.js';
@@ -72,7 +83,9 @@ describe('renderAttachmentsSuffix â€” agreement with the inbound [Attachments: â
     const inbound = renderMessageBody({ ownText: 'here you go', files }, { redacted: false });
     const suffix = renderAttachmentsSuffix(paths);
 
-    expect(suffix).toBe('\n  [Attachments: report.pdf (/tmp/artifacts/report.pdf), chart.png (/tmp/artifacts/chart.png)]');
+    expect(suffix).toBe(
+      '\n  [Attachments: report.pdf (/tmp/artifacts/report.pdf), chart.png (/tmp/artifacts/chart.png)]',
+    );
     expect(inbound).toBe(`here you go${suffix}`);
     expect(inbound.endsWith(suffix)).toBe(true);
   });
@@ -87,7 +100,9 @@ describe('renderAttachmentsSuffix â€” agreement with the inbound [Attachments: â
 
     expect(inbound).toBe('here you go\n  [Attachments: report.pdf]');
     expect(inbound).not.toBe(`here you go${renderAttachmentsSuffix(['report.pdf'])}`);
-    expect(renderAttachmentsSuffix(['report.pdf'])).toBe('\n  [Attachments: report.pdf (report.pdf)]');
+    expect(renderAttachmentsSuffix(['report.pdf'])).toBe(
+      '\n  [Attachments: report.pdf (report.pdf)]',
+    );
   });
 });
 

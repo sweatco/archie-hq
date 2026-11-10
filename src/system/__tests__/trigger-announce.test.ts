@@ -18,8 +18,15 @@ vi.mock('../../agents/spawn.js', () => ({ spawnAgent: vi.fn() }));
 
 vi.mock('../logger.js', () => ({
   logger: {
-    system: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), info: vi.fn(),
-    plain: vi.fn(), server: vi.fn(), slack: vi.fn(), agent: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    warn: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    plain: vi.fn(),
+    server: vi.fn(),
+    slack: vi.fn(),
+    agent: vi.fn(),
   },
 }));
 
@@ -38,14 +45,23 @@ function makeTrigger(binding: Trigger['binding']): Trigger {
     created_by: DM_USER,
     created_at: '2026-08-27T09:00:00.000Z',
     binding,
-    conditions: [{ type: 'schedule', tz: 'UTC', cron: '0 9 * * *', next_run_at: '2099-01-01T09:00:00.000Z' }],
+    conditions: [
+      { type: 'schedule', tz: 'UTC', cron: '0 9 * * *', next_run_at: '2099-01-01T09:00:00.000Z' },
+    ],
     action: { prompt: 'send the morning digest' },
     summary: 'Morning digest',
   };
 }
 
-const channelTrigger = () => makeTrigger({ type: 'channel', channel_id: CHANNEL, channel_name: 'ops-daily' });
-const dmTrigger = () => makeTrigger({ type: 'user', user_id: DM_USER, channel_id: DM_CHANNEL, channel_name: 'DM with Dana' });
+const channelTrigger = () =>
+  makeTrigger({ type: 'channel', channel_id: CHANNEL, channel_name: 'ops-daily' });
+const dmTrigger = () =>
+  makeTrigger({
+    type: 'user',
+    user_id: DM_USER,
+    channel_id: DM_CHANNEL,
+    channel_name: 'DM with Dana',
+  });
 
 beforeEach(() => {
   vi.clearAllMocks();

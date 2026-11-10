@@ -18,19 +18,23 @@ describe('pendingSince', () => {
 
   it('uses updated_at once the proposal has been revised', () => {
     const edited = '2026-07-30T09:30:00.000Z';
-    expect(pendingSince({ created_at: CREATED, updated_at: edited })).toBe(new Date(edited).getTime());
+    expect(pendingSince({ created_at: CREATED, updated_at: edited })).toBe(
+      new Date(edited).getTime(),
+    );
   });
 
   it('an edit renews the lifetime — a 23h-old proposal revised now is not near the reaper', () => {
     const TTL = 24 * 60 * 60_000;
     const now = new Date('2026-07-30T09:56:00.000Z').getTime(); // 23h after creation
-    const justEdited = new Date(now - 60_000).toISOString();    // revised a minute ago
+    const justEdited = new Date(now - 60_000).toISOString(); // revised a minute ago
 
     // Unedited: 23h in, one hour from being GC'd.
     expect(now - pendingSince({ created_at: CREATED })).toBeGreaterThan(22 * 60 * 60_000);
     // Edited: the clock restarted, so it is nowhere near the TTL.
     expect(now - pendingSince({ created_at: CREATED, updated_at: justEdited })).toBeLessThan(TTL);
-    expect(now - pendingSince({ created_at: CREATED, updated_at: justEdited })).toBeLessThan(5 * 60_000);
+    expect(now - pendingSince({ created_at: CREATED, updated_at: justEdited })).toBeLessThan(
+      5 * 60_000,
+    );
   });
 
   it('an abandoned proposal still ages out — renewal requires an actual edit', () => {

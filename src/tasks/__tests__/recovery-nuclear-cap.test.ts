@@ -17,7 +17,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../../system/logger.js', () => ({
-  logger: { warn: vi.fn(), system: vi.fn(), error: vi.fn(), debug: vi.fn(), agent: vi.fn(), plain: vi.fn() },
+  logger: {
+    warn: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    agent: vi.fn(),
+    plain: vi.fn(),
+  },
 }));
 const { findTaskIdsByStatusMock, taskGetMock } = vi.hoisted(() => ({
   findTaskIdsByStatusMock: vi.fn(),
@@ -26,7 +33,9 @@ const { findTaskIdsByStatusMock, taskGetMock } = vi.hoisted(() => ({
 vi.mock('../persistence.js', () => ({ findTaskIdsByStatus: findTaskIdsByStatusMock }));
 vi.mock('../task.js', () => ({ Task: { get: taskGetMock } }));
 vi.mock('../../system/reminder-scheduler.js', () => ({
-  cancelReminder: vi.fn((task: { metadata: { reminder?: unknown } }) => { task.metadata.reminder = undefined; }),
+  cancelReminder: vi.fn((task: { metadata: { reminder?: unknown } }) => {
+    task.metadata.reminder = undefined;
+  }),
 }));
 
 import { scheduleIdleCheck } from '../recovery.js';
@@ -43,7 +52,9 @@ function fakeStalledTask() {
     completionIntent: false,
     recoveryAttempts: 0,
     nuclearRecoveryCycles: 0,
-    metadata: {} as { reminder?: { trigger_at: string; reason: string; cron?: string; tz?: string } },
+    metadata: {} as {
+      reminder?: { trigger_at: string; reason: string; cron?: string; tz?: string };
+    },
     debouncedSave: vi.fn(),
     agent: {
       isRunning: true,
@@ -112,9 +123,9 @@ describe('nuclear recovery cap', () => {
     expect(task.stop).toHaveBeenCalledTimes(4);
     expect(task.postToUser).toHaveBeenCalledTimes(1);
     expect(task.postToUser.mock.calls[0][0]).toMatch(/paused this task/i);
-    const pauseLog = vi.mocked(logger.warn).mock.calls.find(([, msg]) =>
-      String(msg).includes('pausing instead of respawning'),
-    );
+    const pauseLog = vi
+      .mocked(logger.warn)
+      .mock.calls.find(([, msg]) => String(msg).includes('pausing instead of respawning'));
     expect(pauseLog?.[1]).toContain(TASK_ID);
     expect(pauseLog?.[1]).toContain('cycle 4');
   });
@@ -123,7 +134,12 @@ describe('nuclear recovery cap', () => {
     // Each reminder wake is a fresh activation, which resets the nuclear budget — so without this a
     // looping task with an hourly cron would get three more recovery cycles every hour, forever.
     const task = fakeStalledTask();
-    task.metadata.reminder = { trigger_at: '2026-10-12T10:00:00.000Z', reason: 'r', cron: '0 * * * *', tz: 'UTC' };
+    task.metadata.reminder = {
+      trigger_at: '2026-10-12T10:00:00.000Z',
+      reason: 'r',
+      cron: '0 * * * *',
+      tz: 'UTC',
+    };
     taskGetMock.mockResolvedValue(task);
 
     for (let i = 0; i < 4; i++) await runNuclearCycle(task);
@@ -131,7 +147,9 @@ describe('nuclear recovery cap', () => {
     expect(task.metadata.reminder).toBeUndefined();
     // The pause notice is posted (awaited) before the cancel, so the stop line follows it.
     const { cancelReminder } = await import('../../system/reminder-scheduler.js');
-    expect(task.postToUser.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(cancelReminder).mock.invocationCallOrder[0]);
+    expect(task.postToUser.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(cancelReminder).mock.invocationCallOrder[0],
+    );
   });
 
   it('leaves a one-shot reminder alone when pausing', async () => {

@@ -8,7 +8,8 @@ export function initializeSchema(db: DatabaseSync, team: string, now: number): v
   try {
     const version = Number(db.prepare('PRAGMA user_version').get()!.user_version);
     if (version === 0) {
-      if (db.prepare("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1").get()) throw new Error('Unversioned initiative database is not empty; use a fresh database');
+      if (db.prepare("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1").get())
+        throw new Error('Unversioned initiative database is not empty; use a fresh database');
       db.exec(`
         CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE channels (id TEXT PRIMARY KEY, allowed INTEGER NOT NULL, shared INTEGER NOT NULL, checkpoint TEXT NOT NULL, cursor TEXT, gap TEXT);
@@ -40,17 +41,28 @@ export function initializeSchema(db: DatabaseSync, team: string, now: number): v
           WHERE card_state IS NOT CASE WHEN state IN ('approved','prepared') THEN 'pending' ELSE state END;
       `);
       const set = db.prepare('INSERT INTO settings VALUES (?,?)');
-      for (const [key, value] of [['team', team], ['watermark', String(now / 1000)]]) set.run(key, value);
+      for (const [key, value] of [
+        ['team', team],
+        ['watermark', String(now / 1000)],
+      ])
+        set.run(key, value);
       db.exec('PRAGMA user_version=' + SCHEMA_VERSION);
     }
     validateSchema(db, team);
     db.exec('COMMIT');
-  } catch (error) { db.exec('ROLLBACK'); throw error; }
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
 }
 
 export function validateSchema(db: DatabaseSync, team: string): void {
   const version = Number(db.prepare('PRAGMA user_version').get()!.user_version);
   if (version > SCHEMA_VERSION) throw new Error('Observation database is newer than this binary');
-  if (version !== SCHEMA_VERSION) throw new Error(`Unsupported initiative schema ${version}; this build requires a fresh database`);
-  if (db.prepare("SELECT value FROM settings WHERE key='team'").get()?.value !== team) throw new Error('Observation workspace mismatch');
+  if (version !== SCHEMA_VERSION)
+    throw new Error(
+      `Unsupported initiative schema ${version}; this build requires a fresh database`,
+    );
+  if (db.prepare("SELECT value FROM settings WHERE key='team'").get()?.value !== team)
+    throw new Error('Observation workspace mismatch');
 }

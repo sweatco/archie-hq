@@ -14,15 +14,21 @@ const slackApi = {
 };
 
 vi.mock('@slack/web-api', () => ({
-  WebClient: vi.fn(function (this: unknown) { return slackApi; }),
+  WebClient: vi.fn(function (this: unknown) {
+    return slackApi;
+  }),
 }));
 
 const loggerWarn = vi.fn();
 const loggerDebug = vi.fn();
 vi.mock('../../../system/logger.js', () => ({
   logger: {
-    slack: vi.fn(), warn: loggerWarn, debug: loggerDebug,
-    system: vi.fn(), error: vi.fn(), plain: vi.fn(),
+    slack: vi.fn(),
+    warn: loggerWarn,
+    debug: loggerDebug,
+    system: vi.fn(),
+    error: vi.fn(),
+    plain: vi.fn(),
   },
 }));
 
@@ -39,7 +45,10 @@ beforeEach(async () => {
   vi.resetModules(); // negative cache starts empty
 
   slackApi.auth.test.mockResolvedValue({
-    user_id: 'UBOT', bot_id: 'BBOT', team_id: 'THOME', url: 'https://acme.slack.com',
+    user_id: 'UBOT',
+    bot_id: 'BBOT',
+    team_id: 'THOME',
+    url: 'https://acme.slack.com',
   });
   slackApi.usergroups.list.mockResolvedValue({ usergroups: [] });
   slackApi.users.list.mockResolvedValue({ members: [] });

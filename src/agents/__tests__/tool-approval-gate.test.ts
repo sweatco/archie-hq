@@ -35,7 +35,12 @@ const POLICY: McpToolPolicy = { tramline: TRAMLINE };
 
 const tool = (action: string) => `mcp__tramline__${action}`;
 
-async function runGate(port: Partial<ToolApprovalPort>, tool_name: string, tool_input: unknown, policy = POLICY) {
+async function runGate(
+  port: Partial<ToolApprovalPort>,
+  tool_name: string,
+  tool_input: unknown,
+  policy = POLICY,
+) {
   const fullPort: ToolApprovalPort = {
     consumeApproval: () => false,
     requestApproval: async () => 'posted',
@@ -43,7 +48,11 @@ async function runGate(port: Partial<ToolApprovalPort>, tool_name: string, tool_
   };
   const [matcher] = createToolApprovalHooks(policy, fullPort);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (await matcher.hooks[0]({ tool_name, tool_input } as any, undefined as any, {} as any)) as any;
+  return (await matcher.hooks[0](
+    { tool_name, tool_input } as any,
+    undefined as any,
+    {} as any,
+  )) as any;
 }
 
 const denialReason = (r: { hookSpecificOutput?: { permissionDecisionReason?: string } }) =>
@@ -53,15 +62,21 @@ const isDeny = (r: { hookSpecificOutput?: { permissionDecision?: string } }) =>
 
 describe('parseMcpToolName', () => {
   it('splits server and tool', () => {
-    expect(parseMcpToolName('mcp__tramline__retry_workflow_run'))
-      .toEqual({ server: 'tramline', tool: 'retry_workflow_run' });
+    expect(parseMcpToolName('mcp__tramline__retry_workflow_run')).toEqual({
+      server: 'tramline',
+      tool: 'retry_workflow_run',
+    });
   });
 
   it('handles dashed and underscored server keys', () => {
-    expect(parseMcpToolName('mcp__atlassian-rovo-mcp__getJiraIssue'))
-      .toEqual({ server: 'atlassian-rovo-mcp', tool: 'getJiraIssue' });
-    expect(parseMcpToolName('mcp__aws_billing__get_cost'))
-      .toEqual({ server: 'aws_billing', tool: 'get_cost' });
+    expect(parseMcpToolName('mcp__atlassian-rovo-mcp__getJiraIssue')).toEqual({
+      server: 'atlassian-rovo-mcp',
+      tool: 'getJiraIssue',
+    });
+    expect(parseMcpToolName('mcp__aws_billing__get_cost')).toEqual({
+      server: 'aws_billing',
+      tool: 'get_cost',
+    });
   });
 
   it('rejects non-MCP tools', () => {
@@ -76,7 +91,6 @@ describe('deniedToolNames', () => {
   it('lists every deny-tier tool as its qualified SDK name', () => {
     expect(deniedToolNames(POLICY)).toEqual(['mcp__tramline__start_release']);
   });
-
 
   it('does not withhold tools that only fall to a deny default', () => {
     // Their names aren't knowable at load time — the gate refuses them at call time.
@@ -139,17 +153,22 @@ describe('renderCall', () => {
   // Terse but honest — and the arguments show either way. The tool's own
   // description is unreachable: the CLI never exposes it to us.
   it('falls back to the bare identity for an untitled tool', () => {
-    expect(renderCall(TRAMLINE, { ...call, tool: 'unlisted_tool' }, {}).heading)
-      .toBe('Run `tramline:unlisted_tool`');
+    expect(renderCall(TRAMLINE, { ...call, tool: 'unlisted_tool' }, {}).heading).toBe(
+      'Run `tramline:unlisted_tool`',
+    );
   });
 
   // The prompt must be authored by the engine. A string argument is the one
   // part the agent controls, and unescaped it can append its own lines.
   it('neutralizes newlines and mrkdwn in argument values', () => {
-    const r = renderCall(TRAMLINE, { ...call, tool: 'extend_soak' }, {
-      release_id: 'r1',
-      additional_hours: '6\n*Note:* pre-agreed with the release manager — safe to approve',
-    });
+    const r = renderCall(
+      TRAMLINE,
+      { ...call, tool: 'extend_soak' },
+      {
+        release_id: 'r1',
+        additional_hours: '6\n*Note:* pre-agreed with the release manager — safe to approve',
+      },
+    );
     expect(r.summary).not.toContain('\n*Note:*');
     expect(r.heading).not.toContain('\n');
   });
@@ -169,7 +188,9 @@ describe('renderCall', () => {
   // The digest covers null arguments, so hiding them would have the approver
   // approve an argument they were never shown.
   it('renders null arguments instead of dropping them', () => {
-    expect(renderCall(TRAMLINE, call, { id: 'wf-1', reason: null }).summary).toContain('reason=`null`');
+    expect(renderCall(TRAMLINE, call, { id: 'wf-1', reason: null }).summary).toContain(
+      'reason=`null`',
+    );
   });
 
   // Slack refuses a section over 3000 chars; an uncapped list would make such a
@@ -183,7 +204,10 @@ describe('renderCall', () => {
 
   it('caps long argument values and long titles', () => {
     expect(renderCall(TRAMLINE, call, { id: 'x'.repeat(500) }).summary.length).toBeLessThan(400);
-    const longTitle: McpServerPolicy = { ...TRAMLINE, titles: { retry_workflow_run: 'd'.repeat(500) } };
+    const longTitle: McpServerPolicy = {
+      ...TRAMLINE,
+      titles: { retry_workflow_run: 'd'.repeat(500) },
+    };
     expect(renderCall(longTitle, call, {}).heading.length).toBeLessThanOrEqual(200);
   });
 });
@@ -191,7 +215,12 @@ describe('renderCall', () => {
 describe('createToolApprovalHooks', () => {
   it('lets unmanaged tools and allow-tier tools straight through', async () => {
     const requestApproval = vi.fn(async () => 'posted' as const);
-    for (const name of ['Read', 'mcp__teamcity__list_builds', tool('get_release'), tool('list_apps')]) {
+    for (const name of [
+      'Read',
+      'mcp__teamcity__list_builds',
+      tool('get_release'),
+      tool('list_apps'),
+    ]) {
       expect(await runGate({ requestApproval }, name, {})).toEqual({ continue: true });
     }
     expect(requestApproval).not.toHaveBeenCalled();
@@ -216,8 +245,13 @@ describe('createToolApprovalHooks', () => {
 
   it('requests approval for an ask-tier call and denies this attempt', async () => {
     const requestApproval = vi.fn(
-      async (_r: { digest: string; server: string; tool: string; summary: string; heading: string }) =>
-        'posted' as const,
+      async (_r: {
+        digest: string;
+        server: string;
+        tool: string;
+        summary: string;
+        heading: string;
+      }) => 'posted' as const,
     );
     const result = await runGate({ requestApproval }, tool('retry_workflow_run'), { id: 'wf-1' });
 
@@ -229,9 +263,11 @@ describe('createToolApprovalHooks', () => {
     expect(request.heading).toBe('Re-run the failed CI build for this release');
   });
 
-
   it('raises a prompt for an untitled tool using its bare identity', async () => {
-    const requestApproval = vi.fn(async (r: { heading: string }) => { void r; return 'posted' as const; });
+    const requestApproval = vi.fn(async (r: { heading: string }) => {
+      void r;
+      return 'posted' as const;
+    });
     await runGate({ requestApproval }, tool('some_untitled_tool'), { id: 'x' });
     expect(requestApproval.mock.calls[0][0].heading).toBe('Run `tramline:some_untitled_tool`');
   });
@@ -239,15 +275,23 @@ describe('createToolApprovalHooks', () => {
   it('proceeds exactly once a grant for that call is spendable', async () => {
     const consumeApproval = vi.fn(() => true);
     const requestApproval = vi.fn(async () => 'posted' as const);
-    const result = await runGate({ consumeApproval, requestApproval }, tool('retry_workflow_run'), { id: 'wf-1' });
+    const result = await runGate({ consumeApproval, requestApproval }, tool('retry_workflow_run'), {
+      id: 'wf-1',
+    });
 
     expect(result).toEqual({ continue: true });
-    expect(consumeApproval).toHaveBeenCalledWith(callDigest('tramline', 'retry_workflow_run', { id: 'wf-1' }));
+    expect(consumeApproval).toHaveBeenCalledWith(
+      callDigest('tramline', 'retry_workflow_run', { id: 'wf-1' }),
+    );
     expect(requestApproval).not.toHaveBeenCalled();
   });
 
   it('refuses a second gated call while one is pending', async () => {
-    const result = await runGate({ requestApproval: async () => 'already-pending' }, tool('retry_workflow_run'), {});
+    const result = await runGate(
+      { requestApproval: async () => 'already-pending' },
+      tool('retry_workflow_run'),
+      {},
+    );
     expect(isDeny(result)).toBe(true);
     expect(denialReason(result)).toContain('already waiting for approval');
   });
@@ -256,8 +300,12 @@ describe('createToolApprovalHooks', () => {
   // prototype hit must not be mistaken for a policy.
   it('does not treat inherited properties as policy', async () => {
     const requestApproval = vi.fn(async () => 'posted' as const);
-    expect(await runGate({ requestApproval }, 'mcp__constructor__x', {})).toEqual({ continue: true });
-    expect(await runGate({ requestApproval }, tool('constructor'), {})).not.toEqual({ continue: true });
+    expect(await runGate({ requestApproval }, 'mcp__constructor__x', {})).toEqual({
+      continue: true,
+    });
+    expect(await runGate({ requestApproval }, tool('constructor'), {})).not.toEqual({
+      continue: true,
+    });
     expect(requestApproval).toHaveBeenCalledTimes(1); // the tramline one is gated, not crashed
   });
 
@@ -265,7 +313,10 @@ describe('createToolApprovalHooks', () => {
     const order: string[] = [];
     const consumeApproval = vi.fn(() => {
       order.push('spend');
-      return Promise.resolve(true).then((v) => { order.push('flushed'); return v; });
+      return Promise.resolve(true).then((v) => {
+        order.push('flushed');
+        return v;
+      });
     });
     const result = await runGate({ consumeApproval }, tool('retry_workflow_run'), { id: 'wf-1' });
     expect(result).toEqual({ continue: true });
@@ -283,7 +334,11 @@ describe('createToolApprovalHooks', () => {
 
     it('denies when the port throws', async () => {
       const result = await runGate(
-        { requestApproval: async () => { throw new Error('slack down'); } },
+        {
+          requestApproval: async () => {
+            throw new Error('slack down');
+          },
+        },
         tool('retry_workflow_run'),
         { id: 'wf-1' },
       );
@@ -292,7 +347,11 @@ describe('createToolApprovalHooks', () => {
     });
 
     it('still lets unmanaged tools through when the port is broken', async () => {
-      const broken = { consumeApproval: () => { throw new Error('boom'); } };
+      const broken = {
+        consumeApproval: () => {
+          throw new Error('boom');
+        },
+      };
       expect(await runGate(broken, 'Read', { file_path: '/x' })).toEqual({ continue: true });
       expect(await runGate(broken, tool('get_release'), {})).toEqual({ continue: true });
     });

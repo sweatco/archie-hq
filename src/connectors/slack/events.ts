@@ -37,11 +37,21 @@ import { logger } from '../../system/logger.js';
 import { getIsShuttingDown } from '../../system/shutdown.js';
 import { findTaskByThread } from '../../tasks/persistence.js';
 import { rawMessageBody } from './message-body.js';
-import { getChannelMessageTriggers, fireTrigger, triggerWhat, buildTriggerApprovalBlocks } from '../../system/trigger-scheduler.js';
+import {
+  getChannelMessageTriggers,
+  fireTrigger,
+  triggerWhat,
+  buildTriggerApprovalBlocks,
+} from '../../system/trigger-scheduler.js';
 import { messageMatchesTrigger } from '../../system/trigger-match.js';
 import type { Trigger } from '../../types/trigger.js';
 import { generateTaskTitle } from '../../tasks/title-generator.js';
-import { observeSlack, initiativeAction, initiativeOrigin, attachInitiativeOrigin } from '../../proactivity/index.js';
+import {
+  observeSlack,
+  initiativeAction,
+  initiativeOrigin,
+  attachInitiativeOrigin,
+} from '../../proactivity/index.js';
 import { setAssistantThreadTitle } from './title.js';
 import type { SlackThread, SlackAuthor } from '../../types/task.js';
 
@@ -97,14 +107,14 @@ async function updateTaskApprovalMessage(
  */
 export async function mountSlackApp(
   expressApp: Application,
-  config: SlackConfig
+  config: SlackConfig,
 ): Promise<SlackLifecycle> {
   const useSocketMode = !!config.slackAppToken;
 
   if (useSocketMode) {
     if (!config.slackAppToken!.startsWith('xapp-')) {
       throw new Error(
-        'SLACK_APP_TOKEN must start with "xapp-" (app-level token with connections:write scope)'
+        'SLACK_APP_TOKEN must start with "xapp-" (app-level token with connections:write scope)',
       );
     }
     logger.plain('Slack: Socket Mode (outbound WebSocket, no webhook URL)');
@@ -145,7 +155,10 @@ export async function mountSlackApp(
       return;
     }
 
-    await observeSlack({ ...event, event_id: body?.event_id } as unknown as Record<string, unknown>);
+    await observeSlack({ ...event, event_id: body?.event_id } as unknown as Record<
+      string,
+      unknown
+    >);
     const route = routeSlackEvent(event);
     if (route.action === 'discard') {
       return;
@@ -178,7 +191,8 @@ export async function mountSlackApp(
         return;
       }
       handleSlackEdit(event).catch((err: unknown) =>
-        logger.error('Server', 'Error processing Slack message edit', err));
+        logger.error('Server', 'Error processing Slack message edit', err),
+      );
       return;
     }
 
@@ -236,7 +250,9 @@ export async function mountSlackApp(
 
   app!.action(/^initiative_/, async ({ ack, body, action }: any) => {
     await ack();
-    initiativeAction(body.user?.id ?? '', action.value ?? '').catch((error) => logger.warn('initiative', 'Control failed', error));
+    initiativeAction(body.user?.id ?? '', action.value ?? '').catch((error) =>
+      logger.warn('initiative', 'Control failed', error),
+    );
   });
 
   // Handle the bot itself being added to a channel — scan for an existing
@@ -250,8 +266,10 @@ export async function mountSlackApp(
     const botUserId = getBotUserId();
     if (!botUserId || event.user !== botUserId) return;
     if (typeof event.channel !== 'string' || event.channel.startsWith('D')) return;
-    Promise.all([ensureChannelCanvas(event.channel), ensureChannelPins(event.channel)]).catch((err: unknown) =>
-      logger.error('Server', 'Error scanning channel context on channel join', err));
+    Promise.all([ensureChannelCanvas(event.channel), ensureChannelPins(event.channel)]).catch(
+      (err: unknown) =>
+        logger.error('Server', 'Error scanning channel context on channel join', err),
+    );
   });
 
   for (const eventName of ['user_change', 'team_join']) {
@@ -289,7 +307,9 @@ export async function mountSlackApp(
         try {
           const info = await getUserInfo(userId);
           if (isExternalUser(info)) {
-            logger.system(`Edit-mode approver ${userId} is external/guest — commits stay bot-authored`);
+            logger.system(
+              `Edit-mode approver ${userId} is external/guest — commits stay bot-authored`,
+            );
           } else {
             approver = { id: userId, name: info.realName, email: info.email };
           }
@@ -385,7 +405,11 @@ export async function mountSlackApp(
     logger.server(`Research budget approved by ${userId} for task ${taskId}`);
 
     try {
-      await updateTaskApprovalMessage(taskId, body, `✅ *Research budget extended* by <@${userId}> (+5 requests)`);
+      await updateTaskApprovalMessage(
+        taskId,
+        body,
+        `✅ *Research budget extended* by <@${userId}> (+5 requests)`,
+      );
 
       const task = await Task.get(taskId);
       await task.handleResearchBudgetApproval();
@@ -405,7 +429,11 @@ export async function mountSlackApp(
     logger.server(`Research budget denied by ${userId} for task ${taskId}`);
 
     try {
-      await updateTaskApprovalMessage(taskId, body, `❌ *Additional research denied* by <@${userId}>`);
+      await updateTaskApprovalMessage(
+        taskId,
+        body,
+        `❌ *Additional research denied* by <@${userId}>`,
+      );
 
       const task = await Task.get(taskId);
       await task.handleResearchBudgetDenial();
@@ -439,7 +467,10 @@ export async function mountSlackApp(
         const task = await Task.get(taskId);
         trigger = await task.handleTriggerApproval(userId, triggerId);
       } else {
-        logger.warn('Server', `approve_trigger: no task found for thread ${threadId}; approval refused`);
+        logger.warn(
+          'Server',
+          `approve_trigger: no task found for thread ${threadId}; approval refused`,
+        );
       }
       // Cards are never retracted, so a stale click is routine: read the real state.
       let text: string;
@@ -488,17 +519,21 @@ export async function mountSlackApp(
       } else {
         const { withdrawPendingTrigger } = await import('../../system/trigger-store.js');
         const w = await withdrawPendingTrigger(triggerId);
-        result = w.outcome === 'gone' ? { outcome: 'not_found' }
-          : w.outcome === 'resolved' ? { outcome: 'already_live', status: w.status }
-          : { outcome: 'withdrawn' };
+        result =
+          w.outcome === 'gone'
+            ? { outcome: 'not_found' }
+            : w.outcome === 'resolved'
+              ? { outcome: 'already_live', status: w.status }
+              : { outcome: 'withdrawn' };
       }
       let text: string;
       if (result.outcome === 'withdrawn') {
         text = `❌ Declined by <@${userId}> — no automation was set up.`;
       } else if (result.outcome === 'already_live') {
-        text = result.status === 'paused'
-          ? `ℹ️ This proposal was already approved and is currently paused, so nothing was declined. Ask me to remove it if you want it gone.`
-          : `ℹ️ This proposal was already approved and is running, so nothing was declined. Ask me to pause or remove it instead.`;
+        text =
+          result.status === 'paused'
+            ? `ℹ️ This proposal was already approved and is currently paused, so nothing was declined. Ask me to remove it if you want it gone.`
+            : `ℹ️ This proposal was already approved and is running, so nothing was declined. Ask me to pause or remove it instead.`;
       } else {
         text = `ℹ️ This proposal is no longer around — nothing to decline.`;
       }
@@ -528,7 +563,10 @@ export async function mountSlackApp(
 }
 
 /** Parse a merge-button value (`<taskId>|<github>#<pr_number>`) into the task id + expected PR identity. */
-function parseMergeButtonValue(value: string): { taskId: string; expected: { github: string; pr_number: number } } {
+function parseMergeButtonValue(value: string): {
+  taskId: string;
+  expected: { github: string; pr_number: number };
+} {
   const pipe = value.indexOf('|');
   const taskId = value.slice(0, pipe);
   const prRef = value.slice(pipe + 1);
@@ -562,7 +600,9 @@ export function registerMergeActionHandlers(boltApp: Pick<AppType, 'action'>): v
     const { taskId, expected } = parseMergeButtonValue(String(action.value ?? ''));
     const userId = body.user?.id || 'unknown';
 
-    logger.server(`Merge approved by ${userId} for task ${taskId} (${expected.github}#${expected.pr_number})`);
+    logger.server(
+      `Merge approved by ${userId} for task ${taskId} (${expected.github}#${expected.pr_number})`,
+    );
 
     try {
       const task = await Task.get(taskId);
@@ -574,7 +614,9 @@ export function registerMergeActionHandlers(boltApp: Pick<AppType, 'action'>): v
         try {
           const info = await getUserInfo(userId);
           if (isExternalUser(info)) {
-            logger.system(`Merge approver ${userId} is external/guest — identity omitted from the finding`);
+            logger.system(
+              `Merge approver ${userId} is external/guest — identity omitted from the finding`,
+            );
           } else {
             approver = { id: userId, name: info.realName, email: info.email };
           }
@@ -586,9 +628,10 @@ export function registerMergeActionHandlers(boltApp: Pick<AppType, 'action'>): v
       const disposition = await task.handleMergeApproval(approver, expected);
 
       if (body.channel?.id && body.message?.ts) {
-        const text = disposition === 'resolved'
-          ? `✅ *Merge approved* by <@${userId}>`
-          : STALE_MERGE_PROMPT_TEXT;
+        const text =
+          disposition === 'resolved'
+            ? `✅ *Merge approved* by <@${userId}>`
+            : STALE_MERGE_PROMPT_TEXT;
         await task.updateSlackMessageSafely(body.channel.id, body.message.ts, text, []);
       }
     } catch (error) {
@@ -603,16 +646,19 @@ export function registerMergeActionHandlers(boltApp: Pick<AppType, 'action'>): v
     const { taskId, expected } = parseMergeButtonValue(String(action.value ?? ''));
     const userId = body.user?.id || 'unknown';
 
-    logger.server(`Merge denied by ${userId} for task ${taskId} (${expected.github}#${expected.pr_number})`);
+    logger.server(
+      `Merge denied by ${userId} for task ${taskId} (${expected.github}#${expected.pr_number})`,
+    );
 
     try {
       const task = await Task.get(taskId);
       const disposition = await task.handleMergeDenial(expected);
 
       if (body.channel?.id && body.message?.ts) {
-        const text = disposition === 'resolved'
-          ? `❌ *Merge denied* by <@${userId}>`
-          : STALE_MERGE_PROMPT_TEXT;
+        const text =
+          disposition === 'resolved'
+            ? `❌ *Merge denied* by <@${userId}>`
+            : STALE_MERGE_PROMPT_TEXT;
         await task.updateSlackMessageSafely(body.channel.id, body.message.ts, text, []);
       }
     } catch (error) {
@@ -620,7 +666,6 @@ export function registerMergeActionHandlers(boltApp: Pick<AppType, 'action'>): v
     }
   });
 }
-
 
 // ============================================================================
 // Task Title Pipeline
@@ -673,12 +718,16 @@ const STALE_TOOL_APPROVAL_TEXT =
  */
 export function registerToolApprovalHandlers(boltApp: Pick<AppType, 'action'>): void {
   /** Resolve the clicker for attribution; never blocks resolution. */
-  const resolveApprover = async (userId: string | undefined): Promise<{ id: string; name: string } | undefined> => {
+  const resolveApprover = async (
+    userId: string | undefined,
+  ): Promise<{ id: string; name: string } | undefined> => {
     if (!userId) return undefined;
     try {
       const info = await getUserInfo(userId);
       if (isExternalUser(info)) {
-        logger.system(`Tool-call approver ${userId} is external/guest — identity omitted from the finding`);
+        logger.system(
+          `Tool-call approver ${userId} is external/guest — identity omitted from the finding`,
+        );
         return undefined;
       }
       return { id: userId, name: info.realName };
@@ -702,9 +751,10 @@ export function registerToolApprovalHandlers(boltApp: Pick<AppType, 'action'>): 
       const disposition = await task.handleToolCallApproval(approver, digest);
 
       if (body.channel?.id && body.message?.ts) {
-        const text = disposition === 'resolved'
-          ? `✅ *Tool call approved* by <@${userId}>`
-          : STALE_TOOL_APPROVAL_TEXT;
+        const text =
+          disposition === 'resolved'
+            ? `✅ *Tool call approved* by <@${userId}>`
+            : STALE_TOOL_APPROVAL_TEXT;
         await task.updateSlackMessageSafely(body.channel.id, body.message.ts, text, []);
       }
     } catch (error) {
@@ -725,9 +775,10 @@ export function registerToolApprovalHandlers(boltApp: Pick<AppType, 'action'>): 
       const disposition = await task.handleToolCallDenial(digest);
 
       if (body.channel?.id && body.message?.ts) {
-        const text = disposition === 'resolved'
-          ? `❌ *Tool call denied* by <@${userId}>`
-          : STALE_TOOL_APPROVAL_TEXT;
+        const text =
+          disposition === 'resolved'
+            ? `❌ *Tool call denied* by <@${userId}>`
+            : STALE_TOOL_APPROVAL_TEXT;
         await task.updateSlackMessageSafely(body.channel.id, body.message.ts, text, []);
       }
     } catch (error) {
@@ -740,9 +791,7 @@ export function registerToolApprovalHandlers(boltApp: Pick<AppType, 'action'>): 
 // Slack Routing
 // ============================================================================
 
-type SlackRouteResult =
-  | { action: 'discard'; reason: string }
-  | { action: 'process' };
+type SlackRouteResult = { action: 'discard'; reason: string } | { action: 'process' };
 
 function routeSlackEvent(event: {
   bot_id?: string;
@@ -841,7 +890,9 @@ export async function handleSlackEvent(event: {
         // (there's no other re-engagement path in a DM)
         channel.muted = false;
         task.debouncedSave();
-        logger.system(`Channel ${threadId} unmuted by ${event.type === 'app_mention' ? '@mention' : 'DM message'}`);
+        logger.system(
+          `Channel ${threadId} unmuted by ${event.type === 'app_mention' ? '@mention' : 'DM message'}`,
+        );
       } else {
         // Channel is muted and no @mention — skip
         logger.system(`Skipping muted channel ${threadId}`);
@@ -860,11 +911,16 @@ export async function handleSlackEvent(event: {
       );
     }
     await sendSharedChannelWarnings(task, event.channel, threadId, thread, shared);
-    const initiativeContext = initiative && task.metadata.initiative_origin?.delivery_id !== initiative.deliveryId
-      ? attachInitiativeOrigin(task.metadata, initiative) : '';
+    const initiativeContext =
+      initiative && task.metadata.initiative_origin?.delivery_id !== initiative.deliveryId
+        ? attachInitiativeOrigin(task.metadata, initiative)
+        : '';
     if (initiativeContext) task.debouncedSave();
     await task.sendMessage(AGENT_PROMPTS.inboundActivity(entries) + initiativeContext);
-  } else if (shouldCreateNewTask(event.type, event.channel, thread.rootAuthorWasBot, !!initiative) && thread.messages.length > 0) {
+  } else if (
+    shouldCreateNewTask(event.type, event.channel, thread.rootAuthorWasBot, !!initiative) &&
+    thread.messages.length > 0
+  ) {
     logger.system(`Processing #${thread.channel.name} (thread: ${threadId})`);
 
     // Start a new task when: the bot was @mentioned, this is a DM, OR a human is
@@ -925,11 +981,14 @@ async function dispatchChannelMessageTriggers(
   // all, the subtype allowlist closed this by accident. Now that they are forwarded deliberately, the gate
   // has to be explicit — and it mirrors the rule thread ingestion and the pin index already draw (drop a
   // bot from a foreign team, keep internal bots) rather than inventing a stricter one.
-  const raw = event.raw as { bot_id?: string; team?: string; bot_profile?: { team_id?: string } } | null | undefined;
+  const raw = event.raw as
+    { bot_id?: string; team?: string; bot_profile?: { team_id?: string } } | null | undefined;
   if (raw?.bot_id) {
     const botTeamId = raw.bot_profile?.team_id || raw.team;
     if (isExternalUser({ teamId: botTeamId })) {
-      logger.system(`Skipping channel-message triggers for an app post from another workspace in ${channelName} (bot ${raw.bot_id}, team ${botTeamId})`);
+      logger.system(
+        `Skipping channel-message triggers for an app post from another workspace in ${channelName} (bot ${raw.bot_id}, team ${botTeamId})`,
+      );
       return;
     }
   }

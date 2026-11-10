@@ -140,16 +140,24 @@ describe('Task activation lock (double-spawn guard)', () => {
   });
 
   it('reconciles the fixed destination and authors before choosing the spawned instance', async () => {
-    const staleA = new TaskCtor(TASK_ID, {
-      ...metadata(TASK_ID),
-      memory_destination: { channel_id: 'C07PUBLIC1' },
-      memory_authors: { U07PERSON1: 'One' },
-    }, pmDef());
-    const staleB = new TaskCtor(TASK_ID, {
-      ...metadata(TASK_ID),
-      memory_destination: { channel_id: 'C07PUBLIC1' },
-      memory_authors: { U07PERSON2: 'Two' },
-    }, pmDef());
+    const staleA = new TaskCtor(
+      TASK_ID,
+      {
+        ...metadata(TASK_ID),
+        memory_destination: { channel_id: 'C07PUBLIC1' },
+        memory_authors: { U07PERSON1: 'One' },
+      },
+      pmDef(),
+    );
+    const staleB = new TaskCtor(
+      TASK_ID,
+      {
+        ...metadata(TASK_ID),
+        memory_destination: { channel_id: 'C07PUBLIC1' },
+        memory_authors: { U07PERSON2: 'Two' },
+      },
+      pmDef(),
+    );
     loadMetadataMock.mockResolvedValue({
       ...metadata(TASK_ID),
       memory_destination: { channel_id: 'C07PUBLIC1' },
@@ -160,9 +168,11 @@ describe('Task activation lock (double-spawn guard)', () => {
 
     const canonical = activeTasks.get(TASK_ID)!;
     expect(canonical.metadata.memory_destination).toEqual({ channel_id: 'C07PUBLIC1' });
-    expect(canonical.metadata.memory_authors).toEqual(expect.objectContaining({
-      U07PERSON3: 'Three',
-    }));
+    expect(canonical.metadata.memory_authors).toEqual(
+      expect.objectContaining({
+        U07PERSON3: 'Three',
+      }),
+    );
     expect(spawnMock).toHaveBeenCalledTimes(1);
   });
 });

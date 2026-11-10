@@ -47,10 +47,7 @@ export interface SandboxOptions {
  * so the egress surface can't be widened from a hot-reloaded plugins change or a
  * compromised orchestrator. A broader "trusted" list is tracked separately.
  */
-export const TRUSTED_PACKAGE_REGISTRY_DOMAINS = [
-  'registry.npmjs.org',
-  'registry.yarnpkg.com',
-];
+export const TRUSTED_PACKAGE_REGISTRY_DOMAINS = ['registry.npmjs.org', 'registry.yarnpkg.com'];
 
 // ---- Sandbox config (OS-level, Bash only) ----
 
@@ -297,11 +294,7 @@ function deny(reason: string): HookJSONOutput {
  * plugin/domain servers) stays available to workers: reading and investigating
  * is exactly what they are for.
  */
-export const PM_ONLY_MCP_SERVERS = [
-  'comms-tools',
-  'orchestration-tools',
-  'scheduling-tools',
-];
+export const PM_ONLY_MCP_SERVERS = ['comms-tools', 'orchestration-tools', 'scheduling-tools'];
 
 /**
  * Create a PreToolUse hook that keeps PM-only MCP servers out of subagents.
@@ -317,22 +310,25 @@ export const PM_ONLY_MCP_SERVERS = [
  * started with `--agent`, which would deny the PM its own tools.
  */
 export function createPmOnlyToolGuardHooks(): HookCallbackMatcher[] {
-  return [{
-    hooks: [async (input: any) => {
-      const { tool_name, agent_id } = input;
+  return [
+    {
+      hooks: [
+        async (input: any) => {
+          const { tool_name, agent_id } = input;
 
-      // Main thread (the PM or a specialist's own session) — untouched.
-      if (!agent_id) return { continue: true };
+          // Main thread (the PM or a specialist's own session) — untouched.
+          if (!agent_id) return { continue: true };
 
-      const isPmOnly = typeof tool_name === 'string'
-        && PM_ONLY_MCP_SERVERS.some((s) => tool_name.startsWith(`mcp__${s}__`));
-      if (!isPmOnly) return { continue: true };
+          const isPmOnly =
+            typeof tool_name === 'string' &&
+            PM_ONLY_MCP_SERVERS.some((s) => tool_name.startsWith(`mcp__${s}__`));
+          if (!isPmOnly) return { continue: true };
 
-      return deny(
-        `${tool_name} is a PM-only tool; return your result to the PM instead.`,
-      );
-    }],
-  }];
+          return deny(`${tool_name} is a PM-only tool; return your result to the PM instead.`);
+        },
+      ],
+    },
+  ];
 }
 
 /**
@@ -343,47 +339,52 @@ export function createPmOnlyToolGuardHooks(): HookCallbackMatcher[] {
  * that filters by tool_name inside the callback.
  */
 export function createFilesystemGuardHooks(opts: SandboxOptions): HookCallbackMatcher[] {
-  return [{
-    hooks: [async (input: any) => {
-      const { tool_name, tool_input } = input;
+  return [
+    {
+      hooks: [
+        async (input: any) => {
+          const { tool_name, tool_input } = input;
 
-      if (!READ_TOOLS.has(tool_name) && !WRITE_TOOLS.has(tool_name)) {
-        return { continue: true };
-      }
+          if (!READ_TOOLS.has(tool_name) && !WRITE_TOOLS.has(tool_name)) {
+            return { continue: true };
+          }
 
-      // Extract path from tool input
-      let rawPath: string | undefined;
-      if (tool_input && typeof tool_input === 'object') {
-        if ('file_path' in tool_input) rawPath = tool_input.file_path as string;
-        else if ('path' in tool_input) rawPath = tool_input.path as string;
-      }
+          // Extract path from tool input
+          let rawPath: string | undefined;
+          if (tool_input && typeof tool_input === 'object') {
+            if ('file_path' in tool_input) rawPath = tool_input.file_path as string;
+            else if ('path' in tool_input) rawPath = tool_input.path as string;
+          }
 
-      // No path specified (Glob/Grep default to cwd) → allowed
-      if (!rawPath) return { continue: true };
+          // No path specified (Glob/Grep default to cwd) → allowed
+          if (!rawPath) return { continue: true };
 
-      // Resolve to absolute before checking
-      const absPath = resolve(opts.cwd, rawPath);
+          // Resolve to absolute before checking
+          const absPath = resolve(opts.cwd, rawPath);
 
-      // Read check — allow if path is in allowRead OR allowWrite (writable implies readable)
-      if (READ_TOOLS.has(tool_name)) {
-        const canRead = isUnderAny(absPath, opts.allowReadPaths)
-          || (opts.allowWritePaths && isUnderAny(absPath, opts.allowWritePaths));
-        if (!canRead) {
-          return deny(`Read denied: ${absPath} is outside allowed paths`);
-        }
-      }
+          // Read check — allow if path is in allowRead OR allowWrite (writable implies readable)
+          if (READ_TOOLS.has(tool_name)) {
+            const canRead =
+              isUnderAny(absPath, opts.allowReadPaths) ||
+              (opts.allowWritePaths && isUnderAny(absPath, opts.allowWritePaths));
+            if (!canRead) {
+              return deny(`Read denied: ${absPath} is outside allowed paths`);
+            }
+          }
 
-      // Write check
-      if (WRITE_TOOLS.has(tool_name)) {
-        if (!opts.allowWritePaths || !isUnderAny(absPath, opts.allowWritePaths)) {
-          return deny(`Write denied: ${absPath} is outside allowed paths`);
-        }
-        if (opts.denyWritePaths && isUnderAny(absPath, opts.denyWritePaths)) {
-          return deny(`Write denied: ${absPath} is in a protected path`);
-        }
-      }
+          // Write check
+          if (WRITE_TOOLS.has(tool_name)) {
+            if (!opts.allowWritePaths || !isUnderAny(absPath, opts.allowWritePaths)) {
+              return deny(`Write denied: ${absPath} is outside allowed paths`);
+            }
+            if (opts.denyWritePaths && isUnderAny(absPath, opts.denyWritePaths)) {
+              return deny(`Write denied: ${absPath} is in a protected path`);
+            }
+          }
 
-      return { continue: true };
-    }],
-  }];
+          return { continue: true };
+        },
+      ],
+    },
+  ];
 }

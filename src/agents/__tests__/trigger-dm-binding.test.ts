@@ -6,7 +6,9 @@ vi.mock('../../connectors/github/client.js', () => ({
 }));
 vi.mock('../../connectors/github/repo-clone.js', () => ({
   gitExec: vi.fn().mockResolvedValue(''),
-  setupSharedClone: vi.fn().mockResolvedValue({ clone_path: '/wt', branch: 'feat/x', base_branch: 'main' }),
+  setupSharedClone: vi
+    .fn()
+    .mockResolvedValue({ clone_path: '/wt', branch: 'feat/x', base_branch: 'main' }),
   cloneExists: vi.fn().mockResolvedValue(false),
   isWorktree: vi.fn().mockResolvedValue(false),
   fetchOrigin: vi.fn().mockResolvedValue(undefined),
@@ -18,7 +20,14 @@ vi.mock('../../tasks/persistence.js', () => ({
   isThreadMuted,
 }));
 vi.mock('../../system/logger.js', () => ({
-  logger: { agentAction: vi.fn(), agentFinding: vi.fn(), agentToSlack: vi.fn(), system: vi.fn(), error: vi.fn(), warn: vi.fn() },
+  logger: {
+    agentAction: vi.fn(),
+    agentFinding: vi.fn(),
+    agentToSlack: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    warn: vi.fn(),
+  },
 }));
 vi.mock('../registry.js', () => ({
   getAgentIds: vi.fn().mockReturnValue([]),
@@ -37,7 +46,14 @@ vi.mock('../../system/trigger-store.js', async (importActual) => {
   return { ...actual, saveTrigger, countActiveTriggers, loadTrigger, listTriggers };
 });
 
-const { postSlackMessage, listBotChannels, assertPostableChannel, getChannelInfo, getUserInfo, listWorkspaceChannels } = vi.hoisted(() => ({
+const {
+  postSlackMessage,
+  listBotChannels,
+  assertPostableChannel,
+  getChannelInfo,
+  getUserInfo,
+  listWorkspaceChannels,
+} = vi.hoisted(() => ({
   postSlackMessage: vi.fn(),
   listBotChannels: vi.fn(),
   assertPostableChannel: vi.fn(),
@@ -47,7 +63,15 @@ const { postSlackMessage, listBotChannels, assertPostableChannel, getChannelInfo
 }));
 vi.mock('../../connectors/slack/client.js', async (importActual) => {
   const actual = await importActual<typeof import('../../connectors/slack/client.js')>();
-  return { ...actual, postSlackMessage, listBotChannels, assertPostableChannel, getChannelInfo, getUserInfo, listWorkspaceChannels };
+  return {
+    ...actual,
+    postSlackMessage,
+    listBotChannels,
+    assertPostableChannel,
+    getChannelInfo,
+    getUserInfo,
+    listWorkspaceChannels,
+  };
 });
 
 const {
@@ -80,27 +104,53 @@ const DM_USER = 'U1';
 const PUBLIC_CHANNEL = 'C0PUBLIC';
 const PRIVATE_CHANNEL = 'C0PRIVATE';
 
-const DM_INFO = { id: DM_CHANNEL, name: 'DM with Dana', isPrivate: true, isIm: true, imUserId: DM_USER };
+const DM_INFO = {
+  id: DM_CHANNEL,
+  name: 'DM with Dana',
+  isPrivate: true,
+  isIm: true,
+  imUserId: DM_USER,
+};
 const PUBLIC_INFO = { id: PUBLIC_CHANNEL, name: 'general', isPrivate: false, isIm: false };
 
 function makeAgent(): Agent {
-  return { def: { id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', pluginName: 'pm', isPm: true }, queue: {} as any, session: { active: false } } as unknown as Agent;
+  return {
+    def: { id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', pluginName: 'pm', isPm: true },
+    queue: {} as any,
+    session: { active: false },
+  } as unknown as Agent;
 }
 
-function makeTask(opts: { originChannelId?: string; homeChannel?: { channel_id: string; channel_name: string } } = {}): Task {
+function makeTask(
+  opts: {
+    originChannelId?: string;
+    homeChannel?: { channel_id: string; channel_name: string };
+  } = {},
+): Task {
   const channels: Record<string, unknown> = {};
   let default_channel: string | null = null;
   if (opts.originChannelId) {
     const key = `slack:${opts.originChannelId}:1.0`;
-    channels[key] = { type: 'slack', channel_id: opts.originChannelId, thread_id: '1.0', channel_name: 'origin' };
+    channels[key] = {
+      type: 'slack',
+      channel_id: opts.originChannelId,
+      thread_id: '1.0',
+      channel_name: 'origin',
+    };
     default_channel = key;
   }
   return {
     taskId: 'task-1',
     isActive: true,
     completionIntent: false,
-    metadata: { channels, default_channel, ...(opts.homeChannel ? { home_channel: opts.homeChannel } : {}) },
-    touch: vi.fn(), debouncedSave: vi.fn(), save: vi.fn().mockResolvedValue(undefined),
+    metadata: {
+      channels,
+      default_channel,
+      ...(opts.homeChannel ? { home_channel: opts.homeChannel } : {}),
+    },
+    touch: vi.fn(),
+    debouncedSave: vi.fn(),
+    save: vi.fn().mockResolvedValue(undefined),
     postToUser: vi.fn().mockResolvedValue(null),
     postInteractiveToUser: vi.fn().mockResolvedValue(undefined),
     prepareTriggerDelivery: vi.fn().mockResolvedValue(undefined),
@@ -117,7 +167,9 @@ function getOrchestrationHandler(
   task: Task,
 ): (args: Record<string, unknown>) => Promise<{ content: { text: string }[] }> {
   const server = createOrchestrationMcpServer(makeAgent(), task);
-  const raw = (server.instance as any)._registeredTools ?? Object.fromEntries((server.instance as any)._tools ?? []);
+  const raw =
+    (server.instance as any)._registeredTools ??
+    Object.fromEntries((server.instance as any)._tools ?? []);
   const entry = raw[name];
   const fn = entry.callback ?? entry.handler ?? entry.cb;
   return (args) => fn(args, {});
@@ -129,8 +181,16 @@ function textOf(result: { content: { text: string }[] }): string {
 
 const SCHEDULE = { type: 'schedule' as const, cron: '0 9 * * *', tz: 'UTC' };
 
-function proposal(binding: Record<string, unknown>, conditions: Record<string, unknown>[] = [SCHEDULE]) {
-  return { binding, conditions, action_prompt: 'send the morning digest', summary: 'Morning digest' };
+function proposal(
+  binding: Record<string, unknown>,
+  conditions: Record<string, unknown>[] = [SCHEDULE],
+) {
+  return {
+    binding,
+    conditions,
+    action_prompt: 'send the morning digest',
+    summary: 'Morning digest',
+  };
 }
 
 function savedTrigger(): Trigger {
@@ -144,7 +204,10 @@ beforeEach(() => {
   countActiveTriggers.mockResolvedValue(0);
   loadTrigger.mockResolvedValue(null);
   listTriggers.mockResolvedValue([]);
-  listWorkspaceChannels.mockResolvedValue([{ id: PUBLIC_CHANNEL, isPrivate: false }, { id: PRIVATE_CHANNEL, isPrivate: true }]);
+  listWorkspaceChannels.mockResolvedValue([
+    { id: PUBLIC_CHANNEL, isPrivate: false },
+    { id: PRIVATE_CHANNEL, isPrivate: true },
+  ]);
   getChannelInfo.mockResolvedValue(PUBLIC_INFO);
   getUserInfo.mockResolvedValue({ name: 'dana', realName: 'Dana', tz: 'UTC' });
 });
@@ -157,7 +220,9 @@ describe('a DM binding is derived from the origin, never from the arguments', ()
   it('stores the asking user, their DM conversation and its label', async () => {
     const task = makeTask({ originChannelId: DM_CHANNEL });
 
-    const out = textOf(await getOrchestrationHandler('propose_trigger', task)(proposal({ type: 'user' })));
+    const out = textOf(
+      await getOrchestrationHandler('propose_trigger', task)(proposal({ type: 'user' })),
+    );
 
     expect(out).toMatch(/proposed/i);
     expect(savedTrigger().binding).toEqual({
@@ -171,9 +236,10 @@ describe('a DM binding is derived from the origin, never from the arguments', ()
   it('ignores a channel_id and channel_name passed alongside type "user"', async () => {
     const task = makeTask({ originChannelId: DM_CHANNEL });
 
-    await getOrchestrationHandler('propose_trigger', task)(
-      proposal({ type: 'user', channel_id: 'DEVIL', channel_name: 'DM with Someone Else' }),
-    );
+    await getOrchestrationHandler(
+      'propose_trigger',
+      task,
+    )(proposal({ type: 'user', channel_id: 'DEVIL', channel_name: 'DM with Someone Else' }));
 
     expect(savedTrigger().binding).toEqual({
       type: 'user',
@@ -192,7 +258,9 @@ describe('a DM binding is refused when the request did not come from a DM', () =
     getChannelInfo.mockResolvedValue(info);
     const task = makeTask({ originChannelId: info.id });
 
-    const out = textOf(await getOrchestrationHandler('propose_trigger', task)(proposal({ type: 'user' })));
+    const out = textOf(
+      await getOrchestrationHandler('propose_trigger', task)(proposal({ type: 'user' })),
+    );
 
     expect(out).toMatch(/only be set up from a DM/i);
     expect(saveTrigger).not.toHaveBeenCalled();
@@ -202,7 +270,9 @@ describe('a DM binding is refused when the request did not come from a DM', () =
   it('refuses from an operator task with no Slack channel', async () => {
     const task = makeTask();
 
-    const out = textOf(await getOrchestrationHandler('propose_trigger', task)(proposal({ type: 'user' })));
+    const out = textOf(
+      await getOrchestrationHandler('propose_trigger', task)(proposal({ type: 'user' })),
+    );
 
     expect(out).toMatch(/only be set up from a DM/i);
     expect(saveTrigger).not.toHaveBeenCalled();
@@ -217,7 +287,9 @@ describe('a DM trigger can only run on a schedule', () => {
     getChannelInfo.mockResolvedValue(DM_INFO);
     const task = makeTask({ originChannelId: DM_CHANNEL });
 
-    const out = textOf(await getOrchestrationHandler('propose_trigger', task)(proposal({ type: 'user' }, [WATCH])));
+    const out = textOf(
+      await getOrchestrationHandler('propose_trigger', task)(proposal({ type: 'user' }, [WATCH])),
+    );
 
     expect(out).toMatch(/only run on a schedule/i);
     expect(saveTrigger).not.toHaveBeenCalled();
@@ -231,17 +303,29 @@ describe('a DM trigger can only run on a schedule', () => {
       status: 'enabled',
       created_by: DM_USER,
       created_at: '2026-08-27T09:00:00.000Z',
-      binding: { type: 'user', user_id: DM_USER, channel_id: DM_CHANNEL, channel_name: 'DM with Dana' },
-      conditions: [{ type: 'schedule', tz: 'UTC', cron: '0 9 * * *', next_run_at: '2099-01-01T09:00:00.000Z' }],
+      binding: {
+        type: 'user',
+        user_id: DM_USER,
+        channel_id: DM_CHANNEL,
+        channel_name: 'DM with Dana',
+      },
+      conditions: [
+        { type: 'schedule', tz: 'UTC', cron: '0 9 * * *', next_run_at: '2099-01-01T09:00:00.000Z' },
+      ],
       action: { prompt: 'send the morning digest' },
       summary: 'Morning digest',
     } satisfies Trigger);
     const task = makeTask({ originChannelId: DM_CHANNEL });
 
-    const out = textOf(await getOrchestrationHandler('update_trigger', task)({
-      id: 'trg-20260827-0900-abc123',
-      conditions: [WATCH],
-    }));
+    const out = textOf(
+      await getOrchestrationHandler(
+        'update_trigger',
+        task,
+      )({
+        id: 'trg-20260827-0900-abc123',
+        conditions: [WATCH],
+      }),
+    );
 
     expect(out).toMatch(/only run on a schedule/i);
     expect(saveTrigger).not.toHaveBeenCalled();
@@ -252,36 +336,64 @@ describe('a channel binding still works', () => {
   it('stores the channel it was proposed in', async () => {
     const task = makeTask({ originChannelId: PUBLIC_CHANNEL });
 
-    const out = textOf(await getOrchestrationHandler('propose_trigger', task)(
-      proposal({ type: 'channel', channel_id: PUBLIC_CHANNEL, channel_name: 'general' }),
-    ));
+    const out = textOf(
+      await getOrchestrationHandler(
+        'propose_trigger',
+        task,
+      )(proposal({ type: 'channel', channel_id: PUBLIC_CHANNEL, channel_name: 'general' })),
+    );
 
     expect(out).toMatch(/proposed/i);
-    expect(savedTrigger().binding).toEqual({ type: 'channel', channel_id: PUBLIC_CHANNEL, channel_name: 'general' });
+    expect(savedTrigger().binding).toEqual({
+      type: 'channel',
+      channel_id: PUBLIC_CHANNEL,
+      channel_name: 'general',
+    });
     expect(task.metadata.pending_trigger_id).toBeDefined();
   });
 });
 
 describe('a trigger-fired task is confined to the conversation it is homed in', () => {
   const publicTrigger: Trigger = {
-    id: 'trg-pub', status: 'enabled', created_by: 'U9', created_at: '2026-08-01T00:00:00Z',
+    id: 'trg-pub',
+    status: 'enabled',
+    created_by: 'U9',
+    created_at: '2026-08-01T00:00:00Z',
     binding: { type: 'channel', channel_id: PUBLIC_CHANNEL, channel_name: 'general' },
-    conditions: [{ type: 'schedule', tz: 'UTC', cron: '0 9 * * *', next_run_at: '2026-08-28T09:00:00Z' }],
-    action: { prompt: 'x' }, summary: 'Public digest',
+    conditions: [
+      { type: 'schedule', tz: 'UTC', cron: '0 9 * * *', next_run_at: '2026-08-28T09:00:00Z' },
+    ],
+    action: { prompt: 'x' },
+    summary: 'Public digest',
   };
   const privateTrigger: Trigger = {
-    ...publicTrigger, id: 'trg-priv',
+    ...publicTrigger,
+    id: 'trg-priv',
     binding: { type: 'channel', channel_id: PRIVATE_CHANNEL, channel_name: 'exec-private' },
     summary: 'Exec private digest',
   };
   const ownDmTrigger: Trigger = {
-    ...publicTrigger, id: 'trg-mine', created_by: DM_USER,
-    binding: { type: 'user', user_id: DM_USER, channel_id: DM_CHANNEL, channel_name: 'DM with Dana' },
+    ...publicTrigger,
+    id: 'trg-mine',
+    created_by: DM_USER,
+    binding: {
+      type: 'user',
+      user_id: DM_USER,
+      channel_id: DM_CHANNEL,
+      channel_name: 'DM with Dana',
+    },
     summary: 'My private digest',
   };
   const otherDmTrigger: Trigger = {
-    ...publicTrigger, id: 'trg-theirs', created_by: 'UOTHER',
-    binding: { type: 'user', user_id: 'UOTHER', channel_id: 'D0OTHER', channel_name: 'DM with Sam' },
+    ...publicTrigger,
+    id: 'trg-theirs',
+    created_by: 'UOTHER',
+    binding: {
+      type: 'user',
+      user_id: 'UOTHER',
+      channel_id: 'D0OTHER',
+      channel_name: 'DM with Sam',
+    },
     summary: 'Someone else private digest',
   };
 
@@ -289,9 +401,11 @@ describe('a trigger-fired task is confined to the conversation it is homed in', 
     listTriggers.mockResolvedValue([publicTrigger, privateTrigger, ownDmTrigger, otherDmTrigger]);
   });
 
-  it('homed in a DM, sees that DM and public — never another private channel or another person\'s DM', async () => {
+  it("homed in a DM, sees that DM and public — never another private channel or another person's DM", async () => {
     getChannelInfo.mockResolvedValue(DM_INFO);
-    const task = makeTask({ homeChannel: { channel_id: DM_CHANNEL, channel_name: 'DM with Dana' } });
+    const task = makeTask({
+      homeChannel: { channel_id: DM_CHANNEL, channel_name: 'DM with Dana' },
+    });
 
     const out = textOf(await getOrchestrationHandler('list_triggers', task)({}));
 
@@ -302,8 +416,15 @@ describe('a trigger-fired task is confined to the conversation it is homed in', 
   });
 
   it('homed in a private channel, sees that channel and public — never a DM trigger', async () => {
-    getChannelInfo.mockResolvedValue({ id: PRIVATE_CHANNEL, name: 'exec-private', isPrivate: true, isIm: false });
-    const task = makeTask({ homeChannel: { channel_id: PRIVATE_CHANNEL, channel_name: 'exec-private' } });
+    getChannelInfo.mockResolvedValue({
+      id: PRIVATE_CHANNEL,
+      name: 'exec-private',
+      isPrivate: true,
+      isIm: false,
+    });
+    const task = makeTask({
+      homeChannel: { channel_id: PRIVATE_CHANNEL, channel_name: 'exec-private' },
+    });
 
     const out = textOf(await getOrchestrationHandler('list_triggers', task)({}));
 
@@ -334,9 +455,13 @@ describe('a homed task with no thread of its own cannot propose a trigger', () =
   });
 
   it('refuses, and writes nothing', async () => {
-    const task = makeTask({ homeChannel: { channel_id: DM_CHANNEL, channel_name: 'DM with Dana' } });
+    const task = makeTask({
+      homeChannel: { channel_id: DM_CHANNEL, channel_name: 'DM with Dana' },
+    });
 
-    const out = textOf(await getOrchestrationHandler('propose_trigger', task)(proposal({ type: 'user' })));
+    const out = textOf(
+      await getOrchestrationHandler('propose_trigger', task)(proposal({ type: 'user' })),
+    );
 
     expect(out).toMatch(/no thread of its own yet/i);
     expect(saveTrigger).not.toHaveBeenCalled();
@@ -344,13 +469,21 @@ describe('a homed task with no thread of its own cannot propose a trigger', () =
   });
 
   it('goes through once the task has opened its thread', async () => {
-    const task = makeTask({ originChannelId: DM_CHANNEL, homeChannel: { channel_id: DM_CHANNEL, channel_name: 'DM with Dana' } });
+    const task = makeTask({
+      originChannelId: DM_CHANNEL,
+      homeChannel: { channel_id: DM_CHANNEL, channel_name: 'DM with Dana' },
+    });
 
-    const out = textOf(await getOrchestrationHandler('propose_trigger', task)(proposal({ type: 'user' })));
+    const out = textOf(
+      await getOrchestrationHandler('propose_trigger', task)(proposal({ type: 'user' })),
+    );
 
     expect(out).not.toMatch(/no thread of its own yet/i);
     expect(savedTrigger().binding).toEqual({
-      type: 'user', user_id: DM_USER, channel_id: DM_CHANNEL, channel_name: 'DM with Dana',
+      type: 'user',
+      user_id: DM_USER,
+      channel_id: DM_CHANNEL,
+      channel_name: 'DM with Dana',
     });
   });
 });

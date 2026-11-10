@@ -72,13 +72,16 @@ export function isAppAuthorId(id: string): boolean {
  */
 export function authorFilterMatches(filter: string, author: MessageAuthor): boolean {
   if (!filter) return false;
-  return (!!author.userId && filter === author.userId) || (!!author.botId && filter === author.botId);
+  return (
+    (!!author.userId && filter === author.userId) || (!!author.botId && filter === author.botId)
+  );
 }
 
 /** Does one condition fire on this message? */
 function conditionMatches(c: TriggerCondition, input: MessageMatchInput): boolean {
   if (c.type !== 'channel_message' || c.channel_id !== input.channelId) return false;
-  if (c.match?.contains && !input.body.toLowerCase().includes(c.match.contains.toLowerCase())) return false;
+  if (c.match?.contains && !input.body.toLowerCase().includes(c.match.contains.toLowerCase()))
+    return false;
   if (c.match?.from_user && !authorFilterMatches(c.match.from_user, input.author)) return false;
   return true;
 }

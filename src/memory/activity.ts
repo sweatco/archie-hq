@@ -76,7 +76,10 @@ export async function readActivity(): Promise<ActivityEntry[]> {
 export async function appendActivity(entry: ActivityEntry): Promise<void> {
   const clean = sanitizeActivityEntry(entry);
   if (!clean) {
-    logger.warn('memory', `dropped activity entry (sanitizer rejected): ${JSON.stringify(entry).slice(0, 120)}`);
+    logger.warn(
+      'memory',
+      `dropped activity entry (sanitizer rejected): ${JSON.stringify(entry).slice(0, 120)}`,
+    );
     return;
   }
 

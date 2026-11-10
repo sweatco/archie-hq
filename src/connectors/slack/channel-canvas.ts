@@ -45,7 +45,10 @@ const ARCHIE_TITLE = /^archie/i;
  *
  * The label wins for display when set, since that is the name the channel shows.
  */
-function canvasNames(tabLabel: string | undefined, fileTitle: string | undefined): {
+function canvasNames(
+  tabLabel: string | undefined,
+  fileTitle: string | undefined,
+): {
   display: string;
   matches: boolean;
 } {
@@ -93,7 +96,12 @@ export async function ensureChannelCanvas(channelId: string): Promise<void> {
     // rather than waiting out the TTL on stale data.
     if (tabs === null) return;
 
-    type Resolved = { fileId: string; title: string; external: boolean; entry?: ChannelCanvasEntry };
+    type Resolved = {
+      fileId: string;
+      title: string;
+      external: boolean;
+      entry?: ChannelCanvasEntry;
+    };
     const resolved: Resolved[] = [];
 
     for (const tab of tabs) {
@@ -138,7 +146,10 @@ export async function ensureChannelCanvas(channelId: string): Promise<void> {
         if (prevEntry) {
           resolved.push({ fileId: tab.file_id, title, external: false, entry: prevEntry });
         } else {
-          logger.warn('channel-canvas', `creator classification unavailable for canvas ${tab.file_id} in ${channelId} — not adopting yet`);
+          logger.warn(
+            'channel-canvas',
+            `creator classification unavailable for canvas ${tab.file_id} in ${channelId} — not adopting yet`,
+          );
         }
         continue;
       }
@@ -216,7 +227,8 @@ type AnnounceKind = 'adopted' | 'ignored' | 'dropped';
 const ANNOUNCE_TEXT: Record<AnnounceKind, (name: string) => string> = {
   adopted: (name) => `:scroll: Now using canvas *${name}* as context for this channel.`,
   ignored: (name) => `:warning: Not using canvas *${name}* — created outside this workspace.`,
-  dropped: (name) => `:no_entry_sign: No longer using canvas *${name}* as context for this channel.`,
+  dropped: (name) =>
+    `:no_entry_sign: No longer using canvas *${name}* as context for this channel.`,
 };
 
 async function announceCanvas(channelId: string, kind: AnnounceKind, title: string): Promise<void> {
@@ -281,7 +293,7 @@ export async function buildChannelCanvasPromptSection(metadata: TaskMetadata): P
     // JSON.stringify gives a safely-quoted/escaped attribute value.
     blocks.push(
       `<canvas title=${JSON.stringify(entry.title)} channel=${JSON.stringify(channels.join(', '))}>\n` +
-      `${stripContainerTags(entry.markdown)}\n</canvas>`,
+        `${stripContainerTags(entry.markdown)}\n</canvas>`,
     );
   }
   if (blocks.length === 0) return '';
@@ -328,7 +340,9 @@ export async function buildOtherChannelContextSection(
   const blocks: string[] = [];
   for (const c of store.canvases) {
     if (c.external || !c.markdown) continue;
-    blocks.push(`<canvas title=${JSON.stringify(c.title)}>\n${stripContainerTags(c.markdown)}\n</canvas>`);
+    blocks.push(
+      `<canvas title=${JSON.stringify(c.title)}>\n${stripContainerTags(c.markdown)}\n</canvas>`,
+    );
   }
   if (blocks.length === 0) return '';
 

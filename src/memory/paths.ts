@@ -57,13 +57,21 @@ function envInt(name: string, fallback: number): number {
 }
 
 /** Soft cap on total bullets in each user file before housekeeping triggers. */
-export function getUserCap(): number { return envInt('ARCHIE_MEMORY_USER_CAP', 100); }
+export function getUserCap(): number {
+  return envInt('ARCHIE_MEMORY_USER_CAP', 100);
+}
 /** Soft cap on bullets per section in any memory file. */
-export function getSectionCap(): number { return envInt('ARCHIE_MEMORY_SECTION_CAP', 30); }
+export function getSectionCap(): number {
+  return envInt('ARCHIE_MEMORY_SECTION_CAP', 30);
+}
 /** Days after which an unrefreshed bullet becomes eligible for housekeeping removal. */
-export function getStalenessDays(): number { return envInt('ARCHIE_MEMORY_STALENESS_DAYS', 180); }
+export function getStalenessDays(): number {
+  return envInt('ARCHIE_MEMORY_STALENESS_DAYS', 180);
+}
 /** Soft cap on total entity files before entity housekeeping triggers. */
-export function getEntityCap(): number { return envInt('ARCHIE_MEMORY_ENTITY_CAP', 300); }
+export function getEntityCap(): number {
+  return envInt('ARCHIE_MEMORY_ENTITY_CAP', 300);
+}
 // ---- Directory & file paths ----
 
 /** Root memory directory: workdir/memory/ */

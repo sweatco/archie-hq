@@ -68,19 +68,34 @@ describe('entity index', () => {
     expect(markdown).not.toContain('[[stripe]]');
   });
 
-  it.each(['summary', 'displayName'] as const)('escapes backslashes and pipes in the %s cell', (field) => {
-    const markdown = renderIndex([rec({ entity: 'payment-service', [field]: 'A\\|B' })]);
-    expect(markdown).toContain('| A\\\\\\|B |');
-  });
+  it.each(['summary', 'displayName'] as const)(
+    'escapes backslashes and pipes in the %s cell',
+    (field) => {
+      const markdown = renderIndex([rec({ entity: 'payment-service', [field]: 'A\\|B' })]);
+      expect(markdown).toContain('| A\\\\\\|B |');
+    },
+  );
 
   it('sorts by latest touch descending, then slug, with undated records last', () => {
     const markdown = renderIndex([
       rec({ entity: 'undated' }),
-      rec({ entity: 'zulu', observations: [{ category: 'fact', text: 'z', touched: '2026-09-15' }] }),
-      rec({ entity: 'alpha', observations: [{ category: 'fact', text: 'a', touched: '2026-09-15' }] }),
-      rec({ entity: 'older', observations: [{ category: 'fact', text: 'o', touched: '2026-09-14' }] }),
+      rec({
+        entity: 'zulu',
+        observations: [{ category: 'fact', text: 'z', touched: '2026-09-15' }],
+      }),
+      rec({
+        entity: 'alpha',
+        observations: [{ category: 'fact', text: 'a', touched: '2026-09-15' }],
+      }),
+      rec({
+        entity: 'older',
+        observations: [{ category: 'fact', text: 'o', touched: '2026-09-14' }],
+      }),
     ]);
-    const slugs = markdown.split('\n').filter((line) => line.startsWith('| [[')).map((line) => line.match(/\[\[([^\]]+)/)![1]);
+    const slugs = markdown
+      .split('\n')
+      .filter((line) => line.startsWith('| [['))
+      .map((line) => line.match(/\[\[([^\]]+)/)![1]);
     expect(slugs).toEqual(['alpha', 'zulu', 'older', 'undated']);
   });
 

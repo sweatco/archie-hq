@@ -53,10 +53,7 @@ export function pendingPathFor(state: string): string {
   return join(OAUTH_PENDING_DIR, `${state}.json`);
 }
 
-export async function writeOAuthRecord(
-  meta: OAuthRecordMeta,
-  sealed: OAuthSealed,
-): Promise<void> {
+export async function writeOAuthRecord(meta: OAuthRecordMeta, sealed: OAuthSealed): Promise<void> {
   const record: OAuthRecord = { ...meta, envelope: encryptJson(sealed) };
   await writeJsonAtomic(vaultPathFor(meta.server_name), record, 0o600);
 }

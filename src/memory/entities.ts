@@ -32,12 +32,7 @@
 
 import { readFile, writeFile, mkdir, readdir } from 'fs/promises';
 import { existsSync } from 'fs';
-import {
-  getEntityPath,
-  getEntitiesDir,
-  getEntityCap,
-  isValidEntitySlug,
-} from './paths.js';
+import { getEntityPath, getEntitiesDir, getEntityCap, isValidEntitySlug } from './paths.js';
 import {
   sanitizeEntitySlug,
   sanitizeEntityDisplayName,
@@ -140,10 +135,14 @@ export async function readEntity(slug: string): Promise<EntityRecord | null> {
 export async function writeEntity(record: EntityRecord): Promise<void> {
   const path = getEntityPath(record.entity);
   await mkdir(getEntitiesDir(), { recursive: true });
-  await writeFile(path, serializeEntity({
-    ...record,
-    observations: record.observations.slice(-ENTITY_OBSERVATION_LIMIT),
-  }), 'utf-8');
+  await writeFile(
+    path,
+    serializeEntity({
+      ...record,
+      observations: record.observations.slice(-ENTITY_OBSERVATION_LIMIT),
+    }),
+    'utf-8',
+  );
 }
 
 /** Read + parse every entity file (excluding the derived index). */
@@ -215,17 +214,24 @@ export async function applyEntityUpdate(
 
   const all = await listEntities();
   const proposedSlug = sanitizeEntitySlug(update.slug);
-  let record = (proposedSlug && resolveEntity(proposedSlug, all)) || resolveEntity(update.slug, all);
+  let record =
+    (proposedSlug && resolveEntity(proposedSlug, all)) || resolveEntity(update.slug, all);
   let created = false;
 
   if (!record) {
     if (!proposedSlug) {
-      logger.warn('memory', `applyEntityUpdate: dropped — unusable slug ${JSON.stringify(update.slug)}`);
+      logger.warn(
+        'memory',
+        `applyEntityUpdate: dropped — unusable slug ${JSON.stringify(update.slug)}`,
+      );
       return null;
     }
     const type = typeof update.type === 'string' ? update.type.toLowerCase().trim() : '';
     if (!isAllowedEntityType(type)) {
-      logger.warn('memory', `applyEntityUpdate: dropped new entity "${proposedSlug}" — missing/invalid type`);
+      logger.warn(
+        'memory',
+        `applyEntityUpdate: dropped new entity "${proposedSlug}" — missing/invalid type`,
+      );
       return null;
     }
     const cleanRepos = cleanRepoList(update.repos);
@@ -248,7 +254,10 @@ export async function applyEntityUpdate(
     // Merge scalar fields into the existing record when provided + valid.
     const dn = sanitizeEntityDisplayName(update.display_name);
     if (dn) record.displayName = dn;
-    if (typeof update.scope === 'string' && isAllowedEntityScope(update.scope.toLowerCase().trim())) {
+    if (
+      typeof update.scope === 'string' &&
+      isAllowedEntityScope(update.scope.toLowerCase().trim())
+    ) {
       record.scope = update.scope.toLowerCase().trim() as EntityScope;
     }
     const domain = pickDomain(update.domain);
@@ -265,7 +274,8 @@ export async function applyEntityUpdate(
     for (const a of update.aliases) {
       const alias = typeof a === 'string' ? a.replace(/\s+/g, ' ').trim() : '';
       if (alias && alias.toLowerCase() !== record.entity && alias.length <= 80) {
-        if (!record.aliases.some((x) => x.toLowerCase() === alias.toLowerCase())) record.aliases.push(alias);
+        if (!record.aliases.some((x) => x.toLowerCase() === alias.toLowerCase()))
+          record.aliases.push(alias);
       }
     }
   }
@@ -310,7 +320,8 @@ function pickScope(raw: string | undefined, repos: string[]): EntityScope {
 }
 
 function pickDomain(raw: string | undefined): string {
-  if (typeof raw === 'string' && isAllowedDomain(raw.toLowerCase().trim())) return raw.toLowerCase().trim();
+  if (typeof raw === 'string' && isAllowedDomain(raw.toLowerCase().trim()))
+    return raw.toLowerCase().trim();
   return '';
 }
 
@@ -337,12 +348,15 @@ function dedupe(items: string[]): string[] {
 
 function hasObservation(list: EntityObservation[], o: EntityObservation): boolean {
   const norm = o.text.toLowerCase().replace(/\s+/g, ' ').trim();
-  return list.some((x) => x.category === o.category && x.text.toLowerCase().replace(/\s+/g, ' ').trim() === norm);
+  return list.some(
+    (x) => x.category === o.category && x.text.toLowerCase().replace(/\s+/g, ' ').trim() === norm,
+  );
 }
 
 /** Add a relation if (type, target) is not already present. */
 export function addRelation(list: EntityRelation[], rel: EntityRelation): void {
-  if (list.some((x) => x.type === rel.type && x.target.toLowerCase() === rel.target.toLowerCase())) return;
+  if (list.some((x) => x.type === rel.type && x.target.toLowerCase() === rel.target.toLowerCase()))
+    return;
   list.push(rel);
 }
 

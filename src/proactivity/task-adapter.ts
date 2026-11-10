@@ -2,7 +2,11 @@
 import type { TaskMetadata } from '../types/task.js';
 
 export interface PreparedTaskInput {
-  taskId: string; correlation: string; version: string; actor: string; brief: string;
+  taskId: string;
+  correlation: string;
+  version: string;
+  actor: string;
+  brief: string;
   evidence?: string;
   destination: { channel: string; thread: string; name: string };
 }
@@ -32,7 +36,8 @@ export const ordinaryTasks: ApprovedTaskRuntime = {
 export function taskRuntimeState(metadata: TaskMetadata | null): string {
   if (!metadata) return 'not created';
   if (metadata.status === 'preparing') return 'preparing';
-  if (metadata.pending_merge_approval || metadata.pending_tool_approval) return 'awaiting approval; outcome unverified';
+  if (metadata.pending_merge_approval || metadata.pending_tool_approval)
+    return 'awaiting approval; outcome unverified';
   if (metadata.status === 'completed') return 'parked or awaiting the user; outcome unverified';
   if (metadata.status === 'stopped') return 'stopped; outcome unverified';
   return 'running; outcome unverified';

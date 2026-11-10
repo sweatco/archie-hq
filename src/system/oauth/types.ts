@@ -15,7 +15,7 @@ import type { EncryptedEnvelope } from '../secrets-vault.js';
 export interface OAuthRecordMeta {
   server_name: string;
   label?: string;
-  expires_at: number;        // unix seconds
+  expires_at: number; // unix seconds
   created_at: number;
   updated_at: number;
   /** Authorization-server issuer URL — needed to reconstruct an AS for refresh. */
@@ -37,7 +37,7 @@ export interface OAuthSealed {
   refresh_token?: string;
   client_id: string;
   client_secret?: string;
-  token_type: string;        // typically "Bearer"
+  token_type: string; // typically "Bearer"
 }
 
 /** On-disk representation of a connected MCP server. */
@@ -76,4 +76,3 @@ export interface OAuthPendingRecord extends OAuthPendingMeta {
   /** Set by the callback handler on success — CLI uses it to detect completion. */
   completed_at?: number;
 }
-

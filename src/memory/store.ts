@@ -44,7 +44,7 @@ export async function writeUser(username: string, content: string): Promise<void
 export async function applyUserUpdatesWithIdentity(
   userId: string,
   displayName: string,
-  updates: MemoryUpdate[]
+  updates: MemoryUpdate[],
 ): Promise<{ appliedUpdates: MemoryUpdate[]; capExceeded: boolean }> {
   let content = await readUser(userId);
   const original = content;
@@ -53,7 +53,10 @@ export async function applyUserUpdatesWithIdentity(
   for (const update of updates) {
     const clean = sanitizeUpdate(update);
     if (!clean) {
-      logger.warn('memory', `dropped user update for ${userId} (sanitizer rejected): ${JSON.stringify(update).slice(0, 120)}`);
+      logger.warn(
+        'memory',
+        `dropped user update for ${userId} (sanitizer rejected): ${JSON.stringify(update).slice(0, 120)}`,
+      );
       continue;
     }
     const next = applyUpdate(content, clean);
@@ -127,7 +130,10 @@ export function applyUpdate(content: string, update: MemoryUpdate): string {
       return lines.join('\n');
     }
     // old text not found — skip + warn rather than silently appending
-    logger.warn('memory', `applyUpdate: \`old\` text not found, skipped: ${update.old.slice(0, 80)}`);
+    logger.warn(
+      'memory',
+      `applyUpdate: \`old\` text not found, skipped: ${update.old.slice(0, 80)}`,
+    );
     return content;
   }
 

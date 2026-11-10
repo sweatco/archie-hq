@@ -4,7 +4,13 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { computeNextRun, validateRecurringInterval, MIN_RECURRING_INTERVAL_MS, describeSchedule, friendlyTz } from '../trigger-scheduler.js';
+import {
+  computeNextRun,
+  validateRecurringInterval,
+  MIN_RECURRING_INTERVAL_MS,
+  describeSchedule,
+  friendlyTz,
+} from '../trigger-scheduler.js';
 
 describe('computeNextRun', () => {
   it('computes the next weekday-9am run after a given instant', () => {
@@ -24,7 +30,11 @@ describe('computeNextRun', () => {
     // US DST 2026 begins Sun Mar 8. A daily 9am America/New_York job:
     //  - Sat Mar 7 fires at 14:00 UTC (EST, UTC-5)
     //  - Sun Mar 8 fires at 13:00 UTC (EDT, UTC-4) — still 9am local
-    const beforeDst = computeNextRun('0 9 * * *', 'America/New_York', new Date('2026-03-07T15:00:00Z'));
+    const beforeDst = computeNextRun(
+      '0 9 * * *',
+      'America/New_York',
+      new Date('2026-03-07T15:00:00Z'),
+    );
     expect(beforeDst?.toISOString()).toBe('2026-03-08T13:00:00.000Z');
   });
 
@@ -86,10 +96,14 @@ describe('friendlyTz', () => {
 
 describe('describeSchedule (cron → plain English)', () => {
   it('daily at a time', () => {
-    expect(describeSchedule('0 9 * * *', 'Europe/London')).toBe('every day at 9:00 AM (London time)');
+    expect(describeSchedule('0 9 * * *', 'Europe/London')).toBe(
+      'every day at 9:00 AM (London time)',
+    );
   });
   it('afternoon time in 12h clock (min=10, hour=15 → 3:10 PM)', () => {
-    expect(describeSchedule('10 15 * * *', 'Europe/London')).toBe('every day at 3:10 PM (London time)');
+    expect(describeSchedule('10 15 * * *', 'Europe/London')).toBe(
+      'every day at 3:10 PM (London time)',
+    );
   });
   it('weekdays', () => {
     expect(describeSchedule('0 9 * * 1-5', 'UTC')).toBe('every weekday at 9:00 AM (UTC)');
@@ -98,7 +112,9 @@ describe('describeSchedule (cron → plain English)', () => {
     expect(describeSchedule('30 8 * * 1', 'UTC')).toBe('every Monday at 8:30 AM (UTC)');
   });
   it('multiple weekdays', () => {
-    expect(describeSchedule('0 9 * * 1,3,5', 'UTC')).toBe('every Monday, Wednesday, Friday at 9:00 AM (UTC)');
+    expect(describeSchedule('0 9 * * 1,3,5', 'UTC')).toBe(
+      'every Monday, Wednesday, Friday at 9:00 AM (UTC)',
+    );
   });
   it('hourly with no minute offset', () => {
     expect(describeSchedule('0 * * * *', 'UTC')).toBe('every hour');

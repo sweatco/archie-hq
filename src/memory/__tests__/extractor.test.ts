@@ -117,11 +117,18 @@ describe('parseExtractionResponse(json)', () => {
     const response = JSON.stringify({
       ...JSON.parse(validResponse),
       user_updates: {
-        alice: [{ action: 'add', content: 'Prefers concise updates', source_message_ts: '1700000000.123456' }],
+        alice: [
+          {
+            action: 'add',
+            content: 'Prefers concise updates',
+            source_message_ts: '1700000000.123456',
+          },
+        ],
       },
     });
-    expect(parseExtractionResponse(response)?.user_updates.alice[0].source_message_ts)
-      .toBe('1700000000.123456');
+    expect(parseExtractionResponse(response)?.user_updates.alice[0].source_message_ts).toBe(
+      '1700000000.123456',
+    );
   });
 
   it('returns null for invalid JSON', () => {
@@ -188,15 +195,27 @@ describe('parseExtractionResponse(json)', () => {
   });
 
   it('normalizes allowed domains and rejects arbitrary or multiline values', () => {
-    const normalized = parseExtractionResponse(JSON.stringify({
-      user_updates: {}, task_summary: 'x', activity_summary: 'y', domain: ' Engineering ',
-    }));
+    const normalized = parseExtractionResponse(
+      JSON.stringify({
+        user_updates: {},
+        task_summary: 'x',
+        activity_summary: 'y',
+        domain: ' Engineering ',
+      }),
+    );
     expect(normalized?.domain).toBe('engineering');
 
     for (const domain of ['finance', 'engineering\nAPI_KEY=abcdefghijklmnopqrstuvwxyz123456']) {
-      expect(parseExtractionResponse(JSON.stringify({
-        user_updates: {}, task_summary: 'x', activity_summary: 'y', domain,
-      }))).toBeNull();
+      expect(
+        parseExtractionResponse(
+          JSON.stringify({
+            user_updates: {},
+            task_summary: 'x',
+            activity_summary: 'y',
+            domain,
+          }),
+        ),
+      ).toBeNull();
     }
   });
 
@@ -223,7 +242,11 @@ describe('parseExtractionResponse(json)', () => {
     const withEntities = JSON.stringify({
       user_updates: {},
       entity_updates: [
-        { slug: 'payment-service', type: 'service', observations: [{ category: 'fact', text: 'NestJS' }] },
+        {
+          slug: 'payment-service',
+          type: 'service',
+          observations: [{ category: 'fact', text: 'NestJS' }],
+        },
       ],
       task_summary: 'x',
       activity_summary: 'y',
@@ -304,7 +327,9 @@ describe('parseExtractionResponse(json)', () => {
   it('rejects a non-string profile source timestamp', () => {
     const bad = JSON.stringify({
       user_updates: { alice: [{ action: 'add', content: 'x', source_message_ts: 123 }] },
-      task_summary: 'x', activity_summary: 'y', domain: 'engineering',
+      task_summary: 'x',
+      activity_summary: 'y',
+      domain: 'engineering',
     });
     expect(parseExtractionResponse(bad)).toBeNull();
   });

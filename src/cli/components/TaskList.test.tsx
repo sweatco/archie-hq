@@ -43,7 +43,12 @@ function page(offset: number, count: number, total: number) {
 
 function renderList(refreshTrigger = 0, active = false) {
   return render(
-    <TaskList onSelect={() => {}} onCreate={() => {}} refreshTrigger={refreshTrigger} active={active} />,
+    <TaskList
+      onSelect={() => {}}
+      onCreate={() => {}}
+      refreshTrigger={refreshTrigger}
+      active={active}
+    />,
   );
 }
 
@@ -68,7 +73,12 @@ function serveFrom(list: ReturnType<typeof task>[]) {
 
 /** Which task the cursor (`>`) currently sits on. */
 function selectedTask(frame: string): string | null {
-  return frame.split('\n').find((l) => l.trimStart().startsWith('>'))?.match(/task-\d+/)?.[0] ?? null;
+  return (
+    frame
+      .split('\n')
+      .find((l) => l.trimStart().startsWith('>'))
+      ?.match(/task-\d+/)?.[0] ?? null
+  );
 }
 
 /** The task rows currently rendered, top to bottom. */
@@ -167,7 +177,9 @@ describe('TaskList', () => {
 
   it('discards a response from before a refresh so it cannot clobber the new list', async () => {
     let releaseStale: (() => void) | undefined;
-    const stale = new Promise<void>((resolve) => { releaseStale = resolve; });
+    const stale = new Promise<void>((resolve) => {
+      releaseStale = resolve;
+    });
 
     fetchTasksMock
       // First mount: hangs until we release it, then resolves with old data.

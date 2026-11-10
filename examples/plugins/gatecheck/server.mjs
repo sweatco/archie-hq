@@ -61,7 +61,12 @@ function handle(msg) {
   if (method === 'tools/call') {
     const { name, arguments: args } = params ?? {};
     if (name === 'get_status') {
-      return { id, result: { content: [{ type: 'text', text: `status ok; markers written: ${markerLines().length}` }] } };
+      return {
+        id,
+        result: {
+          content: [{ type: 'text', text: `status ok; markers written: ${markerLines().length}` }],
+        },
+      };
     }
     if (name === 'write_marker') {
       const value = String(args?.value ?? '');

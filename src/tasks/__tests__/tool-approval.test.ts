@@ -20,8 +20,15 @@ vi.mock('../persistence.js', async (importOriginal) => {
 
 vi.mock('../../system/logger.js', () => ({
   logger: {
-    system: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), info: vi.fn(),
-    slack: vi.fn(), agentAction: vi.fn(), agentFinding: vi.fn(), agentToSlack: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    warn: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    slack: vi.fn(),
+    agentAction: vi.fn(),
+    agentFinding: vi.fn(),
+    agentToSlack: vi.fn(),
   },
 }));
 
@@ -37,7 +44,8 @@ const REQUEST = {
   digest: 'd1'.padEnd(16, '0'),
   server: 'tramline',
   tool: 'retry_workflow_run',
-  summary: 'Re-run this failed CI build\n*Tool:* `tramline:retry_workflow_run`\n*Arguments:* id=`wf-1`',
+  summary:
+    'Re-run this failed CI build\n*Tool:* `tramline:retry_workflow_run`\n*Arguments:* id=`wf-1`',
   heading: 'Re-run this failed CI build',
 };
 const OTHER_DIGEST = 'd2'.padEnd(16, '0');
@@ -45,7 +53,10 @@ const OTHER_DIGEST = 'd2'.padEnd(16, '0');
 type FakeTask = {
   taskId: string;
   metadata: Partial<TaskMetadata>;
-  agent: { clearPendingTeardown: ReturnType<typeof vi.fn>; deferTeardown: ReturnType<typeof vi.fn> };
+  agent: {
+    clearPendingTeardown: ReturnType<typeof vi.fn>;
+    deferTeardown: ReturnType<typeof vi.fn>;
+  };
   debouncedSave: ReturnType<typeof vi.fn>;
   save: ReturnType<typeof vi.fn>;
   sendMessage: ReturnType<typeof vi.fn>;
@@ -137,7 +148,7 @@ describe('requestToolApproval', () => {
 
     expect(await request(task)).toBe('posted');
     expect(task.postInteractiveToUser).not.toHaveBeenCalled(); // no duplicate prompt
-    expect(task.suspendStatus).toHaveBeenCalled();             // but the park is re-armed
+    expect(task.suspendStatus).toHaveBeenCalled(); // but the park is re-armed
   });
 
   // The slot's presence is what the re-arm branch and the one-at-a-time refusal
@@ -226,7 +237,10 @@ describe('handleToolCallApproval', () => {
     expect(task.metadata.pending_tool_approval).toBeUndefined(); // slot cleared
     expect(task.metadata.approved_tool_calls ?? []).toHaveLength(0); // NO grant minted
     expect(vi.mocked(appendAgentFinding)).toHaveBeenCalledWith(
-      'task-123', 'system', expect.stringContaining('expired unspent'), 'decision',
+      'task-123',
+      'system',
+      expect.stringContaining('expired unspent'),
+      'decision',
     );
   });
 

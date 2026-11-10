@@ -33,14 +33,22 @@ describe('buildPrCardBlocks', () => {
     const { block, title, subtitle } = card(baseCard);
     expect(block.type).toBe('card');
     expect(block.title!.type).toBe('mrkdwn');
-    expect(title).toBe('<https://github.com/sweatco/sweatcoin-mobile/pull/6543|#6543> fix/recovery-teardown-race');
+    expect(title).toBe(
+      '<https://github.com/sweatco/sweatcoin-mobile/pull/6543|#6543> fix/recovery-teardown-race',
+    );
     expect(subtitle).toBe('sweatcoin-mobile · :hourglass: CI checks (1/2)');
   });
 
   it('uses Slack emoji shortcodes for passed / failed / merged', () => {
-    expect(card({ ...baseCard, ci: 'passed', ciPassed: 2 }).subtitle).toBe('sweatcoin-mobile · :white_check_mark: CI checks (2/2)');
-    expect(card({ ...baseCard, ci: 'failed', ciPassed: 1 }).subtitle).toBe('sweatcoin-mobile · :x: CI checks (1/2)');
-    expect(card({ ...baseCard, state: 'merged' }).subtitle).toBe('sweatcoin-mobile · :large_purple_circle: Merged');
+    expect(card({ ...baseCard, ci: 'passed', ciPassed: 2 }).subtitle).toBe(
+      'sweatcoin-mobile · :white_check_mark: CI checks (2/2)',
+    );
+    expect(card({ ...baseCard, ci: 'failed', ciPassed: 1 }).subtitle).toBe(
+      'sweatcoin-mobile · :x: CI checks (1/2)',
+    );
+    expect(card({ ...baseCard, state: 'merged' }).subtitle).toBe(
+      'sweatcoin-mobile · :large_purple_circle: Merged',
+    );
   });
 
   it('escapes mrkdwn-special characters in the branch name', () => {

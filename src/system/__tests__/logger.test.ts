@@ -29,7 +29,10 @@ describe('formatAgentSpawnLine', () => {
 
   it('falls back to inherited when model is absent', () => {
     expect(
-      formatAgentSpawnLine({ subagent_type: 'engineering:coder', description: 'implement the fix' }),
+      formatAgentSpawnLine({
+        subagent_type: 'engineering:coder',
+        description: 'implement the fix',
+      }),
     ).toBe('Agent → engineering:coder (inherited) — implement the fix');
   });
 
@@ -44,7 +47,7 @@ describe('formatAgentSpawnLine', () => {
       subagent_type: 'engineering:coder',
       model: 'sonnet',
       description: 'short summary',
-      ...( { prompt: 'a very long prompt body that must never reach the log' } as any ),
+      ...({ prompt: 'a very long prompt body that must never reach the log' } as any),
     });
     expect(line).not.toContain('very long prompt body');
   });

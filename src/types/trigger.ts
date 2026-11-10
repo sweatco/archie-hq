@@ -37,7 +37,11 @@ export type TriggerBinding =
  */
 export type TriggerCondition =
   | { type: 'schedule'; tz: string; next_run_at: string; cron?: string }
-  | { type: 'channel_message'; channel_id: string; match?: { contains?: string; from_user?: string } };
+  | {
+      type: 'channel_message';
+      channel_id: string;
+      match?: { contains?: string; from_user?: string };
+    };
 
 export interface Trigger {
   /** "trg-YYYYMMDD-HHMM-random6" */

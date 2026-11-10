@@ -54,7 +54,11 @@ vi.mock('../../tasks/task.js', async (importOriginal) => {
 
 vi.mock('../../tasks/persistence.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../tasks/persistence.js')>();
-  return { ...actual, appendSlackMessage: appendSlackMessageMock, downloadMessageFiles: downloadMessageFilesMock };
+  return {
+    ...actual,
+    appendSlackMessage: appendSlackMessageMock,
+    downloadMessageFiles: downloadMessageFilesMock,
+  };
 });
 
 vi.mock('../../connectors/slack/client.js', async (importOriginal) => {
@@ -91,8 +95,15 @@ vi.mock('../../agents/spawn.js', () => ({ spawnAgent: vi.fn() }));
 
 vi.mock('../logger.js', () => ({
   logger: {
-    system: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), info: vi.fn(),
-    plain: vi.fn(), server: vi.fn(), slack: vi.fn(), agent: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    warn: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    plain: vi.fn(),
+    server: vi.fn(),
+    slack: vi.fn(),
+    agent: vi.fn(),
   },
 }));
 
@@ -101,9 +112,19 @@ import { Task } from '../../tasks/task.js';
 
 // The constructor is private, and the real `Task.create` touches disk — the redaction case needs a real
 // instance without either, so it is built through the same cast `append-render-ordering.test.ts` uses.
-const TaskCtor = Task as unknown as new (taskId: string, metadata: TaskMetadata, pmDef: AgentDef) => Task;
+const TaskCtor = Task as unknown as new (
+  taskId: string,
+  metadata: TaskMetadata,
+  pmDef: AgentDef,
+) => Task;
 const PM_DEF = {
-  id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', pluginName: 'core', visibility: 'global', isPm: true,
+  id: 'pm-agent',
+  key: 'pm',
+  role: 'PM',
+  expertise: '',
+  pluginName: 'core',
+  visibility: 'global',
+  isPm: true,
 } as AgentDef;
 
 interface FakeTask {
@@ -123,7 +144,9 @@ function fakeTask(n: number): FakeTask {
   return {
     taskId: `task-${n}`,
     metadata: { task_id: `task-${n}`, channels: {}, default_channel: null },
-    append: vi.fn().mockResolvedValue({ linkedNewThread: true, entries: [`[ts] [<@U1:R> in #dm] ${BODY}`] }),
+    append: vi
+      .fn()
+      .mockResolvedValue({ linkedNewThread: true, entries: [`[ts] [<@U1:R> in #dm] ${BODY}`] }),
     linkSlackThread: vi.fn(),
     sendMessage: vi.fn().mockResolvedValue(undefined),
     debouncedSave: vi.fn(),
@@ -155,11 +178,13 @@ function messageThread(over: Partial<SlackThread> = {}): SlackThread {
     shared: false,
     currentMessageTs: TRIGGER_TS,
     rootAuthorWasBot: false,
-    messages: [{
-      user: { id: 'U_DEV', username: 'dev', realName: 'A Dev' },
-      ownText: BODY,
-      ts: TRIGGER_TS,
-    }],
+    messages: [
+      {
+        user: { id: 'U_DEV', username: 'dev', realName: 'A Dev' },
+        ownText: BODY,
+        ts: TRIGGER_TS,
+      },
+    ],
     ...over,
   };
 }
@@ -173,8 +198,10 @@ beforeEach(() => {
     return task as unknown as Task;
   });
   appendSlackMessageMock.mockResolvedValue(`[ts] [unknown in #${CHANNEL_NAME}] ${BODY}`);
-  downloadMessageFilesMock.mockImplementation(async (_taskId: string, files: Array<Record<string, unknown>>) =>
-    files.map((f) => ({ ...f, localPath: '/sessions/t1/attachments/f.pdf' })));
+  downloadMessageFilesMock.mockImplementation(
+    async (_taskId: string, files: Array<Record<string, unknown>>) =>
+      files.map((f) => ({ ...f, localPath: '/sessions/t1/attachments/f.pdf' })),
+  );
   isChannelReachableMock.mockResolvedValue(true);
   postSlackMessageMock.mockResolvedValue(undefined);
   saveTriggerMock.mockResolvedValue(undefined);
@@ -188,7 +215,11 @@ describe('a message fire ingests its thread', () => {
     const thread = messageThread();
 
     await fireTrigger(makeTrigger(), {
-      kind: 'message', thread, body: BODY, authorId: 'U_DEV', channelName: CHANNEL_NAME,
+      kind: 'message',
+      thread,
+      body: BODY,
+      authorId: 'U_DEV',
+      channelName: CHANNEL_NAME,
     });
 
     const task = createdTasks[0]!;
@@ -204,7 +235,11 @@ describe('a message fire ingests its thread', () => {
 
   it('seeds the agent with where to reply and with the message that fired it', async () => {
     await fireTrigger(makeTrigger(), {
-      kind: 'message', thread: messageThread(), body: BODY, authorId: 'U_DEV', channelName: CHANNEL_NAME,
+      kind: 'message',
+      thread: messageThread(),
+      body: BODY,
+      authorId: 'U_DEV',
+      channelName: CHANNEL_NAME,
     });
 
     const task = createdTasks[0]!;
@@ -220,7 +255,11 @@ describe('a message fire ingests its thread', () => {
 
   it('posts no preamble to Slack', async () => {
     await fireTrigger(makeTrigger(), {
-      kind: 'message', thread: messageThread(), body: BODY, authorId: 'U_DEV', channelName: CHANNEL_NAME,
+      kind: 'message',
+      thread: messageThread(),
+      body: BODY,
+      authorId: 'U_DEV',
+      channelName: CHANNEL_NAME,
     });
 
     // The first thing the channel sees is the agent's actual answer, in the thread it already owns.
@@ -229,12 +268,21 @@ describe('a message fire ingests its thread', () => {
 
   it('spawns an independent task per fire — N matching messages, N tasks', async () => {
     const trigger = makeTrigger();
-    const ctx = { kind: 'message' as const, body: BODY, authorId: 'U_DEV', channelName: CHANNEL_NAME };
+    const ctx = {
+      kind: 'message' as const,
+      body: BODY,
+      authorId: 'U_DEV',
+      channelName: CHANNEL_NAME,
+    };
 
     await fireTrigger(trigger, { ...ctx, thread: messageThread() });
     await fireTrigger(trigger, {
       ...ctx,
-      thread: messageThread({ threadId: '1700000000.000200', currentMessageTs: '1700000000.000200', messages: [] }),
+      thread: messageThread({
+        threadId: '1700000000.000200',
+        currentMessageTs: '1700000000.000200',
+        messages: [],
+      }),
     });
 
     expect(taskCreateMock).toHaveBeenCalledTimes(2);
@@ -260,7 +308,10 @@ describe('a message fire ingests its thread', () => {
     expect(createdTasks).toHaveLength(2);
     expect(createdTasks[0]).not.toBe(createdTasks[1]);
     for (const task of createdTasks) {
-      expect(task!.metadata.home_channel).toEqual({ channel_id: CHANNEL, channel_name: CHANNEL_NAME });
+      expect(task!.metadata.home_channel).toEqual({
+        channel_id: CHANNEL,
+        channel_name: CHANNEL_NAME,
+      });
       // Nothing carried over from the other fire: no linked thread, no default channel, one wake each.
       expect(task!.metadata.channels).toEqual({});
       expect(task!.metadata.default_channel).toBeNull();
@@ -277,7 +328,10 @@ describe('a message fire ingests its thread', () => {
     const thread = messageThread({ messages: [] });
 
     await fireTrigger(makeTrigger(), {
-      kind: 'message', thread, body: BODY, channelName: CHANNEL_NAME,
+      kind: 'message',
+      thread,
+      body: BODY,
+      channelName: CHANNEL_NAME,
     });
 
     const task = createdTasks[0]!;
@@ -327,7 +381,11 @@ describe('the ingestion floor fires only for the shape the fetch filter drops', 
   // a foreign-workspace bot post is the known one — and that content must go through the redaction policy
   // or not be written at all. Writing it here would make the floor a hole in that policy.
   it('writes nothing when the message HAD an author id', async () => {
-    await fireTrigger(makeTrigger(), { ...floorCtx, thread: emptyThread(), authorId: 'B_FOREIGN_BOT' });
+    await fireTrigger(makeTrigger(), {
+      ...floorCtx,
+      thread: emptyThread(),
+      authorId: 'B_FOREIGN_BOT',
+    });
 
     expect(appendSlackMessageMock).not.toHaveBeenCalled();
   });
@@ -361,14 +419,16 @@ describe('a schedule fire homes its task in the bound channel', () => {
   it('fixes the destination before the first agent turn', async () => {
     await fireTrigger(makeTrigger(), { kind: 'schedule' });
 
-    expect(createdTasks[0]!.setMemoryDestination.mock.invocationCallOrder[0]!)
-      .toBeLessThan(createdTasks[0]!.sendMessage.mock.invocationCallOrder[0]!);
+    expect(createdTasks[0]!.setMemoryDestination.mock.invocationCallOrder[0]!).toBeLessThan(
+      createdTasks[0]!.sendMessage.mock.invocationCallOrder[0]!,
+    );
     expect(createdTasks[0]!.save).toHaveBeenCalledWith(true);
-    expect(createdTasks[0]!.save.mock.invocationCallOrder[0]!)
-      .toBeLessThan(createdTasks[0]!.sendMessage.mock.invocationCallOrder[0]!);
+    expect(createdTasks[0]!.save.mock.invocationCallOrder[0]!).toBeLessThan(
+      createdTasks[0]!.sendMessage.mock.invocationCallOrder[0]!,
+    );
   });
 
-  it('refreshes that channel\'s canvas and pin index before the first agent spawns', async () => {
+  it("refreshes that channel's canvas and pin index before the first agent spawns", async () => {
     await fireTrigger(makeTrigger(), { kind: 'schedule' });
 
     // The scan is called exactly as any other caller calls it, announcements included. A canvas adoption notice
@@ -407,7 +467,11 @@ describe('a schedule fire homes its task in the bound channel', () => {
 
   it('leaves a message fire unhomed and costs it no scan', async () => {
     await fireTrigger(makeTrigger(), {
-      kind: 'message', thread: messageThread(), body: BODY, authorId: 'U_DEV', channelName: CHANNEL_NAME,
+      kind: 'message',
+      thread: messageThread(),
+      body: BODY,
+      authorId: 'U_DEV',
+      channelName: CHANNEL_NAME,
     });
 
     // A message fire already owns a thread, and the event path that dispatched it already scanned the
@@ -435,10 +499,13 @@ describe('a schedule fire on a DM-bound trigger homes its task in the DM', () =>
   const DM_CHANNEL = 'D0DANA';
   const DM_NAME = 'DM with Dana';
 
-  const dmTrigger = () => makeTrigger({
-    binding: { type: 'user', user_id: DM_USER, channel_id: DM_CHANNEL, channel_name: DM_NAME },
-    conditions: [{ type: 'schedule', tz: 'UTC', cron: '0 9 * * *', next_run_at: '2099-01-01T09:00:00.000Z' }],
-  });
+  const dmTrigger = () =>
+    makeTrigger({
+      binding: { type: 'user', user_id: DM_USER, channel_id: DM_CHANNEL, channel_name: DM_NAME },
+      conditions: [
+        { type: 'schedule', tz: 'UTC', cron: '0 9 * * *', next_run_at: '2099-01-01T09:00:00.000Z' },
+      ],
+    });
 
   it('records the bound DM as the task home', async () => {
     await fireTrigger(dmTrigger(), { kind: 'schedule' });
@@ -455,7 +522,10 @@ describe('a schedule fire on a DM-bound trigger homes its task in the DM', () =>
     await fireTrigger(dmTrigger(), { kind: 'schedule' });
 
     expect(isChannelReachableMock).not.toHaveBeenCalled();
-    expect(createdTasks[0]!.metadata.home_channel).toEqual({ channel_id: DM_CHANNEL, channel_name: DM_NAME });
+    expect(createdTasks[0]!.metadata.home_channel).toEqual({
+      channel_id: DM_CHANNEL,
+      channel_name: DM_NAME,
+    });
   });
 
   it('names the DM in the seed without a leading #', async () => {
@@ -487,11 +557,18 @@ describe('a message fire ingests through the real Task.append', () => {
   // real `Task` whose only stubs are the two persistence-adjacent seams (`debouncedSave`, `sendMessage`).
   function realTask(): Task {
     const metadata = {
-      task_id: 'task-real', channels: {}, default_channel: null,
-      agent_sessions: {}, repositories: [],
+      task_id: 'task-real',
+      channels: {},
+      default_channel: null,
+      agent_sessions: {},
+      repositories: [],
     } as unknown as TaskMetadata;
     const task = new TaskCtor('task-real', metadata, PM_DEF);
-    const stubbed = task as unknown as { debouncedSave: () => void; sendMessage: unknown; save: () => Promise<void> };
+    const stubbed = task as unknown as {
+      debouncedSave: () => void;
+      sendMessage: unknown;
+      save: () => Promise<void>;
+    };
     stubbed.debouncedSave = () => {};
     stubbed.sendMessage = vi.fn().mockResolvedValue(undefined);
     stubbed.save = async () => {};
@@ -504,20 +581,35 @@ describe('a message fire ingests through the real Task.append', () => {
 
     const thread = messageThread({
       shared: true,
-      messages: [{
-        user: { id: 'U_EXT', username: 'ext', realName: 'Ext Contractor', teamId: 'T_OTHER' },
-        ownText: BODY,
-        ts: TRIGGER_TS,
-        files: [{ id: 'F1', name: 'runbook.pdf', mimetype: 'application/pdf', url_private: 'https://x/y' }],
-      }],
+      messages: [
+        {
+          user: { id: 'U_EXT', username: 'ext', realName: 'Ext Contractor', teamId: 'T_OTHER' },
+          ownText: BODY,
+          ts: TRIGGER_TS,
+          files: [
+            {
+              id: 'F1',
+              name: 'runbook.pdf',
+              mimetype: 'application/pdf',
+              url_private: 'https://x/y',
+            },
+          ],
+        },
+      ],
     });
 
     await fireTrigger(makeTrigger(), {
-      kind: 'message', thread, body: BODY, authorId: 'U_EXT', channelName: CHANNEL_NAME,
+      kind: 'message',
+      thread,
+      body: BODY,
+      authorId: 'U_EXT',
+      channelName: CHANNEL_NAME,
     });
 
     expect(appendSlackMessageMock).toHaveBeenCalledTimes(1);
-    expect(appendSlackMessageMock.mock.calls[0]![4]).toBe('[redacted: external participant in shared channel]');
+    expect(appendSlackMessageMock.mock.calls[0]![4]).toBe(
+      '[redacted: external participant in shared channel]',
+    );
     // A redacted message's files must never reach the task's attachments folder — the body that would
     // reference them is a placeholder.
     expect(downloadMessageFilesMock).not.toHaveBeenCalled();

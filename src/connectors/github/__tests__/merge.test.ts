@@ -30,7 +30,12 @@ vi.mock('../../../agents/registry.js', () => ({
 
 vi.mock('../../../system/logger.js', () => ({
   logger: {
-    system: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), info: vi.fn(), plain: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    warn: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    plain: vi.fn(),
   },
 }));
 
@@ -105,9 +110,7 @@ function mockPersistedTask(repositories: TaskMetadata['repositories']): {
 }
 
 function singlePRRepositories(github: string, prNumber: number): TaskMetadata['repositories'] {
-  return [
-    { github, branch_states: { 'feat/x': { pr_number: prNumber, base_branch: 'main' } } },
-  ];
+  return [{ github, branch_states: { 'feat/x': { pr_number: prNumber, base_branch: 'main' } } }];
 }
 
 function branchState(task: FakeTask, github: string, branch: string): BranchState {
@@ -116,9 +119,11 @@ function branchState(task: FakeTask, github: string, branch: string): BranchStat
 
 /** Findings that are the ready notification (decision finding naming the held PR). */
 function readyNotifications(): unknown[][] {
-  return vi.mocked(appendAgentFinding).mock.calls.filter(
-    (call) => call[3] === 'decision' && String(call[2]).includes('do not auto-merge'),
-  );
+  return vi
+    .mocked(appendAgentFinding)
+    .mock.calls.filter(
+      (call) => call[3] === 'decision' && String(call[2]).includes('do not auto-merge'),
+    );
 }
 
 beforeEach(() => {
@@ -157,14 +162,17 @@ describe('checkAndMergeLinkedPRs — non-auto policy (AC1)', () => {
     // debounced write would be invisible to any instance loaded meanwhile.
     expect(branchState(notifier, 'org/backend', 'feat/x').merge_ready_notified).toBe(true);
     expect(notifier.save).toHaveBeenCalledWith(true);
-    expect(notifier.save.mock.invocationCallOrder[0]!)
-      .toBeLessThan(notifier.sendMessage.mock.invocationCallOrder[0]!);
+    expect(notifier.save.mock.invocationCallOrder[0]!).toBeLessThan(
+      notifier.sendMessage.mock.invocationCallOrder[0]!,
+    );
   });
 
   it('suppresses the ready nudge for a PR whose merge approval is pending', async () => {
     const task = makeTask(singlePRRepositories('org/backend', 42), {
-      github: 'org/backend', pr_number: 42,
-      requested_by: 'backend-agent', requested_at: '2026-07-06T00:00:00.000Z',
+      github: 'org/backend',
+      pr_number: 42,
+      requested_by: 'backend-agent',
+      requested_at: '2026-07-06T00:00:00.000Z',
     });
     vi.mocked(Task.get).mockResolvedValue(task as unknown as Task);
     mockGitHubClient.getPRStatus.mockResolvedValue(READY);
@@ -205,7 +213,10 @@ describe('checkAndMergeLinkedPRs — non-auto policy (AC1)', () => {
 
     // PR #42 merges (externally or on approval); the marker must not survive it.
     mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'merged', mergeable: false, mergeableState: 'unknown', approved: true,
+      state: 'merged',
+      mergeable: false,
+      mergeableState: 'unknown',
+      approved: true,
     });
     await checkAndMergeLinkedPRs('task-123');
     expect(branchState(task, 'org/backend', 'feat/x').merge_ready_notified).toBeUndefined();
@@ -220,7 +231,6 @@ describe('checkAndMergeLinkedPRs — non-auto policy (AC1)', () => {
     expect(notifications).toHaveLength(2);
     expect(String(notifications[1]![2])).toContain('org/backend#43');
   });
-
 
   it('does not re-notify after a task reload — the marker reaches the persisted metadata', async () => {
     const world = mockPersistedTask(singlePRRepositories('org/backend', 42));
@@ -256,7 +266,10 @@ describe('checkAndMergeLinkedPRs — auto policy (AC2)', () => {
     expect(mockGitHubClient.mergePullRequest).toHaveBeenCalledWith('org/backend', 42);
     expect(readyNotifications()).toHaveLength(0);
     expect(appendAgentFinding).toHaveBeenCalledWith(
-      'task-123', 'system', expect.stringContaining('org/backend#42'), 'completion',
+      'task-123',
+      'system',
+      expect.stringContaining('org/backend#42'),
+      'completion',
     );
   });
 });
@@ -264,7 +277,12 @@ describe('checkAndMergeLinkedPRs — auto policy (AC2)', () => {
 describe('checkAndMergeLinkedPRs — armed bucket (AC5)', () => {
   function armedRepositories(github: string, prNumber: number): TaskMetadata['repositories'] {
     return [
-      { github, branch_states: { 'feat/x': { pr_number: prNumber, base_branch: 'main', merge_armed: true } } },
+      {
+        github,
+        branch_states: {
+          'feat/x': { pr_number: prNumber, base_branch: 'main', merge_armed: true },
+        },
+      },
     ];
   }
 
@@ -275,7 +293,10 @@ describe('checkAndMergeLinkedPRs — armed bucket (AC5)', () => {
     const task = makeTask(armedRepositories('org/backend', 42));
     vi.mocked(Task.get).mockResolvedValue(task as unknown as Task);
     mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'open', mergeable: true, mergeableState: 'clean', approved: false,
+      state: 'open',
+      mergeable: true,
+      mergeableState: 'clean',
+      approved: false,
     });
     mockGitHubClient.mergePullRequest.mockResolvedValue({ success: true, message: 'merged' });
 
@@ -292,7 +313,10 @@ describe('checkAndMergeLinkedPRs — armed bucket (AC5)', () => {
     const task = makeTask(armedRepositories('org/backend', 42));
     vi.mocked(Task.get).mockResolvedValue(task as unknown as Task);
     mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'open', mergeable: true, mergeableState: 'blocked', approved: true,
+      state: 'open',
+      mergeable: true,
+      mergeableState: 'blocked',
+      approved: true,
     });
 
     await checkAndMergeLinkedPRs('task-123');
@@ -320,7 +344,10 @@ describe('checkAndMergeLinkedPRs — armed bucket (AC5)', () => {
     const task = makeTask(armedRepositories('org/backend', 42));
     vi.mocked(Task.get).mockResolvedValue(task as unknown as Task);
     mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'merged', mergeable: false, mergeableState: 'unknown', approved: true,
+      state: 'merged',
+      mergeable: false,
+      mergeableState: 'unknown',
+      approved: true,
     });
 
     await checkAndMergeLinkedPRs('task-123');
@@ -333,7 +360,10 @@ describe('checkAndMergeLinkedPRs — armed bucket (AC5)', () => {
     const task = makeTask(armedRepositories('org/backend', 42));
     vi.mocked(Task.get).mockResolvedValue(task as unknown as Task);
     mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'closed', mergeable: false, mergeableState: 'unknown', approved: false,
+      state: 'closed',
+      mergeable: false,
+      mergeableState: 'unknown',
+      approved: false,
     });
 
     await checkAndMergeLinkedPRs('task-123');

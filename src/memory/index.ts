@@ -60,26 +60,35 @@ async function initializeMemory(teamId: string | null): Promise<boolean> {
     await mkdir(memoryDir, { recursive: true });
     const entries = await readdir(memoryDir);
     const markerTemps = entries.filter((entry) => MARKER_TEMP_RE.test(entry));
-    await Promise.all(markerTemps.map(async (entry) => {
-      const path = `${memoryDir}/${entry}`;
-      const info = await stat(path).catch(() => null);
-      if (info && Date.now() - info.mtimeMs >= MARKER_TEMP_STALE_MS) {
-        await unlink(path).catch((error) => {
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-        });
-      }
-    }));
+    await Promise.all(
+      markerTemps.map(async (entry) => {
+        const path = `${memoryDir}/${entry}`;
+        const info = await stat(path).catch(() => null);
+        if (info && Date.now() - info.mtimeMs >= MARKER_TEMP_STALE_MS) {
+          await unlink(path).catch((error) => {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          });
+        }
+      }),
+    );
     const remainingEntries = entries.filter((entry) => !MARKER_TEMP_RE.test(entry));
     const hasMarker = remainingEntries.includes('.scoped-v1.json');
     if (remainingEntries.length > 0 && !hasMarker) {
       logger.warn('memory', 'Resetting non-empty unmarked memory store');
-      await Promise.all(remainingEntries.map((entry) => rm(`${memoryDir}/${entry}`, { recursive: true, force: true })));
+      await Promise.all(
+        remainingEntries.map((entry) =>
+          rm(`${memoryDir}/${entry}`, { recursive: true, force: true }),
+        ),
+      );
     }
 
     if (!hasMarker) {
       const tempPath = `${markerPath}.${process.pid}.${randomUUID()}.tmp`;
       try {
-        await writeFile(tempPath, `${JSON.stringify({ version: 1, team_id: teamId }, null, 2)}\n`, { encoding: 'utf-8', flag: 'wx' });
+        await writeFile(tempPath, `${JSON.stringify({ version: 1, team_id: teamId }, null, 2)}\n`, {
+          encoding: 'utf-8',
+          flag: 'wx',
+        });
         await link(tempPath, markerPath);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
@@ -90,10 +99,16 @@ async function initializeMemory(teamId: string | null): Promise<boolean> {
       }
     }
 
-    const marker = JSON.parse(await readFile(markerPath, 'utf-8')) as { version?: unknown; team_id?: unknown };
+    const marker = JSON.parse(await readFile(markerPath, 'utf-8')) as {
+      version?: unknown;
+      team_id?: unknown;
+    };
     if (marker.version !== 1 || marker.team_id !== teamId) {
       setMemoryReady(false);
-      logger.warn('memory', 'Memory layer disabled: scoped store does not match the authenticated Slack workspace');
+      logger.warn(
+        'memory',
+        'Memory layer disabled: scoped store does not match the authenticated Slack workspace',
+      );
       return false;
     }
 
@@ -158,7 +173,10 @@ async function warnLegacyUserFiles(): Promise<void> {
     // Reverse the colon-to-double-underscore normalisation for fallback IDs.
     const candidate = stem.replace(/^(cli|local)__/, '$1:');
     if (!isAllowedUserId(candidate)) {
-      logger.warn('memory', `legacy user file (non-Slack-ID name): users/${name} — read at extraction time, never written to by this version`);
+      logger.warn(
+        'memory',
+        `legacy user file (non-Slack-ID name): users/${name} — read at extraction time, never written to by this version`,
+      );
     }
   }
 }

@@ -22,7 +22,9 @@ const manifest = readFileSync(manifestPath, 'utf-8');
  * the next line whose indentation is less than or equal to the header's. */
 function section(text: string, headerKey: string): string {
   const lines = text.split('\n');
-  const start = lines.findIndex((l) => l.trimEnd().endsWith(headerKey) || l.trimEnd().endsWith(`${headerKey}:`));
+  const start = lines.findIndex(
+    (l) => l.trimEnd().endsWith(headerKey) || l.trimEnd().endsWith(`${headerKey}:`),
+  );
   if (start === -1) throw new Error(`section ${headerKey} not found`);
   const headerIndent = lines[start].length - lines[start].trimStart().length;
   const out: string[] = [];

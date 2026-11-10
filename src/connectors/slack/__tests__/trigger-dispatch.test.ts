@@ -18,7 +18,9 @@ const bolt = vi.hoisted(() => {
   class FakeApp {
     constructor(_opts: unknown) {}
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    event(name: string, handler: (arg: any) => unknown) { handlers.set(name, handler); }
+    event(name: string, handler: (arg: any) => unknown) {
+      handlers.set(name, handler);
+    }
     action(_name: string, _handler: unknown) {}
     async start() {}
     async stop() {}
@@ -26,7 +28,10 @@ const bolt = vi.hoisted(() => {
   class FakeReceiver {
     constructor(_opts: unknown) {}
   }
-  return { handlers, exports: { App: FakeApp, ExpressReceiver: FakeReceiver, SocketModeReceiver: FakeReceiver } };
+  return {
+    handlers,
+    exports: { App: FakeApp, ExpressReceiver: FakeReceiver, SocketModeReceiver: FakeReceiver },
+  };
 });
 
 vi.mock('module', async (importOriginal) => {
@@ -51,8 +56,13 @@ vi.mock('../client.js', () => ({
   addReaction: vi.fn(),
   setSlackDryRun: vi.fn(),
   getUserInfo: vi.fn().mockResolvedValue({
-    name: 'dev', realName: 'A Dev', teamId: 'T_HOME',
-    isRestricted: false, isUltraRestricted: false, isBot: false, isAppUser: false,
+    name: 'dev',
+    realName: 'A Dev',
+    teamId: 'T_HOME',
+    isRestricted: false,
+    isUltraRestricted: false,
+    isBot: false,
+    isAppUser: false,
   }),
   isExternalUser: vi.fn().mockReturnValue(false),
   isChannelShared: vi.fn().mockResolvedValue(false),
@@ -62,7 +72,9 @@ vi.mock('../client.js', () => ({
   extractMessageContent: vi.fn(
     async (message: unknown): Promise<{ text: string; attachments?: SlackAttachment[] }> => {
       const raw = (message ?? {}) as { text?: string; attachments?: Array<{ text?: string }> };
-      const attachments = (raw.attachments ?? []).map((a) => ({ text: a.text ?? '' })) as SlackAttachment[];
+      const attachments = (raw.attachments ?? []).map((a) => ({
+        text: a.text ?? '',
+      })) as SlackAttachment[];
       return { text: raw.text ?? '', ...(attachments.length > 0 ? { attachments } : {}) };
     },
   ),
@@ -72,7 +84,9 @@ vi.mock('../channel-canvas.js', () => ({ ensureChannelCanvas: vi.fn() }));
 vi.mock('../channel-pins.js', () => ({ ensureChannelPins: vi.fn() }));
 vi.mock('../title.js', () => ({ setAssistantThreadTitle: vi.fn() }));
 vi.mock('../../../tasks/title-generator.js', () => ({ generateTaskTitle: vi.fn() }));
-vi.mock('../../../system/shutdown.js', () => ({ getIsShuttingDown: vi.fn().mockReturnValue(false) }));
+vi.mock('../../../system/shutdown.js', () => ({
+  getIsShuttingDown: vi.fn().mockReturnValue(false),
+}));
 vi.mock('../../../system/event-bus.js', () => ({
   onEvent: vi.fn(),
   offEvent: vi.fn(),
@@ -103,13 +117,24 @@ vi.mock('../../../system/trigger-scheduler.js', () => ({
 
 vi.mock('../../../system/logger.js', () => ({
   logger: {
-    system: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), info: vi.fn(),
-    plain: vi.fn(), server: vi.fn(), slack: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    warn: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    plain: vi.fn(),
+    server: vi.fn(),
+    slack: vi.fn(),
   },
 }));
 
 import { handleSlackEvent, mountSlackApp } from '../events.js';
-import { fetchSlackThread, getBotUserId, isExternalUser, extractMessageContent } from '../client.js';
+import {
+  fetchSlackThread,
+  getBotUserId,
+  isExternalUser,
+  extractMessageContent,
+} from '../client.js';
 import { getChannelMessageTriggers, fireTrigger } from '../../../system/trigger-scheduler.js';
 import { logger } from '../../../system/logger.js';
 import { Task } from '../../../tasks/task.js';
@@ -124,11 +149,15 @@ function makeTrigger(contains?: string, from_user?: string): Trigger {
     created_by: 'U_DEV',
     created_at: '2026-08-18T12:00:00.000Z',
     binding: { type: 'channel', channel_id: CHANNEL, channel_name: 'watched' },
-    conditions: [{
-      type: 'channel_message',
-      channel_id: CHANNEL,
-      ...(contains || from_user ? { match: { ...(contains ? { contains } : {}), ...(from_user ? { from_user } : {}) } } : {}),
-    }],
+    conditions: [
+      {
+        type: 'channel_message',
+        channel_id: CHANNEL,
+        ...(contains || from_user
+          ? { match: { ...(contains ? { contains } : {}), ...(from_user ? { from_user } : {}) } }
+          : {}),
+      },
+    ],
     action: { prompt: 'look into it' },
     summary: 'watch the deploy bot',
   };
@@ -256,7 +285,9 @@ describe('the author filter matches the author the payload actually carries', ()
   // `event.user` alone, so it matched nothing: the trigger was approved, announced, listed as active, and
   // never fired once.
   it('fires on a `B…` filter when the app post has a bot_id and no user', async () => {
-    vi.mocked(getChannelMessageTriggers).mockReturnValue([makeTrigger('expired feature flags report', 'B_REPORTER')]);
+    vi.mocked(getChannelMessageTriggers).mockReturnValue([
+      makeTrigger('expired feature flags report', 'B_REPORTER'),
+    ]);
 
     await deliverAmbientPost({
       type: 'message',
@@ -277,7 +308,9 @@ describe('the author filter matches the author the payload actually carries', ()
   // The discriminator. Matching on "is a bot post at all" would pass the case above just as well, and would
   // fire this trigger on every other app in the channel.
   it('does not fire when a different app posts matching text', async () => {
-    vi.mocked(getChannelMessageTriggers).mockReturnValue([makeTrigger('expired feature flags report', 'B_REPORTER')]);
+    vi.mocked(getChannelMessageTriggers).mockReturnValue([
+      makeTrigger('expired feature flags report', 'B_REPORTER'),
+    ]);
 
     await deliverAmbientPost({
       type: 'message',
@@ -342,7 +375,13 @@ describe('routing-gate drop log', () => {
     vi.mocked(getChannelMessageTriggers).mockReturnValue([makeTrigger('deploy failed')]);
 
     await messageHandler({
-      event: { type: 'message', subtype: 'channel_join', channel: CHANNEL, user: 'U_DEV', ts: '1700000000.000500' },
+      event: {
+        type: 'message',
+        subtype: 'channel_join',
+        channel: CHANNEL,
+        user: 'U_DEV',
+        ts: '1700000000.000500',
+      },
     });
 
     expect(vi.mocked(fireTrigger)).not.toHaveBeenCalled();
@@ -359,7 +398,13 @@ describe('routing-gate drop log', () => {
     vi.mocked(getChannelMessageTriggers).mockReturnValue([]);
 
     await messageHandler({
-      event: { type: 'message', subtype: 'channel_join', channel: 'C0QUIET', user: 'U_DEV', ts: '1700000000.000600' },
+      event: {
+        type: 'message',
+        subtype: 'channel_join',
+        channel: 'C0QUIET',
+        user: 'U_DEV',
+        ts: '1700000000.000600',
+      },
     });
 
     // Must assert on `debug`, the level production actually uses. Asserting `warn` here was vacuous:
@@ -388,7 +433,12 @@ describe('the content floor on task creation', () => {
       type: 'message',
       channel: 'D0USER',
       user: '',
-      raw: { type: 'message', subtype: 'assistant_app_thread', channel: 'D0USER', ts: '1700000000.001000' },
+      raw: {
+        type: 'message',
+        subtype: 'assistant_app_thread',
+        channel: 'D0USER',
+        ts: '1700000000.001000',
+      },
       ts: '1700000000.001000',
     });
 
@@ -398,7 +448,9 @@ describe('the content floor on task creation', () => {
   it('still creates a task for a DM that carries a message', async () => {
     const task = {
       metadata: { channels: {}, title: 'x' },
-      append: vi.fn().mockResolvedValue({ linkedNewThread: true, entries: ['[ts] [<@U1:R> in #dm] hello'] }),
+      append: vi
+        .fn()
+        .mockResolvedValue({ linkedNewThread: true, entries: ['[ts] [<@U1:R> in #dm] hello'] }),
       ackMessage: vi.fn(),
       sendMessage: vi.fn().mockResolvedValue(undefined),
       debouncedSave: vi.fn(),
@@ -408,7 +460,13 @@ describe('the content floor on task creation', () => {
       threadId: '1700000000.001100',
       channel: { id: 'D0USER', name: 'dm' },
       rootAuthorWasBot: false,
-      messages: [{ user: { id: 'U1', username: 'r', realName: 'R' }, ownText: 'hello', ts: '1700000000.001100' }],
+      messages: [
+        {
+          user: { id: 'U1', username: 'r', realName: 'R' },
+          ownText: 'hello',
+          ts: '1700000000.001100',
+        },
+      ],
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
 
@@ -416,7 +474,13 @@ describe('the content floor on task creation', () => {
       type: 'message',
       channel: 'D0USER',
       user: 'U1',
-      raw: { type: 'message', channel: 'D0USER', user: 'U1', text: 'hello', ts: '1700000000.001100' },
+      raw: {
+        type: 'message',
+        channel: 'D0USER',
+        user: 'U1',
+        text: 'hello',
+        ts: '1700000000.001100',
+      },
       ts: '1700000000.001100',
     });
 
@@ -440,7 +504,10 @@ describe('self-loop guard', () => {
   let messageHandler: (arg: { event: unknown }) => unknown;
 
   beforeEach(async () => {
-    await mountSlackApp({} as Application, { slackBotToken: 'xoxb-test', slackAppToken: 'xapp-test' });
+    await mountSlackApp({} as Application, {
+      slackBotToken: 'xoxb-test',
+      slackAppToken: 'xapp-test',
+    });
     messageHandler = bolt.handlers.get('message')!;
   });
 
@@ -456,7 +523,13 @@ describe('self-loop guard', () => {
     } as any);
 
     await messageHandler({
-      event: { type: 'message', channel: CHANNEL, user: 'U_ARCHIE', text: 'archie own post', ts: '1700000000.001200' },
+      event: {
+        type: 'message',
+        channel: CHANNEL,
+        user: 'U_ARCHIE',
+        text: 'archie own post',
+        ts: '1700000000.001200',
+      },
     });
     await flushHandler();
 
@@ -475,7 +548,13 @@ describe('self-loop guard', () => {
     } as any);
 
     await messageHandler({
-      event: { type: 'message', channel: CHANNEL, user: 'U_HUMAN', text: 'a real post', ts: '1700000000.001300' },
+      event: {
+        type: 'message',
+        channel: CHANNEL,
+        user: 'U_HUMAN',
+        text: 'a real post',
+        ts: '1700000000.001300',
+      },
     });
     await flushHandler();
 
@@ -495,7 +574,10 @@ describe('the message-edit entry point renders through the shared module', () =>
   let messageHandler: (arg: { event: unknown }) => unknown;
 
   beforeEach(async () => {
-    await mountSlackApp({} as Application, { slackBotToken: 'xoxb-test', slackAppToken: 'xapp-test' });
+    await mountSlackApp({} as Application, {
+      slackBotToken: 'xoxb-test',
+      slackAppToken: 'xapp-test',
+    });
     messageHandler = bolt.handlers.get('message')!;
   });
 
@@ -503,7 +585,16 @@ describe('the message-edit entry point renders through the shared module', () =>
     const appendSlackEdit = vi.fn().mockResolvedValue(true);
     vi.mocked(findTaskByThread).mockResolvedValue('task-1');
     vi.mocked(Task.get).mockResolvedValue({
-      metadata: { channels: { 'slack:C0WATCHED:900.000': { type: 'slack', channel_id: CHANNEL, channel_name: 'watched', thread_id: '900.000' } } },
+      metadata: {
+        channels: {
+          'slack:C0WATCHED:900.000': {
+            type: 'slack',
+            channel_id: CHANNEL,
+            channel_name: 'watched',
+            thread_id: '900.000',
+          },
+        },
+      },
       appendSlackEdit,
       sendMessage: vi.fn().mockResolvedValue(undefined),
     } as never);
@@ -552,7 +643,9 @@ describe('an app post from another workspace never fires a trigger', () => {
   };
 
   it('drops it before rendering or matching', async () => {
-    vi.mocked(isExternalUser).mockImplementation((u: { teamId?: string }) => u.teamId === 'T_OTHER');
+    vi.mocked(isExternalUser).mockImplementation(
+      (u: { teamId?: string }) => u.teamId === 'T_OTHER',
+    );
     vi.mocked(getChannelMessageTriggers).mockReturnValue([makeTrigger('deploy failed')]);
 
     await deliverAmbientPost({ ...foreignPost });
@@ -563,10 +656,16 @@ describe('an app post from another workspace never fires a trigger', () => {
   });
 
   it('still fires for an app post from our own workspace — the control that makes the above meaningful', async () => {
-    vi.mocked(isExternalUser).mockImplementation((u: { teamId?: string }) => u.teamId === 'T_OTHER');
+    vi.mocked(isExternalUser).mockImplementation(
+      (u: { teamId?: string }) => u.teamId === 'T_OTHER',
+    );
     vi.mocked(getChannelMessageTriggers).mockReturnValue([makeTrigger('deploy failed')]);
 
-    await deliverAmbientPost({ ...foreignPost, bot_profile: { team_id: 'T_HOME' }, ts: '1700000000.002001' });
+    await deliverAmbientPost({
+      ...foreignPost,
+      bot_profile: { team_id: 'T_HOME' },
+      ts: '1700000000.002001',
+    });
 
     expect(vi.mocked(fireTrigger)).toHaveBeenCalledTimes(1);
   });

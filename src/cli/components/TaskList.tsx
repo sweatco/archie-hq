@@ -6,7 +6,11 @@ import { fetchTasks } from '../api.js';
 function formatDateTime(iso: string): string {
   const d = new Date(iso);
   return d.toLocaleString('en-US', {
-    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
   });
 }
 
@@ -37,10 +41,18 @@ const RETRY_DELAY_MS = 1500;
 
 function StatusIcon({ status }: { status: string }) {
   switch (status) {
-    case 'in_progress': return <Text color="yellow">[<Spinner type="dots" />]</Text>;
-    case 'completed': return <Text color="green">[+]</Text>;
-    case 'stopped': return <Text color="red">[-]</Text>;
-    default: return <Text color="gray">[?]</Text>;
+    case 'in_progress':
+      return (
+        <Text color="yellow">
+          [<Spinner type="dots" />]
+        </Text>
+      );
+    case 'completed':
+      return <Text color="green">[+]</Text>;
+    case 'stopped':
+      return <Text color="red">[-]</Text>;
+    default:
+      return <Text color="gray">[?]</Text>;
   }
 }
 
@@ -75,7 +87,9 @@ export function TaskList({ onSelect, onCreate, refreshTrigger, active }: TaskLis
   // Mirrors scrollTop for reads inside async fetch handlers, where the state
   // captured by the closure is stale.
   const scrollTopRef = useRef(0);
-  useEffect(() => { scrollTopRef.current = scrollTop; }, [scrollTop]);
+  useEffect(() => {
+    scrollTopRef.current = scrollTop;
+  }, [scrollTop]);
 
   // Schedule a single debounced retry. Failed pages are left unmarked so the
   // prefetch effect re-attempts them when this fires.
@@ -87,65 +101,71 @@ export function TaskList({ onSelect, onCreate, refreshTrigger, active }: TaskLis
     }, RETRY_DELAY_MS);
   }, []);
 
-  const loadPage = useCallback(async (page: number) => {
-    if (fetchedPages.current.has(page) || fetchingPages.current.has(page)) return;
-    const gen = generation.current;
-    fetchingPages.current.add(page);
-    try {
-      const { tasks, total: t } = await fetchTasks({ limit: PAGE_SIZE, offset: page * PAGE_SIZE });
-      if (gen !== generation.current) return; // superseded by a refresh — discard
-      fetchedPages.current.add(page);
+  const loadPage = useCallback(
+    async (page: number) => {
+      if (fetchedPages.current.has(page) || fetchingPages.current.has(page)) return;
+      const gen = generation.current;
+      fetchingPages.current.add(page);
+      try {
+        const { tasks, total: t } = await fetchTasks({
+          limit: PAGE_SIZE,
+          offset: page * PAGE_SIZE,
+        });
+        if (gen !== generation.current) return; // superseded by a refresh — discard
+        fetchedPages.current.add(page);
 
-      // Tasks are served newest-first (the API sorts session dirs descending),
-      // so anything created since the last load is *prepended* and every
-      // existing row shifts down by the growth in `total`. Slide the array and
-      // the viewport by that delta together, before the page merge below writes
-      // the fresh rows, so indices stay aligned throughout and the selection
-      // keeps pointing at the same task instead of silently drifting.
-      if (page === 0 && pendingShift.current) {
-        pendingShift.current = false;
-        const shift = t - prevTotal.current;
-        if (shift > 0) {
-          setAllTasks((prev) => [...new Array<TaskSummary>(shift), ...prev]);
-          // Pinned to the top: let new tasks appear rather than scrolling away
-          // from them. Scrolled anywhere else: hold the viewport still.
-          if (scrollTopRef.current > 0) {
-            setScrollTop((s) => s + shift);
-            setCursor((c) => c + shift);
+        // Tasks are served newest-first (the API sorts session dirs descending),
+        // so anything created since the last load is *prepended* and every
+        // existing row shifts down by the growth in `total`. Slide the array and
+        // the viewport by that delta together, before the page merge below writes
+        // the fresh rows, so indices stay aligned throughout and the selection
+        // keeps pointing at the same task instead of silently drifting.
+        if (page === 0 && pendingShift.current) {
+          pendingShift.current = false;
+          const shift = t - prevTotal.current;
+          if (shift > 0) {
+            setAllTasks((prev) => [...new Array<TaskSummary>(shift), ...prev]);
+            // Pinned to the top: let new tasks appear rather than scrolling away
+            // from them. Scrolled anywhere else: hold the viewport still.
+            if (scrollTopRef.current > 0) {
+              setScrollTop((s) => s + shift);
+              setCursor((c) => c + shift);
+            }
           }
         }
-      }
-      prevTotal.current = t;
+        prevTotal.current = t;
 
-      setTotal(t);
-      setAllTasks((prev) => {
-        const next = [...prev];
-        // Ensure array is large enough
-        while (next.length < page * PAGE_SIZE + tasks.length) {
-          next.push(undefined as any);
+        setTotal(t);
+        setAllTasks((prev) => {
+          const next = [...prev];
+          // Ensure array is large enough
+          while (next.length < page * PAGE_SIZE + tasks.length) {
+            next.push(undefined as any);
+          }
+          for (let i = 0; i < tasks.length; i++) {
+            next[page * PAGE_SIZE + i] = tasks[i];
+          }
+          return next;
+        });
+        setError(null);
+        if (page === 0) setLoading(false);
+      } catch (err) {
+        if (gen !== generation.current) return; // superseded — ignore
+        // Leave the page unmarked so it is retried. Only surface an error when
+        // page 0 fails, since that is what leaves the list with nothing to show.
+        if (page === 0) {
+          setLoading(false);
+          setError(err instanceof Error ? err.message : 'Failed to load tasks');
         }
-        for (let i = 0; i < tasks.length; i++) {
-          next[page * PAGE_SIZE + i] = tasks[i];
-        }
-        return next;
-      });
-      setError(null);
-      if (page === 0) setLoading(false);
-    } catch (err) {
-      if (gen !== generation.current) return; // superseded — ignore
-      // Leave the page unmarked so it is retried. Only surface an error when
-      // page 0 fails, since that is what leaves the list with nothing to show.
-      if (page === 0) {
-        setLoading(false);
-        setError(err instanceof Error ? err.message : 'Failed to load tasks');
+        scheduleRetry();
+      } finally {
+        // Only the owning generation may clear the marker, so a stale fetch can't
+        // delete the tracking entry of a fetch started after a refresh.
+        if (gen === generation.current) fetchingPages.current.delete(page);
       }
-      scheduleRetry();
-    } finally {
-      // Only the owning generation may clear the marker, so a stale fetch can't
-      // delete the tracking entry of a fetch started after a refresh.
-      if (gen === generation.current) fetchingPages.current.delete(page);
-    }
-  }, [scheduleRetry]);
+    },
+    [scheduleRetry],
+  );
 
   // Initial load, then revalidate-in-place on every refresh.
   //
@@ -199,9 +219,12 @@ export function TaskList({ onSelect, onCreate, refreshTrigger, active }: TaskLis
   }, [cursor, scrollTop, total, visibleRows, retryTick, loadPage]);
 
   // Cancel any pending retry on unmount.
-  useEffect(() => () => {
-    if (retryTimer.current) clearTimeout(retryTimer.current);
-  }, []);
+  useEffect(
+    () => () => {
+      if (retryTimer.current) clearTimeout(retryTimer.current);
+    },
+    [],
+  );
 
   // Keep cursor in view
   useEffect(() => {
@@ -252,7 +275,13 @@ export function TaskList({ onSelect, onCreate, refreshTrigger, active }: TaskLis
     return (
       <Box flexDirection="column" padding={1}>
         <Text bold>No tasks found</Text>
-        <Text dimColor>Press <Text color="cyan" bold>n</Text> to create a new task</Text>
+        <Text dimColor>
+          {'Press '}
+          <Text color="cyan" bold>
+            n
+          </Text>
+          {' to create a new task'}
+        </Text>
       </Box>
     );
   }
@@ -263,17 +292,23 @@ export function TaskList({ onSelect, onCreate, refreshTrigger, active }: TaskLis
     <Box flexDirection="column" height={visibleRows + 2}>
       <Box paddingX={1} marginBottom={1}>
         <Text bold>Tasks ({total})</Text>
-        {total > visibleRows && <Text dimColor>  {cursor + 1}/{total}</Text>}
+        {total > visibleRows && (
+          <Text dimColor>
+            {'  '}
+            {cursor + 1}/{total}
+          </Text>
+        )}
       </Box>
       {visible.map((task, i) => {
         if (!task) return null;
         const globalIndex = scrollTop + i;
         const selected = globalIndex === cursor;
-        const channel = !task.channel_name || task.channel_name === 'cli'
-          ? 'cli'
-          : task.channel_name.startsWith('DM with')
-            ? task.channel_name
-            : `#${task.channel_name}`;
+        const channel =
+          !task.channel_name || task.channel_name === 'cli'
+            ? 'cli'
+            : task.channel_name.startsWith('DM with')
+              ? task.channel_name
+              : `#${task.channel_name}`;
 
         return (
           <Box key={task.task_id} paddingX={1}>
@@ -283,11 +318,29 @@ export function TaskList({ onSelect, onCreate, refreshTrigger, active }: TaskLis
               </Text>
               <StatusIcon status={task.status} />
               <Text color={selected ? 'cyan' : undefined} bold={selected}>
-                {' '}{task.task_id}
+                {' '}
+                {task.task_id}
               </Text>
-              <Text dimColor>  {channel}</Text>
-              {task.title && <Text>  {task.title}</Text>}
-              {task.reminder && <Text color="magenta">  ⏰ {formatDateTime(task.reminder.trigger_at)} — {task.reminder.reason.length > 50 ? task.reminder.reason.slice(0, 50) + '…' : task.reminder.reason}</Text>}
+              <Text dimColor>
+                {'  '}
+                {channel}
+              </Text>
+              {task.title && (
+                <Text>
+                  {'  '}
+                  {task.title}
+                </Text>
+              )}
+              {task.reminder && (
+                <Text color="magenta">
+                  {'  ⏰ '}
+                  {formatDateTime(task.reminder.trigger_at)}
+                  {' — '}
+                  {task.reminder.reason.length > 50
+                    ? task.reminder.reason.slice(0, 50) + '…'
+                    : task.reminder.reason}
+                </Text>
+              )}
             </Text>
           </Box>
         );

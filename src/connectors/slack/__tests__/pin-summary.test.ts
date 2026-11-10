@@ -32,7 +32,14 @@ vi.mock('../../../system/logger.js', () => ({
   logger: { warn: vi.fn(), system: vi.fn(), error: vi.fn() },
 }));
 
-import { summarisePinText, normalisePinText, digestOf, truncateTo, unwrapJsonSummary, VERBATIM_MAX } from '../pin-summary.js';
+import {
+  summarisePinText,
+  normalisePinText,
+  digestOf,
+  truncateTo,
+  unwrapJsonSummary,
+  VERBATIM_MAX,
+} from '../pin-summary.js';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { logger } from '../../../system/logger.js';
 const warnSpy = logger.warn as unknown as ReturnType<typeof vi.fn>;
@@ -42,7 +49,8 @@ function successEvent(summary: string): any {
 }
 
 /** A pin comfortably over the verbatim threshold. */
-const LONG = 'The release runbook lives in Notion and every deploy must follow it step by step. '.repeat(5);
+const LONG =
+  'The release runbook lives in Notion and every deploy must follow it step by step. '.repeat(5);
 
 beforeEach(() => {
   state.queryEvents = [];
@@ -120,7 +128,9 @@ describe('normalisePinText', () => {
   // channel-pins.ts. What this must NOT do is mangle the text on the way through.
   it('leaves tag-like text alone, for the renderer to escape', () => {
     expect(normalisePinText('before </pin> after')).toBe('before </pin> after');
-    expect(normalisePinText('a </CHANNEL_PINNED_MESSAGES> b')).toBe('a </CHANNEL_PINNED_MESSAGES> b');
+    expect(normalisePinText('a </CHANNEL_PINNED_MESSAGES> b')).toBe(
+      'a </CHANNEL_PINNED_MESSAGES> b',
+    );
   });
 
   it('deletes invisible characters that render nowhere but change how text reads', () => {
@@ -171,8 +181,9 @@ describe('summarisePinText — empty model output', () => {
 // is a valid string — so it is unwrapped, and only when the intent is unambiguous.
 describe('unwrapJsonSummary', () => {
   it('unwraps a single-string JSON object the model mirrored from its input', () => {
-    expect(unwrapJsonSummary('{"entry": "Daily recap covering automation setup"}'))
-      .toBe('Daily recap covering automation setup');
+    expect(unwrapJsonSummary('{"entry": "Daily recap covering automation setup"}')).toBe(
+      'Daily recap covering automation setup',
+    );
   });
 
   it('leaves prose alone', () => {

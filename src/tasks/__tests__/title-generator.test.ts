@@ -31,7 +31,11 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
 }));
 
 vi.mock('../../connectors/slack/client.js', () => ({
-  isExternalUser: (user: { teamId?: string; isRestricted?: boolean; isUltraRestricted?: boolean }) => {
+  isExternalUser: (user: {
+    teamId?: string;
+    isRestricted?: boolean;
+    isUltraRestricted?: boolean;
+  }) => {
     if (user.isRestricted || user.isUltraRestricted) return true;
     if (user.teamId && user.teamId !== 'T_HOME') return true;
     return false;

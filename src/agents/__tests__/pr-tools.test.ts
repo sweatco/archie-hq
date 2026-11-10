@@ -34,8 +34,12 @@ vi.mock('../../connectors/github/client.js', async (importOriginal) => {
 
 vi.mock('../../connectors/github/repo-clone.js', () => ({
   gitExec: vi.fn().mockResolvedValue(''),
-  setupSharedClone: vi.fn().mockResolvedValue({ clone_path: '/wt', branch: 'feat/x', base_branch: 'main' }),
-  ensureTaskClone: vi.fn().mockResolvedValue({ clone_path: '/wt', branch: 'feat/x', base_branch: 'main', created: true }),
+  setupSharedClone: vi
+    .fn()
+    .mockResolvedValue({ clone_path: '/wt', branch: 'feat/x', base_branch: 'main' }),
+  ensureTaskClone: vi
+    .fn()
+    .mockResolvedValue({ clone_path: '/wt', branch: 'feat/x', base_branch: 'main', created: true }),
   recordedBaseBranch: vi.fn().mockReturnValue('main'),
   cloneExists: vi.fn().mockResolvedValue(false),
   isWorktree: vi.fn().mockResolvedValue(false),
@@ -44,7 +48,9 @@ vi.mock('../../connectors/github/repo-clone.js', () => ({
 
 vi.mock('../../tasks/persistence.js', () => ({
   appendAgentFinding: vi.fn().mockResolvedValue(undefined),
-  getTaskClonePath: vi.fn((taskId: string, github: string) => `/sessions/${taskId}/repos/${github}`),
+  getTaskClonePath: vi.fn(
+    (taskId: string, github: string) => `/sessions/${taskId}/repos/${github}`,
+  ),
   getReposPath: vi.fn().mockReturnValue('/sessions/task-123/repos'),
 }));
 
@@ -148,8 +154,9 @@ function makeTask(overrides: Partial<Task['metadata']> = {}): Task {
 
 /** Extract a tool handler from an MCP server by name */
 function getToolFromServer(server: any, toolName: string) {
-  const tools: Record<string, any> = (server.instance as any)._registeredTools
-    ?? Object.fromEntries((server.instance as any)._tools ?? []);
+  const tools: Record<string, any> =
+    (server.instance as any)._registeredTools ??
+    Object.fromEntries((server.instance as any)._tools ?? []);
   if (!tools[toolName]) throw new Error(`Tool '${toolName}' not found in server`);
   return tools[toolName].callback ?? tools[toolName].handler;
 }
@@ -170,7 +177,10 @@ describe('merge_pull_request', () => {
 
   it('rejects when PR is not open', async () => {
     mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'merged', mergeable: true, mergeableState: 'clean', approved: true,
+      state: 'merged',
+      mergeable: true,
+      mergeableState: 'clean',
+      approved: true,
     });
 
     const tool = getRepoTool(makeAgent(), makeTask(), 'merge_pull_request');
@@ -183,7 +193,10 @@ describe('merge_pull_request', () => {
 
   it('rejects when mergeableState is not clean', async () => {
     mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'open', mergeable: true, mergeableState: 'dirty', approved: true,
+      state: 'open',
+      mergeable: true,
+      mergeableState: 'dirty',
+      approved: true,
     });
 
     const tool = getRepoTool(makeAgent(), makeTask(), 'merge_pull_request');
@@ -196,7 +209,10 @@ describe('merge_pull_request', () => {
 
   it('rejects when mergeable is false', async () => {
     mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'open', mergeable: false, mergeableState: 'blocked', approved: false,
+      state: 'open',
+      mergeable: false,
+      mergeableState: 'blocked',
+      approved: false,
     });
 
     const tool = getRepoTool(makeAgent(), makeTask(), 'merge_pull_request');
@@ -211,7 +227,10 @@ describe('merge_pull_request', () => {
     // blocked tolerance. isMergeReadyPerGithub would merge this PR; the tool
     // must not. Reverting to isMergeReadyPerGithub here fails this test.
     mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'open', mergeable: true, mergeableState: 'blocked', approved: true,
+      state: 'open',
+      mergeable: true,
+      mergeableState: 'blocked',
+      approved: true,
     });
 
     const tool = getRepoTool(makeAgent(), makeTask(), 'merge_pull_request');
@@ -223,10 +242,14 @@ describe('merge_pull_request', () => {
 
   it('merges when PR is open and clean', async () => {
     mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'open', mergeable: true, mergeableState: 'clean', approved: true,
+      state: 'open',
+      mergeable: true,
+      mergeableState: 'clean',
+      approved: true,
     });
     mockGitHubClient.mergePullRequest.mockResolvedValue({
-      success: true, message: 'PR #42 merged successfully',
+      success: true,
+      message: 'PR #42 merged successfully',
     });
 
     const tool = getRepoTool(makeAgent(), makeTask(), 'merge_pull_request');
@@ -238,10 +261,14 @@ describe('merge_pull_request', () => {
 
   it('targets the repo named in the github argument', async () => {
     mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'open', mergeable: true, mergeableState: 'clean', approved: true,
+      state: 'open',
+      mergeable: true,
+      mergeableState: 'clean',
+      approved: true,
     });
     mockGitHubClient.mergePullRequest.mockResolvedValue({
-      success: true, message: 'PR #7 merged successfully',
+      success: true,
+      message: 'PR #7 merged successfully',
     });
 
     const task = makeTask({
@@ -290,7 +317,13 @@ describe('merge_pull_request — policy gating', () => {
   }
 
   function readyStatus(overrides: Record<string, unknown> = {}) {
-    return { state: 'open', mergeable: true, mergeableState: 'clean', approved: true, ...overrides };
+    return {
+      state: 'open',
+      mergeable: true,
+      mergeableState: 'clean',
+      approved: true,
+      ...overrides,
+    };
   }
 
   beforeEach(() => {
@@ -302,7 +335,10 @@ describe('merge_pull_request — policy gating', () => {
   it('auto repo: merges directly with no approval request and no pause (AC6)', async () => {
     vi.mocked(isAutoMergeRepo).mockReturnValue(true);
     mockGitHubClient.getPRStatus.mockResolvedValue(readyStatus());
-    mockGitHubClient.mergePullRequest.mockResolvedValue({ success: true, message: 'PR #42 merged successfully' });
+    mockGitHubClient.mergePullRequest.mockResolvedValue({
+      success: true,
+      message: 'PR #42 merged successfully',
+    });
 
     const agent = makeMergeAgent();
     const task = makeTask();
@@ -352,7 +388,9 @@ describe('merge_pull_request — policy gating', () => {
     // PR must surface the approve/deny prompt (approving arms it for auto-merge),
     // NOT a "not ready" refusal. Restoring the isMergeReadyPerGithub gate here
     // would return the refusal and skip the prompt — this test would fail.
-    mockGitHubClient.getPRStatus.mockResolvedValue(readyStatus({ mergeable: false, mergeableState: 'blocked' }));
+    mockGitHubClient.getPRStatus.mockResolvedValue(
+      readyStatus({ mergeable: false, mergeableState: 'blocked' }),
+    );
 
     const agent = makeMergeAgent();
     const task = makeTask();
@@ -408,8 +446,10 @@ describe('merge_pull_request — policy gating', () => {
     const agent = makeMergeAgent();
     const task = makeTask({
       pending_merge_approval: {
-        github: 'org/backend', pr_number: 1,
-        requested_by: 'pm-agent', requested_at: '2026-07-06T00:00:00.000Z',
+        github: 'org/backend',
+        pr_number: 1,
+        requested_by: 'pm-agent',
+        requested_at: '2026-07-06T00:00:00.000Z',
       },
     });
     (task as { agent?: unknown }).agent = { pendingTeardown: () => Promise.resolve() };
@@ -430,8 +470,10 @@ describe('merge_pull_request — policy gating', () => {
     const agent = makeMergeAgent();
     const task = makeTask({
       pending_merge_approval: {
-        github: 'org/backend', pr_number: 42,
-        requested_by: 'pm-agent', requested_at: '2026-07-06T00:00:00.000Z',
+        github: 'org/backend',
+        pr_number: 42,
+        requested_by: 'pm-agent',
+        requested_at: '2026-07-06T00:00:00.000Z',
       },
     });
     const tool = getRepoTool(agent, task, 'merge_pull_request');
@@ -450,8 +492,10 @@ describe('merge_pull_request — policy gating', () => {
     const agent = makeMergeAgent();
     const task = makeTask({
       pending_merge_approval: {
-        github: 'org/backend', pr_number: 1,
-        requested_by: 'pm-agent', requested_at: '2026-07-06T00:00:00.000Z',
+        github: 'org/backend',
+        pr_number: 1,
+        requested_by: 'pm-agent',
+        requested_at: '2026-07-06T00:00:00.000Z',
       },
     });
     const tool = getRepoTool(agent, task, 'merge_pull_request');
@@ -502,7 +546,10 @@ describe('get_pr_status (read-only server)', () => {
 
   it('returns formatted status', async () => {
     mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'open', mergeable: true, mergeableState: 'clean', approved: true,
+      state: 'open',
+      mergeable: true,
+      mergeableState: 'clean',
+      approved: true,
     });
 
     const tool = getRepoTool(makeAgent(), makeTask(), 'get_pr_status');
@@ -522,9 +569,15 @@ describe('get_check_run', () => {
 
   it('resolves a legacy /runs/<id> check-run permalink and shows output + log', async () => {
     mockGitHubClient.getCheckRunById.mockResolvedValue({
-      id: 78033491451, name: 'rspec', app: 'github-actions', status: 'completed',
-      conclusion: 'failure', url: 'https://github.com/org/backend/runs/78033491451',
-      headSha: 'abc1234def', startedAt: null, completedAt: null,
+      id: 78033491451,
+      name: 'rspec',
+      app: 'github-actions',
+      status: 'completed',
+      conclusion: 'failure',
+      url: 'https://github.com/org/backend/runs/78033491451',
+      headSha: 'abc1234def',
+      startedAt: null,
+      completedAt: null,
       output: { title: 'RSpec', summary: '3 failures' },
       logTail: 'Failures:\n  1) Widget flakes\n  rspec ./spec/widget_spec.rb:12',
     });
@@ -542,8 +595,15 @@ describe('get_check_run', () => {
 
   it('accepts a bare numeric id', async () => {
     mockGitHubClient.getCheckRunById.mockResolvedValue({
-      id: 999, name: 'lint', app: 'ci', status: 'completed', conclusion: 'success',
-      url: null, headSha: null, startedAt: null, completedAt: null,
+      id: 999,
+      name: 'lint',
+      app: 'ci',
+      status: 'completed',
+      conclusion: 'success',
+      url: null,
+      headSha: null,
+      startedAt: null,
+      completedAt: null,
     });
 
     const tool = getRepoTool(makeAgent(), makeTask(), 'get_check_run');
@@ -554,11 +614,23 @@ describe('get_check_run', () => {
 
   it('routes an /actions/runs/<id> URL to the workflow-run path', async () => {
     mockGitHubClient.getWorkflowRunById.mockResolvedValue({
-      id: 555, name: 'CI', status: 'completed', conclusion: 'failure',
-      headSha: 'deadbeef', headBranch: 'main', url: 'https://github.com/org/backend/actions/runs/555',
+      id: 555,
+      name: 'CI',
+      status: 'completed',
+      conclusion: 'failure',
+      headSha: 'deadbeef',
+      headBranch: 'main',
+      url: 'https://github.com/org/backend/actions/runs/555',
       jobs: [
         { id: 1, name: 'build', status: 'completed', conclusion: 'success', url: null },
-        { id: 2, name: 'test', status: 'completed', conclusion: 'failure', url: null, logTail: 'Failures:\n  boom' },
+        {
+          id: 2,
+          name: 'test',
+          status: 'completed',
+          conclusion: 'failure',
+          url: null,
+          logTail: 'Failures:\n  boom',
+        },
       ],
     });
 
@@ -573,8 +645,15 @@ describe('get_check_run', () => {
 
   it('treats /actions/runs/<run>/job/<job> as a check-run (job id)', async () => {
     mockGitHubClient.getCheckRunById.mockResolvedValue({
-      id: 42, name: 'rspec', app: 'github-actions', status: 'completed',
-      conclusion: 'failure', url: null, headSha: null, startedAt: null, completedAt: null,
+      id: 42,
+      name: 'rspec',
+      app: 'github-actions',
+      status: 'completed',
+      conclusion: 'failure',
+      url: null,
+      headSha: null,
+      startedAt: null,
+      completedAt: null,
     });
 
     const tool = getRepoTool(makeAgent(), makeTask(), 'get_check_run');
@@ -613,15 +692,26 @@ describe('PM agent tools', () => {
 
     const registeredTools = servers.flatMap((server) =>
       Object.keys(
-        (server.instance as any)._registeredTools ?? Object.fromEntries((server.instance as any)._tools ?? []),
+        (server.instance as any)._registeredTools ??
+          Object.fromEntries((server.instance as any)._tools ?? []),
       ),
     );
 
     const prToolNames = [
-      'push_branch', 'create_pull_request', 'get_pr_status', 'get_pr_reviews',
-      'get_pr_comments', 'get_review_threads',
-      'update_pr', 'add_pr_comment', 'add_review_comment', 'reply_to_review_comment',
-      'resolve_review_thread', 'request_re_review', 'merge_pull_request', 'close_pull_request',
+      'push_branch',
+      'create_pull_request',
+      'get_pr_status',
+      'get_pr_reviews',
+      'get_pr_comments',
+      'get_review_threads',
+      'update_pr',
+      'add_pr_comment',
+      'add_review_comment',
+      'reply_to_review_comment',
+      'resolve_review_thread',
+      'request_re_review',
+      'merge_pull_request',
+      'close_pull_request',
     ];
 
     for (const prTool of prToolNames) {
@@ -634,7 +724,10 @@ describe('request_edit_mode', () => {
   it('is a no-op when edit mode is already approved (idempotent)', async () => {
     const agent = makeAgent();
     const task = makeTask({ edit_allowed: true });
-    const handler = getToolFromServer(createOrchestrationMcpServer(agent, task), 'request_edit_mode');
+    const handler = getToolFromServer(
+      createOrchestrationMcpServer(agent, task),
+      'request_edit_mode',
+    );
 
     const result = await handler({ reason: 'tweak the config' });
 
@@ -649,7 +742,10 @@ describe('request_edit_mode', () => {
     (agent as any).pendingTeardown = false;
     (agent as any).deferTeardown = vi.fn();
     const task = makeTask({ edit_allowed: false });
-    const handler = getToolFromServer(createOrchestrationMcpServer(agent, task), 'request_edit_mode');
+    const handler = getToolFromServer(
+      createOrchestrationMcpServer(agent, task),
+      'request_edit_mode',
+    );
 
     const result = await handler({ reason: 'apply the fix' });
 
@@ -675,7 +771,7 @@ describe('hydrateBranchState', () => {
   it('preserves existing branch_states', () => {
     const attached: AttachedRepo = {
       github: 'org/backend',
-      branch_states: { 'existing': { } },
+      branch_states: { existing: {} },
     };
     hydrateBranchState(attached, 'feature/task-2', 'main');
 
@@ -729,14 +825,21 @@ describe('PR attribution', () => {
     vi.mocked(getGitHubClient).mockReturnValue(mockGitHubClient as any);
     vi.mocked(getArchieAttributionIdentity).mockReturnValue(ARCHIE as any);
     vi.mocked(isAutoMergeRepo).mockReturnValue(true);
-    mockGitHubClient.createPullRequest.mockResolvedValue({ pr_number: 42, pr_url: 'https://gh/pr/42' });
+    mockGitHubClient.createPullRequest.mockResolvedValue({
+      pr_number: 42,
+      pr_url: 'https://gh/pr/42',
+    });
   });
 
   /** The body create_pull_request actually sent to GitHub. */
   const sentBody = () => mockGitHubClient.createPullRequest.mock.calls[0][4] as string;
 
   it('names the approver, using their Slack display name', () => {
-    const tool = getRepoTool(makeAgent(), makeTask({ edit_approved_by: APPROVER }), 'create_pull_request');
+    const tool = getRepoTool(
+      makeAgent(),
+      makeTask({ edit_approved_by: APPROVER }),
+      'create_pull_request',
+    );
 
     return tool({ title: 'T', body: 'Description.' }, {}).then(() => {
       expect(sentBody()).toContain('Opened by @archie-hq on behalf of **Bandita Parida**.');

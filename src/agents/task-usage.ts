@@ -259,7 +259,9 @@ async function collectTokens(taskId: string): Promise<{
 async function collectCost(
   taskId: string,
   reduce: NonceReducer,
-): Promise<{ grand: number; perAgent: Map<string, number>; costRecordedTurns: number } | undefined> {
+): Promise<
+  { grand: number; perAgent: Map<string, number>; costRecordedTurns: number } | undefined
+> {
   // (a) INLINE allowlist barrier: reject an unsafe taskId before a path is
   // built — an unsafe id reports no cost (undefined), like a missing file.
   if (!/^task-\d{8}-\d{4}-[a-z0-9]+$/.test(taskId)) return undefined;
@@ -295,9 +297,10 @@ async function collectCost(
   const groups = new Map<string, UsageRecordLite[]>();
   let singleton = 0;
   for (const r of records) {
-    const nonce = typeof r.query_nonce === 'string' && r.query_nonce
-      ? r.query_nonce
-      : `__no-nonce-${singleton++}`;
+    const nonce =
+      typeof r.query_nonce === 'string' && r.query_nonce
+        ? r.query_nonce
+        : `__no-nonce-${singleton++}`;
     const list = groups.get(nonce);
     if (list) list.push(r);
     else groups.set(nonce, [r]);

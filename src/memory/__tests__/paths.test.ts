@@ -28,27 +28,19 @@ import {
 } from '../paths.js';
 
 describe('isSlackUserId', () => {
-  it.each([
-    'U07ABC123',
-    'W123456789',
-    'B0X1Y2Z3A4',
-    'T07TEAM01',
-    'U0123456',
-  ])('accepts %s', (id) => {
-    expect(isSlackUserId(id)).toBe(true);
-  });
+  it.each(['U07ABC123', 'W123456789', 'B0X1Y2Z3A4', 'T07TEAM01', 'U0123456'])(
+    'accepts %s',
+    (id) => {
+      expect(isSlackUserId(id)).toBe(true);
+    },
+  );
 
-  it.each([
-    '',
-    'u07abc123',
-    'U123',
-    'X07ABC123',
-    'cli:abc',
-    'alex',
-    'U07ABC 123',
-  ])('rejects %j', (id) => {
-    expect(isSlackUserId(id)).toBe(false);
-  });
+  it.each(['', 'u07abc123', 'U123', 'X07ABC123', 'cli:abc', 'alex', 'U07ABC 123'])(
+    'rejects %j',
+    (id) => {
+      expect(isSlackUserId(id)).toBe(false);
+    },
+  );
 });
 
 describe('isFallbackUserId', () => {
@@ -56,17 +48,12 @@ describe('isFallbackUserId', () => {
     expect(isFallbackUserId(id)).toBe(true);
   });
 
-  it.each([
-    '',
-    'cli',
-    'cli:',
-    ':abc',
-    'cli:has spaces',
-    'CLI:upper',
-    'U07ABC123',
-  ])('rejects %j', (id) => {
-    expect(isFallbackUserId(id)).toBe(false);
-  });
+  it.each(['', 'cli', 'cli:', ':abc', 'cli:has spaces', 'CLI:upper', 'U07ABC123'])(
+    'rejects %j',
+    (id) => {
+      expect(isFallbackUserId(id)).toBe(false);
+    },
+  );
 });
 
 describe('isAllowedUserId', () => {
@@ -125,10 +112,18 @@ describe('task summary paths', () => {
   });
 
   it('places public, private-channel, and DM task files under their conversation IDs', () => {
-    expect(getTaskSummaryPath('public', 'C07ABC123', 'task-1')).toMatch(/memory\/public\/C07ABC123\/task-1\.md$/);
-    expect(getTaskSummaryPath('private', 'G07ABC123', 'task-1')).toMatch(/memory\/private\/G07ABC123\/task-1\.md$/);
-    expect(getTaskSummaryPath('private', 'D07ABC123', 'task-1')).toMatch(/memory\/private\/D07ABC123\/task-1\.md$/);
-    expect(getTaskOverviewPath('private', 'D07ABC123')).toMatch(/memory\/private\/D07ABC123\/rolling-summary\.md$/);
+    expect(getTaskSummaryPath('public', 'C07ABC123', 'task-1')).toMatch(
+      /memory\/public\/C07ABC123\/task-1\.md$/,
+    );
+    expect(getTaskSummaryPath('private', 'G07ABC123', 'task-1')).toMatch(
+      /memory\/private\/G07ABC123\/task-1\.md$/,
+    );
+    expect(getTaskSummaryPath('private', 'D07ABC123', 'task-1')).toMatch(
+      /memory\/private\/D07ABC123\/task-1\.md$/,
+    );
+    expect(getTaskOverviewPath('private', 'D07ABC123')).toMatch(
+      /memory\/private\/D07ABC123\/rolling-summary\.md$/,
+    );
   });
 
   it('rejects malformed channel and task IDs', () => {
@@ -158,7 +153,9 @@ describe('isValidEntitySlug', () => {
 
 describe('getEntityPath', () => {
   it('places entities under memory/public/entities/', () => {
-    expect(getEntityPath('payment-service')).toMatch(/memory\/public\/entities\/payment-service\.md$/);
+    expect(getEntityPath('payment-service')).toMatch(
+      /memory\/public\/entities\/payment-service\.md$/,
+    );
   });
   it('throws on an invalid slug (no traversal reaches the filesystem)', () => {
     expect(() => getEntityPath('../../etc/passwd')).toThrow(/invalid entity slug/);

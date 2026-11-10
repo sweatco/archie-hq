@@ -29,14 +29,12 @@ vi.mock('../../system/logger.js', () => ({
   logger: { warn: vi.fn(), system: vi.fn(), debug: vi.fn(), info: vi.fn(), error: vi.fn() },
 }));
 
-import {
-  readUser,
-  writeUser,
-  applyUserUpdatesWithIdentity,
-} from '../store.js';
+import { readUser, writeUser, applyUserUpdatesWithIdentity } from '../store.js';
 
-const applyUserUpdates = (userId: string, updates: Parameters<typeof applyUserUpdatesWithIdentity>[2]) =>
-  applyUserUpdatesWithIdentity(userId, userId, updates);
+const applyUserUpdates = (
+  userId: string,
+  updates: Parameters<typeof applyUserUpdatesWithIdentity>[2],
+) => applyUserUpdatesWithIdentity(userId, userId, updates);
 
 describe('memory store', () => {
   beforeEach(async () => {
@@ -108,7 +106,9 @@ describe('memory store', () => {
 
   describe('applyUserUpdates(username, updates)', () => {
     it('creates new user file with section when file does not exist', async () => {
-      await applyUserUpdates('alice', [{ action: 'add', section: 'Communication', content: 'Prefers async' }]);
+      await applyUserUpdates('alice', [
+        { action: 'add', section: 'Communication', content: 'Prefers async' },
+      ]);
       const saved = await readFile(join(usersDir, 'alice.md'), 'utf-8');
       expect(saved).toContain('## Communication');
       expect(saved).toContain('- Prefers async');
@@ -117,7 +117,9 @@ describe('memory store', () => {
     it('adds under existing section in user file', async () => {
       await mkdir(usersDir, { recursive: true });
       await writeFile(join(usersDir, 'bob.md'), '## Communication\n- Prefers async\n', 'utf-8');
-      await applyUserUpdates('bob', [{ action: 'add', section: 'Communication', content: 'Uses Slack' }]);
+      await applyUserUpdates('bob', [
+        { action: 'add', section: 'Communication', content: 'Uses Slack' },
+      ]);
       const saved = await readFile(join(usersDir, 'bob.md'), 'utf-8');
       expect(saved).toContain('- Prefers async');
       expect(saved).toContain('- Uses Slack');
@@ -133,7 +135,9 @@ describe('memory store', () => {
     });
 
     it('creates users/ directory if missing', async () => {
-      await applyUserUpdates('charlie', [{ action: 'add', section: 'Notes', content: 'Backend dev' }]);
+      await applyUserUpdates('charlie', [
+        { action: 'add', section: 'Notes', content: 'Backend dev' },
+      ]);
       const saved = await readFile(join(usersDir, 'charlie.md'), 'utf-8');
       expect(saved).toContain('## Notes');
       expect(saved).toContain('- Backend dev');
@@ -141,8 +145,14 @@ describe('memory store', () => {
 
     it('replaces line on update action with old text', async () => {
       await mkdir(usersDir, { recursive: true });
-      await writeFile(join(usersDir, 'erin.md'), '## Notes\n- Uses Node.js\n- Uses TypeScript\n', 'utf-8');
-      await applyUserUpdates('erin', [{ action: 'update', content: 'Uses Node.js v20', old: 'Uses Node.js' }]);
+      await writeFile(
+        join(usersDir, 'erin.md'),
+        '## Notes\n- Uses Node.js\n- Uses TypeScript\n',
+        'utf-8',
+      );
+      await applyUserUpdates('erin', [
+        { action: 'update', content: 'Uses Node.js v20', old: 'Uses Node.js' },
+      ]);
       const saved = await readFile(join(usersDir, 'erin.md'), 'utf-8');
       expect(saved).toContain('- Uses Node.js v20');
       expect(saved).not.toContain('- Uses Node.js\n');
@@ -153,7 +163,9 @@ describe('memory store', () => {
       await mkdir(usersDir, { recursive: true });
       await writeFile(join(usersDir, 'finn.md'), '## Notes\n- Uses TypeScript\n', 'utf-8');
       const before = await readFile(join(usersDir, 'finn.md'), 'utf-8');
-      const result = await applyUserUpdates('finn', [{ action: 'update', content: 'Uses TypeScript v5', old: 'Uses JavaScript' }]);
+      const result = await applyUserUpdates('finn', [
+        { action: 'update', content: 'Uses TypeScript v5', old: 'Uses JavaScript' },
+      ]);
       const after = await readFile(join(usersDir, 'finn.md'), 'utf-8');
       expect(after).toBe(before);
       expect(result.appliedUpdates).toEqual([]);

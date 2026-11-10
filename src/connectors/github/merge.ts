@@ -12,10 +12,10 @@
  */
 
 export interface MergeCheckResult {
-  merged: string[];    // PRs that were merged
-  pending: string[];   // PRs waiting for approval/CI
+  merged: string[]; // PRs that were merged
+  pending: string[]; // PRs waiting for approval/CI
   conflicts: string[]; // PRs with merge conflicts
-  ready: string[];     // Ready PRs in non-auto repos — held for an explicit merge request
+  ready: string[]; // Ready PRs in non-auto repos — held for an explicit merge request
 }
 
 import { appendAgentFinding } from '../../tasks/persistence.js';
@@ -166,19 +166,13 @@ async function runMergeCheck(task: Task): Promise<MergeCheckResult> {
   // - approved by reviewer
   // - GitHub reports it ready (see isMergeReadyPerGithub for the 'blocked' tolerance)
   const mergeable = prStatuses.filter(
-    (pr) =>
-      pr.status.state === 'open' &&
-      pr.status.approved &&
-      isMergeReadyPerGithub(pr.status)
+    (pr) => pr.status.state === 'open' && pr.status.approved && isMergeReadyPerGithub(pr.status),
   );
   const conflicted = prStatuses.filter(
-    (pr) => pr.status.state === 'open' && pr.status.mergeableState === 'dirty'
+    (pr) => pr.status.state === 'open' && pr.status.mergeableState === 'dirty',
   );
   const pending = prStatuses.filter(
-    (pr) =>
-      pr.status.state === 'open' &&
-      !conflicted.includes(pr) &&
-      !mergeable.includes(pr)
+    (pr) => pr.status.state === 'open' && !conflicted.includes(pr) && !mergeable.includes(pr),
   );
 
   // Policy split: the orchestrator merges PRs in auto-merge repos (AC2).
@@ -196,7 +190,7 @@ async function runMergeCheck(task: Task): Promise<MergeCheckResult> {
     (pr) =>
       pr.status.state === 'open' &&
       pr.status.mergeableState === 'clean' &&
-      findBranchStatesForPR(task, pr.github, pr.prNumber).some((s) => s.merge_armed)
+      findBranchStatesForPR(task, pr.github, pr.prNumber).some((s) => s.merge_armed),
   );
 
   // PRs the orchestrator merges = auto-merge repos ∪ armed PRs, deduped by
@@ -233,7 +227,7 @@ async function runMergeCheck(task: Task): Promise<MergeCheckResult> {
   // PR that must not inherit a stale arm. Unlike merge_ready_notified, an armed
   // PR that is merely not-clean-yet while still open stays armed until it merges.
   const leftOpen = prStatuses.filter(
-    (pr) => pr.status.state === 'merged' || pr.status.state === 'closed'
+    (pr) => pr.status.state === 'merged' || pr.status.state === 'closed',
   );
   for (const pr of leftOpen) {
     for (const state of findBranchStatesForPR(task, pr.github, pr.prNumber)) {
@@ -256,7 +250,7 @@ async function runMergeCheck(task: Task): Promise<MergeCheckResult> {
       `armed=${armed.length}, ` +
       `ready=${held.length}, ` +
       `conflicted=${conflicted.length}, ` +
-      `pending=${pending.length}`
+      `pending=${pending.length}`,
   );
 
   // Log details for all non-merged PRs
@@ -286,12 +280,15 @@ async function runMergeCheck(task: Task): Promise<MergeCheckResult> {
       // Explain why not mergeable
       const reasons: string[] = [];
       if (!pr.status.approved) reasons.push('needs approval');
-      if (pr.status.mergeableState !== 'clean') reasons.push(`mergeableState=${pr.status.mergeableState}`);
+      if (pr.status.mergeableState !== 'clean')
+        reasons.push(`mergeableState=${pr.status.mergeableState}`);
       reason = reasons.join(', ');
     }
 
     const reasonStr = reason ? ` - ${reason}` : '';
-    logger.system(`Task ${taskId}: ${pr.github}#${pr.prNumber} → ${category}${reasonStr} (${flags.join(', ')})`);
+    logger.system(
+      `Task ${taskId}: ${pr.github}#${pr.prNumber} → ${category}${reasonStr} (${flags.join(', ')})`,
+    );
   }
 
   // Format already merged PRs
@@ -358,7 +355,7 @@ function findBranchStatesForPR(task: Task, github: string, prNumber: number): Br
  */
 async function fetchAllPRStatuses(
   githubClient: GitHubClient,
-  linkedPRs: Array<{ github: string; prNumber: number }>
+  linkedPRs: Array<{ github: string; prNumber: number }>,
 ): Promise<LinkedPRStatus[]> {
   const results: LinkedPRStatus[] = [];
 
@@ -367,11 +364,7 @@ async function fetchAllPRStatuses(
       const status = await githubClient.getPRStatus(github, prNumber);
       results.push({ github, prNumber, status });
     } catch (error) {
-      logger.error(
-        'merge-orchestrator',
-        `Failed to get status for ${github}#${prNumber}`,
-        error
-      );
+      logger.error('merge-orchestrator', `Failed to get status for ${github}#${prNumber}`, error);
     }
   }
 
@@ -382,10 +375,7 @@ async function fetchAllPRStatuses(
  * Notify PM about PRs with conflicts
  * Records the finding for the offline log, then wakes the PM with the notice itself
  */
-async function notifyPMAboutConflicts(
-  task: Task,
-  conflictedPRs: string[]
-): Promise<void> {
+async function notifyPMAboutConflicts(task: Task, conflictedPRs: string[]): Promise<void> {
   const prList = conflictedPRs.map((pr) => `- ${pr}`).join('\n');
 
   const message =
@@ -403,10 +393,7 @@ async function notifyPMAboutConflicts(
  * Notify PM that held-ready PRs (non-auto repos) can be merged on request
  * Records the finding for the offline log, then wakes the PM with the notice itself
  */
-async function notifyPMAboutReadyPRs(
-  task: Task,
-  readyPRs: string[]
-): Promise<void> {
+async function notifyPMAboutReadyPRs(task: Task, readyPRs: string[]): Promise<void> {
   const prList = readyPRs.map((pr) => `- ${pr}`).join('\n');
 
   const message =
@@ -427,7 +414,7 @@ async function notifyPMAboutReadyPRs(
 async function notifyPMAboutMerge(
   task: Task,
   mergedPRs: string[],
-  failedPRs: string[]
+  failedPRs: string[],
 ): Promise<void> {
   let message = '';
 

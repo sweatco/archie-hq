@@ -76,9 +76,19 @@ describe('entity store', () => {
 
     it('coerces an unknown type/scope to safe defaults', () => {
       const md = [
-        '---', 'entity: x', 'type: wizardry', 'display_name: "X"', 'aliases: []',
-        'scope: galaxy', 'repos: []', 'domain: engineering', 'status: active', '---',
-        '## Facts', '## Relations', '',
+        '---',
+        'entity: x',
+        'type: wizardry',
+        'display_name: "X"',
+        'aliases: []',
+        'scope: galaxy',
+        'repos: []',
+        'domain: engineering',
+        'status: active',
+        '---',
+        '## Facts',
+        '## Relations',
+        '',
       ].join('\n');
       const parsed = parseEntity(md)!;
       expect(parsed.type).toBe('concept');
@@ -142,7 +152,11 @@ describe('entity store', () => {
       );
       expect(applied).toMatchObject({ slug: 'payment-service', created: true });
       const rec = (await readEntity('payment-service'))!;
-      expect(rec.observations[0]).toEqual({ category: 'decision', text: 'chose idempotency keys', touched: '2026-06-01' });
+      expect(rec.observations[0]).toEqual({
+        category: 'decision',
+        text: 'chose idempotency keys',
+        touched: '2026-06-01',
+      });
       expect(rec.relations).toContainEqual({ type: 'touched_by', target: 'task-42' });
       expect(rec.relations).toContainEqual({ type: 'depends_on', target: 'postgres-prod' });
     });
@@ -185,7 +199,11 @@ describe('entity store', () => {
 
     it('rejects a path-traversal slug — no file is written', async () => {
       const applied = await applyEntityUpdate(
-        { slug: '../../etc/passwd', type: 'service', observations: [{ category: 'fact', text: 'x' }] },
+        {
+          slug: '../../etc/passwd',
+          type: 'service',
+          observations: [{ category: 'fact', text: 'x' }],
+        },
         'task-4',
       );
       expect(applied).toBeNull();

@@ -30,7 +30,12 @@ import type { TaskMetadata, SlackChannel } from '../types/task.js';
  */
 export type MigrationNoticeInput = Pick<
   TaskMetadata,
-  'repositories' | 'edit_allowed' | 'pending_merge_approval' | 'pending_tool_approval' | 'pending_trigger_id' | 'agent_sessions'
+  | 'repositories'
+  | 'edit_allowed'
+  | 'pending_merge_approval'
+  | 'pending_tool_approval'
+  | 'pending_trigger_id'
+  | 'agent_sessions'
 >;
 
 /** The id the PM's own session is recorded under. Never a former peer, so it is subtracted from the roster. */
@@ -62,7 +67,9 @@ function describeFormerAgents(metadata: MigrationNoticeInput): string {
  *
  * A recorded clone_path is not evidence of a clone: a read-only task removes its clones at completion, and an entry can be recorded before its clone finishes. Only a path still on disk is adoptable, and only such an entry earns the "adopts these existing clones" sentence — told to check git status in clones that do not exist, the PM either invents a reason or wastes a turn finding out.
  */
-function describeRepositories(metadata: Pick<TaskMetadata, 'repositories' | 'edit_allowed'>): string[] {
+function describeRepositories(
+  metadata: Pick<TaskMetadata, 'repositories' | 'edit_allowed'>,
+): string[] {
   const editMode = metadata.edit_allowed === true ? 'on' : 'off';
   if (metadata.repositories.length === 0) {
     return ['Repositories attached to this task: none'];
@@ -80,7 +87,9 @@ function describeRepositories(metadata: Pick<TaskMetadata, 'repositories' | 'edi
       }
     }
     if (anyClone) {
-      lines.push('mount_repo adopts these existing clones. Check git status in each before continuing — a former agent may have left uncommitted work.');
+      lines.push(
+        'mount_repo adopts these existing clones. Check git status in each before continuing — a former agent may have left uncommitted work.',
+      );
     }
     return lines;
   }
@@ -88,14 +97,21 @@ function describeRepositories(metadata: Pick<TaskMetadata, 'repositories' | 'edi
 
 /** The approvals still outstanding on a task, as one clause, or '' when there are none. */
 function describePendingApprovals(
-  metadata: Pick<TaskMetadata, 'pending_merge_approval' | 'pending_tool_approval' | 'pending_trigger_id'>,
+  metadata: Pick<
+    TaskMetadata,
+    'pending_merge_approval' | 'pending_tool_approval' | 'pending_trigger_id'
+  >,
 ): string {
   const parts: string[] = [];
   if (metadata.pending_merge_approval) {
-    parts.push(`merge of ${metadata.pending_merge_approval.github}#${metadata.pending_merge_approval.pr_number}`);
+    parts.push(
+      `merge of ${metadata.pending_merge_approval.github}#${metadata.pending_merge_approval.pr_number}`,
+    );
   }
   if (metadata.pending_tool_approval) {
-    parts.push(`tool call ${metadata.pending_tool_approval.server}:${metadata.pending_tool_approval.tool}`);
+    parts.push(
+      `tool call ${metadata.pending_tool_approval.server}:${metadata.pending_tool_approval.tool}`,
+    );
   }
   if (metadata.pending_trigger_id) {
     parts.push(`trigger ${metadata.pending_trigger_id}`);
@@ -141,7 +157,13 @@ export function buildMigrationNotice(metadata: MigrationNoticeInput): string {
  */
 export type SessionResetNoticeInput = Pick<
   TaskMetadata,
-  'repositories' | 'edit_allowed' | 'pending_merge_approval' | 'pending_tool_approval' | 'pending_trigger_id' | 'channels' | 'default_channel'
+  | 'repositories'
+  | 'edit_allowed'
+  | 'pending_merge_approval'
+  | 'pending_tool_approval'
+  | 'pending_trigger_id'
+  | 'channels'
+  | 'default_channel'
 >;
 
 /** The Slack thread this task speaks in — its originating channel when that is a Slack one, else any Slack channel it is linked to. `undefined` for a CLI or API task. */
@@ -284,7 +306,8 @@ Your turn must end with one of:
 
 Review the conversation to see where you left off, then take action.`,
 
-  reminder: (reason: string) => `Your scheduled reminder has fired. Reason: ${reason}\n\nReview the conversation for the latest context and decide what to do next.`,
+  reminder: (reason: string) =>
+    `Your scheduled reminder has fired. Reason: ${reason}\n\nReview the conversation for the latest context and decide what to do next.`,
 
   // Names neither the trigger directory nor the `trigger-task` skill: those belong in the
   // section buildTriggerDataPromptSection appends, while this message reaches the PM alone.
@@ -294,5 +317,6 @@ Review the conversation to see where you left off, then take action.`,
   // sentence `fireTrigger` builds and folds into `prompt`, because it differs between a
   // message fire (reply in the thread the task already owns) and a schedule fire (the first
   // post_to_user opens the task's own thread in its home channel).
-  triggered: (prompt: string, context: string) => `A trigger you were set up with has fired (${context}).\n\nDo this now: ${prompt}\n\nNobody is waiting on the other end, so nothing reaches anyone unless you post it. You are read-only by default; if the work requires code changes, request edit mode first.`,
+  triggered: (prompt: string, context: string) =>
+    `A trigger you were set up with has fired (${context}).\n\nDo this now: ${prompt}\n\nNobody is waiting on the other end, so nothing reaches anyone unless you post it. You are read-only by default; if the work requires code changes, request edit mode first.`,
 };

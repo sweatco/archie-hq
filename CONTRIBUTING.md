@@ -2,7 +2,7 @@
 
 Thanks for your interest in contributing! Archie HQ is the open-source core engine of a multi-agent AI system built on the Claude Agent SDK — a PM agent that orchestrates specialist agents, plus a plugin system that adds new domains.
 
-The project is licensed under **AGPL-3.0-or-later**, and contributions are accepted under that same license. By opening a pull request, you agree that your contribution is licensed under AGPL-3.0-or-later. (You can use and modify Archie internally without restriction; note that running a *modified* version as a network service triggers AGPL's source-disclosure obligations.)
+The project is licensed under **AGPL-3.0-or-later**, and contributions are accepted under that same license. By opening a pull request, you agree that your contribution is licensed under AGPL-3.0-or-later. (You can use and modify Archie internally without restriction; note that running a _modified_ version as a network service triggers AGPL's source-disclosure obligations.)
 
 ## Prerequisites
 

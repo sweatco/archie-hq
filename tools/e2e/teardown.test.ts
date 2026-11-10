@@ -53,13 +53,20 @@ function fakeExec(script: (cmd: string, args: string[]) => ExecResult) {
 const io = () => {
   const logs: string[] = [];
   const errors: string[] = [];
-  return { log: (l: string) => void logs.push(l), error: (l: string) => void errors.push(l), logs, errors };
+  return {
+    log: (l: string) => void logs.push(l),
+    error: (l: string) => void errors.push(l),
+    logs,
+    errors,
+  };
 };
 
 describe('runTeardown', () => {
   it('clean teardown prints an evidence-suitable confirmation and returns zero', async () => {
     const { exec, calls } = fakeExec((_cmd, args) =>
-      args.includes('down') ? { code: 0, stdout: '', stderr: '' } : { code: 0, stdout: '', stderr: '' },
+      args.includes('down')
+        ? { code: 0, stdout: '', stderr: '' }
+        : { code: 0, stdout: '', stderr: '' },
     );
     const out = io();
     const code = await runTeardown(exec, out);
@@ -74,7 +81,11 @@ describe('runTeardown', () => {
   it('names each survivor and returns non-zero', async () => {
     const { exec } = fakeExec((_cmd, args) =>
       args.includes('ps')
-        ? { code: 0, stdout: '{"Name":"archie-hq-archie-1","Service":"archie","State":"exited"}\n', stderr: '' }
+        ? {
+            code: 0,
+            stdout: '{"Name":"archie-hq-archie-1","Service":"archie","State":"exited"}\n',
+            stderr: '',
+          }
         : { code: 0, stdout: '', stderr: '' },
     );
     const out = io();
@@ -99,7 +110,9 @@ describe('runTeardown', () => {
 
   it('an unverifiable ps (malformed output) is a failure, not a silent pass', async () => {
     const { exec } = fakeExec((_cmd, args) =>
-      args.includes('ps') ? { code: 0, stdout: 'garbage', stderr: '' } : { code: 0, stdout: '', stderr: '' },
+      args.includes('ps')
+        ? { code: 0, stdout: 'garbage', stderr: '' }
+        : { code: 0, stdout: '', stderr: '' },
     );
     const out = io();
     const code = await runTeardown(exec, out);

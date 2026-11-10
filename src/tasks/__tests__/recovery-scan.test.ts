@@ -18,12 +18,22 @@ import { join } from 'path';
 vi.mock('../../system/workdir.js', async () => {
   const { tmpdir } = await import('os');
   const { join } = await import('path');
-  const dir = join(tmpdir(), `archie-recovery-scan-${process.pid}-${Math.random().toString(36).slice(2)}`);
+  const dir = join(
+    tmpdir(),
+    `archie-recovery-scan-${process.pid}-${Math.random().toString(36).slice(2)}`,
+  );
   return { SESSIONS_DIR: dir, WORKDIR: tmpdir() };
 });
 
 vi.mock('../../system/logger.js', () => ({
-  logger: { warn: vi.fn(), system: vi.fn(), error: vi.fn(), debug: vi.fn(), agent: vi.fn(), plain: vi.fn() },
+  logger: {
+    warn: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    agent: vi.fn(),
+    plain: vi.fn(),
+  },
 }));
 
 vi.mock('../../connectors/slack/client.js', () => ({
@@ -123,14 +133,19 @@ describe('startup recovery scan', () => {
     const untouched = 'task-20260301-0901-done';
     await writeLegacyTask(IN_PROGRESS, 'in_progress');
     await writeLegacyTask(untouched, 'completed');
-    const before = await readFile(join(SESSIONS_DIR, untouched, 'shared', 'metadata.json'), 'utf-8');
+    const before = await readFile(
+      join(SESSIONS_DIR, untouched, 'shared', 'metadata.json'),
+      'utf-8',
+    );
     taskGetMock.mockResolvedValue(fakeTask(IN_PROGRESS));
 
     await recoverActiveTasks();
 
     // A rollback to the previous engine has to stay non-destructive for a task
     // this build never ran.
-    expect(await readFile(join(SESSIONS_DIR, untouched, 'shared', 'metadata.json'), 'utf-8')).toBe(before);
+    expect(await readFile(join(SESSIONS_DIR, untouched, 'shared', 'metadata.json'), 'utf-8')).toBe(
+      before,
+    );
   });
 
   it('loads nothing at all when no task is in progress', async () => {

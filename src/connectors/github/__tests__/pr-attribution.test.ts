@@ -54,7 +54,11 @@ describe('buildAttributedBody', () => {
   it('keeps the Slack thread link the agent writes into the body', () => {
     // The prompt still has the agent append the originating thread; attribution
     // must not eat it.
-    const out = buildAttributedBody('Body.\n\nSlack thread in #liveops: https://slack.example/p1', 'Bandita Parida', MENTION);
+    const out = buildAttributedBody(
+      'Body.\n\nSlack thread in #liveops: https://slack.example/p1',
+      'Bandita Parida',
+      MENTION,
+    );
 
     expect(out).toContain('Slack thread in #liveops: https://slack.example/p1');
   });

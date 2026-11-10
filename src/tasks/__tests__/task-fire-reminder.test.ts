@@ -13,7 +13,10 @@ vi.mock('../../system/logger.js', () => ({
 const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
 vi.mock('../../agents/spawn.js', () => ({ spawnAgent: spawnMock }));
 
-const { loadMetadataMock, persistMock } = vi.hoisted(() => ({ loadMetadataMock: vi.fn(), persistMock: vi.fn() }));
+const { loadMetadataMock, persistMock } = vi.hoisted(() => ({
+  loadMetadataMock: vi.fn(),
+  persistMock: vi.fn(),
+}));
 vi.mock('../persistence.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../persistence.js')>()),
   loadMetadata: loadMetadataMock,
@@ -25,7 +28,11 @@ import { MessageQueue } from '../../agents/message-queue.js';
 import type { TaskMetadata } from '../../types/task.js';
 import type { AgentDef } from '../../types/agent.js';
 
-const TaskCtor = Task as unknown as new (taskId: string, metadata: TaskMetadata, pmDef: AgentDef) => Task;
+const TaskCtor = Task as unknown as new (
+  taskId: string,
+  metadata: TaskMetadata,
+  pmDef: AgentDef,
+) => Task;
 const TASK_ID = 'task-20261012-0000-firerem';
 // Same instant as firing(), but with milliseconds — the stored form often omits them.
 const DUE = { trigger_at: '2026-10-12T09:00:00.000Z', reason: 'r', cron: '0 * * * *', tz: 'UTC' };
@@ -45,8 +52,21 @@ function metadata(reminder?: TaskMetadata['reminder']): TaskMetadata {
   };
 }
 
-const pmDef = { id: 'pm-agent', key: 'pm', visibility: 'global', role: 'PM', expertise: '', isPm: true, pluginName: 'pm' } as AgentDef;
-const firing = () => ({ trigger_at: '2026-10-12T09:00:00Z', reason: 'r', cron: '0 * * * *', tz: 'UTC' });
+const pmDef = {
+  id: 'pm-agent',
+  key: 'pm',
+  visibility: 'global',
+  role: 'PM',
+  expertise: '',
+  isPm: true,
+  pluginName: 'pm',
+} as AgentDef;
+const firing = () => ({
+  trigger_at: '2026-10-12T09:00:00Z',
+  reason: 'r',
+  cron: '0 * * * *',
+  tz: 'UTC',
+});
 
 describe('Task.fireReminder', () => {
   let addSpy: ReturnType<typeof vi.spyOn>;
@@ -100,8 +120,12 @@ describe('Task.fireReminder', () => {
     const copy = new TaskCtor(TASK_ID, metadata(firing()), pmDef);
     loadMetadataMock.mockResolvedValue(metadata(firing()));
     const order: string[] = [];
-    persistMock.mockImplementation(async () => { order.push('persist'); });
-    addSpy.mockImplementation(() => { order.push('wake'); });
+    persistMock.mockImplementation(async () => {
+      order.push('persist');
+    });
+    addSpy.mockImplementation(() => {
+      order.push('wake');
+    });
 
     await copy.fireReminder(DUE, NEXT, () => {}, '[reminder] r');
 

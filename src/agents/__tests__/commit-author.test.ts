@@ -13,7 +13,10 @@ const meta = (edit_approved_by?: TaskMetadata['edit_approved_by']) =>
 describe('buildCommitAuthorEnv', () => {
   it('authors as the approver with their email when present', () => {
     expect(
-      buildCommitAuthorEnv(pmDef, meta({ id: 'U1', name: 'Egor Tolstoy', email: 'egor@sweatco.in' })),
+      buildCommitAuthorEnv(
+        pmDef,
+        meta({ id: 'U1', name: 'Egor Tolstoy', email: 'egor@sweatco.in' }),
+      ),
     ).toEqual({ GIT_AUTHOR_NAME: 'Egor Tolstoy', GIT_AUTHOR_EMAIL: 'egor@sweatco.in' });
   });
 
@@ -25,9 +28,10 @@ describe('buildCommitAuthorEnv', () => {
   });
 
   it('uses the noreply fallback for a whitespace-only email', () => {
-    expect(
-      buildCommitAuthorEnv(pmDef, meta({ id: 'U1', name: 'Egor', email: '   ' })),
-    ).toEqual({ GIT_AUTHOR_NAME: 'Egor', GIT_AUTHOR_EMAIL: 'U1@users.noreply.archie.invalid' });
+    expect(buildCommitAuthorEnv(pmDef, meta({ id: 'U1', name: 'Egor', email: '   ' }))).toEqual({
+      GIT_AUTHOR_NAME: 'Egor',
+      GIT_AUTHOR_EMAIL: 'U1@users.noreply.archie.invalid',
+    });
   });
 
   it('trims surrounding whitespace from the name', () => {

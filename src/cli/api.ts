@@ -10,9 +10,10 @@ export function getBaseUrl(): string {
 
 // ---- REST helpers ----
 
-export async function fetchTasks(
-  opts?: { limit?: number; offset?: number },
-): Promise<{ tasks: any[]; total: number }> {
+export async function fetchTasks(opts?: {
+  limit?: number;
+  offset?: number;
+}): Promise<{ tasks: any[]; total: number }> {
   const params = new URLSearchParams();
   if (opts?.limit) params.set('limit', String(opts.limit));
   if (opts?.offset) params.set('offset', String(opts.offset));
@@ -53,9 +54,10 @@ export async function fetchTaskEvents(
   taskId: string,
   after?: number,
 ): Promise<{ events: any[]; total: number }> {
-  const url = after !== undefined
-    ? `${getBaseUrl()}/api/tasks/${taskId}/events?after=${after}`
-    : `${getBaseUrl()}/api/tasks/${taskId}/events`;
+  const url =
+    after !== undefined
+      ? `${getBaseUrl()}/api/tasks/${taskId}/events?after=${after}`
+      : `${getBaseUrl()}/api/tasks/${taskId}/events`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Failed to fetch events: ${res.status}`);
   return res.json() as Promise<{ events: any[]; total: number }>;
@@ -105,7 +107,7 @@ export async function sendApproval(
     }),
   });
   if (!res.ok) {
-    const detail = await res.json().catch(() => null) as { error?: string } | null;
+    const detail = (await res.json().catch(() => null)) as { error?: string } | null;
     throw new Error(detail?.error || `Failed to send approval: ${res.status}`);
   }
 }

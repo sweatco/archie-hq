@@ -35,14 +35,14 @@ export function githubRepoToUrl(githubRepo: string): string {
 
 export interface CloneResult {
   clone_path: string;
-  branch: string;       // branch checked out (feature or base)
+  branch: string; // branch checked out (feature or base)
   base_branch: string;
 }
 
 export type CloneCheckout =
-  | { type: 'new_branch'; name: string }   // RW fresh: clone base, create branch
-  | { type: 'branch'; name: string }       // RW resume or visit: clone on existing branch
-  | { type: 'base' };                      // RO default: clone on base branch
+  | { type: 'new_branch'; name: string } // RW fresh: clone base, create branch
+  | { type: 'branch'; name: string } // RW resume or visit: clone on existing branch
+  | { type: 'base' }; // RO default: clone on base branch
 
 // ---- Git helpers ----
 
@@ -165,7 +165,7 @@ export async function setupSharedClone(
   // --shared) — all of those require an existing git repo.
   await ensureBaseCache(baseRepoPath, githubRepo, baseBranch);
 
-  const defaultBranch = baseBranch || await getDefaultBranch(baseRepoPath);
+  const defaultBranch = baseBranch || (await getDefaultBranch(baseRepoPath));
   const githubUrl = githubRepo ? githubRepoToUrl(githubRepo) : undefined;
   const label = githubRepo || clonePath;
 
@@ -309,7 +309,7 @@ export async function ensureTaskClone(opts: {
   // than today's canonical location — then the canonical path, which is where a
   // clone left behind by an interrupted mount would be.
   let existing: string | undefined;
-  if (attached.clone_path && await cloneExists(attached.clone_path)) {
+  if (attached.clone_path && (await cloneExists(attached.clone_path))) {
     existing = attached.clone_path;
   } else if (await cloneExists(opts.clonePath)) {
     existing = opts.clonePath;
@@ -321,9 +321,10 @@ export async function ensureTaskClone(opts: {
     // interrupted mount, or one whose config predates the current attribution
     // identity, would otherwise commit as whoever git falls back to.
     await configureGitIdentity(existing);
-    const branch = attached.current_branch ?? await readCurrentBranch(existing);
+    const branch = attached.current_branch ?? (await readCurrentBranch(existing));
     if (branch) attached.current_branch = branch;
-    const base = recordedBaseBranch(attached) ?? opts.baseBranch ?? await getDefaultBranch(baseRepoPath);
+    const base =
+      recordedBaseBranch(attached) ?? opts.baseBranch ?? (await getDefaultBranch(baseRepoPath));
     // Edit mode approved while this clone sat on base: cut the task branch now,
     // so the reuse path does not hand back a checkout the task cannot commit on.
     if (editAllowed && branch && !attached.branch_states?.[branch]) {
@@ -349,7 +350,11 @@ export async function ensureTaskClone(opts: {
   const baseBranch = recordedBaseBranch(attached) ?? opts.baseBranch;
 
   const result = await setupSharedClone(
-    opts.clonePath, baseRepoPath, checkout, baseBranch, attached.github,
+    opts.clonePath,
+    baseRepoPath,
+    checkout,
+    baseBranch,
+    attached.github,
   );
   attached.clone_path = result.clone_path;
   if (result.branch !== result.base_branch) {

@@ -100,7 +100,9 @@ export async function bootstrapWorkdir(): Promise<void> {
   if (pluginsUrl) {
     const isSymlink = existsSync(PLUGINS_DIR) && lstatSync(PLUGINS_DIR).isSymbolicLink();
     const hasGit = existsSync(join(PLUGINS_DIR, '.git'));
-    logger.system(`Plugins init: url=${pluginsUrl}, branch=${pluginsBranch || 'default'}, exists=${hasGit}, symlink=${isSymlink}`);
+    logger.system(
+      `Plugins init: url=${pluginsUrl}, branch=${pluginsBranch || 'default'}, exists=${hasGit}, symlink=${isSymlink}`,
+    );
 
     if (!hasGit) {
       logger.system(`Plugins: cloning fresh from ${pluginsUrl}`);
@@ -109,16 +111,21 @@ export async function bootstrapWorkdir(): Promise<void> {
     } else {
       // Symlink = local dev (don't reset), real dir = cloned by us (safe to reset)
       managedPlugins = !isSymlink;
-      logger.system(`Plugins: managed=${managedPlugins} (${isSymlink ? 'symlink — local dev' : 'real dir — will sync from remote'})`);
-      if (pluginsBranch && managedPlugins) await checkoutBranch(PLUGINS_DIR, pluginsBranch, 'plugins');
+      logger.system(
+        `Plugins: managed=${managedPlugins} (${isSymlink ? 'symlink — local dev' : 'real dir — will sync from remote'})`,
+      );
+      if (pluginsBranch && managedPlugins)
+        await checkoutBranch(PLUGINS_DIR, pluginsBranch, 'plugins');
       await refreshPlugins();
     }
   } else if (existsSync(PLUGINS_DIR)) {
-    logger.system(`Plugins init: using pre-existing directory at ${PLUGINS_DIR} (ARCHIE_PLUGINS not set)`);
+    logger.system(
+      `Plugins init: using pre-existing directory at ${PLUGINS_DIR} (ARCHIE_PLUGINS not set)`,
+    );
   } else {
     throw new Error(
       `Plugins directory not found at ${PLUGINS_DIR}. ` +
-      `Set ARCHIE_PLUGINS to a git URL, or manually place plugins in ${PLUGINS_DIR}.`
+        `Set ARCHIE_PLUGINS to a git URL, or manually place plugins in ${PLUGINS_DIR}.`,
     );
   }
 
@@ -143,7 +150,7 @@ export async function bootstrapWorkdir(): Promise<void> {
  * @param repos - Array of { github, baseBranch } — deduplicated by caller
  */
 export async function cloneRepos(
-  repos: Array<{ github: string; baseBranch?: string }>
+  repos: Array<{ github: string; baseBranch?: string }>,
 ): Promise<void> {
   // Pull every repo in parallel. Each one targets its own directory, so there's
   // no shared working tree or cross-repo git lock to contend over — total time
@@ -152,8 +159,8 @@ export async function cloneRepos(
   // "log and carry on" behaviour cloneOrFetch already has on the fetch path).
   const results = await Promise.allSettled(
     repos.map(({ github, baseBranch }) =>
-      cloneOrFetch(githubRepoToUrl(github), getBaseCachePath(github), github, baseBranch)
-    )
+      cloneOrFetch(githubRepoToUrl(github), getBaseCachePath(github), github, baseBranch),
+    ),
   );
   results.forEach((result, i) => {
     if (result.status === 'rejected') {
@@ -227,7 +234,10 @@ export async function refreshPlugins(): Promise<boolean> {
         const remoteSha = await getRemoteHeadSha(PLUGINS_DIR, branch);
         if (!remoteSha) {
           // Couldn't reach the remote — keep what we have and try again next call.
-          logger.warn('workdir', `Plugins: could not read remote ${branch} tip; leaving plugins unchanged`);
+          logger.warn(
+            'workdir',
+            `Plugins: could not read remote ${branch} tip; leaving plugins unchanged`,
+          );
           return false;
         }
         const localSha = await getLocalHeadSha(PLUGINS_DIR);
@@ -235,7 +245,9 @@ export async function refreshPlugins(): Promise<boolean> {
           logger.debug('workdir', `Plugins up to date (${branch} @ ${remoteSha.slice(0, 8)})`);
           return false;
         }
-        logger.system(`Plugins: ${branch} moved ${localSha?.slice(0, 8) ?? 'unknown'} → ${remoteSha.slice(0, 8)}, updating`);
+        logger.system(
+          `Plugins: ${branch} moved ${localSha?.slice(0, 8) ?? 'unknown'} → ${remoteSha.slice(0, 8)}, updating`,
+        );
         await execAsync('git fetch --all --prune', { cwd: PLUGINS_DIR });
         await execAsync(`git checkout "${branch}"`, { cwd: PLUGINS_DIR });
         await execAsync(`git reset --hard "origin/${branch}"`, { cwd: PLUGINS_DIR });
@@ -289,7 +301,12 @@ export async function getPluginsHeadInfo(): Promise<PluginsHeadInfo | null> {
     const { stdout } = await execAsync('git log -1 --format=%H%x1f%cI%x1f%s', { cwd: PLUGINS_DIR });
     const [sha, committedAt, subject] = stdout.trim().split('\x1f');
     if (!sha) return null;
-    return { sha, shortSha: sha.slice(0, 8), committedAt: committedAt ?? '', subject: subject ?? '' };
+    return {
+      sha,
+      shortSha: sha.slice(0, 8),
+      committedAt: committedAt ?? '',
+      subject: subject ?? '',
+    };
   } catch (error) {
     logger.debug('workdir', `Failed to read plugins HEAD: ${error}`);
     return null;
@@ -299,7 +316,9 @@ export async function getPluginsHeadInfo(): Promise<PluginsHeadInfo | null> {
 /** Read the remote branch tip via `ls-remote` (no object download). Returns null on failure. */
 async function getRemoteHeadSha(repoDir: string, branch: string): Promise<string | null> {
   try {
-    const { stdout } = await execAsync(`git ls-remote origin "refs/heads/${branch}"`, { cwd: repoDir });
+    const { stdout } = await execAsync(`git ls-remote origin "refs/heads/${branch}"`, {
+      cwd: repoDir,
+    });
     const sha = stdout.split(/\s+/)[0]?.trim();
     return sha && /^[0-9a-f]{40}$/.test(sha) ? sha : null;
   } catch (error) {
@@ -325,7 +344,12 @@ async function getLocalHeadSha(repoDir: string): Promise<string | null> {
 /**
  * Clone a git repo into targetDir.
  */
-async function cloneRepo(url: string, targetDir: string, label: string, branch?: string): Promise<void> {
+async function cloneRepo(
+  url: string,
+  targetDir: string,
+  label: string,
+  branch?: string,
+): Promise<void> {
   const branchFlag = branch ? ` -b "${branch}"` : '';
   logger.system(`Cloning ${label} from ${url}${branch ? ` (branch: ${branch})` : ''}...`);
   await execAsync(`git clone --recurse-submodules${branchFlag} "${url}" "${targetDir}"`);
@@ -346,7 +370,12 @@ async function checkoutBranch(repoDir: string, branch: string, label: string): P
 /**
  * Clone if missing, fetch and pull default branch if exists.
  */
-async function cloneOrFetch(url: string, targetDir: string, label: string, baseBranch?: string): Promise<void> {
+async function cloneOrFetch(
+  url: string,
+  targetDir: string,
+  label: string,
+  baseBranch?: string,
+): Promise<void> {
   const cloned = existsSync(join(targetDir, '.git'));
   // Warm clones are declared in `archie.json`, which carries no base branch, so
   // it has to be discovered — a repo whose default is not `main` used to fail

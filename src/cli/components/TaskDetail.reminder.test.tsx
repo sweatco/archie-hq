@@ -35,9 +35,18 @@ const CLOCK = '⏰';
 type Ev = { type: string; taskId: string; data: Record<string, unknown>; timestamp: string };
 let seq = 0;
 const ev = (type: string, data: Record<string, unknown> = {}): Ev => ({
-  type, taskId: TASK_ID, data, timestamp: `2026-08-01T05:00:0${seq++}.000Z`,
+  type,
+  taskId: TASK_ID,
+  data,
+  timestamp: `2026-08-01T05:00:0${seq++}.000Z`,
 });
-const armed = () => ev('reminder:set', { trigger_at: NEXT_WAKE, reason: 'offer-code check', cron: '0 5,17 * * *', tz: 'UTC' });
+const armed = () =>
+  ev('reminder:set', {
+    trigger_at: NEXT_WAKE,
+    reason: 'offer-code check',
+    cron: '0 5,17 * * *',
+    tz: 'UTC',
+  });
 const fired = () => ev('reminder:fired', { reason: 'offer-code check' });
 
 /**
@@ -46,7 +55,9 @@ const fired = () => ev('reminder:fired', { reason: 'offer-code check' });
  * nothing about the indicator this AC is actually about.
  */
 async function headerFor(events: Ev[]): Promise<string> {
-  const { lastFrame } = render(<TaskDetail taskId={TASK_ID} onBack={() => {}} liveEvents={events} />);
+  const { lastFrame } = render(
+    <TaskDetail taskId={TASK_ID} onBack={() => {}} liveEvents={events} />,
+  );
   await new Promise((r) => setTimeout(r, 30));
   const header = (lastFrame() ?? '').split('\n').find((l) => l.includes('Task:'));
   if (header === undefined) throw new Error('header line not rendered');

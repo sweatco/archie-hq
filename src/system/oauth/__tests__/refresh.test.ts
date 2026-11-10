@@ -10,7 +10,8 @@ const tempDirPlaceholder = join(tmpdir(), 'archie-refresh-tests');
 process.env.ARCHIE_SECRETS_DIR = tempDirPlaceholder;
 process.env.ARCHIE_SECRETS_KEY = randomBytes(32).toString('base64');
 
-const { ensureFreshToken, OAuthRecordMissingError, OAuthRefreshError } = await import('../refresh.js');
+const { ensureFreshToken, OAuthRecordMissingError, OAuthRefreshError } =
+  await import('../refresh.js');
 const { writeOAuthRecord, readOAuthRecord, readOAuthSealed } = await import('../storage.js');
 
 describe('ensureFreshToken', () => {
@@ -38,7 +39,9 @@ describe('ensureFreshToken', () => {
 
   it('throws OAuthRecordMissingError when no record exists', async () => {
     const { refresh } = await importFresh();
-    await expect(refresh.ensureFreshToken('absent')).rejects.toBeInstanceOf(refresh.OAuthRecordMissingError);
+    await expect(refresh.ensureFreshToken('absent')).rejects.toBeInstanceOf(
+      refresh.OAuthRecordMissingError,
+    );
   });
 
   it('returns the cached token when not near expiry', async () => {
@@ -48,7 +51,8 @@ describe('ensureFreshToken', () => {
       {
         server_name: 'cached',
         expires_at: nowSec + 3600,
-        created_at: nowSec, updated_at: nowSec,
+        created_at: nowSec,
+        updated_at: nowSec,
         issuer: 'https://auth.example.com',
         token_endpoint: 'https://auth.example.com/token',
         scopes: [],
@@ -56,7 +60,10 @@ describe('ensureFreshToken', () => {
       { access_token: 'AT-old', refresh_token: 'RT', client_id: 'cli', token_type: 'Bearer' },
     );
     let fetchCalled = false;
-    globalThis.fetch = vi.fn(async () => { fetchCalled = true; return new Response('', { status: 500 }); }) as any;
+    globalThis.fetch = vi.fn(async () => {
+      fetchCalled = true;
+      return new Response('', { status: 500 });
+    }) as any;
 
     const result = await refresh.ensureFreshToken('cached');
     expect(result.accessToken).toBe('AT-old');
@@ -70,19 +77,31 @@ describe('ensureFreshToken', () => {
       {
         server_name: 'expiring',
         expires_at: nowSec + 10, // within leeway
-        created_at: nowSec - 3600, updated_at: nowSec - 3600,
+        created_at: nowSec - 3600,
+        updated_at: nowSec - 3600,
         issuer: 'https://auth.example.com',
         token_endpoint: 'https://auth.example.com/token',
         scopes: ['read'],
       },
-      { access_token: 'AT-old', refresh_token: 'RT-old', client_id: 'cli', client_secret: 'sec', token_type: 'Bearer' },
+      {
+        access_token: 'AT-old',
+        refresh_token: 'RT-old',
+        client_id: 'cli',
+        client_secret: 'sec',
+        token_type: 'Bearer',
+      },
     );
 
     let bodyCaptured: URLSearchParams | null = null;
     globalThis.fetch = vi.fn(async (_url: any, init: any) => {
       bodyCaptured = new URLSearchParams(init.body);
       return new Response(
-        JSON.stringify({ access_token: 'AT-new', token_type: 'Bearer', expires_in: 3600, refresh_token: 'RT-new' }),
+        JSON.stringify({
+          access_token: 'AT-new',
+          token_type: 'Bearer',
+          expires_in: 3600,
+          refresh_token: 'RT-new',
+        }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       );
     }) as any;
@@ -111,7 +130,8 @@ describe('ensureFreshToken', () => {
       {
         server_name: 'forced',
         expires_at: nowSec + 3600, // plenty of life left — would normally be cached
-        created_at: nowSec - 600, updated_at: nowSec - 600,
+        created_at: nowSec - 600,
+        updated_at: nowSec - 600,
         issuer: 'https://auth.example.com',
         token_endpoint: 'https://auth.example.com/token',
         scopes: [],
@@ -151,7 +171,8 @@ describe('ensureFreshToken', () => {
       {
         server_name: 'audience',
         expires_at: nowSec + 5,
-        created_at: nowSec, updated_at: nowSec,
+        created_at: nowSec,
+        updated_at: nowSec,
         issuer: 'https://auth.example.com',
         token_endpoint: 'https://auth.example.com/token',
         scopes: [],
@@ -183,7 +204,8 @@ describe('ensureFreshToken', () => {
       {
         server_name: 'legacy',
         expires_at: nowSec + 5,
-        created_at: nowSec, updated_at: nowSec,
+        created_at: nowSec,
+        updated_at: nowSec,
         issuer: 'https://auth.example.com',
         token_endpoint: 'https://auth.example.com/token',
         scopes: [],
@@ -210,17 +232,21 @@ describe('ensureFreshToken', () => {
       {
         server_name: 'no-rotation',
         expires_at: nowSec + 5,
-        created_at: nowSec, updated_at: nowSec,
+        created_at: nowSec,
+        updated_at: nowSec,
         issuer: 'https://auth.example.com',
         token_endpoint: 'https://auth.example.com/token',
         scopes: [],
       },
       { access_token: 'AT-old', refresh_token: 'RT-keep', client_id: 'cli', token_type: 'Bearer' },
     );
-    globalThis.fetch = vi.fn(async () => new Response(
-      JSON.stringify({ access_token: 'AT-new', token_type: 'Bearer', expires_in: 600 }),
-      { status: 200, headers: { 'Content-Type': 'application/json' } },
-    )) as any;
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({ access_token: 'AT-new', token_type: 'Bearer', expires_in: 600 }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+    ) as any;
 
     await refresh.ensureFreshToken('no-rotation');
     const reread = await storage.readOAuthRecord('no-rotation');
@@ -235,19 +261,25 @@ describe('ensureFreshToken', () => {
       {
         server_name: 'broken',
         expires_at: nowSec + 5,
-        created_at: nowSec, updated_at: nowSec,
+        created_at: nowSec,
+        updated_at: nowSec,
         issuer: 'https://auth.example.com',
         token_endpoint: 'https://auth.example.com/token',
         scopes: [],
       },
       { access_token: 'AT-old', refresh_token: 'BAD', client_id: 'cli', token_type: 'Bearer' },
     );
-    globalThis.fetch = vi.fn(async () => new Response(
-      JSON.stringify({ error: 'invalid_grant' }),
-      { status: 400, headers: { 'Content-Type': 'application/json' } },
-    )) as any;
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ error: 'invalid_grant' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+    ) as any;
 
-    await expect(refresh.ensureFreshToken('broken')).rejects.toBeInstanceOf(refresh.OAuthRefreshError);
+    await expect(refresh.ensureFreshToken('broken')).rejects.toBeInstanceOf(
+      refresh.OAuthRefreshError,
+    );
   });
 
   it('serialises concurrent refreshes for the same server', async () => {
@@ -257,7 +289,8 @@ describe('ensureFreshToken', () => {
       {
         server_name: 'concurrent',
         expires_at: nowSec + 5,
-        created_at: nowSec, updated_at: nowSec,
+        created_at: nowSec,
+        updated_at: nowSec,
         issuer: 'https://auth.example.com',
         token_endpoint: 'https://auth.example.com/token',
         scopes: [],

@@ -3,8 +3,21 @@ import type { Delivery, Observation, Matter, Evidence } from '../types.js';
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 
 type Row = Record<string, string | number | null>;
-type RevisionRecord = Omit<Evidence, 'own' | 'bot' | 'deleted' | 'context' | 'eventId'> & { own: number; bot: number; deleted: number; excerpt: string; hash: string };
-type ChannelRecord = { id: string; allowed: number; shared: number; checkpoint: string; cursor: string | null; gap: string | null };
+type RevisionRecord = Omit<Evidence, 'own' | 'bot' | 'deleted' | 'context' | 'eventId'> & {
+  own: number;
+  bot: number;
+  deleted: number;
+  excerpt: string;
+  hash: string;
+};
+type ChannelRecord = {
+  id: string;
+  allowed: number;
+  shared: number;
+  checkpoint: string;
+  cursor: string | null;
+  gap: string | null;
+};
 
 export class AttentionRecords {
   constructor(private readonly database: DatabaseSync) {}
@@ -24,14 +37,26 @@ export class AttentionRecords {
   private atomic<T>(work: () => T): T {
     if (this.database.isTransaction) return work();
     this.database.exec('BEGIN IMMEDIATE');
-    try { const result = work(); this.database.exec('COMMIT'); return result; }
-    catch (error) { this.database.exec('ROLLBACK'); throw error; }
+    try {
+      const result = work();
+      this.database.exec('COMMIT');
+      return result;
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
   }
 
-  revision(id: number) { return this.row<RevisionRecord>('SELECT * FROM revisions WHERE id=?', id); }
+  revision(id: number) {
+    return this.row<RevisionRecord>('SELECT * FROM revisions WHERE id=?', id);
+  }
 
   scheduledJob(kind: string, target: string) {
-    return this.row<{ kind: string }>('SELECT kind FROM jobs WHERE kind=? AND target=?', kind, target);
+    return this.row<{ kind: string }>(
+      'SELECT kind FROM jobs WHERE kind=? AND target=?',
+      kind,
+      target,
+    );
   }
 
   allowedChannels() {
@@ -44,11 +69,16 @@ export class AttentionRecords {
 
   extractionPart(key: string) {
     const row = this.row<{ response: string }>('SELECT response FROM extractions WHERE id=?', key);
-    return row ? JSON.parse(row.response) as unknown : undefined;
+    return row ? (JSON.parse(row.response) as unknown) : undefined;
   }
 
   cacheExtraction(key: string, created: number, response: object) {
-    this.run('INSERT OR REPLACE INTO extractions VALUES (?,?,?)', key, created, JSON.stringify(response));
+    this.run(
+      'INSERT OR REPLACE INTO extractions VALUES (?,?,?)',
+      key,
+      created,
+      JSON.stringify(response),
+    );
   }
 
   discardExtraction(key: string) {
@@ -60,13 +90,30 @@ export class AttentionRecords {
   }
 
   currentMessage(channel: string, timestamp: string) {
-    return this.row<RevisionRecord>('SELECT r.* FROM revisions r JOIN messages m ON m.revision=r.id WHERE m.channel=? AND m.ts=?', channel, timestamp);
+    return this.row<RevisionRecord>(
+      'SELECT r.* FROM revisions r JOIN messages m ON m.revision=r.id WHERE m.channel=? AND m.ts=?',
+      channel,
+      timestamp,
+    );
   }
 
-  coveredMessages(channel: string, thread: string, oldest: number, latest: number, latestVersion: number) {
-    return this.rows<RevisionRecord>(`SELECT r.* FROM revisions r JOIN messages m ON m.revision=r.id
+  coveredMessages(
+    channel: string,
+    thread: string,
+    oldest: number,
+    latest: number,
+    latestVersion: number,
+  ) {
+    return this.rows<RevisionRecord>(
+      `SELECT r.* FROM revisions r JOIN messages m ON m.revision=r.id
           WHERE r.channel=? AND r.thread=? AND r.deleted=0 AND CAST(r.ts AS REAL)>=? AND CAST(r.ts AS REAL)<=?
-          AND CAST(r.version AS REAL)<=?`, channel, thread, oldest, latest, latestVersion);
+          AND CAST(r.version AS REAL)<=?`,
+      channel,
+      thread,
+      oldest,
+      latest,
+      latestVersion,
+    );
   }
 
   setThreadGap(gap: string | null, channel: string, thread: string) {
@@ -86,19 +133,29 @@ export class AttentionRecords {
   }
 
   evidenceSources(evidence: number[]) {
-    return this.rows<{ channel: string; thread: string }>('SELECT DISTINCT r.channel,r.thread FROM revisions r JOIN json_each(?) j ON j.value=r.id', JSON.stringify(evidence));
+    return this.rows<{ channel: string; thread: string }>(
+      'SELECT DISTINCT r.channel,r.thread FROM revisions r JOIN json_each(?) j ON j.value=r.id',
+      JSON.stringify(evidence),
+    );
   }
 
   cancelDelivery(delivery: string) {
     this.atomic(() => {
-      this.run(`DELETE FROM matter_checks WHERE kind='notified' AND matter IN (
+      this.run(
+        `DELETE FROM matter_checks WHERE kind='notified' AND matter IN (
         SELECT j.value FROM deliveries d,json_each(d.matters) j WHERE d.id=? AND d.state='pending'
-      )`, delivery);
+      )`,
+        delivery,
+      );
       this.run("UPDATE deliveries SET state='cancelled' WHERE id=? AND state='pending'", delivery);
     });
   }
 
-  finishDelivery(state: Extract<Delivery['state'], 'sent' | 'uncertain'>, timestamp: string | null, delivery: string) {
+  finishDelivery(
+    state: Extract<Delivery['state'], 'sent' | 'uncertain'>,
+    timestamp: string | null,
+    delivery: string,
+  ) {
     this.run('UPDATE deliveries SET state=?,ts=? WHERE id=?', state, timestamp, delivery);
   }
 
@@ -107,21 +164,36 @@ export class AttentionRecords {
   }
 
   observation(id: string) {
-    const row = this.row<Omit<Observation, 'evidence'> & { evidence: string }>('SELECT * FROM observations WHERE id=? AND valid=1', id);
+    const row = this.row<Omit<Observation, 'evidence'> & { evidence: string }>(
+      'SELECT * FROM observations WHERE id=? AND valid=1',
+      id,
+    );
     return row ? { ...row, evidence: JSON.parse(row.evidence) as number[] } : undefined;
   }
 
   messageKnown(channel: string, timestamp: string) {
-    return this.row<{ revision: number }>('SELECT revision FROM messages WHERE channel=? AND ts=?', channel, timestamp);
+    return this.row<{ revision: number }>(
+      'SELECT revision FROM messages WHERE channel=? AND ts=?',
+      channel,
+      timestamp,
+    );
   }
 
   deliveryMatters(delivery: string) {
-    const row = this.row<{ matters: string }>('SELECT matters FROM deliveries WHERE id=?', delivery);
-    return row ? JSON.parse(row.matters) as string[] : undefined;
+    const row = this.row<{ matters: string }>(
+      'SELECT matters FROM deliveries WHERE id=?',
+      delivery,
+    );
+    return row ? (JSON.parse(row.matters) as string[]) : undefined;
   }
 
   deliveryOrigin(channel: string, thread: string, timestamp: string) {
-    return this.row<{ id: string; matters: string; recipient: string | null }>("SELECT id,matters,recipient FROM deliveries WHERE channel=? AND (thread=? OR ts=?) AND state='sent' ORDER BY created DESC LIMIT 1", channel, thread, timestamp);
+    return this.row<{ id: string; matters: string; recipient: string | null }>(
+      "SELECT id,matters,recipient FROM deliveries WHERE channel=? AND (thread=? OR ts=?) AND state='sent' ORDER BY created DESC LIMIT 1",
+      channel,
+      thread,
+      timestamp,
+    );
   }
 
   statistics() {

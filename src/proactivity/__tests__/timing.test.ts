@@ -18,29 +18,77 @@ let service: InitiativeService;
 let slack: ObservationSlack;
 let model: BackgroundModel;
 let message: SourceMessage;
-const freshService = () => new InitiativeService(store, slack, model, { mode: 'shadow', extractionModel: 'haiku', investigationModel: 'sonnet' }, Date.now);
+const freshService = () =>
+  new InitiativeService(
+    store,
+    slack,
+    model,
+    { mode: 'shadow', extractionModel: 'haiku', investigationModel: 'sonnet' },
+    Date.now,
+  );
 
 beforeEach(() => {
-  vi.useFakeTimers(); vi.setSystemTime(START);
+  vi.useFakeTimers();
+  vi.setSystemTime(START);
   root = mkdtempSync(join(tmpdir(), 'initiative-timing-'));
   store = new InitiativeStore(join(root, 'state.sqlite'), 'T1', START - 60_000);
   store.channel('C1', true, false);
   const ts = ((START - 30_000) / 1000).toFixed(6);
-  message = { channel: 'C1', thread: ts, ts, version: ts, author: 'U1', text: 'Please prepare the release checklist.' };
+  message = {
+    channel: 'C1',
+    thread: ts,
+    ts,
+    version: ts,
+    author: 'U1',
+    text: 'Please prepare the release checklist.',
+  };
   store.record(message, START);
   slack = {
-    inspect: async () => ({ shared: false, recipientCanRead: true }), channels: async () => ['C1'],
-    page: async () => ({ messages: [message] }), dm: async () => 'D1', recipient: async channel => channel === 'D1' ? 'U1' : null, verifyDm: async channel => channel === 'D1',
-    send: vi.fn(async () => 'sent'), find: async () => undefined, active: () => false, link: (channel, thread) => `${channel}/${thread}`,
+    inspect: async () => ({ shared: false, recipientCanRead: true }),
+    channels: async () => ['C1'],
+    page: async () => ({ messages: [message] }),
+    dm: async () => 'D1',
+    recipient: async (channel) => (channel === 'D1' ? 'U1' : null),
+    verifyDm: async (channel) => channel === 'D1',
+    send: vi.fn(async () => 'sent'),
+    find: async () => undefined,
+    active: () => false,
+    link: (channel, thread) => `${channel}/${thread}`,
   };
-  model = { complete: vi.fn(async request => ({ resolved: false, help: null, public: false, evidence: (request.input as { matter: Matter }).matter.evidence })) as BackgroundModel['complete'] };
+  model = {
+    complete: vi.fn(async (request) => ({
+      resolved: false,
+      help: null,
+      public: false,
+      evidence: (request.input as { matter: Matter }).matter.evidence,
+    })) as BackgroundModel['complete'],
+  };
   service = freshService();
 });
-afterEach(() => { service.stop(); service.release(); store.close(); vi.useRealTimers(); rmSync(root, { recursive: true, force: true }); });
+afterEach(() => {
+  service.stop();
+  service.release();
+  store.close();
+  vi.useRealTimers();
+  rmSync(root, { recursive: true, force: true });
+});
 
 function seed(nextCheck = START, deadline: number | null = null): Matter {
   const snapshot = store.snapshot('C1', message.thread)!;
-  const matter: Matter = { id: `C1:${message.thread}:m:release`, channel: 'C1', thread: message.thread, title: 'Release checklist', detail: 'Prepare checklist', evidence: snapshot.evidence.map(e => e.id), state: 'open', owner: 'U1', deadline, explicit: true, nextCheck, valid: true };
+  const matter: Matter = {
+    id: `C1:${message.thread}:m:release`,
+    channel: 'C1',
+    thread: message.thread,
+    title: 'Release checklist',
+    detail: 'Prepare checklist',
+    evidence: snapshot.evidence.map((e) => e.id),
+    state: 'open',
+    owner: 'U1',
+    deadline,
+    explicit: true,
+    nextCheck,
+    valid: true,
+  };
   store.apply([snapshot], [], [matter]);
   store.schedule('investigate', matter.id, nextCheck);
   return matter;
@@ -49,10 +97,38 @@ function seed(nextCheck = START, deadline: number | null = null): Matter {
 async function editDeadline(matter: Matter, deadline: number): Promise<void> {
   const now = START + 60_000;
   vi.setSystemTime(now);
-  message = { ...message, version: (now / 1000).toFixed(6), text: `The checklist deadline changed to ${deadline}.` };
+  message = {
+    ...message,
+    version: (now / 1000).toFixed(6),
+    text: `The checklist deadline changed to ${deadline}.`,
+  };
   store.record(message, now);
-  const evidence = store.snapshot('C1', message.thread)!.evidence.map(e => e.id);
-  vi.mocked(model.complete).mockResolvedValueOnce({ threads: [{ channel: 'C1', thread: message.thread, observations: [], matters: [{ key: 'release', title: matter.title, detail: message.text, evidence, state: 'open', owner: 'U1', deadline: { date: new Date(deadline).toISOString().slice(0, 10), time: new Date(deadline).toISOString().slice(11, 16), timeZone: 'UTC' }, explicit: true }] }] });
+  const evidence = store.snapshot('C1', message.thread)!.evidence.map((e) => e.id);
+  vi.mocked(model.complete).mockResolvedValueOnce({
+    threads: [
+      {
+        channel: 'C1',
+        thread: message.thread,
+        observations: [],
+        matters: [
+          {
+            key: 'release',
+            title: matter.title,
+            detail: message.text,
+            evidence,
+            state: 'open',
+            owner: 'U1',
+            deadline: {
+              date: new Date(deadline).toISOString().slice(0, 10),
+              time: new Date(deadline).toISOString().slice(11, 16),
+              timeZone: 'UTC',
+            },
+            explicit: true,
+          },
+        ],
+      },
+    ],
+  });
   store.schedule('extract', 'global', now);
   await service.tick(now, true);
 }
@@ -66,13 +142,21 @@ it('reassesses after restart at the inactivity boundary and reuses stable phases
   await service.tick(Date.now(), true);
   expect(model.complete).toHaveBeenCalledTimes(1);
   expect(store.matter(matter.id)?.nextCheck).toBe(boundary);
-  service.stop(); service.release(); store.close();
-  store = new InitiativeStore(join(root, 'state.sqlite'), 'T1', Date.now()); service = freshService();
-  vi.mocked(model.complete).mockResolvedValue({ resolved: false, help: 'Can I prepare this still-open checklist?', public: true, evidence: matter.evidence });
+  service.stop();
+  service.release();
+  store.close();
+  store = new InitiativeStore(join(root, 'state.sqlite'), 'T1', Date.now());
+  service = freshService();
+  vi.mocked(model.complete).mockResolvedValue({
+    resolved: false,
+    help: 'Can I prepare this still-open checklist?',
+    public: true,
+    evidence: matter.evidence,
+  });
   vi.setSystemTime(boundary);
   await service.tick(Date.now(), true);
   expect(model.complete).toHaveBeenCalledTimes(2);
-  expect(store.deliveries('pending').some(delivery => delivery.channel === 'C1')).toBe(true);
+  expect(store.deliveries('pending').some((delivery) => delivery.channel === 'C1')).toBe(true);
   store.attention.setNextCheck(boundary + 60_000, matter.id);
   store.schedule('investigate', matter.id, boundary + 60_000);
   vi.setSystemTime(boundary + 60_000);
@@ -97,7 +181,9 @@ it('advances a shortened source deadline to its preparation window', async () =>
   const deadline = START + 60_000 + 3_600_000;
   await editDeadline(matter, deadline);
   expect(store.matter(matter.id)?.nextCheck).toBe(deadline - 15 * 60_000);
-  expect(store['row']("SELECT due FROM jobs WHERE kind='investigate' AND target=?", matter.id)?.due).toBe(deadline - 15 * 60_000);
+  expect(
+    store['row']("SELECT due FROM jobs WHERE kind='investigate' AND target=?", matter.id)?.due,
+  ).toBe(deadline - 15 * 60_000);
 });
 
 it('does not postpone an existing earlier check when the source deadline moves later', async () => {
@@ -106,10 +192,16 @@ it('does not postpone an existing earlier check when the source deadline moves l
   expect(store.matter(matter.id)?.nextCheck).toBe(START + 3_600_000);
 });
 
-it.each(['later', 'not useful'] as const)('preserves the human %s decision across an earlier source deadline', async action => {
-  const matter = seed(START + DAY);
-  store.feedback(matter.id, action, START, START + DAY);
-  await editDeadline(matter, START + 5 * 60_000);
-  expect(store.matter(matter.id)).toMatchObject({ state: action === 'later' ? 'snoozed' : 'dismissed', nextCheck: START + DAY });
-  expect(model.complete).toHaveBeenCalledTimes(1);
-});
+it.each(['later', 'not useful'] as const)(
+  'preserves the human %s decision across an earlier source deadline',
+  async (action) => {
+    const matter = seed(START + DAY);
+    store.feedback(matter.id, action, START, START + DAY);
+    await editDeadline(matter, START + 5 * 60_000);
+    expect(store.matter(matter.id)).toMatchObject({
+      state: action === 'later' ? 'snoozed' : 'dismissed',
+      nextCheck: START + DAY,
+    });
+    expect(model.complete).toHaveBeenCalledTimes(1);
+  },
+);

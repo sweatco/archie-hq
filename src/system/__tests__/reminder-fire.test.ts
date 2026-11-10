@@ -29,7 +29,13 @@ vi.mock('../../tasks/persistence.js', () => ({
 const { taskGet } = vi.hoisted(() => ({ taskGet: vi.fn() }));
 vi.mock('../../tasks/task.js', () => ({ Task: { get: taskGet } }));
 
-import { scheduleReminder, cancelReminder, checkDueReminders, getReminder, announceRecurrence } from '../reminder-scheduler.js';
+import {
+  scheduleReminder,
+  cancelReminder,
+  checkDueReminders,
+  getReminder,
+  announceRecurrence,
+} from '../reminder-scheduler.js';
 import type { Task } from '../../tasks/task.js';
 
 /**
@@ -44,15 +50,27 @@ function makeTask(taskId = 'task-1') {
     sendMessage: vi.fn().mockResolvedValue(undefined),
     debouncedSave: vi.fn(),
     postToUser: vi.fn().mockResolvedValue(null),
-    fireReminder: vi.fn(async (fired: { trigger_at: string; cron?: string }, next: unknown, beforeWake: () => void, message: string) => {
-      const current = task.metadata.reminder as { trigger_at: string; cron?: string } | undefined;
-      if (!current || new Date(current.trigger_at).getTime() !== new Date(fired.trigger_at).getTime() || current.cron !== fired.cron) return false;
-      task.metadata.reminder = next;
-      await task.save(true);
-      beforeWake();
-      await task.sendMessage(message);
-      return true;
-    }),
+    fireReminder: vi.fn(
+      async (
+        fired: { trigger_at: string; cron?: string },
+        next: unknown,
+        beforeWake: () => void,
+        message: string,
+      ) => {
+        const current = task.metadata.reminder as { trigger_at: string; cron?: string } | undefined;
+        if (
+          !current ||
+          new Date(current.trigger_at).getTime() !== new Date(fired.trigger_at).getTime() ||
+          current.cron !== fired.cron
+        )
+          return false;
+        task.metadata.reminder = next;
+        await task.save(true);
+        beforeWake();
+        await task.sendMessage(message);
+        return true;
+      },
+    ),
   };
   return task;
 }
@@ -70,11 +88,19 @@ describe('checkDueReminders — recurring', () => {
     taskGet.mockResolvedValue(task as unknown as Task);
 
     // Due now, recurring hourly.
-    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'stock check', { cron: '0 * * * *', tz: 'UTC' });
+    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'stock check', {
+      cron: '0 * * * *',
+      tz: 'UTC',
+    });
     await checkDueReminders();
 
     // The instance the rest of the system holds must carry the NEXT occurrence.
-    const next = task.metadata.reminder as { trigger_at: string; cron: string; tz: string; reason: string };
+    const next = task.metadata.reminder as {
+      trigger_at: string;
+      cron: string;
+      tz: string;
+      reason: string;
+    };
     expect(next).toBeDefined();
     expect(new Date(next.trigger_at).getTime()).toBeGreaterThan(Date.now());
     expect(next.cron).toBe('0 * * * *');
@@ -82,12 +108,14 @@ describe('checkDueReminders — recurring', () => {
     expect(next.reason).toBe('stock check');
   });
 
-
   it('keeps the in-memory index armed for the next occurrence', async () => {
     const task = makeTask();
     taskGet.mockResolvedValue(task as unknown as Task);
 
-    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', { cron: '0 * * * *', tz: 'UTC' });
+    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', {
+      cron: '0 * * * *',
+      tz: 'UTC',
+    });
     await checkDueReminders();
 
     const armed = getReminder('task-1');
@@ -99,7 +127,10 @@ describe('checkDueReminders — recurring', () => {
     const task = makeTask();
     taskGet.mockResolvedValue(task as unknown as Task);
 
-    scheduleReminder(task as unknown as Task, new Date(Date.now() + 3_600_000), 'r', { cron: '0 * * * *', tz: 'UTC' });
+    scheduleReminder(task as unknown as Task, new Date(Date.now() + 3_600_000), 'r', {
+      cron: '0 * * * *',
+      tz: 'UTC',
+    });
     await checkDueReminders();
 
     expect(task.sendMessage).not.toHaveBeenCalled();
@@ -126,7 +157,10 @@ describe('cancel_reminder is a complete off switch', () => {
     const task = makeTask();
     taskGet.mockResolvedValue(task as unknown as Task);
 
-    scheduleReminder(task as unknown as Task, new Date(Date.now() + 3_600_000), 'r', { cron: '0 * * * *', tz: 'UTC' });
+    scheduleReminder(task as unknown as Task, new Date(Date.now() + 3_600_000), 'r', {
+      cron: '0 * * * *',
+      tz: 'UTC',
+    });
     expect(getReminder('task-1')?.cron).toBe('0 * * * *');
 
     emitEvent.mockClear();
@@ -148,7 +182,10 @@ describe('cancel_reminder is a complete off switch', () => {
     const task = makeTask();
     taskGet.mockResolvedValue(task as unknown as Task);
 
-    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', { cron: '0 * * * *', tz: 'UTC' });
+    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', {
+      cron: '0 * * * *',
+      tz: 'UTC',
+    });
     await checkDueReminders();
     expect(getReminder('task-1')).toBeDefined(); // re-armed
 
@@ -164,7 +201,10 @@ describe('checkDueReminders — the index survives a failed or overtaken fire', 
     const task = makeTask();
     task.save.mockRejectedValue(new Error('EBUSY'));
     taskGet.mockResolvedValue(task as unknown as Task);
-    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', { cron: '0 * * * *', tz: 'UTC' });
+    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', {
+      cron: '0 * * * *',
+      tz: 'UTC',
+    });
 
     await checkDueReminders();
 
@@ -178,7 +218,10 @@ describe('checkDueReminders — the index survives a failed or overtaken fire', 
       scheduleReminder(task as unknown as Task, replacementAt, 'replacement');
       return task as unknown as Task;
     });
-    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', { cron: '0 * * * *', tz: 'UTC' });
+    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', {
+      cron: '0 * * * *',
+      tz: 'UTC',
+    });
 
     await checkDueReminders();
 
@@ -189,7 +232,10 @@ describe('checkDueReminders — the index survives a failed or overtaken fire', 
   it('does not overwrite a reminder scheduled while the fire was in flight', async () => {
     const task = makeTask();
     taskGet.mockResolvedValue(task as unknown as Task);
-    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', { cron: '0 * * * *', tz: 'UTC' });
+    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', {
+      cron: '0 * * * *',
+      tz: 'UTC',
+    });
     const replacementAt = new Date(Date.now() + 5 * 3_600_000);
     task.fireReminder.mockImplementationOnce(async () => {
       scheduleReminder(task as unknown as Task, replacementAt, 'replacement');
@@ -206,22 +252,36 @@ describe('checkDueReminders — the index survives a failed or overtaken fire', 
 describe('a recurring reminder is never silent', () => {
   it('words the set line as a plain cadence and an end date, never cron syntax', async () => {
     const task = makeTask();
-    announceRecurrence(task as unknown as Task, 'set', { cron: '0 */12 * * *', tz: 'UTC', until: '2026-10-30T18:00:00.000Z' });
+    announceRecurrence(task as unknown as Task, 'set', {
+      cron: '0 */12 * * *',
+      tz: 'UTC',
+      until: '2026-10-30T18:00:00.000Z',
+    });
     await flush();
     // The exact end instant, not a bare day — a bare day hides whether that day's run happens.
-    expect(task.postToUser).toHaveBeenCalledWith("⏰ I'll check this every 12 hours until 30 Oct, 18:00 UTC.");
+    expect(task.postToUser).toHaveBeenCalledWith(
+      "⏰ I'll check this every 12 hours until 30 Oct, 18:00 UTC.",
+    );
   });
 
   it('words an hour list as times rather than "a custom schedule"', async () => {
     const task = makeTask();
-    announceRecurrence(task as unknown as Task, 'set', { cron: '0 5,17 * * *', tz: 'UTC', until: '2026-10-30T18:00:00.000Z' });
+    announceRecurrence(task as unknown as Task, 'set', {
+      cron: '0 5,17 * * *',
+      tz: 'UTC',
+      until: '2026-10-30T18:00:00.000Z',
+    });
     await flush();
     expect(task.postToUser.mock.calls[0][0]).toContain('every day at 5:00 AM and 5:00 PM');
   });
 
   it('never throws, even for a timezone that no longer resolves — it sits on the stop paths', async () => {
     const task = makeTask();
-    scheduleReminder(task as unknown as Task, new Date(Date.now() + 3_600_000), 'r', { cron: '0 9 * * *', tz: 'Not/A_Zone', until: '2026-10-30T00:00:00.000Z' });
+    scheduleReminder(task as unknown as Task, new Date(Date.now() + 3_600_000), 'r', {
+      cron: '0 9 * * *',
+      tz: 'Not/A_Zone',
+      until: '2026-10-30T00:00:00.000Z',
+    });
     expect(() => cancelReminder(task as unknown as Task)).not.toThrow();
     await flush();
     expect(task.metadata.reminder).toBeUndefined();
@@ -230,18 +290,28 @@ describe('a recurring reminder is never silent', () => {
 
   it('posts one line when it is cancelled', async () => {
     const task = makeTask();
-    scheduleReminder(task as unknown as Task, new Date(Date.now() + 3_600_000), 'r', { cron: '0 */12 * * *', tz: 'UTC', until: '2026-10-30T00:00:00.000Z' });
+    scheduleReminder(task as unknown as Task, new Date(Date.now() + 3_600_000), 'r', {
+      cron: '0 */12 * * *',
+      tz: 'UTC',
+      until: '2026-10-30T00:00:00.000Z',
+    });
 
     cancelReminder(task as unknown as Task);
     await flush();
 
-    expect(task.postToUser).toHaveBeenCalledWith('⏰ Stopped the reminder that ran every 12 hours.');
+    expect(task.postToUser).toHaveBeenCalledWith(
+      '⏰ Stopped the reminder that ran every 12 hours.',
+    );
   });
 
   it('posts nothing per run while it keeps re-arming', async () => {
     const task = makeTask();
     taskGet.mockResolvedValue(task as unknown as Task);
-    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', { cron: '0 * * * *', tz: 'UTC', until: new Date(Date.now() + 7 * 24 * 3_600_000).toISOString() });
+    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', {
+      cron: '0 * * * *',
+      tz: 'UTC',
+      until: new Date(Date.now() + 7 * 24 * 3_600_000).toISOString(),
+    });
 
     await checkDueReminders();
     await flush();
@@ -262,7 +332,10 @@ describe('a recurring reminder is never silent', () => {
 describe('checkDueReminders — missing task', () => {
   it('drops the reminder and keeps going when the task is gone', async () => {
     const task = makeTask();
-    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', { cron: '0 * * * *', tz: 'UTC' });
+    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', {
+      cron: '0 * * * *',
+      tz: 'UTC',
+    });
     metadataExists.value = false; // the task really is gone, not just unreadable
     taskGet.mockRejectedValue(new Error('Task task-1 not found'));
 
@@ -280,7 +353,10 @@ describe('event order is a UI contract', () => {
     const task = makeTask();
     taskGet.mockResolvedValue(task as unknown as Task);
 
-    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', { cron: '0 * * * *', tz: 'UTC' });
+    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', {
+      cron: '0 * * * *',
+      tz: 'UTC',
+    });
     emitEvent.mockClear();
     await checkDueReminders();
 
@@ -307,7 +383,10 @@ describe('a failure loading the task must not silently kill the cadence', () => 
     // those would kill a recurring cadence for the process lifetime while the
     // reminder stayed armed on disk to re-fire after a restart.
     const task = makeTask();
-    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', { cron: '0 * * * *', tz: 'UTC' });
+    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', {
+      cron: '0 * * * *',
+      tz: 'UTC',
+    });
     metadataExists.value = true;
     taskGet.mockRejectedValue(new Error('Unexpected token } in JSON'));
 
@@ -321,7 +400,10 @@ describe('a failure loading the task must not silently kill the cadence', () => 
     const task = makeTask();
     taskGet.mockRejectedValue(new Error('unparseable metadata'));
     metadataExists.value = true;
-    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', { cron: '0 * * * *', tz: 'UTC' });
+    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', {
+      cron: '0 * * * *',
+      tz: 'UTC',
+    });
 
     for (let i = 0; i < 10; i++) await checkDueReminders();
 
@@ -331,7 +413,10 @@ describe('a failure loading the task must not silently kill the cadence', () => 
 
   it('drops the reminder when the task is genuinely gone', async () => {
     const task = makeTask();
-    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', { cron: '0 * * * *', tz: 'UTC' });
+    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', {
+      cron: '0 * * * *',
+      tz: 'UTC',
+    });
     metadataExists.value = false;
     taskGet.mockRejectedValue(new Error('Task task-1 not found'));
 
@@ -353,7 +438,11 @@ describe('a bounded recurrence expires on its own', () => {
       taskGet.mockResolvedValue(task as unknown as Task);
       const until = new Date(Date.now() + 30 * 60_000).toISOString();
 
-      scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', { cron: '0 * * * *', tz: 'UTC', until });
+      scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', {
+        cron: '0 * * * *',
+        tz: 'UTC',
+        until,
+      });
       await checkDueReminders();
       await flush();
 
@@ -361,7 +450,9 @@ describe('a bounded recurrence expires on its own', () => {
       expect(getReminder('task-1')).toBeUndefined();
       expect(task.sendMessage).toHaveBeenCalledOnce(); // the due wake still happened
       // Posted at the last run, so it must not name a date that is still ahead.
-      expect(task.postToUser).toHaveBeenCalledWith('⏰ Last scheduled check — this ends the reminder that ran every hour.');
+      expect(task.postToUser).toHaveBeenCalledWith(
+        '⏰ Last scheduled check — this ends the reminder that ran every hour.',
+      );
     } finally {
       vi.useRealTimers();
     }
@@ -372,7 +463,11 @@ describe('a bounded recurrence expires on its own', () => {
     taskGet.mockResolvedValue(task as unknown as Task);
     const until = new Date(Date.now() + 7 * 24 * 3_600_000).toISOString();
 
-    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', { cron: '0 * * * *', tz: 'UTC', until });
+    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', {
+      cron: '0 * * * *',
+      tz: 'UTC',
+      until,
+    });
     await checkDueReminders();
 
     const next = task.metadata.reminder as { until: string; cron: string };
@@ -388,7 +483,10 @@ describe('one tick handles each task exactly once', () => {
     // iterator revisits keys re-added during iteration — so iterating the live map
     // spun forever on a transient Task.get failure. The tick iterates a snapshot.
     const task = makeTask();
-    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', { cron: '0 * * * *', tz: 'UTC' });
+    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', {
+      cron: '0 * * * *',
+      tz: 'UTC',
+    });
     metadataExists.value = true;
     taskGet.mockRejectedValue(new Error('torn read'));
 
@@ -402,8 +500,13 @@ describe('one tick handles each task exactly once', () => {
     // The retry path re-inserts the SAME overdue entry; a Map iterator would revisit it, and the
     // second Task.get (now succeeding) would fire it within the tick that just failed.
     const task = makeTask();
-    taskGet.mockRejectedValueOnce(new Error('torn read')).mockResolvedValue(task as unknown as Task);
-    scheduleReminder(task as unknown as Task, new Date(Date.now() - 3 * 24 * 3_600_000), 'r', { cron: '0 * * * *', tz: 'UTC' });
+    taskGet
+      .mockRejectedValueOnce(new Error('torn read'))
+      .mockResolvedValue(task as unknown as Task);
+    scheduleReminder(task as unknown as Task, new Date(Date.now() - 3 * 24 * 3_600_000), 'r', {
+      cron: '0 * * * *',
+      tz: 'UTC',
+    });
 
     await checkDueReminders();
 

@@ -173,7 +173,11 @@ describe('loadMcpJson — archie tool policy', () => {
   });
 
   it('accepts an allow-by-default server with explicit exceptions', async () => {
-    const path = await writePolicy({ default: 'allow', ask: ['trigger_build'], deny: ['set_mcp_mode'] });
+    const path = await writePolicy({
+      default: 'allow',
+      ask: ['trigger_build'],
+      deny: ['set_mcp_mode'],
+    });
     expect(loadMcpJson(path).policies.tramline).toEqual({
       default: 'allow',
       tiers: { trigger_build: 'ask', set_mcp_mode: 'deny' },
@@ -186,8 +190,9 @@ describe('loadMcpJson — archie tool policy', () => {
     const path = await writePolicy({
       titles: { fully_release_rollout: '  Release to 100% of users — irreversible  ' },
     });
-    expect(loadMcpJson(path).policies.tramline.titles)
-      .toEqual({ fully_release_rollout: 'Release to 100% of users — irreversible' });
+    expect(loadMcpJson(path).policies.tramline.titles).toEqual({
+      fully_release_rollout: 'Release to 100% of users — irreversible',
+    });
   });
 
   it('rejects a non-string or empty title', async () => {
@@ -233,7 +238,6 @@ describe('loadMcpJson — archie tool policy', () => {
     expect(() => loadMcpJson(path)).toThrow(/must be a list of tool names/);
   });
 
-
   // A key with `__` splits differently coming back out of the SDK's
   // `mcp__<server>__<tool>` name, so the gate would never find the policy and
   // every tool of the server would run ungated. Refuse the key instead.
@@ -247,7 +251,7 @@ describe('loadMcpJson — archie tool policy', () => {
   });
 
   it('refuses an unpolicied server with a qualification delimiter', async () => {
-    const path = await writeMcpJson({ mcpServers: { 'sweat__admin': { command: 'node' } } });
+    const path = await writeMcpJson({ mcpServers: { sweat__admin: { command: 'node' } } });
     expect(loadMcpJson(path)).toEqual({ servers: {}, descriptions: {}, policies: {} });
   });
 

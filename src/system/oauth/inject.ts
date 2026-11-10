@@ -53,7 +53,10 @@ export async function applyOAuthBindings(
       }
       injected.push(name);
     } catch (err) {
-      dropped.push({ serverName: name, error: err instanceof Error ? err : new Error(String(err)) });
+      dropped.push({
+        serverName: name,
+        error: err instanceof Error ? err : new Error(String(err)),
+      });
       delete mcpServers[name];
       logger.error('oauth', `Failed to bind credentials for MCP server "${name}", dropping`, err);
     }
@@ -62,7 +65,9 @@ export async function applyOAuthBindings(
   return { injected, dropped };
 }
 
-function isHttpLike(config: unknown): config is { type?: string; headers?: Record<string, string> } {
+function isHttpLike(
+  config: unknown,
+): config is { type?: string; headers?: Record<string, string> } {
   if (!config || typeof config !== 'object') return false;
   const type = (config as { type?: unknown }).type;
   return type === 'http' || type === 'sse';

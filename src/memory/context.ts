@@ -10,12 +10,18 @@ import { existsSync } from 'fs';
 import { readUser } from './store.js';
 import { listEntities } from './entities.js';
 import { renderIndex } from './entity-index.js';
-import { isMemoryReady, isInjectionEnabled, isMemoryToolsEnabled, getRecentActivityPath } from './paths.js';
+import {
+  isMemoryReady,
+  isInjectionEnabled,
+  isMemoryToolsEnabled,
+  getRecentActivityPath,
+} from './paths.js';
 import { logger } from '../system/logger.js';
 import type { UserRef } from './types.js';
 
 const ENTITY_CATALOGUE_LIMIT = 4_000;
-const ENTITY_TOOL_GUIDANCE = 'The catalogue may be incomplete. Use search_memory to find relevant knowledge and read_entity for details.';
+const ENTITY_TOOL_GUIDANCE =
+  'The catalogue may be incomplete. Use search_memory to find relevant knowledge and read_entity for details.';
 
 /**
  * Build an XML-tagged memory context string from available memory artifacts.
@@ -29,16 +35,14 @@ const ENTITY_TOOL_GUIDANCE = 'The catalogue may be incomplete. Use search_memory
  *
  * Blocks are joined with double newlines. Returns '' when nothing is available.
  */
-export async function buildMemoryContext(
-  users: UserRef[] | string[],
-): Promise<string> {
+export async function buildMemoryContext(users: UserRef[] | string[]): Promise<string> {
   if (!isMemoryReady()) return '';
 
   const blocks: string[] = [];
 
   // Per-user preferences
   const refs: UserRef[] = users.map((u) =>
-    typeof u === 'string' ? { userId: u, displayName: u } : u
+    typeof u === 'string' ? { userId: u, displayName: u } : u,
   );
   for (const ref of refs) {
     let userContent: string;
@@ -49,9 +53,10 @@ export async function buildMemoryContext(
       continue;
     }
     if (userContent.trim()) {
-      const display = ref.displayName !== ref.userId ? ` display_name="${escapeAttr(ref.displayName)}"` : '';
+      const display =
+        ref.displayName !== ref.userId ? ` display_name="${escapeAttr(ref.displayName)}"` : '';
       blocks.push(
-        `<user_preferences user_id="${escapeAttr(ref.userId)}"${display}>\n${userContent.trimEnd()}\n</user_preferences>`
+        `<user_preferences user_id="${escapeAttr(ref.userId)}"${display}>\n${userContent.trimEnd()}\n</user_preferences>`,
       );
     }
   }
@@ -70,7 +75,10 @@ export async function buildMemoryContext(
     const open = '<entity_index>\n';
     const guidance = isMemoryToolsEnabled() ? `\n\n${ENTITY_TOOL_GUIDANCE}` : '';
     const close = '\n</entity_index>';
-    const index = renderIndex(records, ENTITY_CATALOGUE_LIMIT - open.length - guidance.length - close.length).trimEnd();
+    const index = renderIndex(
+      records,
+      ENTITY_CATALOGUE_LIMIT - open.length - guidance.length - close.length,
+    ).trimEnd();
     if (index) blocks.push(`${open}${index}${guidance}${close}`);
   }
 
@@ -100,7 +108,10 @@ export async function enrichPromptWithMemory(
   // Injection is gated separately from extraction and defaults off. Bail before
   // any store read so disabled injection costs nothing.
   if (!isInjectionEnabled()) {
-    logger.debug('memory', 'injection disabled (ARCHIE_MEMORY_INJECT≠true) — prompt unchanged; extraction unaffected');
+    logger.debug(
+      'memory',
+      'injection disabled (ARCHIE_MEMORY_INJECT≠true) — prompt unchanged; extraction unaffected',
+    );
     return systemPrompt;
   }
 

@@ -21,7 +21,13 @@ process.env.ARCHIE_WORKDIR = WORK;
 
 const store = await import('../trigger-store.js');
 const { isValidTriggerId, generateTriggerId, getTriggerPath } = store;
-const { getTriggerDataPath, ensureTriggerDataDir, removeTriggerDataDir, saveTrigger, deleteTrigger } = store;
+const {
+  getTriggerDataPath,
+  ensureTriggerDataDir,
+  removeTriggerDataDir,
+  saveTrigger,
+  deleteTrigger,
+} = store;
 const { countActiveTriggers } = store;
 const { TRIGGERS_DATA_DIR } = await import('../workdir.js');
 
@@ -36,8 +42,15 @@ function sampleTrigger(id: string): Trigger {
     status: 'enabled',
     created_by: 'UCREATOR',
     created_at: '2026-08-17T09:00:00.000Z',
-    binding: { type: 'user', user_id: 'UCREATOR', channel_id: 'DCREATOR', channel_name: 'DM with Creator' },
-    conditions: [{ type: 'schedule', tz: 'UTC', next_run_at: '2026-08-18T09:00:00.000Z', cron: '0 9 * * *' }],
+    binding: {
+      type: 'user',
+      user_id: 'UCREATOR',
+      channel_id: 'DCREATOR',
+      channel_name: 'DM with Creator',
+    },
+    conditions: [
+      { type: 'schedule', tz: 'UTC', next_run_at: '2026-08-18T09:00:00.000Z', cron: '0 9 * * *' },
+    ],
     action: { prompt: 'do the thing' },
   };
 }
@@ -153,21 +166,24 @@ describe('removeTriggerDataDir', () => {
   // caller reports a deletion while the data is still on disk.
   // Skipped as root, which ignores directory permissions, so the chmod would not
   // bite and the test would pass vacuously.
-  it.skipIf(process.getuid?.() === 0)('rejects rather than reporting success when the filesystem refuses', async () => {
-    const id = 'trg-20260817-1207-eacces';
-    await saveTrigger(sampleTrigger(id));
-    const path = (await ensureTriggerDataDir(id))!;
-    await writeFile(join(path, 'state.json'), '{"seen":1}');
+  it.skipIf(process.getuid?.() === 0)(
+    'rejects rather than reporting success when the filesystem refuses',
+    async () => {
+      const id = 'trg-20260817-1207-eacces';
+      await saveTrigger(sampleTrigger(id));
+      const path = (await ensureTriggerDataDir(id))!;
+      await writeFile(join(path, 'state.json'), '{"seen":1}');
 
-    // Strip write permission from the PARENT, so removing `path` itself fails.
-    chmodSync(TRIGGERS_DATA_DIR, 0o500);
-    try {
-      await expect(removeTriggerDataDir(id)).rejects.toThrow();
-      expect(existsSync(path)).toBe(true); // the refusal was real, so the rejection is meaningful
-    } finally {
-      chmodSync(TRIGGERS_DATA_DIR, 0o700);
-    }
-  });
+      // Strip write permission from the PARENT, so removing `path` itself fails.
+      chmodSync(TRIGGERS_DATA_DIR, 0o500);
+      try {
+        await expect(removeTriggerDataDir(id)).rejects.toThrow();
+        expect(existsSync(path)).toBe(true); // the refusal was real, so the rejection is meaningful
+      } finally {
+        chmodSync(TRIGGERS_DATA_DIR, 0o700);
+      }
+    },
+  );
 });
 
 describe('deleteTrigger', () => {
@@ -204,7 +220,11 @@ describe('countActiveTriggers counts only what is running', () => {
   // temp workdir, and an unscoped count would tally those too.
   it('excludes pending and paused triggers', async () => {
     const CREATOR = 'UCAPTEST';
-    const mk = (id: string, status: Trigger['status']) => ({ ...sampleTrigger(id), status, created_by: CREATOR });
+    const mk = (id: string, status: Trigger['status']) => ({
+      ...sampleTrigger(id),
+      status,
+      created_by: CREATOR,
+    });
     await saveTrigger(mk('trg-20260824-1000-en1', 'enabled'));
     await saveTrigger(mk('trg-20260824-1000-en2', 'enabled'));
     await saveTrigger(mk('trg-20260824-1000-pau', 'paused'));

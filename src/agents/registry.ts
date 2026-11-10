@@ -104,14 +104,19 @@ export function readPmOverlay(): PmOverlay {
     const file = matter(raw);
     parsed = { data: file.data as Record<string, unknown>, content: file.content };
   } catch (error) {
-    logger.warn('registry', `pm.md: frontmatter did not parse — using the file as body only`, error);
+    logger.warn(
+      'registry',
+      `pm.md: frontmatter did not parse — using the file as body only`,
+      error,
+    );
     return { body: raw.trim() };
   }
 
   const maxMode = parsed.data.maxMode;
-  const max = maxMode && typeof maxMode === 'object' && !Array.isArray(maxMode)
-    ? (maxMode as Record<string, unknown>)
-    : {};
+  const max =
+    maxMode && typeof maxMode === 'object' && !Array.isArray(maxMode)
+      ? (maxMode as Record<string, unknown>)
+      : {};
   const model = overlayString(parsed.data.model);
   const effort = overlayEffort(parsed.data.effort, 'effort');
   const overlay: PmOverlay = {
@@ -122,7 +127,10 @@ export function readPmOverlay(): PmOverlay {
   const maxModel = overlayString(max.model);
   const maxEffort = overlayEffort(max.effort, 'maxMode.effort');
   if (maxModel || maxEffort) {
-    overlay.maxMode = { ...(maxModel ? { model: maxModel } : {}), ...(maxEffort ? { effort: maxEffort } : {}) };
+    overlay.maxMode = {
+      ...(maxModel ? { model: maxModel } : {}),
+      ...(maxEffort ? { effort: maxEffort } : {}),
+    };
   }
   return overlay;
 }
@@ -226,8 +234,10 @@ function buildPmDef(): AgentDef {
   const overlay = readPmOverlay();
   const model = process.env.ARCHIE_PM_MODEL?.trim() || overlay.model || DEFAULT_PM_MODEL;
   const effort = process.env.ARCHIE_PM_EFFORT?.trim() || overlay.effort || DEFAULT_PM_EFFORT;
-  const maxModel = process.env.ARCHIE_PM_MAX_MODEL?.trim() || overlay.maxMode?.model || DEFAULT_PM_MAX_MODEL;
-  const maxEffort = process.env.ARCHIE_PM_MAX_EFFORT?.trim() || overlay.maxMode?.effort || DEFAULT_PM_MAX_EFFORT;
+  const maxModel =
+    process.env.ARCHIE_PM_MAX_MODEL?.trim() || overlay.maxMode?.model || DEFAULT_PM_MAX_MODEL;
+  const maxEffort =
+    process.env.ARCHIE_PM_MAX_EFFORT?.trim() || overlay.maxMode?.effort || DEFAULT_PM_MAX_EFFORT;
 
   return {
     id: 'pm-agent',

@@ -21,7 +21,11 @@ vi.mock('../client.js', () => ({
 }));
 
 vi.mock('../canvas-read.js', () => ({
-  readCanvas: async () => ({ title: 'Archie Context', markdown: '# standing context', fileIds: [] }),
+  readCanvas: async () => ({
+    title: 'Archie Context',
+    markdown: '# standing context',
+    fileIds: [],
+  }),
 }));
 
 vi.mock('../pin-summary.js', async () => {
@@ -146,7 +150,9 @@ describe('standing context reaches a trigger-fired task before it has a thread',
   });
 
   it('both blocks stay empty with no slack channels and no home channel', async () => {
-    const cliOnly = { channels: { a: { type: 'cli', id: 'cli:local' } } } as unknown as TaskMetadata;
+    const cliOnly = {
+      channels: { a: { type: 'cli', id: 'cli:local' } },
+    } as unknown as TaskMetadata;
 
     expect(await buildChannelCanvasPromptSection(cliOnly)).toBe('');
     expect(await buildChannelPinsPromptSection(cliOnly)).toBe('');
@@ -183,7 +189,13 @@ describe('capability derivation covers the home channel too', () => {
         ...homeStore(),
         pins: [
           pinEntry(),
-          { ...pinEntry(), kind: 'file', key: 'F_PINNED', fileId: 'F_PINNED', summary: 'the runbook pdf' },
+          {
+            ...pinEntry(),
+            kind: 'file',
+            key: 'F_PINNED',
+            fileId: 'F_PINNED',
+            summary: 'the runbook pdf',
+          },
         ],
       },
     };
@@ -196,7 +208,9 @@ describe('capability derivation covers the home channel too', () => {
   // The widening is scoped to the home channel, not a blanket "allow whatever the stores hold": a task
   // with no slack surface at all must still get nothing.
   it('both allowlists stay empty with no slack channels and no home channel', async () => {
-    const cliOnly = { channels: { a: { type: 'cli', id: 'cli:local' } } } as unknown as TaskMetadata;
+    const cliOnly = {
+      channels: { a: { type: 'cli', id: 'cli:local' } },
+    } as unknown as TaskMetadata;
 
     expect((await collectCanvasFileAllowlist(cliOnly)).size).toBe(0);
     expect((await collectPinnedFileAllowlist(cliOnly)).size).toBe(0);

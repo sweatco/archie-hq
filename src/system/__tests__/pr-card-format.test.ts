@@ -34,16 +34,25 @@ describe('summarizeCi', () => {
   });
 
   it('counts passed out of total when all succeed', () => {
-    expect(summarizeCi([completed('success'), completed('skipped')])).toEqual({ state: 'passed', passed: 2, total: 2 });
+    expect(summarizeCi([completed('success'), completed('skipped')])).toEqual({
+      state: 'passed',
+      passed: 2,
+      total: 2,
+    });
   });
 
   it('reports pending with a partial passed count while checks run', () => {
-    expect(summarizeCi([completed('success'), { status: 'in_progress', conclusion: null }]))
-      .toEqual({ state: 'pending', passed: 1, total: 2 });
+    expect(
+      summarizeCi([completed('success'), { status: 'in_progress', conclusion: null }]),
+    ).toEqual({ state: 'pending', passed: 1, total: 2 });
   });
 
   it('reports failed when any check is a failure class', () => {
-    expect(summarizeCi([completed('success'), completed('failure')])).toEqual({ state: 'failed', passed: 1, total: 2 });
+    expect(summarizeCi([completed('success'), completed('failure')])).toEqual({
+      state: 'failed',
+      passed: 1,
+      total: 2,
+    });
     expect(summarizeCi([completed('timed_out')])).toEqual({ state: 'failed', passed: 0, total: 1 });
   });
 });
@@ -71,16 +80,26 @@ describe('prCardSubtitle', () => {
 
   it('shows repo (short name) and a CI summary for an open PR with checks', () => {
     expect(prCardSubtitle(baseCard, e)).toBe('sweatcoin-mobile · ⏳ CI checks (1/2)');
-    expect(prCardSubtitle({ ...baseCard, ci: 'passed', ciPassed: 2 }, e)).toBe('sweatcoin-mobile · ✅ CI checks (2/2)');
-    expect(prCardSubtitle({ ...baseCard, ci: 'failed', ciPassed: 1 }, e)).toBe('sweatcoin-mobile · ❌ CI checks (1/2)');
+    expect(prCardSubtitle({ ...baseCard, ci: 'passed', ciPassed: 2 }, e)).toBe(
+      'sweatcoin-mobile · ✅ CI checks (2/2)',
+    );
+    expect(prCardSubtitle({ ...baseCard, ci: 'failed', ciPassed: 1 }, e)).toBe(
+      'sweatcoin-mobile · ❌ CI checks (1/2)',
+    );
   });
 
   it('shows just the repo when an open PR has no checks', () => {
-    expect(prCardSubtitle({ ...baseCard, ci: 'none', ciPassed: 0, ciTotal: 0 }, e)).toBe('sweatcoin-mobile');
+    expect(prCardSubtitle({ ...baseCard, ci: 'none', ciPassed: 0, ciTotal: 0 }, e)).toBe(
+      'sweatcoin-mobile',
+    );
   });
 
   it('shows the final state for merged / closed PRs', () => {
-    expect(prCardSubtitle({ ...baseCard, state: 'merged' }, e)).toBe('sweatcoin-mobile · 🟣 Merged');
-    expect(prCardSubtitle({ ...baseCard, state: 'closed' }, e)).toBe('sweatcoin-mobile · 🚫 Closed');
+    expect(prCardSubtitle({ ...baseCard, state: 'merged' }, e)).toBe(
+      'sweatcoin-mobile · 🟣 Merged',
+    );
+    expect(prCardSubtitle({ ...baseCard, state: 'closed' }, e)).toBe(
+      'sweatcoin-mobile · 🚫 Closed',
+    );
   });
 });

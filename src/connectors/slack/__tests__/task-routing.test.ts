@@ -72,9 +72,20 @@ describe('group-DM (G…) routing parity', () => {
 // The three arms a `message` event can be forwarded through. Each helper builds
 // the same logical event on a different arm so a subtype can be checked against
 // all of them at once.
-const asThreadReply = (subtype?: string) => ({ type: 'message', subtype, channel: 'C0XYZ', ts: '2', thread_ts: '1' });
+const asThreadReply = (subtype?: string) => ({
+  type: 'message',
+  subtype,
+  channel: 'C0XYZ',
+  ts: '2',
+  thread_ts: '1',
+});
 const asDm = (subtype?: string) => ({ type: 'message', subtype, channel: 'D0USER', ts: '1' });
-const asWatchedTopLevel = (subtype?: string) => ({ type: 'message', subtype, channel: 'C0XYZ', ts: '1' });
+const asWatchedTopLevel = (subtype?: string) => ({
+  type: 'message',
+  subtype,
+  channel: 'C0XYZ',
+  ts: '1',
+});
 
 const DENIED_SUBTYPES = [
   'message_changed',
@@ -147,7 +158,9 @@ describe('subtype denylist', () => {
   ] as Array<[string, Record<string, unknown>]>) {
     it(`wakes a task for a thread reply from ${name}`, () => {
       expect(mayWakeTask({ ...asThreadReply(undefined), ...extra })).toBe(true);
-      expect(shouldForwardMessageEvent({ ...asThreadReply(undefined), ...extra }, () => false)).toBe(true);
+      expect(
+        shouldForwardMessageEvent({ ...asThreadReply(undefined), ...extra }, () => false),
+      ).toBe(true);
     });
   }
 
@@ -175,7 +188,9 @@ describe('subtype denylist', () => {
   });
 
   it('never forwards a non-message event type', () => {
-    expect(shouldForwardMessageEvent({ type: 'app_mention', channel: 'D0USER', ts: '1' }, () => true)).toBe(false);
+    expect(
+      shouldForwardMessageEvent({ type: 'app_mention', channel: 'D0USER', ts: '1' }, () => true),
+    ).toBe(false);
   });
 });
 
@@ -241,7 +256,9 @@ describe('mayReachTriggers', () => {
   });
 
   it('is false for a denied subtype in a watched channel', () => {
-    expect(mayReachTriggers({ subtype: 'pinned_item', channel: 'C0XYZ', ts: '1' }, () => true)).toBe(false);
+    expect(
+      mayReachTriggers({ subtype: 'pinned_item', channel: 'C0XYZ', ts: '1' }, () => true),
+    ).toBe(false);
   });
 
   it('passes the event channel to the predicate', () => {

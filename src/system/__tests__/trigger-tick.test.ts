@@ -20,10 +20,15 @@ function trig(conditions: TriggerCondition[]): Trigger {
 }
 
 const daily9 = (nextRunAt: string): TriggerCondition => ({
-  type: 'schedule', tz: 'UTC', cron: '0 9 * * *', next_run_at: nextRunAt,
+  type: 'schedule',
+  tz: 'UTC',
+  cron: '0 9 * * *',
+  next_run_at: nextRunAt,
 });
 const oneOff = (nextRunAt: string): TriggerCondition => ({
-  type: 'schedule', tz: 'UTC', next_run_at: nextRunAt,
+  type: 'schedule',
+  tz: 'UTC',
+  next_run_at: nextRunAt,
 });
 const onMessage: TriggerCondition = { type: 'channel_message', channel_id: 'C1' };
 
@@ -52,7 +57,10 @@ describe('planTick — catch-up (M1)', () => {
 describe('planTick — per-condition + dedupe (M2)', () => {
   it('a fired one-off is dropped but a sibling recurring survives', () => {
     const now = new Date('2026-06-25T09:05:00Z');
-    const plan = planTick(trig([oneOff('2026-06-25T09:00:00Z'), daily9('2026-06-25T09:00:00Z')]), now);
+    const plan = planTick(
+      trig([oneOff('2026-06-25T09:00:00Z'), daily9('2026-06-25T09:00:00Z')]),
+      now,
+    );
     expect(plan.dueCount).toBe(2); // both due this tick...
     // ...but only the recurring remains, advanced; the one-off is gone.
     expect(plan.nextConditions).toHaveLength(1);
@@ -80,7 +88,10 @@ describe('planTick — per-condition + dedupe (M2)', () => {
 
   it('reports due count so the caller fires once even when multiple conditions coincide', () => {
     const now = new Date('2026-06-25T09:05:00Z');
-    const plan = planTick(trig([daily9('2026-06-25T09:00:00Z'), daily9('2026-06-25T09:00:00Z')]), now);
+    const plan = planTick(
+      trig([daily9('2026-06-25T09:00:00Z'), daily9('2026-06-25T09:00:00Z')]),
+      now,
+    );
     expect(plan.dueCount).toBe(2); // caller uses dueCount>0 → exactly one fire
     expect(plan.nextConditions).toHaveLength(2); // both advanced
   });

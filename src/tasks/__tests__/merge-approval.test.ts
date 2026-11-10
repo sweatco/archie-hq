@@ -23,8 +23,15 @@ vi.mock('../persistence.js', async (importOriginal) => {
 
 vi.mock('../../system/logger.js', () => ({
   logger: {
-    system: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), info: vi.fn(),
-    slack: vi.fn(), agentAction: vi.fn(), agentFinding: vi.fn(), agentToSlack: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    warn: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    slack: vi.fn(),
+    agentAction: vi.fn(),
+    agentFinding: vi.fn(),
+    agentToSlack: vi.fn(),
   },
 }));
 
@@ -45,7 +52,10 @@ const mockGitHubClient = {
 const PR1 = { github: 'org/backend', pr_number: 1 };
 const PR2 = { github: 'org/backend', pr_number: 2 };
 
-function pendingSlot(pr: { github: string; pr_number: number }): NonNullable<TaskMetadata['pending_merge_approval']> {
+function pendingSlot(pr: {
+  github: string;
+  pr_number: number;
+}): NonNullable<TaskMetadata['pending_merge_approval']> {
   return {
     github: pr.github,
     pr_number: pr.pr_number,
@@ -98,7 +108,10 @@ function expectWokenWith(task: FakeTask, fragment: string): void {
 /** Repositories map with a single branch_state carrying `pr`'s number. */
 function reposWithPR(pr: { github: string; pr_number: number }): TaskMetadata['repositories'] {
   return [
-    { github: pr.github, branch_states: { 'feat/x': { pr_number: pr.pr_number, base_branch: 'main' } } },
+    {
+      github: pr.github,
+      branch_states: { 'feat/x': { pr_number: pr.pr_number, base_branch: 'main' } },
+    },
   ];
 }
 
@@ -125,7 +138,10 @@ beforeEach(() => {
 describe('handleMergeApproval', () => {
   it('merges, appends a completion finding, and reactivates the PM when ready (AC4)', async () => {
     mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'open', mergeable: true, mergeableState: 'clean', approved: true,
+      state: 'open',
+      mergeable: true,
+      mergeableState: 'clean',
+      approved: true,
     });
     mockGitHubClient.mergePullRequest.mockResolvedValue({ success: true, message: 'merged' });
     const task = makeFakeTask(pendingSlot(PR1));
@@ -137,14 +153,20 @@ describe('handleMergeApproval', () => {
     expect(task.agent.clearPendingTeardown).toHaveBeenCalledTimes(1);
     expect(mockGitHubClient.mergePullRequest).toHaveBeenCalledWith('org/backend', 1);
     expect(appendAgentFinding).toHaveBeenCalledWith(
-      'task-123', 'system', expect.stringContaining('merged on user approval by Dana'), 'completion',
+      'task-123',
+      'system',
+      expect.stringContaining('merged on user approval by Dana'),
+      'completion',
     );
     expectWokenWith(task, 'merged on user approval by Dana');
   });
 
   it('arms a not-clean PR: no merge, merge_armed set, armed finding, slot cleared, PM reactivated (AC4)', async () => {
     mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'open', mergeable: false, mergeableState: 'blocked', approved: true,
+      state: 'open',
+      mergeable: false,
+      mergeableState: 'blocked',
+      approved: true,
     });
     const task = makeFakeTask(pendingSlot(PR1), reposWithPR(PR1));
 
@@ -156,14 +178,20 @@ describe('handleMergeApproval', () => {
     // The whole reframe: instead of merging or refusing, the PR is armed.
     expect(armedFlag(task)).toBe(true);
     expect(appendAgentFinding).toHaveBeenCalledWith(
-      'task-123', 'system', expect.stringContaining('Auto-merge armed for org/backend#1'), 'decision',
+      'task-123',
+      'system',
+      expect.stringContaining('Auto-merge armed for org/backend#1'),
+      'decision',
     );
     expectWokenWith(task, 'Auto-merge armed for org/backend#1');
   });
 
   it('arms a dirty PR too — any non-clean open PR arms rather than merging', async () => {
     mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'open', mergeable: false, mergeableState: 'dirty', approved: true,
+      state: 'open',
+      mergeable: false,
+      mergeableState: 'dirty',
+      approved: true,
     });
     const task = makeFakeTask(pendingSlot(PR1), reposWithPR(PR1));
 
@@ -172,7 +200,10 @@ describe('handleMergeApproval', () => {
     expect(mockGitHubClient.mergePullRequest).not.toHaveBeenCalled();
     expect(armedFlag(task)).toBe(true);
     expect(appendAgentFinding).toHaveBeenCalledWith(
-      'task-123', 'system', expect.stringContaining('Auto-merge armed'), 'decision',
+      'task-123',
+      'system',
+      expect.stringContaining('Auto-merge armed'),
+      'decision',
     );
   });
 
@@ -183,7 +214,10 @@ describe('handleMergeApproval', () => {
     // though the user was told it would. Flush it synchronously, ordered before
     // the activating sendMessage (mirrors the notify-once marker in merge.ts).
     mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'open', mergeable: false, mergeableState: 'blocked', approved: true,
+      state: 'open',
+      mergeable: false,
+      mergeableState: 'blocked',
+      approved: true,
     });
     const task = makeFakeTask(pendingSlot(PR1), reposWithPR(PR1));
 
@@ -191,8 +225,9 @@ describe('handleMergeApproval', () => {
 
     expect(armedFlag(task)).toBe(true);
     expect(task.save).toHaveBeenCalledWith(true);
-    expect(task.save.mock.invocationCallOrder[0]!)
-      .toBeLessThan(task.sendMessage.mock.invocationCallOrder[0]!);
+    expect(task.save.mock.invocationCallOrder[0]!).toBeLessThan(
+      task.sendMessage.mock.invocationCallOrder[0]!,
+    );
   });
 
   it('does not arm a PR closed during the approval window: no merge, no merge_armed, explicit closed finding, slot cleared, PM reactivated (F2)', async () => {
@@ -202,7 +237,10 @@ describe('handleMergeApproval', () => {
     // branch that a reused pr_number could inherit. So: report the real state,
     // never arm.
     mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'closed', mergeable: false, mergeableState: 'unknown', approved: false,
+      state: 'closed',
+      mergeable: false,
+      mergeableState: 'unknown',
+      approved: false,
     });
     const task = makeFakeTask(pendingSlot(PR1), reposWithPR(PR1));
 
@@ -213,15 +251,20 @@ describe('handleMergeApproval', () => {
     expect(armedFlag(task)).toBeUndefined();
     expect(task.metadata.pending_merge_approval).toBeUndefined();
     expect(appendAgentFinding).toHaveBeenCalledWith(
-      'task-123', 'system',
-      expect.stringContaining('PR org/backend#1 is closed — nothing to merge'), 'decision',
+      'task-123',
+      'system',
+      expect.stringContaining('PR org/backend#1 is closed — nothing to merge'),
+      'decision',
     );
     expectWokenWith(task, 'PR org/backend#1 is closed — nothing to merge');
   });
 
   it('does not arm a PR merged during the approval window: reports the merged state, does not arm (F2)', async () => {
     mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'merged', mergeable: false, mergeableState: 'unknown', approved: true,
+      state: 'merged',
+      mergeable: false,
+      mergeableState: 'unknown',
+      approved: true,
     });
     const task = makeFakeTask(pendingSlot(PR1), reposWithPR(PR1));
 
@@ -230,16 +273,24 @@ describe('handleMergeApproval', () => {
     expect(mockGitHubClient.mergePullRequest).not.toHaveBeenCalled();
     expect(armedFlag(task)).toBeUndefined();
     expect(appendAgentFinding).toHaveBeenCalledWith(
-      'task-123', 'system',
-      expect.stringContaining('PR org/backend#1 is merged — nothing to merge'), 'decision',
+      'task-123',
+      'system',
+      expect.stringContaining('PR org/backend#1 is merged — nothing to merge'),
+      'decision',
     );
   });
 
   it('reports a merge-API failure ({success: false}) as a decision finding (AC4)', async () => {
     mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'open', mergeable: true, mergeableState: 'clean', approved: true,
+      state: 'open',
+      mergeable: true,
+      mergeableState: 'clean',
+      approved: true,
     });
-    mockGitHubClient.mergePullRequest.mockResolvedValue({ success: false, message: 'Base branch was modified' });
+    mockGitHubClient.mergePullRequest.mockResolvedValue({
+      success: false,
+      message: 'Base branch was modified',
+    });
     const task = makeFakeTask(pendingSlot(PR1));
 
     const disposition = await approve(task, PR1);
@@ -248,14 +299,20 @@ describe('handleMergeApproval', () => {
     expect(task.metadata.pending_merge_approval).toBeUndefined();
     expect(appendAgentFinding).toHaveBeenCalledTimes(1);
     expect(appendAgentFinding).toHaveBeenCalledWith(
-      'task-123', 'system', expect.stringContaining('Base branch was modified'), 'decision',
+      'task-123',
+      'system',
+      expect.stringContaining('Base branch was modified'),
+      'decision',
     );
     expectWokenWith(task, 'Base branch was modified');
   });
 
   it('reports a thrown merge error as a decision finding, slot cleared, PM reactivated (AC4)', async () => {
     mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'open', mergeable: true, mergeableState: 'clean', approved: true,
+      state: 'open',
+      mergeable: true,
+      mergeableState: 'clean',
+      approved: true,
     });
     mockGitHubClient.mergePullRequest.mockRejectedValue(new Error('boom from GitHub'));
     const task = makeFakeTask(pendingSlot(PR1));
@@ -265,14 +322,20 @@ describe('handleMergeApproval', () => {
     expect(disposition).toBe('resolved');
     expect(task.metadata.pending_merge_approval).toBeUndefined();
     expect(appendAgentFinding).toHaveBeenCalledWith(
-      'task-123', 'system', expect.stringContaining('boom from GitHub'), 'decision',
+      'task-123',
+      'system',
+      expect.stringContaining('boom from GitHub'),
+      'decision',
     );
     expectWokenWith(task, 'boom from GitHub');
   });
 
   it('merges with zero review approvals when GitHub reports clean — no approved floor (AC5)', async () => {
     mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'open', mergeable: true, mergeableState: 'clean', approved: false,
+      state: 'open',
+      mergeable: true,
+      mergeableState: 'clean',
+      approved: false,
     });
     mockGitHubClient.mergePullRequest.mockResolvedValue({ success: true, message: 'merged' });
     const task = makeFakeTask(pendingSlot(PR1));
@@ -281,7 +344,10 @@ describe('handleMergeApproval', () => {
 
     expect(mockGitHubClient.mergePullRequest).toHaveBeenCalledWith('org/backend', 1);
     expect(appendAgentFinding).toHaveBeenCalledWith(
-      'task-123', 'system', expect.any(String), 'completion',
+      'task-123',
+      'system',
+      expect.any(String),
+      'completion',
     );
   });
 
@@ -313,7 +379,10 @@ describe('handleMergeApproval', () => {
 
     // A subsequent click for PR#2 still resolves normally.
     mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'open', mergeable: true, mergeableState: 'clean', approved: true,
+      state: 'open',
+      mergeable: true,
+      mergeableState: 'clean',
+      approved: true,
     });
     mockGitHubClient.mergePullRequest.mockResolvedValue({ success: true, message: 'merged' });
 
@@ -347,7 +416,10 @@ describe('handleMergeApproval', () => {
 
     // The superseding request is still resolvable afterwards.
     mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'open', mergeable: true, mergeableState: 'clean', approved: true,
+      state: 'open',
+      mergeable: true,
+      mergeableState: 'clean',
+      approved: true,
     });
     const second = await approve(task, PR2);
     expect(second).toBe('resolved');
@@ -411,7 +483,10 @@ describe('handleMergeDenial', () => {
     expect(mockGitHubClient.getPRStatus).not.toHaveBeenCalled();
     expect(mockGitHubClient.mergePullRequest).not.toHaveBeenCalled();
     expect(appendAgentFinding).toHaveBeenCalledWith(
-      'task-123', 'system', 'Merge denied by user — PR not merged', 'decision',
+      'task-123',
+      'system',
+      'Merge denied by user — PR not merged',
+      'decision',
     );
     expectWokenWith(task, 'Merge denied by user — PR not merged');
   });

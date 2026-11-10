@@ -117,9 +117,10 @@ export class ArchieClient {
   }
 
   async getEvents(taskId: string, after?: number): Promise<EventsResult> {
-    const url = after !== undefined
-      ? `${this.baseUrl}/api/tasks/${taskId}/events?after=${after}`
-      : `${this.baseUrl}/api/tasks/${taskId}/events`;
+    const url =
+      after !== undefined
+        ? `${this.baseUrl}/api/tasks/${taskId}/events?after=${after}`
+        : `${this.baseUrl}/api/tasks/${taskId}/events`;
     const res = await fetch(url);
     if (!res.ok) throw new Error(`Failed to get events: ${res.status}`);
     return (await res.json()) as EventsResult;
@@ -138,7 +139,13 @@ export class ArchieClient {
     const res = await fetch(`${this.baseUrl}/api/tasks/${taskId}/approve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type, approve, github: pr?.github, pr_number: pr?.pr_number, ref: pr?.ref }),
+      body: JSON.stringify({
+        type,
+        approve,
+        github: pr?.github,
+        pr_number: pr?.pr_number,
+        ref: pr?.ref,
+      }),
     });
     if (res.ok) return { stale: false };
     const text = await res.text();

@@ -27,7 +27,13 @@ function renderPrCard(d: Record<string, unknown>): React.ReactNode {
   const color = card.state === 'merged' ? 'magenta' : card.state === 'closed' ? 'red' : 'cyan';
   const title = `#${card.prNumber} ${card.headRef}`;
   const subtitle = `${prCardSubtitle(card, CLI_PR_CARD_EMOJI)} · ${card.url}`;
-  return <Text color={color}>{title}{'\n'}<Text dimColor>{subtitle}</Text></Text>;
+  return (
+    <Text color={color}>
+      {title}
+      {'\n'}
+      <Text dimColor>{subtitle}</Text>
+    </Text>
+  );
 }
 
 /**
@@ -40,7 +46,11 @@ function renderPrCard(d: Record<string, unknown>): React.ReactNode {
  *   [pm-agent in cli] message                     — agent posting to CLI
  *   [pm-agent] @backend-agent message             — agent messaging another agent
  */
-function formatMessageParts(from: string, to: string, destination?: string): { label: string; mention: string } {
+function formatMessageParts(
+  from: string,
+  to: string,
+  destination?: string,
+): { label: string; mention: string } {
   const label = destination ? `${from} in ${destination}` : from;
   const mention = from !== to && to !== 'user' ? ` @${to}` : '';
   return { label, mention };
@@ -49,7 +59,11 @@ function formatMessageParts(from: string, to: string, destination?: string): { l
 function formatDateTime(iso: string): string {
   const d = new Date(iso);
   return d.toLocaleString('en-US', {
-    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
   });
 }
 
@@ -73,10 +87,14 @@ interface TaskDetailProps {
 // Extract the PR identity a merge approval must send back to the API. The
 // approve route rejects type:'merge' without github+pr_number; other approval
 // types carry no identity and resolve with it omitted (backward compatible).
-function mergeIdentity(
-  approval: { approvalType: string; github?: string; pr_number?: number },
-): { github: string; pr_number: number } | undefined {
-  return approval.approvalType === 'merge' && approval.github && typeof approval.pr_number === 'number'
+function mergeIdentity(approval: {
+  approvalType: string;
+  github?: string;
+  pr_number?: number;
+}): { github: string; pr_number: number } | undefined {
+  return approval.approvalType === 'merge' &&
+    approval.github &&
+    typeof approval.pr_number === 'number'
     ? { github: approval.github, pr_number: approval.pr_number }
     : undefined;
 }
@@ -120,7 +138,17 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
   const logHeight = Math.max(5, termHeight - reservedLines);
 
   // Build log lines with inline approvals
-  const logLines: { node: React.ReactNode; approval?: { approvalType: 'edit_mode' | 'research_budget' | 'merge' | 'trigger' | 'max_mode' | 'tool_call'; eventIndex: number; github?: string; pr_number?: number; ref?: string } }[] = [];
+  const logLines: {
+    node: React.ReactNode;
+    approval?: {
+      approvalType:
+        'edit_mode' | 'research_budget' | 'merge' | 'trigger' | 'max_mode' | 'tool_call';
+      eventIndex: number;
+      github?: string;
+      pr_number?: number;
+      ref?: string;
+    };
+  }[] = [];
 
   // Fold pr_card events so a card renders once, at its most recent `post`
   // (anchor), showing the latest merged state. `update` events refresh the data
@@ -141,7 +169,27 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
     switch (event.type) {
       case 'message':
         logLines.push({
-          node: (() => { const p = formatMessageParts(event.data.from as string, event.data.to as string, event.data.destination as string | undefined); const footer = event.data.footer as string | undefined; return <><Text dimColor>[{p.label}]</Text>{p.mention ? <Text color="cyan">{p.mention}</Text> : null} {event.data.message as string}{footer ? <Text dimColor>{'\n'}{footer}</Text> : null}</>; })(),
+          node: (() => {
+            const p = formatMessageParts(
+              event.data.from as string,
+              event.data.to as string,
+              event.data.destination as string | undefined,
+            );
+            const footer = event.data.footer as string | undefined;
+            return (
+              <>
+                <Text dimColor>[{p.label}]</Text>
+                {p.mention ? <Text color="cyan">{p.mention}</Text> : null}{' '}
+                {event.data.message as string}
+                {footer ? (
+                  <Text dimColor>
+                    {'\n'}
+                    {footer}
+                  </Text>
+                ) : null}
+              </>
+            );
+          })(),
         });
         break;
       case 'pr_card': {
@@ -152,7 +200,11 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
       }
       case 'agent:log':
         logLines.push({
-          node: <Text dimColor>[{event.agentName}] {event.data.finding as string}</Text>,
+          node: (
+            <Text dimColor>
+              [{event.agentName}] {event.data.finding as string}
+            </Text>
+          ),
         });
         break;
       case 'agent:bg_task': {
@@ -168,11 +220,21 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
         if (ended) {
           const status = ended.data.status as string;
           logLines.push({
-            node: <Text dimColor>{status === 'completed' ? '✅' : '❌'} [{event.agentName}] background task {status} — {desc}</Text>,
+            node: (
+              <Text dimColor>
+                {status === 'completed' ? '✅' : '❌'} [{event.agentName}] background task {status}
+                {' — '}
+                {desc}
+              </Text>
+            ),
           });
         } else {
           logLines.push({
-            node: <Text color="yellow">⏳ [{event.agentName}] background task running — {desc}</Text>,
+            node: (
+              <Text color="yellow">
+                ⏳ [{event.agentName}] background task running — {desc}
+              </Text>
+            ),
           });
         }
         break;
@@ -185,9 +247,15 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
           });
         } else {
           logLines.push({
-            node: <Text color="yellow" bold>⏳ {event.data.text as string}  [y] approve / [n] deny</Text>,
+            node: (
+              <Text color="yellow" bold>
+                ⏳ {event.data.text as string}
+                {'  [y] approve / [n] deny'}
+              </Text>
+            ),
             approval: {
-              approvalType: event.data.approvalType as 'edit_mode' | 'research_budget' | 'merge' | 'trigger' | 'max_mode' | 'tool_call',
+              approvalType: event.data.approvalType as
+                'edit_mode' | 'research_budget' | 'merge' | 'trigger' | 'max_mode' | 'tool_call',
               ref: event.data.ref as string | undefined,
               eventIndex: idx,
               // Merge approvals carry the PR identity; the API requires it on
@@ -201,12 +269,24 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
       }
       case 'approval:resolved':
         logLines.push({
-          node: <Text>{event.data.approve ? '✅' : '❌'} Approval {event.data.approve ? 'granted' : 'denied'}: {event.data.type as string}</Text>,
+          node: (
+            <Text>
+              {event.data.approve ? '✅' : '❌'}
+              {' Approval '}
+              {event.data.approve ? 'granted' : 'denied'}: {event.data.type as string}
+            </Text>
+          ),
         });
         break;
       case 'reminder:set':
         logLines.push({
-          node: <Text color="magenta">⏰ Reminder set for {formatDateTime(event.data.trigger_at as string)} — {event.data.reason as string}</Text>,
+          node: (
+            <Text color="magenta">
+              ⏰ Reminder set for {formatDateTime(event.data.trigger_at as string)}
+              {' — '}
+              {event.data.reason as string}
+            </Text>
+          ),
         });
         break;
       case 'reminder:cancelled':
@@ -225,14 +305,11 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
   });
 
   // Collect line indices of pending approvals
-  const pendingApprovalLines = logLines
-    .map((l, i) => l.approval ? i : -1)
-    .filter((i) => i >= 0);
+  const pendingApprovalLines = logLines.map((l, i) => (l.approval ? i : -1)).filter((i) => i >= 0);
 
   // The approval at the focused line (if any)
-  const focusedApproval = focusedApprovalLine !== null
-    ? logLines[focusedApprovalLine]?.approval ?? null
-    : null;
+  const focusedApproval =
+    focusedApprovalLine !== null ? (logLines[focusedApprovalLine]?.approval ?? null) : null;
 
   // Initial load: fetch metadata + events
   const loadInitial = useCallback(async () => {
@@ -283,8 +360,14 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
 
       // Update status from task events
       if (ev.type === 'task:resumed') setStatus('in_progress');
-      if (ev.type === 'task:completed') { setStatus('completed'); setLiveStatus(''); }
-      if (ev.type === 'task:stopped') { setStatus('stopped'); setLiveStatus(''); }
+      if (ev.type === 'task:completed') {
+        setStatus('completed');
+        setLiveStatus('');
+      }
+      if (ev.type === 'task:stopped') {
+        setStatus('stopped');
+        setLiveStatus('');
+      }
 
       // Update reminder from reminder events
       if (ev.type === 'reminder:set') {
@@ -308,12 +391,16 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
       prevOnConnect.current = onConnect;
       if (onConnect && wasDisconnected) {
         // Reconnected — fetch events we missed
-        fetchTaskEvents(taskId, eventCursor).then((result) => {
-          if (result.events.length > 0) {
-            setEvents((prev) => [...prev, ...result.events]);
-            setEventCursor(result.total);
-          }
-        }).catch(() => { /* ignore reconnect errors */ });
+        fetchTaskEvents(taskId, eventCursor)
+          .then((result) => {
+            if (result.events.length > 0) {
+              setEvents((prev) => [...prev, ...result.events]);
+              setEventCursor(result.total);
+            }
+          })
+          .catch(() => {
+            /* ignore reconnect errors */
+          });
       }
     }
   }, [onConnect, taskId, eventCursor]);
@@ -355,11 +442,23 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
       // Scroll mode / approval handling
       if (input === 'q' || input === 'Q') exit();
       if (focusedApproval && (input === 'y' || input === 'Y')) {
-        sendApproval(taskId, focusedApproval.approvalType, true, mergeIdentity(focusedApproval), focusedApproval.ref).catch((err: any) => setError(err.message));
+        sendApproval(
+          taskId,
+          focusedApproval.approvalType,
+          true,
+          mergeIdentity(focusedApproval),
+          focusedApproval.ref,
+        ).catch((err: any) => setError(err.message));
         setFocusedApprovalLine(null);
         setInputActive(true);
       } else if (focusedApproval && (input === 'n' || input === 'N')) {
-        sendApproval(taskId, focusedApproval.approvalType, false, mergeIdentity(focusedApproval), focusedApproval.ref).catch((err: any) => setError(err.message));
+        sendApproval(
+          taskId,
+          focusedApproval.approvalType,
+          false,
+          mergeIdentity(focusedApproval),
+          focusedApproval.ref,
+        ).catch((err: any) => setError(err.message));
         setFocusedApprovalLine(null);
         setInputActive(true);
       }
@@ -418,13 +517,23 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
       <Box paddingX={1}>
         <Text wrap="truncate-end">
           <Text bold>Task: {taskId}</Text>
-          {title && <Text>  {title}</Text>}
-          <Text dimColor>  status: </Text>
-          <Text color={status === 'in_progress' ? 'yellow' : status === 'completed' ? 'green' : 'red'}>
+          {title && (
+            <Text>
+              {'  '}
+              {title}
+            </Text>
+          )}
+          <Text dimColor>{'  status: '}</Text>
+          <Text
+            color={status === 'in_progress' ? 'yellow' : status === 'completed' ? 'green' : 'red'}
+          >
             {status}
           </Text>
           {reminder && (
-            <Text color="magenta">  ⏰ {formatDateTime(reminder.trigger_at)}</Text>
+            <Text color="magenta">
+              {'  ⏰ '}
+              {formatDateTime(reminder.trigger_at)}
+            </Text>
           )}
         </Text>
       </Box>
@@ -453,7 +562,9 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
           {logLines.map((line, i) => {
             const isFocused = i === focusedApprovalLine;
             return (
-              <Text key={i} wrap="wrap" inverse={isFocused}>{line.node}</Text>
+              <Text key={i} wrap="wrap" inverse={isFocused}>
+                {line.node}
+              </Text>
             );
           })}
         </ScrollView>
@@ -461,13 +572,13 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
       <Box paddingX={1} height={2} flexDirection="column" justifyContent="flex-end">
         {liveStatus ? (
           <Box gap={1}>
-            <Text color="cyan"><Spinner type="dots" /></Text>
+            <Text color="cyan">
+              <Spinner type="dots" />
+            </Text>
             <Text dimColor>Archie {liveStatus}</Text>
           </Box>
         ) : null}
-        {linesBelow > 0 && (
-          <Text dimColor>↓ {linesBelow} more below</Text>
-        )}
+        {linesBelow > 0 && <Text dimColor>↓ {linesBelow} more below</Text>}
       </Box>
 
       {/* Message input */}

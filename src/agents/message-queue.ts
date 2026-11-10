@@ -215,13 +215,15 @@ export interface RecoverableInputGenerator {
  */
 export function createRecoverableInputGenerator(
   queue: MessageQueue,
-  sessionId: string = ''
+  sessionId: string = '',
 ): RecoverableInputGenerator {
   let consumed: SDKUserMessageInput[] = [];
 
   return {
     reset(prefix?: string, replayUuids?: readonly string[]) {
-      const restored = consumed.filter((m) => !replayUuids || replayUuids.includes(m.uuid)).map((m) => m.message.content);
+      const restored = consumed
+        .filter((m) => !replayUuids || replayUuids.includes(m.uuid))
+        .map((m) => m.message.content);
       consumed = [];
       if (prefix && restored.length > 0) {
         restored[0] = `${prefix}\n\n${restored[0]}`;

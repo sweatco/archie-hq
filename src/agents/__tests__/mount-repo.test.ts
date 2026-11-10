@@ -41,7 +41,9 @@ vi.mock('../../connectors/github/repo-clone.js', async (importOriginal) => {
 vi.mock('../../tasks/persistence.js', () => ({
   appendAgentFinding: vi.fn().mockResolvedValue(undefined),
   isThreadMuted: vi.fn().mockResolvedValue(false),
-  getTaskClonePath: vi.fn((taskId: string, github: string) => `/sessions/${taskId}/repos/${github}`),
+  getTaskClonePath: vi.fn(
+    (taskId: string, github: string) => `/sessions/${taskId}/repos/${github}`,
+  ),
 }));
 
 vi.mock('../../system/workdir.js', async (importOriginal) => ({
@@ -51,8 +53,12 @@ vi.mock('../../system/workdir.js', async (importOriginal) => ({
 
 vi.mock('../../system/logger.js', () => ({
   logger: {
-    agentAction: vi.fn(), agentFinding: vi.fn(), agentToSlack: vi.fn(),
-    system: vi.fn(), error: vi.fn(), warn: vi.fn(),
+    agentAction: vi.fn(),
+    agentFinding: vi.fn(),
+    agentToSlack: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    warn: vi.fn(),
   },
 }));
 
@@ -72,7 +78,15 @@ const client = {
 
 function makeAgent(): Agent {
   return {
-    def: { id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', isPm: true, pluginName: 'pm', visibility: 'global' },
+    def: {
+      id: 'pm-agent',
+      key: 'pm',
+      role: 'PM',
+      expertise: '',
+      isPm: true,
+      pluginName: 'pm',
+      visibility: 'global',
+    },
     queue: {} as any,
     session: { active: false },
   } as unknown as Agent;
@@ -99,8 +113,8 @@ function makeTask(overrides: Partial<Task['metadata']> = {}): Task {
 
 function mountTool(agent: Agent, task: Task) {
   const server: any = createOrchestrationMcpServer(agent, task);
-  const tools: Record<string, any> = server.instance._registeredTools
-    ?? Object.fromEntries(server.instance._tools ?? []);
+  const tools: Record<string, any> =
+    server.instance._registeredTools ?? Object.fromEntries(server.instance._tools ?? []);
   return tools['mount_repo'].callback ?? tools['mount_repo'].handler;
 }
 

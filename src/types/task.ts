@@ -38,8 +38,8 @@ export interface SlackThreadRef {
  */
 export interface SlackAuthor {
   id: string;
-  username: string;     // @handle
-  realName: string;     // Full display name
+  username: string; // @handle
+  realName: string; // Full display name
   teamId?: string;
   isRestricted?: boolean;
   isUltraRestricted?: boolean;
@@ -69,7 +69,7 @@ export interface SlackThreadMessage {
    */
   ownText: string;
   ts: string;
-  files?: SlackFile[];    // raw file metadata (not yet downloaded)
+  files?: SlackFile[]; // raw file metadata (not yet downloaded)
   /** Forwarded / unfurled message attachments — each carries its author and text. */
   attachments?: SlackAttachment[];
   /** Emoji reactions present on this message at fetch time. Omitted when none. */
@@ -88,7 +88,7 @@ export interface SlackThread {
   threadId: string;
   channel: { id: string; name: string };
   shared: boolean;
-  messages: SlackThreadMessage[];  // bot messages excluded, EXCEPT the root when our bot started the thread
+  messages: SlackThreadMessage[]; // bot messages excluded, EXCEPT the root when our bot started the thread
   currentMessageTs: string;
   /**
    * True when OUR bot authored the thread's root message. The router uses this
@@ -113,8 +113,8 @@ export interface SlackChannel extends ChannelBase {
   channel_id: string;
   channel_name: string;
   last_processed_ts: string;
-  url?: string;     // Full Slack URL to the thread (e.g. https://workspace.slack.com/archives/C.../p...)
-  muted?: boolean;  // When true, messages are not routed to task until next @mention
+  url?: string; // Full Slack URL to the thread (e.g. https://workspace.slack.com/archives/C.../p...)
+  muted?: boolean; // When true, messages are not routed to task until next @mention
   /**
    * Timestamp of the message we've currently acked, if any (surfaced to the
    * user as an `:eyes:` reaction). Tracked separately from `last_processed_ts`
@@ -154,15 +154,15 @@ export type Channel = SlackChannel | GitHubChannel | CliChannel;
  * (so every surface renders the same data) and used to build the Slack blocks.
  */
 export interface PrCardData {
-  repo: string;          // 'owner/name'
+  repo: string; // 'owner/name'
   prNumber: number;
-  url: string;           // html_url to the PR
-  headRef: string;       // head branch name, shown in the card title
+  url: string; // html_url to the PR
+  headRef: string; // head branch name, shown in the card title
   state: 'open' | 'merged' | 'closed';
   head_sha: string;
-  ci: 'none' | 'pending' | 'passed' | 'failed';  // rolled-up CI verdict
-  ciPassed: number;      // checks concluded OK
-  ciTotal: number;       // total checks (0 = no CI)
+  ci: 'none' | 'pending' | 'passed' | 'failed'; // rolled-up CI verdict
+  ciPassed: number; // checks concluded OK
+  ciTotal: number; // total checks (0 = no CI)
 }
 
 /**
@@ -179,11 +179,11 @@ export interface PrCardState {
 
 /** Per-branch state — tracks PR lifecycle and stash */
 export interface BranchState {
-  base_branch?: string;                // PR target branch (e.g. 'main', 'master')
-  pr_number?: number;                  // PR associated with this branch
-  last_processed_comment_id?: number;  // triage tracking for this branch's PR
-  stash_name?: string;                 // set if dirty work was auto-stashed when leaving
-  pr_card?: PrCardState;               // PR-card message ref + change-detection fingerprint
+  base_branch?: string; // PR target branch (e.g. 'main', 'master')
+  pr_number?: number; // PR associated with this branch
+  last_processed_comment_id?: number; // triage tracking for this branch's PR
+  stash_name?: string; // set if dirty work was auto-stashed when leaving
+  pr_card?: PrCardState; // PR-card message ref + change-detection fingerprint
   /**
    * Set when the "PR ready — merges on request" notification fired for this
    * branch's PR (non-auto repos only), cleared when a merge check observes the
@@ -260,10 +260,10 @@ export interface RepositoryInfo {
  * and preserves session IDs for SDK resume.
  */
 export interface AgentSessionState {
-  session_id?: string;       // undefined = no session yet or cleared (fresh start)
+  session_id?: string; // undefined = no session yet or cleared (fresh start)
   refusal_recovery?: { prompt_uuid?: string };
-  active: boolean;           // true = doing work, false = finished turn / crashed
-  last_activity?: string;    // ISO timestamp
+  active: boolean; // true = doing work, false = finished turn / crashed
+  last_activity?: string; // ISO timestamp
 }
 
 export interface TaskMetadata {
@@ -278,8 +278,8 @@ export interface TaskMetadata {
     owner_reply_delivered?: boolean;
   };
   initiative_origin?: { delivery_id: string; matter_ids: string[] };
-  channels: Record<string, Channel>;   // Active message delivery targets, keyed by channel ID
-  default_channel: string | null;      // Channel ID of the originating channel (null for CLI-originated tasks)
+  channels: Record<string, Channel>; // Active message delivery targets, keyed by channel ID
+  default_channel: string | null; // Channel ID of the originating channel (null for CLI-originated tasks)
   /**
    * The Slack channel a trigger-fired task is homed in. Written only by `fireTrigger`, from the binding on an approved trigger — never from a model input.
    *
@@ -298,8 +298,8 @@ export interface TaskMetadata {
     content: string;
     requested_at: string;
   };
-  title?: string;                      // AI-generated one-line summary; absent on pre-feature tasks
-  slack_threads?: SlackThreadRef[];    // Legacy — only present on old tasks loaded from disk, removed after migration
+  title?: string; // AI-generated one-line summary; absent on pre-feature tasks
+  slack_threads?: SlackThreadRef[]; // Legacy — only present on old tasks loaded from disk, removed after migration
   agent_sessions: Record<string, AgentSessionState | string>; // union handles legacy string values on disk
   /**
    * Repos mounted into this task, one entry per `github`. Flat: the task owns
@@ -335,8 +335,8 @@ export interface TaskMetadata {
   migration_notice_pending?: boolean;
   /** Set when the wall-clock cap parks the task; the next wake is prefixed with `AGENT_PROMPTS.capPauseNotice` and the flag cleared. */
   cap_pause_notice_pending?: boolean;
-  edit_allowed?: boolean;     // Has user approved edit mode for this task?
-  max_mode?: boolean;         // Has user approved "max mode" (per-task model/effort upgrade) for this task?
+  edit_allowed?: boolean; // Has user approved edit mode for this task?
+  max_mode?: boolean; // Has user approved "max mode" (per-task model/effort upgrade) for this task?
   /**
    * The human who approved edit mode. Used as the git *author* on every commit
    * the repo agents make for this task (the committer stays the GitHub App bot),
@@ -352,8 +352,8 @@ export interface TaskMetadata {
    * task-lifetime mode. Survives restart like `edit_allowed`.
    */
   pending_merge_approval?: {
-    github: string;       // repo of the requested PR
-    pr_number: number;    // which PR to merge on approval
+    github: string; // repo of the requested PR
+    pr_number: number; // which PR to merge on approval
     requested_by: string; // agent id (always the PM) — to clear its parked teardown on resolution
     requested_at: string; // ISO 8601, for the audit finding
   };
@@ -365,11 +365,11 @@ export interface TaskMetadata {
    * stop.
    */
   pending_tool_approval?: {
-    digest: string;       // identity of the exact (server, tool, arguments) call
-    server: string;       // MCP server key, for the audit finding
-    tool: string;         // bare tool name
-    summary: string;      // rendered prompt body shown to the approver
-    heading: string;      // one-line heading (the tool's description, or server:tool)
+    digest: string; // identity of the exact (server, tool, arguments) call
+    server: string; // MCP server key, for the audit finding
+    tool: string; // bare tool name
+    summary: string; // rendered prompt body shown to the approver
+    heading: string; // one-line heading (the tool's description, or server:tool)
     requested_by: string; // agent id (always the PM) — woken on approval; park cleared on resolution
     requested_at: string; // ISO 8601
   };
@@ -379,19 +379,20 @@ export interface TaskMetadata {
    * replayed. Expired entries are pruned on read.
    */
   approved_tool_calls?: ApprovedToolCall[];
-  research_budget_extra?: number;    // Additional research budget granted via Slack approval (+5 per approval)
-  research_request_count?: number;   // Persisted research request count (survives stop/reactivate)
-  failure_counter?: number;          // Consecutive recovery attempts (Stage 3 idle detection)
-  reminder?: {                       // Pending self-scheduled reminder (set by agent via set_reminder tool)
-    trigger_at: string;              // ISO 8601 datetime when the task should be reactivated
-    reason: string;                  // Why — shown to agent when woken
-    cron?: string;                   // Set for a recurring reminder: the runtime re-arms from this instead of clearing it
-    tz?: string;                     // IANA timezone the cron is evaluated in (required alongside cron)
+  research_budget_extra?: number; // Additional research budget granted via Slack approval (+5 per approval)
+  research_request_count?: number; // Persisted research request count (survives stop/reactivate)
+  failure_counter?: number; // Consecutive recovery attempts (Stage 3 idle detection)
+  reminder?: {
+    // Pending self-scheduled reminder (set by agent via set_reminder tool)
+    trigger_at: string; // ISO 8601 datetime when the task should be reactivated
+    reason: string; // Why — shown to agent when woken
+    cron?: string; // Set for a recurring reminder: the runtime re-arms from this instead of clearing it
+    tz?: string; // IANA timezone the cron is evaluated in (required alongside cron)
     /** ISO 8601 end for a recurring reminder; the re-arm stops past it. */
     until?: string;
   };
-  triggered_by?: string;             // Trigger ID that spawned this task (set by fireTrigger). Blocks the task from creating triggers.
-  pending_trigger_id?: string;       // Trigger ID proposed by this task, awaiting approve/deny (read by handleTriggerApproval/Denial)
+  triggered_by?: string; // Trigger ID that spawned this task (set by fireTrigger). Blocks the task from creating triggers.
+  pending_trigger_id?: string; // Trigger ID proposed by this task, awaiting approve/deny (read by handleTriggerApproval/Denial)
   created_at: string;
   updated_at: string;
 }
@@ -405,9 +406,9 @@ export interface ApprovedToolCall {
   digest: string;
   server: string;
   tool: string;
-  approved_by?: string;  // Slack user id of the approver, for the audit finding
-  approved_at: string;   // ISO 8601
-  expires_at: string;    // ISO 8601 — unspent grants go stale (APPROVAL_TTL_MS)
+  approved_by?: string; // Slack user id of the approver, for the audit finding
+  approved_at: string; // ISO 8601
+  expires_at: string; // ISO 8601 — unspent grants go stale (APPROVAL_TTL_MS)
 }
 
 export interface LogEntry {

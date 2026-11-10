@@ -19,7 +19,13 @@
 
 import { readFileSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
-import { mcpToolName, parseMcpToolName, type McpToolPolicy, type McpServerPolicy, type ToolTier } from '../agents/tool-approval-gate.js';
+import {
+  mcpToolName,
+  parseMcpToolName,
+  type McpToolPolicy,
+  type McpServerPolicy,
+  type ToolTier,
+} from '../agents/tool-approval-gate.js';
 import { PLUGINS_DIR } from './workdir.js';
 import { logger } from './logger.js';
 
@@ -99,8 +105,8 @@ function parseServerPolicy(serverKey: string, raw: unknown, path: string): McpSe
   if (parseMcpToolName(mcpToolName(serverKey, 'probe'))?.server !== serverKey) {
     throw new Error(
       `${where}: server key "${serverKey}" cannot carry a policy — it does not survive ` +
-      `the mcp__<server>__<tool> round trip (no "__", no leading or trailing "_"), so the ` +
-      `gate would never match its calls. Rename the server.`,
+        `the mcp__<server>__<tool> round trip (no "__", no leading or trailing "_"), so the ` +
+        `gate would never match its calls. Rename the server.`,
     );
   }
 
@@ -108,13 +114,17 @@ function parseServerPolicy(serverKey: string, raw: unknown, path: string): McpSe
   for (const key of Object.keys(entry)) {
     if (key.startsWith('_')) continue;
     if (!allowedKeys.has(key)) {
-      throw new Error(`${where}: unknown key "${key}" — expected one of default, ${TIERS.join(', ')}, titles, or a "_"-prefixed comment.`);
+      throw new Error(
+        `${where}: unknown key "${key}" — expected one of default, ${TIERS.join(', ')}, titles, or a "_"-prefixed comment.`,
+      );
     }
   }
 
   const fallback = entry.default ?? 'ask';
   if (!TIERS.includes(fallback as ToolTier)) {
-    throw new Error(`${where}.default must be one of ${TIERS.join(', ')} — got ${JSON.stringify(fallback)}.`);
+    throw new Error(
+      `${where}.default must be one of ${TIERS.join(', ')} — got ${JSON.stringify(fallback)}.`,
+    );
   }
 
   const tiers: Record<string, ToolTier> = {};
@@ -249,7 +259,9 @@ export function getArchieConfig(): ArchieConfig {
   }
 
   const allowedNetworkDomains = Array.isArray(raw?.allowedNetworkDomains)
-    ? raw.allowedNetworkDomains.filter((d: unknown): d is string => typeof d === 'string' && d.length > 0)
+    ? raw.allowedNetworkDomains.filter(
+        (d: unknown): d is string => typeof d === 'string' && d.length > 0,
+      )
     : [];
 
   const repos: Record<string, ArchieRepoConfig> = {};
@@ -305,7 +317,10 @@ function scanPlugins(): LoadedPlugin[] {
       if (!existsSync(manifestPath)) continue;
       const raw = JSON.parse(readFileSync(manifestPath, 'utf-8'));
       if (!raw.name || !raw.version || !raw.description) {
-        logger.warn('system', `Plugin ${entry.name}: plugin.json missing required fields (name, version, description), skipping`);
+        logger.warn(
+          'system',
+          `Plugin ${entry.name}: plugin.json missing required fields (name, version, description), skipping`,
+        );
         continue;
       }
       manifest = { name: raw.name, version: raw.version, description: raw.description };

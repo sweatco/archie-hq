@@ -147,7 +147,11 @@ describe('waitForHealth', () => {
 describe('archieContainerState', () => {
   it('parses NDJSON compose ps output', () => {
     const out = `${'{"Service":"other","State":"running"}'}\n${RUNNING_PS}\n`;
-    expect(archieContainerState(out)).toEqual({ found: true, state: 'running', publishedPorts: [] });
+    expect(archieContainerState(out)).toEqual({
+      found: true,
+      state: 'running',
+      publishedPorts: [],
+    });
   });
 
   it('parses array-shaped compose ps output', () => {
@@ -157,13 +161,19 @@ describe('archieContainerState', () => {
 
   it('reports not-found for empty or unrelated output', () => {
     expect(archieContainerState('')).toEqual({ found: false, publishedPorts: [] });
-    expect(archieContainerState('{"Service":"db","State":"running"}')).toEqual({ found: false, publishedPorts: [] });
+    expect(archieContainerState('{"Service":"db","State":"running"}')).toEqual({
+      found: false,
+      publishedPorts: [],
+    });
   });
 });
 
 describe('renderDiagnostics', () => {
   it('renders the compose ps table and the log tail', () => {
-    const block = renderDiagnostics('NAME  STATE\narchie  Exited (1)', 'boom: missing env\nstack...');
+    const block = renderDiagnostics(
+      'NAME  STATE\narchie  Exited (1)',
+      'boom: missing env\nstack...',
+    );
     expect(block).toContain('docker compose ps');
     expect(block).toContain('archie  Exited (1)');
     expect(block).toContain('last 100 lines');
@@ -192,7 +202,10 @@ describe('parseArgs', () => {
 
   it('accepts --no-prepare, and omits it otherwise so the flag is opt-in', () => {
     expect(parseArgs(['--no-prepare'])).toEqual({ noPrepare: true });
-    expect(parseArgs(['--timeout-seconds=90', '--no-prepare'])).toEqual({ timeoutFlag: '90', noPrepare: true });
+    expect(parseArgs(['--timeout-seconds=90', '--no-prepare'])).toEqual({
+      timeoutFlag: '90',
+      noPrepare: true,
+    });
     expect(parseArgs([])).toEqual({});
   });
 });
@@ -241,7 +254,9 @@ function bootDeps(overrides: Partial<BootDeps>): BootDeps & { logs: string[]; er
 describe('looksLikeArchie', () => {
   it('accepts the /health payload shape (200 and shutting_down alike)', () => {
     expect(looksLikeArchie('{"status":"ok","activeTasks":0}')).toBe(true);
-    expect(looksLikeArchie('{"status":"shutting_down","activeTasks":2,"git_sha":"abc"}')).toBe(true);
+    expect(looksLikeArchie('{"status":"shutting_down","activeTasks":2,"git_sha":"abc"}')).toBe(
+      true,
+    );
   });
 
   it('rejects non-Archie responses', () => {
@@ -284,7 +299,11 @@ describe('archieContainerState — published ports', () => {
       '{"Name":"archie-hq-archie-1","Service":"archie","State":"running","Publishers":[' +
       '{"URL":"","TargetPort":3000,"PublishedPort":0,"Protocol":"tcp"},' +
       '{"URL":"0.0.0.0","TargetPort":3000,"PublishedPort":53787,"Protocol":"tcp"}]}';
-    expect(archieContainerState(ps)).toEqual({ found: true, state: 'running', publishedPorts: [53787] });
+    expect(archieContainerState(ps)).toEqual({
+      found: true,
+      state: 'running',
+      publishedPorts: [53787],
+    });
   });
 
   it('reads missing/empty Publishers as no published ports', () => {
@@ -296,7 +315,11 @@ describe('archieContainerState — published ports', () => {
 
 describe('isConnectionRefused', () => {
   it('detects a plain ECONNREFUSED cause', () => {
-    expect(isConnectionRefused(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } }))).toBe(true);
+    expect(
+      isConnectionRefused(
+        Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } }),
+      ),
+    ).toBe(true);
   });
 
   it('detects dual-stack AggregateError causes with no top-level code', () => {
@@ -305,9 +328,23 @@ describe('isConnectionRefused', () => {
   });
 
   it('does not classify timeouts, DNS failures, or aborts as refused', () => {
-    expect(isConnectionRefused(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ETIMEDOUT' } }))).toBe(false);
-    expect(isConnectionRefused(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ENOTFOUND' } }))).toBe(false);
-    expect(isConnectionRefused(Object.assign(new TypeError('fetch failed'), { cause: { errors: [{ code: 'ETIMEDOUT' }] } }))).toBe(false);
+    expect(
+      isConnectionRefused(
+        Object.assign(new TypeError('fetch failed'), { cause: { code: 'ETIMEDOUT' } }),
+      ),
+    ).toBe(false);
+    expect(
+      isConnectionRefused(
+        Object.assign(new TypeError('fetch failed'), { cause: { code: 'ENOTFOUND' } }),
+      ),
+    ).toBe(false);
+    expect(
+      isConnectionRefused(
+        Object.assign(new TypeError('fetch failed'), {
+          cause: { errors: [{ code: 'ETIMEDOUT' }] },
+        }),
+      ),
+    ).toBe(false);
     expect(isConnectionRefused(new DOMException('aborted', 'TimeoutError'))).toBe(false);
     expect(isConnectionRefused(new Error('anything'))).toBe(false);
   });
@@ -319,7 +356,11 @@ describe('runBoot — orchestration ordering', () => {
     const { exec, calls } = fakeExec((_cmd, args) =>
       args.includes('up')
         ? { code: 1, stdout: '', stderr: 'build failed: bad Dockerfile' }
-        : { code: 0, stdout: args.includes('logs') ? 'error: cannot start' : 'NAME STATE', stderr: '' },
+        : {
+            code: 0,
+            stdout: args.includes('logs') ? 'error: cannot start' : 'NAME STATE',
+            stderr: '',
+          },
     );
     const deps = bootDeps({
       exec,
@@ -344,7 +385,9 @@ describe('runBoot — orchestration ordering', () => {
 
   it('a successful compose-up proceeds to a healthy poll and returns zero', async () => {
     const { exec } = fakeExec((_cmd, args) =>
-      args.includes('up') ? { code: 0, stdout: '', stderr: '' } : { code: 0, stdout: RUNNING_PS, stderr: '' },
+      args.includes('up')
+        ? { code: 0, stdout: '', stderr: '' }
+        : { code: 0, stdout: RUNNING_PS, stderr: '' },
     );
     const deps = bootDeps({ exec });
 
@@ -357,14 +400,23 @@ describe('runBoot — orchestration ordering', () => {
 
   it('attestation: a healthy instance reporting the expected git_sha passes', async () => {
     const { exec } = fakeExec((_cmd, args) =>
-      args.includes('up') ? { code: 0, stdout: '', stderr: '' } : { code: 0, stdout: RUNNING_PS, stderr: '' },
+      args.includes('up')
+        ? { code: 0, stdout: '', stderr: '' }
+        : { code: 0, stdout: RUNNING_PS, stderr: '' },
     );
     const deps = bootDeps({
       exec,
-      fetchHealth: async () => ({ status: 200, body: '{"status":"ok","activeTasks":0,"git_sha":"abc123"}' }),
+      fetchHealth: async () => ({
+        status: 200,
+        body: '{"status":"ok","activeTasks":0,"git_sha":"abc123"}',
+      }),
     });
 
-    const code = await runBoot(deps, { baseUrl: 'http://localhost:3000', timeoutSeconds: 600, expectedSha: 'abc123' });
+    const code = await runBoot(deps, {
+      baseUrl: 'http://localhost:3000',
+      timeoutSeconds: 600,
+      expectedSha: 'abc123',
+    });
 
     expect(code).toBe(0);
     expect(deps.logs.join('\n')).toContain('Attested: instance composed from abc123');
@@ -372,14 +424,23 @@ describe('runBoot — orchestration ordering', () => {
 
   it('attestation: a healthy instance reporting a DIFFERENT git_sha fails the boot with diagnostics', async () => {
     const { exec } = fakeExec((_cmd, args) =>
-      args.includes('up') ? { code: 0, stdout: '', stderr: '' } : { code: 0, stdout: RUNNING_PS, stderr: '' },
+      args.includes('up')
+        ? { code: 0, stdout: '', stderr: '' }
+        : { code: 0, stdout: RUNNING_PS, stderr: '' },
     );
     const deps = bootDeps({
       exec,
-      fetchHealth: async () => ({ status: 200, body: '{"status":"ok","activeTasks":0,"git_sha":"stale99"}' }),
+      fetchHealth: async () => ({
+        status: 200,
+        body: '{"status":"ok","activeTasks":0,"git_sha":"stale99"}',
+      }),
     });
 
-    const code = await runBoot(deps, { baseUrl: 'http://localhost:3000', timeoutSeconds: 600, expectedSha: 'abc123' });
+    const code = await runBoot(deps, {
+      baseUrl: 'http://localhost:3000',
+      timeoutSeconds: 600,
+      expectedSha: 'abc123',
+    });
 
     expect(code).toBe(1);
     expect(deps.errors.join('\n')).toContain('git_sha=stale99');
@@ -389,14 +450,20 @@ describe('runBoot — orchestration ordering', () => {
 
   it('attestation: a healthy instance with NO git_sha in /health fails when a SHA is expected', async () => {
     const { exec } = fakeExec((_cmd, args) =>
-      args.includes('up') ? { code: 0, stdout: '', stderr: '' } : { code: 0, stdout: RUNNING_PS, stderr: '' },
+      args.includes('up')
+        ? { code: 0, stdout: '', stderr: '' }
+        : { code: 0, stdout: RUNNING_PS, stderr: '' },
     );
     const deps = bootDeps({
       exec,
       fetchHealth: async () => ({ status: 200, body: '{"status":"ok","activeTasks":0}' }),
     });
 
-    const code = await runBoot(deps, { baseUrl: 'http://localhost:3000', timeoutSeconds: 600, expectedSha: 'abc123' });
+    const code = await runBoot(deps, {
+      baseUrl: 'http://localhost:3000',
+      timeoutSeconds: 600,
+      expectedSha: 'abc123',
+    });
 
     expect(code).toBe(1);
     expect(deps.errors.join('\n')).toContain('git_sha=(none)');

@@ -85,14 +85,23 @@ export interface CapabilityProposal {
 }
 
 export interface TaskHandoffRecord {
-  proposal: string; version: string; actor: string; approved: number; task: string;
-  state: 'approved' | 'prepared' | 'activated' | 'stale'; budget: 'task'; delivery: string;
+  proposal: string;
+  version: string;
+  actor: string;
+  approved: number;
+  task: string;
+  state: 'approved' | 'prepared' | 'activated' | 'stale';
+  budget: 'task';
+  delivery: string;
   card_state?: 'pending' | 'activated' | 'stale' | null;
   card_retry?: number;
 }
 
 export function lisbonDay(now: number): string {
   return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Europe/Lisbon', year: 'numeric', month: '2-digit', day: '2-digit',
+    timeZone: 'Europe/Lisbon',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
   }).format(now);
 }

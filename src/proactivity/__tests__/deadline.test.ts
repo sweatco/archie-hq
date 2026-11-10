@@ -33,6 +33,11 @@ it('preserves no deadline and refuses the old epoch output contract', () => {
 
 it('does not depend on the host timezone', () => {
   vi.stubEnv('TZ', 'America/Los_Angeles');
-  try { expect(deadlineAt({ date: '2026-10-27', time: '17:00', timeZone: 'Europe/Lisbon' })).toBe(1793120400000); }
-  finally { vi.unstubAllEnvs(); }
+  try {
+    expect(deadlineAt({ date: '2026-10-27', time: '17:00', timeZone: 'Europe/Lisbon' })).toBe(
+      1793120400000,
+    );
+  } finally {
+    vi.unstubAllEnvs();
+  }
 });

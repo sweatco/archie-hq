@@ -15,17 +15,19 @@ const PROJECT_ROOT = process.cwd();
 const COLORS_ENABLED = !process.env.NO_COLOR && process.stdout.isTTY;
 
 // Color helper that respects NO_COLOR
-const c = COLORS_ENABLED ? pc : {
-  blue: (s: string) => s,
-  green: (s: string) => s,
-  cyan: (s: string) => s,
-  magenta: (s: string) => s,
-  yellow: (s: string) => s,
-  red: (s: string) => s,
-  dim: (s: string) => s,
-  bold: (s: string) => s,
-  gray: (s: string) => s,
-};
+const c = COLORS_ENABLED
+  ? pc
+  : {
+      blue: (s: string) => s,
+      green: (s: string) => s,
+      cyan: (s: string) => s,
+      magenta: (s: string) => s,
+      yellow: (s: string) => s,
+      red: (s: string) => s,
+      dim: (s: string) => s,
+      bold: (s: string) => s,
+      gray: (s: string) => s,
+    };
 
 /**
  * Agent name to color mapping
@@ -35,7 +37,6 @@ const AGENT_COLORS: Record<string, (s: string) => string> = {
   'backend-agent': pc.green,
   'mobile-agent': pc.cyan,
 };
-
 
 /**
  * Get color for an agent name
@@ -137,7 +138,7 @@ export class Logger {
     agentName: string,
     toolName: string,
     input: any,
-    opts?: { editMode?: boolean; cwds?: string[]; subagentLabel?: string }
+    opts?: { editMode?: boolean; cwds?: string[]; subagentLabel?: string },
   ): void {
     const label = formatAgentLabel(agentName, opts?.editMode);
     const cwds = opts?.cwds || [];
@@ -178,7 +179,8 @@ export class Logger {
       console.log(`${label} ${c.dim('Tool:')} ${formatAgentSpawnLine(input)}`);
     } else if (toolName === 'WebSearch') {
       const searchQuery = input.query || '';
-      const displayQuery = searchQuery.length > 80 ? searchQuery.substring(0, 77) + '...' : searchQuery;
+      const displayQuery =
+        searchQuery.length > 80 ? searchQuery.substring(0, 77) + '...' : searchQuery;
       console.log(`${label} ${c.dim('WebSearch:')} "${displayQuery}"`);
     } else if (toolName === 'WebFetch') {
       const url = input.url || '';
@@ -215,14 +217,12 @@ export class Logger {
     fromAgent: string,
     toAgent: string,
     message: string,
-    opts?: { editMode?: boolean; truncate?: number }
+    opts?: { editMode?: boolean; truncate?: number },
   ): void {
     const fromLabel = formatAgentLabel(fromAgent, opts?.editMode);
     const toLabel = formatAgentLabel(toAgent);
 
-    const displayMessage = opts?.truncate
-      ? message.substring(0, opts.truncate) + '...'
-      : message;
+    const displayMessage = opts?.truncate ? message.substring(0, opts.truncate) + '...' : message;
 
     console.log(`${fromLabel} ${c.dim('→')} ${toLabel}: ${displayMessage}`);
   }
@@ -234,12 +234,10 @@ export class Logger {
     agentName: string,
     type: string,
     entry: string,
-    opts?: { editMode?: boolean; truncate?: number }
+    opts?: { editMode?: boolean; truncate?: number },
   ): void {
     const label = formatAgentLabel(agentName, opts?.editMode);
-    const displayEntry = opts?.truncate
-      ? entry.substring(0, opts.truncate) + '...'
-      : entry;
+    const displayEntry = opts?.truncate ? entry.substring(0, opts.truncate) + '...' : entry;
 
     console.log(`${label} ${c.yellow('[' + type + ']')}: ${displayEntry}`);
   }
@@ -251,7 +249,7 @@ export class Logger {
     agentName: string,
     action: string,
     details: string,
-    opts?: { editMode?: boolean }
+    opts?: { editMode?: boolean },
   ): void {
     const label = formatAgentLabel(agentName, opts?.editMode);
     if (details) {
@@ -264,7 +262,11 @@ export class Logger {
   /**
    * Log an agent posting to Slack
    */
-  agentToSlack(agentName: string, message: string, opts?: { editMode?: boolean; destination?: string }): void {
+  agentToSlack(
+    agentName: string,
+    message: string,
+    opts?: { editMode?: boolean; destination?: string },
+  ): void {
     const label = formatAgentLabel(agentName, opts?.editMode);
     const dest = opts?.destination ? `[${opts.destination}]` : '[Slack]';
     console.log(`${label} ${c.dim('→')} ${c.cyan(dest)}: ${message}`);
@@ -360,9 +362,8 @@ function extractSubagentLabel(input: any): string {
   } else if (input.name) {
     base = input.name;
   } else if (input.description) {
-    base = input.description.length > 20
-      ? input.description.substring(0, 20).trim()
-      : input.description;
+    base =
+      input.description.length > 20 ? input.description.substring(0, 20).trim() : input.description;
   } else {
     base = 'subagent';
   }
@@ -382,7 +383,7 @@ export function processAgentEventForLogging(
   event: any,
   agentName: string,
   cwds: string[],
-  editMode?: boolean
+  editMode?: boolean,
 ): void {
   if (event.type === 'assistant') {
     const content = event.message.content;

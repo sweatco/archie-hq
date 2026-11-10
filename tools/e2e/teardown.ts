@@ -24,7 +24,8 @@ export interface ComposeContainer {
   state: string;
 }
 
-export type ParsePsResult = { ok: true; containers: ComposeContainer[] } | { ok: false; error: string };
+export type ParsePsResult =
+  { ok: true; containers: ComposeContainer[] } | { ok: false; error: string };
 
 function toContainer(entry: unknown): ComposeContainer | string {
   if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
@@ -56,7 +57,10 @@ export function parseComposePs(output: string): ParsePsResult {
       }
       entries.push(...(arr as unknown[]));
     } catch (err) {
-      return { ok: false, error: `malformed compose ps JSON: ${err instanceof Error ? err.message : String(err)}` };
+      return {
+        ok: false,
+        error: `malformed compose ps JSON: ${err instanceof Error ? err.message : String(err)}`,
+      };
     }
   } else {
     for (const line of trimmed.split('\n')) {

@@ -20,7 +20,9 @@ import type { Task } from '../task.js';
 import type { Agent } from '../../agents/agent.js';
 
 /** Minimal agent stand-in — idleDecision reads `pendingTeardown`, `session.active`, `backgroundTasks`. */
-function fakeAgent(opts: { active?: boolean; pendingTeardown?: boolean; bgTasks?: string[] } = {}): Agent {
+function fakeAgent(
+  opts: { active?: boolean; pendingTeardown?: boolean; bgTasks?: string[] } = {},
+): Agent {
   return {
     pendingTeardown: opts.pendingTeardown ? () => Promise.resolve() : undefined,
     session: { active: opts.active ?? false },
@@ -77,7 +79,9 @@ describe('idleDecision', () => {
 
   it('prioritises the forced-stop teardown guard over completion intent', () => {
     expect(
-      idleDecision(fakeTask({ completionIntent: true, agent: fakeAgent({ pendingTeardown: true }) })),
+      idleDecision(
+        fakeTask({ completionIntent: true, agent: fakeAgent({ pendingTeardown: true }) }),
+      ),
     ).toBe('wait');
   });
 });

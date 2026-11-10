@@ -202,7 +202,8 @@ export async function withdrawPendingTrigger(id: string): Promise<PendingWithdra
   return triggerLock(id, async () => {
     const trigger = await loadTrigger(id);
     if (!trigger) return { outcome: 'gone' } as const;
-    if (trigger.status !== 'pending') return { outcome: 'resolved', status: trigger.status } as const;
+    if (trigger.status !== 'pending')
+      return { outcome: 'resolved', status: trigger.status } as const;
     await removeTriggerRecord(id);
     return { outcome: 'withdrawn' } as const;
   });
@@ -212,9 +213,7 @@ export async function withdrawPendingTrigger(id: string): Promise<PendingWithdra
  * Count active (enabled) triggers, optionally filtered by a predicate.
  * Used to enforce per-user / per-channel caps at creation time.
  */
-export async function countActiveTriggers(
-  predicate?: (t: Trigger) => boolean,
-): Promise<number> {
+export async function countActiveTriggers(predicate?: (t: Trigger) => boolean): Promise<number> {
   const all = await listTriggers();
   return all.filter((t) => t.status === 'enabled' && (!predicate || predicate(t))).length;
 }
@@ -257,7 +256,8 @@ export async function updatePendingTrigger(
   return triggerLock(id, async () => {
     const trigger = await loadTrigger(id);
     if (!trigger) return { outcome: 'gone' } as const;
-    if (trigger.status !== 'pending') return { outcome: 'resolved', status: trigger.status } as const;
+    if (trigger.status !== 'pending')
+      return { outcome: 'resolved', status: trigger.status } as const;
     mutate(trigger);
     trigger.updated_at = new Date().toISOString();
     await saveTrigger(trigger);

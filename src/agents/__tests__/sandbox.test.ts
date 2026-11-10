@@ -149,7 +149,7 @@ describe('buildRepoGrants', () => {
     }
   });
 
-  it('scopes the writable grant to this task — another task\'s clones are not under it', () => {
+  it("scopes the writable grant to this task — another task's clones are not under it", () => {
     const other = getReposPath('task-20260910-1200-other0');
     expect(buildRepoGrants(TASK, true).write).not.toContain(other);
     expect(other.startsWith(taskRepos)).toBe(false);
@@ -198,7 +198,7 @@ describe('createPmOnlyToolGuardHooks', () => {
     }
   });
 
-  it('never fires on the main thread, where these tools are the PM\'s own', async () => {
+  it("never fires on the main thread, where these tools are the PM's own", async () => {
     for (const server of PM_ONLY_MCP_SERVERS) {
       expect(await call(`mcp__${server}__anything`)).toEqual({ continue: true });
     }

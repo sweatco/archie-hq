@@ -20,19 +20,28 @@ vi.mock('../persistence.js', async (importOriginal) => {
 
 vi.mock('../../system/logger.js', () => ({
   logger: {
-    system: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), info: vi.fn(),
-    slack: vi.fn(), agentAction: vi.fn(), agentFinding: vi.fn(), agentToSlack: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    warn: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    slack: vi.fn(),
+    agentAction: vi.fn(),
+    agentFinding: vi.fn(),
+    agentToSlack: vi.fn(),
   },
 }));
 
 vi.mock('../../system/event-bus.js', () => ({ emitEvent: vi.fn() }));
 
-const { loadTrigger, deleteTrigger, enableProposedTrigger, countActiveTriggers } = vi.hoisted(() => ({
-  loadTrigger: vi.fn(),
-  deleteTrigger: vi.fn().mockResolvedValue(undefined),
-  enableProposedTrigger: vi.fn(),
-  countActiveTriggers: vi.fn(),
-}));
+const { loadTrigger, deleteTrigger, enableProposedTrigger, countActiveTriggers } = vi.hoisted(
+  () => ({
+    loadTrigger: vi.fn(),
+    deleteTrigger: vi.fn().mockResolvedValue(undefined),
+    enableProposedTrigger: vi.fn(),
+    countActiveTriggers: vi.fn(),
+  }),
+);
 vi.mock('../../system/trigger-store.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../system/trigger-store.js')>();
   return { ...actual, loadTrigger, deleteTrigger, enableProposedTrigger, countActiveTriggers };
@@ -55,7 +64,12 @@ import type { Trigger } from '../../types/trigger.js';
 const TRIGGER_ID = 'trg-20260729-1056-capped';
 
 function makeFakeTask() {
-  return { taskId: 'task-1', metadata: { pending_trigger_id: TRIGGER_ID }, debouncedSave: vi.fn(), prepareTriggerDelivery: vi.fn().mockResolvedValue(undefined) };
+  return {
+    taskId: 'task-1',
+    metadata: { pending_trigger_id: TRIGGER_ID },
+    debouncedSave: vi.fn(),
+    prepareTriggerDelivery: vi.fn().mockResolvedValue(undefined),
+  };
 }
 
 function pending(): Trigger {
@@ -66,7 +80,9 @@ function pending(): Trigger {
     created_at: '2026-07-29T10:56:00.000Z',
     proposed_in_task: 'task-1',
     binding: { type: 'channel', channel_id: 'C1', channel_name: 'growth-operations' },
-    conditions: [{ type: 'schedule', tz: 'UTC', next_run_at: '2026-07-30T08:00:00.000Z', cron: '0 9 * * *' }],
+    conditions: [
+      { type: 'schedule', tz: 'UTC', next_run_at: '2026-07-30T08:00:00.000Z', cron: '0 9 * * *' },
+    ],
     action: { prompt: 'do it' },
   } as Trigger;
 }

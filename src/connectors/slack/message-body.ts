@@ -34,7 +34,7 @@ export interface SlackMessageParts {
  */
 export function renderMessageBody(
   parts: SlackMessageParts,
-  options: { redacted: boolean; includeReactions?: boolean }
+  options: { redacted: boolean; includeReactions?: boolean },
 ): string {
   if (options.redacted) {
     return REDACTION_PLACEHOLDER;
@@ -63,10 +63,12 @@ export function renderMessageBody(
   let fullMessage = inlineParts.join('\n');
 
   if (parts.files && parts.files.length > 0) {
-    const fileInfo = parts.files.map(f => {
-      const pathInfo = f.localPath ? ` (${f.localPath})` : '';
-      return `${f.name}${pathInfo}`;
-    }).join(', ');
+    const fileInfo = parts.files
+      .map((f) => {
+        const pathInfo = f.localPath ? ` (${f.localPath})` : '';
+        return `${f.name}${pathInfo}`;
+      })
+      .join(', ');
     fullMessage += `\n  [Attachments: ${fileInfo}]`;
   }
 
@@ -94,7 +96,10 @@ export function shouldRedact(msg: { user: SlackAuthor }, ctx: { shared: boolean 
  *
  * The parameter is typed structurally rather than as `SlackThreadMessage` so this module keeps no dependency on the task types beyond the message-part shapes it actually reads.
  */
-export function messageBody(msg: SlackMessageParts & { user: SlackAuthor }, ctx: { shared: boolean }): string {
+export function messageBody(
+  msg: SlackMessageParts & { user: SlackAuthor },
+  ctx: { shared: boolean },
+): string {
   return renderMessageBody(msg, { redacted: shouldRedact(msg, ctx) });
 }
 
@@ -114,9 +119,23 @@ export function exploreBody(msg: SlackMessageParts): string {
  *
  * Existing as a named function rather than an inline `renderMessageBody(..., { redacted: false, includeReactions: false })` at the call site is the point: it keeps the pin path from being a second place that answers the redaction question, and keeps the partial `ownText` field read inside this module.
  */
-export function pinBody(pin: SlackMessageParts | { ownText?: string; files?: SlackFile[]; attachments?: SlackAttachment[]; reactions?: SlackReaction[] }): string {
+export function pinBody(
+  pin:
+    | SlackMessageParts
+    | {
+        ownText?: string;
+        files?: SlackFile[];
+        attachments?: SlackAttachment[];
+        reactions?: SlackReaction[];
+      },
+): string {
   return renderMessageBody(
-    { ownText: pin.ownText ?? '', attachments: pin.attachments, files: pin.files, reactions: pin.reactions },
+    {
+      ownText: pin.ownText ?? '',
+      attachments: pin.attachments,
+      files: pin.files,
+      reactions: pin.reactions,
+    },
     { redacted: false, includeReactions: false },
   );
 }

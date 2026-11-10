@@ -8,14 +8,27 @@
 import { EventEmitter } from 'events';
 
 export type EventType =
-  | 'task:created' | 'task:resumed' | 'task:stopped' | 'task:completed'
-  | 'agent:active' | 'agent:inactive'
-  | 'message' | 'agent:log' | 'agent:bg_task'
+  | 'task:created'
+  | 'task:resumed'
+  | 'task:stopped'
+  | 'task:completed'
+  | 'agent:active'
+  | 'agent:inactive'
+  | 'message'
+  | 'agent:log'
+  | 'agent:bg_task'
   | 'status'
-  | 'approval:requested' | 'approval:resolved'
+  | 'approval:requested'
+  | 'approval:resolved'
   | 'pr_card'
-  | 'reminder:set' | 'reminder:cancelled' | 'reminder:fired'
-  | 'trigger:created' | 'trigger:fired' | 'trigger:paused' | 'trigger:resumed' | 'trigger:deleted';
+  | 'reminder:set'
+  | 'reminder:cancelled'
+  | 'reminder:fired'
+  | 'trigger:created'
+  | 'trigger:fired'
+  | 'trigger:paused'
+  | 'trigger:resumed'
+  | 'trigger:deleted';
 
 export interface SystemEvent {
   type: EventType;

@@ -11,10 +11,17 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { TaskMetadata } from '../../../types/task.js';
 
 let tabs: Array<{ file_id: string; title?: string }> | null = [];
-let fileInfos: Record<string, { title?: string; user?: string; updated?: number; filetype?: string }> = {};
+let fileInfos: Record<
+  string,
+  { title?: string; user?: string; updated?: number; filetype?: string }
+> = {};
 let userInfoImpl: (id: string) => Promise<{ external?: boolean }>;
 let storesByChannel: Record<string, unknown> = {};
-let savedStore: { canvases: unknown[]; announced: Record<string, boolean>; checkedAt: number } | null = null;
+let savedStore: {
+  canvases: unknown[];
+  announced: Record<string, boolean>;
+  checkedAt: number;
+} | null = null;
 
 vi.mock('../client.js', () => ({
   getChannelCanvasTabs: vi.fn(async () => tabs),
@@ -25,13 +32,21 @@ vi.mock('../client.js', () => ({
 }));
 
 vi.mock('../canvas-read.js', () => ({
-  readCanvas: async () => ({ title: 'Archie Context', markdown: '# standing context', fileIds: ['F_REF1'] }),
+  readCanvas: async () => ({
+    title: 'Archie Context',
+    markdown: '# standing context',
+    fileIds: ['F_REF1'],
+  }),
 }));
 
 vi.mock('../../../system/channel-store.js', () => ({
   loadChannelStore: async (channelId: string) => storesByChannel[channelId] ?? null,
   updateChannelStore: async (channelId: string, updater: (s: never) => never) => {
-    const base = (storesByChannel[channelId] as object | undefined) ?? { canvases: [], announced: {}, checkedAt: 0 };
+    const base = (storesByChannel[channelId] as object | undefined) ?? {
+      canvases: [],
+      announced: {},
+      checkedAt: 0,
+    };
     savedStore = updater(JSON.parse(JSON.stringify(base)) as never);
     return savedStore;
   },
@@ -82,11 +97,18 @@ describe('ensureChannelCanvas — creator classification fails closed', () => {
 
     expect(savedStore?.canvases).toEqual([]);
     expect(postSlackMessage).not.toHaveBeenCalled();
-    expect(logger.warn).toHaveBeenCalledWith('channel-canvas', expect.stringContaining('not adopting yet'));
+    expect(logger.warn).toHaveBeenCalledWith(
+      'channel-canvas',
+      expect.stringContaining('not adopting yet'),
+    );
   });
 
   it('a previously adopted canvas survives a transient lookup failure', async () => {
-    storesByChannel[CHANNEL] = { canvases: [adoptedEntry('F_CANVAS')], announced: { F_CANVAS: true }, checkedAt: 0 };
+    storesByChannel[CHANNEL] = {
+      canvases: [adoptedEntry('F_CANVAS')],
+      announced: { F_CANVAS: true },
+      checkedAt: 0,
+    };
     userInfoImpl = async () => {
       throw new Error('rate limited');
     };
@@ -123,7 +145,9 @@ describe('ensureChannelCanvas — creator classification fails closed', () => {
 
     expect(savedStore?.canvases).toEqual([]);
     expect(postSlackMessage).toHaveBeenCalledTimes(1);
-    expect((vi.mocked(postSlackMessage).mock.calls[0][0] as { text: string }).text).toContain('Not using canvas');
+    expect((vi.mocked(postSlackMessage).mock.calls[0][0] as { text: string }).text).toContain(
+      'Not using canvas',
+    );
   });
 });
 
@@ -133,8 +157,16 @@ describe('collectCanvasFileAllowlist', () => {
   });
 
   it('unions adopted canvas ids with their referenced file ids across linked slack channels, skipping external', async () => {
-    storesByChannel['C1'] = { canvases: [adoptedEntry('F1', ['FA', 'FB'])], announced: {}, checkedAt: 0 };
-    storesByChannel['C2'] = { canvases: [{ ...adoptedEntry('F2', ['FC']), external: true }], announced: {}, checkedAt: 0 };
+    storesByChannel['C1'] = {
+      canvases: [adoptedEntry('F1', ['FA', 'FB'])],
+      announced: {},
+      checkedAt: 0,
+    };
+    storesByChannel['C2'] = {
+      canvases: [{ ...adoptedEntry('F2', ['FC']), external: true }],
+      announced: {},
+      checkedAt: 0,
+    };
 
     const metadata = {
       channels: {
@@ -150,7 +182,9 @@ describe('collectCanvasFileAllowlist', () => {
   });
 
   it('is empty when no channel has an adopted canvas', async () => {
-    const metadata = { channels: { a: { type: 'slack', channel_id: 'C9' } } } as unknown as TaskMetadata;
+    const metadata = {
+      channels: { a: { type: 'slack', channel_id: 'C9' } },
+    } as unknown as TaskMetadata;
 
     expect((await collectCanvasFileAllowlist(metadata)).size).toBe(0);
   });
@@ -192,7 +226,11 @@ describe('buildChannelCanvasPromptSection — containment', () => {
   // saying which channel each one governs — and the agent can also be handed a
   // third at post time (buildOtherChannelContextSection).
   it('names the channel each canvas governs, falling back to the id', async () => {
-    storesByChannel['C1'] = { canvases: [{ ...adoptedEntry('F1'), title: 'Archie — one' }], announced: {}, checkedAt: 0 };
+    storesByChannel['C1'] = {
+      canvases: [{ ...adoptedEntry('F1'), title: 'Archie — one' }],
+      announced: {},
+      checkedAt: 0,
+    };
 
     const section = await buildChannelCanvasPromptSection({
       channels: { a: { type: 'slack', channel_id: 'C1', channel_name: 'bot-test' } },
@@ -236,8 +274,16 @@ describe('buildChannelCanvasPromptSection — containment', () => {
   });
 
   it('still injects distinct canvases from different channels', async () => {
-    storesByChannel['C1'] = { canvases: [{ ...adoptedEntry('F1'), title: 'Archie — one' }], announced: {}, checkedAt: 0 };
-    storesByChannel['C2'] = { canvases: [{ ...adoptedEntry('F2'), title: 'Archie — two' }], announced: {}, checkedAt: 0 };
+    storesByChannel['C1'] = {
+      canvases: [{ ...adoptedEntry('F1'), title: 'Archie — one' }],
+      announced: {},
+      checkedAt: 0,
+    };
+    storesByChannel['C2'] = {
+      canvases: [{ ...adoptedEntry('F2'), title: 'Archie — two' }],
+      announced: {},
+      checkedAt: 0,
+    };
 
     const section = await buildChannelCanvasPromptSection({
       channels: {
@@ -479,7 +525,9 @@ describe('ensureChannelCanvas — unchanged canvas makes no extra calls', () => 
 
   it('reuses the stored entry without re-classifying the creator', async () => {
     storesByChannel[CHANNEL] = {
-      canvases: [{ ...adoptedEntry('F1'), title: 'Archie — brief', creator: 'U_INT', updatedTs: 5 }],
+      canvases: [
+        { ...adoptedEntry('F1'), title: 'Archie — brief', creator: 'U_INT', updatedTs: 5 },
+      ],
       announced: { F1: true },
       checkedAt: 0,
     };
@@ -494,7 +542,9 @@ describe('ensureChannelCanvas — unchanged canvas makes no extra calls', () => 
   // vetted — it must be re-classified rather than trusted.
   it('re-classifies when the stored creator does not match', async () => {
     storesByChannel[CHANNEL] = {
-      canvases: [{ ...adoptedEntry('F1'), title: 'Archie — brief', creator: 'U_OTHER', updatedTs: 5 }],
+      canvases: [
+        { ...adoptedEntry('F1'), title: 'Archie — brief', creator: 'U_OTHER', updatedTs: 5 },
+      ],
       announced: { F1: true },
       checkedAt: 0,
     };
@@ -506,7 +556,9 @@ describe('ensureChannelCanvas — unchanged canvas makes no extra calls', () => 
 
   it('re-reads when updatedTs advanced', async () => {
     storesByChannel[CHANNEL] = {
-      canvases: [{ ...adoptedEntry('F1'), title: 'Archie — brief', creator: 'U_INT', updatedTs: 4 }],
+      canvases: [
+        { ...adoptedEntry('F1'), title: 'Archie — brief', creator: 'U_INT', updatedTs: 4 },
+      ],
       announced: { F1: true },
       checkedAt: 0,
     };

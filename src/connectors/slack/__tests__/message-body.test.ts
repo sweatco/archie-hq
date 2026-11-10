@@ -7,7 +7,11 @@
 import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('../client.js', () => ({
-  isExternalUser: (user: { teamId?: string; isRestricted?: boolean; isUltraRestricted?: boolean }) => {
+  isExternalUser: (user: {
+    teamId?: string;
+    isRestricted?: boolean;
+    isUltraRestricted?: boolean;
+  }) => {
     if (user.isRestricted || user.isUltraRestricted) return true;
     if (user.teamId && user.teamId !== 'T_HOME') return true;
     return false;
@@ -28,7 +32,13 @@ describe('renderMessageBody', () => {
       {
         ownText: 'see file',
         files: [
-          { id: 'F1', name: 'a.txt', mimetype: 'text/plain', url_private: '', localPath: '/p/a.txt' },
+          {
+            id: 'F1',
+            name: 'a.txt',
+            mimetype: 'text/plain',
+            url_private: '',
+            localPath: '/p/a.txt',
+          },
         ],
       },
       { redacted: false },
@@ -55,7 +65,13 @@ describe('renderMessageBody', () => {
       {
         ownText: 'see file',
         files: [
-          { id: 'F1', name: 'a.txt', mimetype: 'text/plain', url_private: '', localPath: '/p/a.txt' },
+          {
+            id: 'F1',
+            name: 'a.txt',
+            mimetype: 'text/plain',
+            url_private: '',
+            localPath: '/p/a.txt',
+          },
         ],
         reactions: [{ name: 'tada', count: 1 }],
       },
@@ -153,7 +169,13 @@ describe('renderMessageBody', () => {
       {
         ownText: 'see file',
         files: [
-          { id: 'F1', name: 'a.txt', mimetype: 'text/plain', url_private: '', localPath: '/p/a.txt' },
+          {
+            id: 'F1',
+            name: 'a.txt',
+            mimetype: 'text/plain',
+            url_private: '',
+            localPath: '/p/a.txt',
+          },
         ],
         reactions: [{ name: 'tada', count: 2 }],
       },
@@ -168,7 +190,13 @@ describe('renderMessageBody', () => {
       {
         ownText: 'see file',
         files: [
-          { id: 'F1', name: 'a.txt', mimetype: 'text/plain', url_private: '', localPath: '/p/a.txt' },
+          {
+            id: 'F1',
+            name: 'a.txt',
+            mimetype: 'text/plain',
+            url_private: '',
+            localPath: '/p/a.txt',
+          },
         ],
         reactions: [{ name: 'tada', count: 2 }],
       },

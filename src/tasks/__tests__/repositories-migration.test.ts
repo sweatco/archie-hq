@@ -42,7 +42,11 @@ describe('migrateRepositoriesShape', () => {
           clone_path: '/sessions/task-test/repos/backend-agent/acme/backend',
           current_branch: 'archie/task-test',
           branch_states: {
-            'archie/task-test': { base_branch: 'main', pr_number: 42, last_processed_comment_id: 1001 },
+            'archie/task-test': {
+              base_branch: 'main',
+              pr_number: 42,
+              last_processed_comment_id: 1001,
+            },
           },
         },
       ],
@@ -130,7 +134,11 @@ describe('migrateRepositoriesShape', () => {
   it('running twice produces the same result (migration then no-op)', () => {
     const m = meta({
       'backend-agent': [
-        { github: 'acme/backend', clone_path: '/c/backend', branch_states: { 'feature/x': { pr_number: 9 } } },
+        {
+          github: 'acme/backend',
+          clone_path: '/c/backend',
+          branch_states: { 'feature/x': { pr_number: 9 } },
+        },
       ],
     });
 

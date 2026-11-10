@@ -15,7 +15,10 @@ import { join } from 'path';
 vi.mock('../../system/workdir.js', async () => {
   const { tmpdir } = await import('os');
   const { join } = await import('path');
-  const dir = join(tmpdir(), `archie-findtask-test-${process.pid}-${Math.random().toString(36).slice(2)}`);
+  const dir = join(
+    tmpdir(),
+    `archie-findtask-test-${process.pid}-${Math.random().toString(36).slice(2)}`,
+  );
   return { SESSIONS_DIR: dir, WORKDIR: tmpdir() };
 });
 
@@ -42,13 +45,23 @@ vi.mock('../task.js', () => ({
     Array.isArray(m.repositories) ? m.repositories : [],
 }));
 
-import { findTaskByBranch, findTaskByPRNumber, findTaskByThread, findTaskIdsByStatus, isThreadMuted } from '../persistence.js';
+import {
+  findTaskByBranch,
+  findTaskByPRNumber,
+  findTaskByThread,
+  findTaskIdsByStatus,
+  isThreadMuted,
+} from '../persistence.js';
 import { SESSIONS_DIR } from '../../system/workdir.js';
 
 async function writeTask(taskId: string, metadata: Record<string, unknown>): Promise<void> {
   const dir = join(SESSIONS_DIR, taskId, 'shared');
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, 'metadata.json'), JSON.stringify({ task_id: taskId, channels: {}, ...metadata }, null, 2), 'utf-8');
+  await writeFile(
+    join(dir, 'metadata.json'),
+    JSON.stringify({ task_id: taskId, channels: {}, ...metadata }, null, 2),
+    'utf-8',
+  );
 }
 
 function repoTask(branch: string, prNumber?: number): Record<string, unknown> {
@@ -172,11 +185,16 @@ describe('findTaskBy* scanners', () => {
   // entries happen to be — a match at either end must resolve.
   it('resolves tasks anywhere in a multi-task fleet', async () => {
     for (let i = 0; i < 40; i++) {
-      await writeTask(`task-20260703-1${String(i).padStart(3, '0')}-bulk`, repoTask(`feature/bulk-${i}`));
+      await writeTask(
+        `task-20260703-1${String(i).padStart(3, '0')}-bulk`,
+        repoTask(`feature/bulk-${i}`),
+      );
     }
     await writeTask('task-20260703-0013-last', repoTask('feature/needle-at-the-end'));
 
-    expect(await findTaskByBranch('sweatco/api', 'feature/needle-at-the-end')).toBe('task-20260703-0013-last');
+    expect(await findTaskByBranch('sweatco/api', 'feature/needle-at-the-end')).toBe(
+      'task-20260703-0013-last',
+    );
     expect(await findTaskByBranch('sweatco/api', 'feature/bulk-0')).toBe('task-20260703-1000-bulk');
   });
 
@@ -194,8 +212,11 @@ describe('findTaskBy* scanners', () => {
       status: 'completed',
       channels: {
         [`slack:${channelId}:${threadId}`]: {
-          type: 'slack', channel_id: channelId, thread_id: threadId,
-          channel_name: 'backend-dev', ...(muted ? { muted: true } : {}),
+          type: 'slack',
+          channel_id: channelId,
+          thread_id: threadId,
+          channel_name: 'backend-dev',
+          ...(muted ? { muted: true } : {}),
         },
       },
     });
@@ -221,8 +242,19 @@ describe('findTaskBy* scanners', () => {
       await writeTask('task-20260703-0103-mixed', {
         status: 'completed',
         channels: {
-          'slack:C_BUGS:1.0': { type: 'slack', channel_id: 'C_BUGS', thread_id: '1.0', channel_name: 'bugs', muted: true },
-          'slack:C_BUGS:2.0': { type: 'slack', channel_id: 'C_BUGS', thread_id: '2.0', channel_name: 'bugs' },
+          'slack:C_BUGS:1.0': {
+            type: 'slack',
+            channel_id: 'C_BUGS',
+            thread_id: '1.0',
+            channel_name: 'bugs',
+            muted: true,
+          },
+          'slack:C_BUGS:2.0': {
+            type: 'slack',
+            channel_id: 'C_BUGS',
+            thread_id: '2.0',
+            channel_name: 'bugs',
+          },
         },
       });
 

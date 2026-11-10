@@ -40,7 +40,11 @@ import { initEventPersistence } from './tasks/persistence.js';
 import { initReminderScheduler } from './system/reminder-scheduler.js';
 import { initTriggerScheduler } from './system/trigger-scheduler.js';
 import { initMemory } from './memory/index.js';
-import { initInitiative, shutdownInitiative, startInitiativeScheduler } from './proactivity/index.js';
+import {
+  initInitiative,
+  shutdownInitiative,
+  startInitiativeScheduler,
+} from './proactivity/index.js';
 import { getHomeTeamId } from './connectors/slack/client.js';
 
 /**

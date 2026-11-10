@@ -39,6 +39,7 @@ npm run cli
 - Anthropic API key ([console.anthropic.com](https://console.anthropic.com/settings/keys))
 
 **Optional:**
+
 - Slack App credentials (for Slack integration — see [Slack Bot Setup](#slack-bot-setup))
 - GitHub App credentials (for PR tools — create PR, merge, review comments)
 - ngrok (for Slack webhooks to reach localhost)
@@ -63,6 +64,7 @@ npm run docker:stop
 ```
 
 The `docker-compose.yml`:
+
 - Mounts `./workdir` into the container (repos, sessions)
 - Resolves the `workdir/plugins` symlink and mounts the real directory
 - Forwards your SSH agent socket for git push/fetch inside the container
@@ -77,6 +79,7 @@ ARCHIE_URL=http://localhost:3000 npm run cli   # override server URL
 ```
 
 **Controls:**
+
 - `↑/↓` — Navigate task list
 - `Enter` — Open task detail
 - `n` — Create new task
@@ -119,6 +122,7 @@ curl http://localhost:3000/api/tasks
 All runtime state lives under `ARCHIE_WORKDIR` (default: `./workdir`).
 
 **Plugins** — symlink to your local clone for easy editing:
+
 ```bash
 git clone git@github.com:<org>/<plugins-repo>.git ../archie-plugins
 mkdir -p workdir
@@ -170,8 +174,7 @@ ANTHROPIC_API_KEY=sk-ant-...           # Claude API key
 
 See [`.env.example`](../../.env.example) for the full list. Your plugins repo may need additional `MCP_*` keys of its own — every `${MCP_*}` placeholder in `plugins/.mcp.json` is substituted from the environment at load time — but those belong to the plugins, not to the engine, so they aren't listed here.
 
-Without Slack credentials, the server runs in **CLI-only mode**.
-Without GitHub App credentials, **PR tools are disabled** but agents can still read/write code, commit, and push via SSH. To enable PR tools, follow the **[GitHub App Setup guide](github-setup.md)** — it covers creating the App, the exact repository permissions and webhook events, the private key, installation, and the env vars above.
+Without Slack credentials, the server runs in **CLI-only mode**. Without GitHub App credentials, **PR tools are disabled** but agents can still read/write code, commit, and push via SSH. To enable PR tools, follow the **[GitHub App Setup guide](github-setup.md)** — it covers creating the App, the exact repository permissions and webhook events, the private key, installation, and the env vars above.
 
 ## Slack Bot Setup
 
@@ -196,6 +199,7 @@ To enable Slack integration, use the app manifest at [`slack-manifest.yaml`](../
    ```
 
 The bot needs these permissions:
+
 - `app_mentions:read` — receive @mentions
 - `chat:write` — post messages to threads
 - `channels:history` — read thread history
@@ -229,6 +233,7 @@ npm run test:watch   # vitest in watch mode
 ```
 
 The server starts on `http://localhost:3000` with:
+
 - `GET /api/tasks` — REST API for CLI and external clients
 - `GET /api/events/stream` — SSE stream for real-time updates
 - `POST /webhooks/slack` — Slack webhooks (if configured)
@@ -247,6 +252,7 @@ Server console output shows all activity with color-coded, semantic logging:
 ```
 
 Inspect task state:
+
 ```bash
 ls workdir/sessions/                                    # All tasks
 cat workdir/sessions/task-*/shared/metadata.json        # Task metadata

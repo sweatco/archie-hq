@@ -17,7 +17,10 @@ export function createKeyedLock() {
   return function run<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const prev = chains.get(key) ?? Promise.resolve();
     const result = prev.then(fn, fn); // run fn whatever the previous outcome
-    const tracked = result.then(() => {}, () => {}); // never-rejecting chain link
+    const tracked = result.then(
+      () => {},
+      () => {},
+    ); // never-rejecting chain link
     chains.set(key, tracked);
     void tracked.then(() => {
       // Drop the entry only if no later call has extended the chain.

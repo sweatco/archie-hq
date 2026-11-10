@@ -115,12 +115,19 @@ export function App() {
     <Box flexDirection="column" height={termHeight}>
       {/* Title */}
       <Box paddingX={1}>
-        <Text bold color="cyan">Archie CLI</Text>
+        <Text bold color="cyan">
+          Archie CLI
+        </Text>
       </Box>
 
       {/* Main content */}
       <Box flexDirection="column" flexGrow={1}>
-        <Box flexDirection="column" height={view === 'list' ? undefined : 0} overflow="hidden" flexGrow={view === 'list' ? 1 : 0}>
+        <Box
+          flexDirection="column"
+          height={view === 'list' ? undefined : 0}
+          overflow="hidden"
+          flexGrow={view === 'list' ? 1 : 0}
+        >
           <TaskList
             onSelect={handleSelectTask}
             onCreate={handleStartCreate}
@@ -154,7 +161,13 @@ export function App() {
   );
 }
 
-function CreateTaskPrompt({ onSubmit, onCancel }: { onSubmit: (msg: string) => void; onCancel: () => void }) {
+function CreateTaskPrompt({
+  onSubmit,
+  onCancel,
+}: {
+  onSubmit: (msg: string) => void;
+  onCancel: () => void;
+}) {
   useInput((_input, key) => {
     if (key.escape) onCancel();
   });

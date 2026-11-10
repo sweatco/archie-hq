@@ -11,22 +11,54 @@ let root: string;
 let store: InitiativeStore;
 
 function message(overrides: Partial<SourceMessage> = {}): SourceMessage {
-  return { channel: 'C1', thread: '1792490401.000001', ts: '1792490401.000001', version: '1792490401.000001', author: 'U1', text: 'Release Friday', ...overrides };
+  return {
+    channel: 'C1',
+    thread: '1792490401.000001',
+    ts: '1792490401.000001',
+    version: '1792490401.000001',
+    author: 'U1',
+    text: 'Release Friday',
+    ...overrides,
+  };
 }
 
 function populate(): Matter {
   store.record(message(), NOW);
   const snapshot = store.snapshot('C1', message().thread)!;
-  const matter: Matter = { id: 'C1:release', channel: 'C1', thread: message().thread, title: 'Release', detail: 'Release Friday',
-    evidence: snapshot.evidence.map((e) => e.id), state: 'open', owner: 'U1', deadline: NOW + 86_400_000,
-    explicit: true, nextCheck: NOW, valid: true };
-  expect(store.apply([snapshot], [{ ...matter, kind: 'commitment', text: matter.detail }], [matter])).toBe(true);
+  const matter: Matter = {
+    id: 'C1:release',
+    channel: 'C1',
+    thread: message().thread,
+    title: 'Release',
+    detail: 'Release Friday',
+    evidence: snapshot.evidence.map((e) => e.id),
+    state: 'open',
+    owner: 'U1',
+    deadline: NOW + 86_400_000,
+    explicit: true,
+    nextCheck: NOW,
+    valid: true,
+  };
+  expect(
+    store.apply([snapshot], [{ ...matter, kind: 'commitment', text: matter.detail }], [matter]),
+  ).toBe(true);
   return matter;
 }
 
 function delivery(id: string, matter: Matter): Delivery {
-  return { id, recipient: matter.owner, channel: 'D1', thread: null, text: matter.title, matters: [matter.id], evidence: matter.evidence,
-    digest: false, state: 'pending', ts: null, created: NOW };
+  return {
+    id,
+    recipient: matter.owner,
+    channel: 'D1',
+    thread: null,
+    text: matter.title,
+    matters: [matter.id],
+    evidence: matter.evidence,
+    digest: false,
+    state: 'pending',
+    ts: null,
+    created: NOW,
+  };
 }
 
 beforeEach(() => {
@@ -34,12 +66,17 @@ beforeEach(() => {
   store = new InitiativeStore(join(root, 'state.sqlite'), 'T1', NOW);
   store.channel('C1', true, false);
 });
-afterEach(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
+afterEach(() => {
+  store.close();
+  rmSync(root, { recursive: true, force: true });
+});
 
 describe('observation memory', () => {
   it('binds the workspace and keeps the initial watermark across restart', () => {
     const watermark = store.setting('watermark');
-    expect(() => new InitiativeStore(join(root, 'state.sqlite'), 'T2', NOW)).toThrow('workspace mismatch');
+    expect(() => new InitiativeStore(join(root, 'state.sqlite'), 'T2', NOW)).toThrow(
+      'workspace mismatch',
+    );
     store.close();
     store = new InitiativeStore(join(root, 'state.sqlite'), 'T1', NOW + 86_400_000);
     expect(store.setting('watermark')).toBe(watermark);
@@ -53,7 +90,12 @@ describe('observation memory', () => {
   });
 
   it('observes a new edit to an older message without importing old history', () => {
-    expect(store.record(message({ ts: '100.000001', version: '1792490402.000001', text: 'New correction' }), NOW)).not.toBeNull();
+    expect(
+      store.record(
+        message({ ts: '100.000001', version: '1792490402.000001', text: 'New correction' }),
+        NOW,
+      ),
+    ).not.toBeNull();
   });
 
   it('deduplicates overlap, rejects older edits, and does not resurrect deletion', () => {
@@ -63,14 +105,18 @@ describe('observation memory', () => {
     store.record(message({ version: '1792490402.000001', text: 'Release Monday' }), NOW);
     expect(store.record(message(), NOW)).toBeNull();
     store.record(message({ version: '1792490403.000001', text: '', deleted: true }), NOW);
-    expect(store.record(message({ version: '1792490404.000001', text: 'Release Monday' }), NOW)).toBeNull();
+    expect(
+      store.record(message({ version: '1792490404.000001', text: 'Release Monday' }), NOW),
+    ).toBeNull();
     expect(store.snapshot('C1', message().thread)!.evidence).toEqual([]);
   });
 
   it('deduplicates envelope IDs and canonical revisions across overlapping handlers', () => {
     expect(store.record(message({ eventId: 'mention-event' }), NOW)).not.toBeNull();
     expect(store.record(message({ eventId: 'message-event' }), NOW)).toBeNull();
-    expect(store.record(message({ eventId: 'message-event', text: 'Inconsistent retry' }), NOW)).toBeNull();
+    expect(
+      store.record(message({ eventId: 'message-event', text: 'Inconsistent retry' }), NOW),
+    ).toBeNull();
     expect(store['rows']('SELECT id FROM revisions')).toHaveLength(1);
     expect(store['rows']('SELECT id FROM source_events')).toHaveLength(2);
   });
@@ -84,9 +130,16 @@ describe('observation memory', () => {
     let snapshot = store.snapshot('C1', matter.thread)!;
     store.apply([snapshot], [], [{ ...matter, evidence: snapshot.evidence.map((e) => e.id) }]);
     expect(store.matter(matter.id)?.state).toBe('resolved');
-    store.record(message({ version: '1792490403.000001', text: 'Please reopen the release for next Friday' }), NOW);
+    store.record(
+      message({ version: '1792490403.000001', text: 'Please reopen the release for next Friday' }),
+      NOW,
+    );
     snapshot = store.snapshot('C1', matter.thread)!;
-    store.apply([snapshot], [], [{ ...matter, evidence: snapshot.evidence.map((e) => e.id), reopen: true }]);
+    store.apply(
+      [snapshot],
+      [],
+      [{ ...matter, evidence: snapshot.evidence.map((e) => e.id), reopen: true }],
+    );
     expect(store.matter(matter.id)?.state).toBe('open');
   });
 
@@ -107,7 +160,22 @@ describe('observation memory', () => {
     store.record(message({ version: '1792490402.000001', text: 'Release Monday' }), NOW);
     expect(store.apply([snapshot], [], [])).toBe(false);
     const current = store.snapshot('C1', message().thread)!;
-    expect(() => store.apply([current], [{ id: 'bad', channel: 'C1', thread: message().thread, kind: 'decision', text: 'bad', evidence: [999] }], [])).toThrow('outside');
+    expect(() =>
+      store.apply(
+        [current],
+        [
+          {
+            id: 'bad',
+            channel: 'C1',
+            thread: message().thread,
+            kind: 'decision',
+            text: 'bad',
+            evidence: [999],
+          },
+        ],
+        [],
+      ),
+    ).toThrow('outside');
     expect(store.dirty()).toHaveLength(1);
   });
 
@@ -123,7 +191,12 @@ describe('observation memory', () => {
 
   it('expires raw content after 30 days and evidence validity after 90', () => {
     const matter = populate();
-    const proposal = store.proposeCapability({ repository: 'owner/repo', outcome: 'Review the release', evidence: matter.evidence, matter: matter.id });
+    const proposal = store.proposeCapability({
+      repository: 'owner/repo',
+      outcome: 'Review the release',
+      evidence: matter.evidence,
+      matter: matter.id,
+    });
     const charge = store.reserve(50_000, false, NOW)!;
     store.expire(NOW + 31 * 86_400_000);
     expect(store['row']('SELECT text,excerpt FROM revisions')?.text).toBe('');
@@ -156,7 +229,9 @@ describe('durable admission', () => {
       expect(second.reserve(1, false, NOW)).toBeNull();
       expect(second.reserve(50_000_000, true, NOW)).toBeTruthy();
       expect(store.reserve(1, true, NOW)).toBeNull();
-    } finally { second.close(); }
+    } finally {
+      second.close();
+    }
   });
 
   it('retains uncertain liabilities across midnight and replaces them with daily debits', () => {
@@ -215,7 +290,14 @@ describe('durable admission', () => {
 
 describe('review regressions', () => {
   it('includes the newest cancellation and declares truncated context', () => {
-    for (let i = 0; i <= 200; i++) store.record(message({ ts: `1792490401.${String(i).padStart(6, '0')}`, text: i === 200 ? 'CANCELLED' : `message ${i}` }), NOW);
+    for (let i = 0; i <= 200; i++)
+      store.record(
+        message({
+          ts: `1792490401.${String(i).padStart(6, '0')}`,
+          text: i === 200 ? 'CANCELLED' : `message ${i}`,
+        }),
+        NOW,
+      );
     const snapshot = store.snapshot('C1', message().thread)!;
     expect(snapshot.evidence).toHaveLength(200);
     expect(snapshot.evidence.at(-1)?.text).toBe('CANCELLED');
@@ -225,7 +307,9 @@ describe('review regressions', () => {
   it('advances revision order even when a newer edit repeats the same text', () => {
     store.record(message({ version: '1792490402.000001' }), NOW);
     store.record(message({ version: '1792490404.000001' }), NOW);
-    expect(store.record(message({ version: '1792490403.000001', text: 'Stale Monday' }), NOW)).toBeNull();
+    expect(
+      store.record(message({ version: '1792490403.000001', text: 'Stale Monday' }), NOW),
+    ).toBeNull();
     expect(store.snapshot('C1', message().thread)?.evidence[0]?.text).toBe('Release Friday');
   });
 
@@ -251,7 +335,15 @@ describe('review regressions', () => {
   it('does not let resolved matters starve open matters', () => {
     const matter = populate();
     const snapshot = store.snapshot('C1', matter.thread)!;
-    store.apply([snapshot], [], Array.from({ length: 101 }, (_, i) => ({ ...matter, id: `m${i}`, state: i < 100 ? 'resolved' as const : 'open' as const })));
+    store.apply(
+      [snapshot],
+      [],
+      Array.from({ length: 101 }, (_, i) => ({
+        ...matter,
+        id: `m${i}`,
+        state: i < 100 ? ('resolved' as const) : ('open' as const),
+      })),
+    );
     expect(store.matters()).toHaveLength(2);
     expect(store.matters().some((m) => m.id === 'm100')).toBe(true);
   });
@@ -263,11 +355,27 @@ describe('review regressions', () => {
 
   it('invalidates edited Archie context already present in a human discussion', () => {
     const matter = populate();
-    store.record(message({ ts: '1792490402.000001', version: '1792490402.000001', text: 'Proposed schedule', own: true }), NOW);
+    store.record(
+      message({
+        ts: '1792490402.000001',
+        version: '1792490402.000001',
+        text: 'Proposed schedule',
+        own: true,
+      }),
+      NOW,
+    );
     const snapshot = store.snapshot('C1', matter.thread)!;
     store.apply([snapshot], [], [{ ...matter, evidence: snapshot.evidence.map((e) => e.id) }]);
     store.enqueueDelivery(delivery('context-reminder', store.matter(matter.id)!));
-    store.record(message({ ts: '1792490402.000001', version: '1792490403.000001', text: 'Schedule revised', own: true }), NOW);
+    store.record(
+      message({
+        ts: '1792490402.000001',
+        version: '1792490403.000001',
+        text: 'Schedule revised',
+        own: true,
+      }),
+      NOW,
+    );
     expect(store.matter(matter.id)?.valid).toBe(false);
     expect(store.deliveries('pending')).toEqual([]);
     expect(store.current([snapshot])).toBe(false);

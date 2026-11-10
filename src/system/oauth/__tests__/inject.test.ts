@@ -36,7 +36,8 @@ describe('applyOAuthBindings', () => {
       {
         server_name: 'notion',
         expires_at: nowSec + 3600,
-        created_at: nowSec, updated_at: nowSec,
+        created_at: nowSec,
+        updated_at: nowSec,
         issuer: 'https://auth.notion.com',
         token_endpoint: 'https://auth.notion.com/token',
         scopes: [],
@@ -76,7 +77,8 @@ describe('applyOAuthBindings', () => {
       {
         server_name: 'manual',
         expires_at: nowSec + 3600,
-        created_at: nowSec, updated_at: nowSec,
+        created_at: nowSec,
+        updated_at: nowSec,
         issuer: 'https://auth.example.com',
         token_endpoint: 'https://auth.example.com/token',
         scopes: [],
@@ -84,7 +86,11 @@ describe('applyOAuthBindings', () => {
       { access_token: 'VAULT', refresh_token: 'RT', client_id: 'cli', token_type: 'Bearer' },
     );
     const mcp = {
-      manual: { type: 'http', url: 'https://example.com', headers: { Authorization: 'Bearer manual-token' } },
+      manual: {
+        type: 'http',
+        url: 'https://example.com',
+        headers: { Authorization: 'Bearer manual-token' },
+      },
     };
     await inject.applyOAuthBindings(mcp);
     expect((mcp.manual as any).headers.Authorization).toBe('Bearer manual-token');
@@ -97,17 +103,21 @@ describe('applyOAuthBindings', () => {
       {
         server_name: 'broken',
         expires_at: nowSec + 5, // within leeway → triggers refresh
-        created_at: nowSec, updated_at: nowSec,
+        created_at: nowSec,
+        updated_at: nowSec,
         issuer: 'https://auth.example.com',
         token_endpoint: 'https://auth.example.com/token',
         scopes: [],
       },
       { access_token: 'AT', refresh_token: 'BAD', client_id: 'cli', token_type: 'Bearer' },
     );
-    globalThis.fetch = vi.fn(async () => new Response(
-      JSON.stringify({ error: 'invalid_grant' }),
-      { status: 400, headers: { 'Content-Type': 'application/json' } },
-    )) as any;
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ error: 'invalid_grant' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+    ) as any;
 
     const mcp: Record<string, any> = {
       broken: { type: 'http', url: 'https://example.com' },

@@ -77,8 +77,12 @@ const it = query({
       ...cacheEnv,
       // Same as spawn.ts: maps the sandbox proxy onto Yarn Berry's own config keys.
       ...(process.env.BASH_ENV ? { BASH_ENV: process.env.BASH_ENV } : {}),
-      ...(process.env.NODE_USE_SYSTEM_CA ? { NODE_USE_SYSTEM_CA: process.env.NODE_USE_SYSTEM_CA } : {}),
-      ...(process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS } : {}),
+      ...(process.env.NODE_USE_SYSTEM_CA
+        ? { NODE_USE_SYSTEM_CA: process.env.NODE_USE_SYSTEM_CA }
+        : {}),
+      ...(process.env.NODE_EXTRA_CA_CERTS
+        ? { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS }
+        : {}),
     },
     maxTurns: 8,
     permissionMode: 'bypassPermissions' as const,
@@ -112,7 +116,8 @@ for await (const m of it as AsyncIterable<Record<string, any>>) {
   } else if (m.type === 'user' && Array.isArray(m.message?.content)) {
     for (const b of m.message.content) {
       if (b.type === 'tool_result') {
-        transcript += (typeof b.content === 'string' ? b.content : JSON.stringify(b.content)) + '\n';
+        transcript +=
+          (typeof b.content === 'string' ? b.content : JSON.stringify(b.content)) + '\n';
       }
     }
   } else if (m.type === 'result') {

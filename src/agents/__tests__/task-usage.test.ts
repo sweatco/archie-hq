@@ -26,11 +26,7 @@ vi.mock('../../system/workdir.js', () => ({
   WORKDIR: SESSIONS_ROOT,
 }));
 
-import {
-  aggregateTaskUsage,
-  formatTaskUsageReport,
-  type NonceReducer,
-} from '../task-usage.js';
+import { aggregateTaskUsage, formatTaskUsageReport, type NonceReducer } from '../task-usage.js';
 
 afterAll(async () => {
   await rm(SESSIONS_ROOT, { recursive: true, force: true });
@@ -78,10 +74,7 @@ async function writeTranscript(dir: string, name: string, lines: string[]): Prom
   await writeFile(join(dir, name), lines.join('\n') + '\n');
 }
 
-async function writeUsage(
-  taskId: string,
-  records: Array<Record<string, unknown>>,
-): Promise<void> {
+async function writeUsage(taskId: string, records: Array<Record<string, unknown>>): Promise<void> {
   await mkdir(sharedDir(taskId), { recursive: true });
   await writeFile(
     join(sharedDir(taskId), 'usage.jsonl'),
@@ -101,14 +94,47 @@ describe('AC2: token dedup + synthetic exclusion across two session files', () =
     // Session 1: msg-a, a DUPLICATE of msg-a (must be ignored), and a synthetic
     // line (must be excluded entirely).
     await writeTranscript(dir, 'sess-1.jsonl', [
-      assistantLine({ id: 'msg-a', usage: { input_tokens: 100, output_tokens: 40, cache_creation_input_tokens: 10, cache_read_input_tokens: 5 } }),
-      assistantLine({ id: 'msg-a', usage: { input_tokens: 100, output_tokens: 40, cache_creation_input_tokens: 10, cache_read_input_tokens: 5 } }),
-      assistantLine({ id: 'msg-synthetic', model: '<synthetic>', usage: { input_tokens: 999, output_tokens: 999, cache_creation_input_tokens: 999, cache_read_input_tokens: 999 } }),
+      assistantLine({
+        id: 'msg-a',
+        usage: {
+          input_tokens: 100,
+          output_tokens: 40,
+          cache_creation_input_tokens: 10,
+          cache_read_input_tokens: 5,
+        },
+      }),
+      assistantLine({
+        id: 'msg-a',
+        usage: {
+          input_tokens: 100,
+          output_tokens: 40,
+          cache_creation_input_tokens: 10,
+          cache_read_input_tokens: 5,
+        },
+      }),
+      assistantLine({
+        id: 'msg-synthetic',
+        model: '<synthetic>',
+        usage: {
+          input_tokens: 999,
+          output_tokens: 999,
+          cache_creation_input_tokens: 999,
+          cache_read_input_tokens: 999,
+        },
+      }),
     ]);
 
     // Session 2: msg-b.
     await writeTranscript(dir, 'sess-2.jsonl', [
-      assistantLine({ id: 'msg-b', usage: { input_tokens: 200, output_tokens: 60, cache_creation_input_tokens: 20, cache_read_input_tokens: 7 } }),
+      assistantLine({
+        id: 'msg-b',
+        usage: {
+          input_tokens: 200,
+          output_tokens: 60,
+          cache_creation_input_tokens: 20,
+          cache_read_input_tokens: 7,
+        },
+      }),
     ]);
 
     const report = await aggregateTaskUsage(taskId);
@@ -136,17 +162,42 @@ describe('AC3: nested subagent transcript included, journal.jsonl excluded', () 
 
     // Main session file.
     await writeTranscript(dir, 'sess-1.jsonl', [
-      assistantLine({ id: 'main-1', usage: { input_tokens: 50, output_tokens: 20, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } }),
+      assistantLine({
+        id: 'main-1',
+        usage: {
+          input_tokens: 50,
+          output_tokens: 20,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
+      }),
     ]);
 
     // journal.jsonl sibling — must be EXCLUDED even though it parses.
     await writeTranscript(dir, 'journal.jsonl', [
-      assistantLine({ id: 'journal-1', usage: { input_tokens: 777, output_tokens: 777, cache_creation_input_tokens: 777, cache_read_input_tokens: 777 } }),
+      assistantLine({
+        id: 'journal-1',
+        usage: {
+          input_tokens: 777,
+          output_tokens: 777,
+          cache_creation_input_tokens: 777,
+          cache_read_input_tokens: 777,
+        },
+      }),
     ]);
 
     // Nested subagent transcript — must be INCLUDED and rolled into backend.
     await writeTranscript(join(dir, 'sess-1', 'subagents', 'child'), 'agent-1.jsonl', [
-      assistantLine({ id: 'sub-1', isSidechain: true, usage: { input_tokens: 30, output_tokens: 10, cache_creation_input_tokens: 3, cache_read_input_tokens: 1 } }),
+      assistantLine({
+        id: 'sub-1',
+        isSidechain: true,
+        usage: {
+          input_tokens: 30,
+          output_tokens: 10,
+          cache_creation_input_tokens: 3,
+          cache_read_input_tokens: 1,
+        },
+      }),
     ]);
 
     const report = await aggregateTaskUsage(taskId);
@@ -174,10 +225,26 @@ describe('AC4: report structure and session counting', () => {
     const taskId = 'task-20260101-1200-ac4';
     const pmDir = projectsDir(taskId, 'pm');
     await writeTranscript(pmDir, 'sess-a.jsonl', [
-      assistantLine({ id: 'a', usage: { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } }),
+      assistantLine({
+        id: 'a',
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
+      }),
     ]);
     await writeTranscript(pmDir, 'sess-b.jsonl', [
-      assistantLine({ id: 'b', usage: { input_tokens: 20, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } }),
+      assistantLine({
+        id: 'b',
+        usage: {
+          input_tokens: 20,
+          output_tokens: 5,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
+      }),
     ]);
 
     const report = await aggregateTaskUsage(taskId);
@@ -201,29 +268,45 @@ describe('AC6-unit: nonce-based cost', () => {
     const taskId = 'task-20260101-1200-ac6i';
     // A transcript so the report is otherwise well-formed.
     await writeTranscript(projectsDir(taskId, 'pm'), 'sess-1.jsonl', [
-      assistantLine({ id: 'x', usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } }),
+      assistantLine({
+        id: 'x',
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
+      }),
     ]);
     await writeUsage(taskId, [
-      { query_nonce: 'N1', agentKey: 'pm', total_cost_usd: 0.10 },
+      { query_nonce: 'N1', agentKey: 'pm', total_cost_usd: 0.1 },
       { query_nonce: 'N1', agentKey: 'pm', total_cost_usd: 0.25 },
-      { query_nonce: 'N1', agentKey: 'pm', total_cost_usd: 0.40 },
+      { query_nonce: 'N1', agentKey: 'pm', total_cost_usd: 0.4 },
     ]);
 
     const report = await aggregateTaskUsage(taskId);
-    expect(report.cost?.grand).toBeCloseTo(0.40, 10);
+    expect(report.cost?.grand).toBeCloseTo(0.4, 10);
     expect(report.cost?.costRecordedTurns).toBe(3);
   });
 
   it('(ii) NO-OMISSION: two cheap+expensive nonces sharing a session_id → grand = $0.62', async () => {
     const taskId = 'task-20260101-1200-ac6ii';
     await writeTranscript(projectsDir(taskId, 'pm'), 'sess-1.jsonl', [
-      assistantLine({ id: 'x', usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } }),
+      assistantLine({
+        id: 'x',
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
+      }),
     ]);
     // The exact scenario the deleted drop-heuristic omitted: nonce A ($0.02) then
     // nonce B ($0.60), BOTH with the same session_id. Must sum to $0.62.
     await writeUsage(taskId, [
       { query_nonce: 'A', agentKey: 'pm', session_id: 'shared-sess', total_cost_usd: 0.02 },
-      { query_nonce: 'B', agentKey: 'pm', session_id: 'shared-sess', total_cost_usd: 0.60 },
+      { query_nonce: 'B', agentKey: 'pm', session_id: 'shared-sess', total_cost_usd: 0.6 },
     ]);
 
     const report = await aggregateTaskUsage(taskId);
@@ -233,35 +316,59 @@ describe('AC6-unit: nonce-based cost', () => {
   it('(iii) two agents each with their own nonce(s) → per-agent costs sum to grand', async () => {
     const taskId = 'task-20260101-1200-ac6iii';
     await writeTranscript(projectsDir(taskId, 'pm'), 'sess-1.jsonl', [
-      assistantLine({ id: 'p', usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } }),
+      assistantLine({
+        id: 'p',
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
+      }),
     ]);
     await writeTranscript(projectsDir(taskId, 'backend'), 'sess-1.jsonl', [
-      assistantLine({ id: 'q', usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } }),
+      assistantLine({
+        id: 'q',
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
+      }),
     ]);
     await writeUsage(taskId, [
-      { query_nonce: 'P1', agentKey: 'pm', total_cost_usd: 0.10 },
+      { query_nonce: 'P1', agentKey: 'pm', total_cost_usd: 0.1 },
       { query_nonce: 'P2', agentKey: 'pm', total_cost_usd: 0.15 },
-      { query_nonce: 'B1', agentKey: 'backend', total_cost_usd: 0.30 },
+      { query_nonce: 'B1', agentKey: 'backend', total_cost_usd: 0.3 },
     ]);
 
     const report = await aggregateTaskUsage(taskId);
     const pm = report.agents.find((a) => a.agentKey === 'pm');
     const backend = report.agents.find((a) => a.agentKey === 'backend');
     expect(pm?.cost).toBeCloseTo(0.25, 10);
-    expect(backend?.cost).toBeCloseTo(0.30, 10);
-    expect((pm!.cost! + backend!.cost!)).toBeCloseTo(report.cost!.grand, 10);
+    expect(backend?.cost).toBeCloseTo(0.3, 10);
+    expect(pm!.cost! + backend!.cost!).toBeCloseTo(report.cost!.grand, 10);
     expect(report.cost?.grand).toBeCloseTo(0.55, 10);
   });
 
   it('(iv) delta-fork guard: with reduceNonceCost set to sum, a multi-record nonce sums', async () => {
     const taskId = 'task-20260101-1200-ac6iv';
     await writeTranscript(projectsDir(taskId, 'pm'), 'sess-1.jsonl', [
-      assistantLine({ id: 'x', usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } }),
+      assistantLine({
+        id: 'x',
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
+      }),
     ]);
     await writeUsage(taskId, [
-      { query_nonce: 'N1', agentKey: 'pm', total_cost_usd: 0.10 },
+      { query_nonce: 'N1', agentKey: 'pm', total_cost_usd: 0.1 },
       { query_nonce: 'N1', agentKey: 'pm', total_cost_usd: 0.25 },
-      { query_nonce: 'N1', agentKey: 'pm', total_cost_usd: 0.40 },
+      { query_nonce: 'N1', agentKey: 'pm', total_cost_usd: 0.4 },
     ]);
 
     // Documents the one-line fallback: the SUM reducer sums within the nonce.
@@ -281,8 +388,26 @@ describe('AC7: cost unavailable / gap disclosure', () => {
   it('no usage.jsonl → tokens report, cost undefined, gap disclosed, no throw', async () => {
     const taskId = 'task-20260101-1200-ac7nocost';
     await writeTranscript(projectsDir(taskId, 'pm'), 'sess-1.jsonl', [
-      assistantLine({ id: 'm1', usage: { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 }, stop_reason: 'end_turn' }),
-      assistantLine({ id: 'm2', usage: { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 }, stop_reason: 'end_turn' }),
+      assistantLine({
+        id: 'm1',
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
+        stop_reason: 'end_turn',
+      }),
+      assistantLine({
+        id: 'm2',
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
+        stop_reason: 'end_turn',
+      }),
     ]);
 
     const report = await aggregateTaskUsage(taskId);
@@ -298,12 +423,39 @@ describe('AC7: cost unavailable / gap disclosure', () => {
   it('costRecordedTurns < end_turn count → gap line', async () => {
     const taskId = 'task-20260101-1200-ac7gap';
     await writeTranscript(projectsDir(taskId, 'pm'), 'sess-1.jsonl', [
-      assistantLine({ id: 'm1', usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 }, stop_reason: 'end_turn' }),
-      assistantLine({ id: 'm2', usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 }, stop_reason: 'end_turn' }),
-      assistantLine({ id: 'm3', usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 }, stop_reason: 'end_turn' }),
+      assistantLine({
+        id: 'm1',
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
+        stop_reason: 'end_turn',
+      }),
+      assistantLine({
+        id: 'm2',
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
+        stop_reason: 'end_turn',
+      }),
+      assistantLine({
+        id: 'm3',
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
+        stop_reason: 'end_turn',
+      }),
     ]);
     // Only one cost record for three transcript turns.
-    await writeUsage(taskId, [{ query_nonce: 'N1', agentKey: 'pm', total_cost_usd: 0.10 }]);
+    await writeUsage(taskId, [{ query_nonce: 'N1', agentKey: 'pm', total_cost_usd: 0.1 }]);
 
     const report = await aggregateTaskUsage(taskId);
     expect(report.transcriptTurns).toBe(3);
@@ -321,7 +473,12 @@ describe('AC7: cost unavailable / gap disclosure', () => {
 describe('cost rendering: no false zeros', () => {
   it('an agent with transcripts but no usage record reads unavailable, not $0.00', async () => {
     const taskId = 'task-20260101-1200-nilcost';
-    const tokens = { input_tokens: 5, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+    const tokens = {
+      input_tokens: 5,
+      output_tokens: 5,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+    };
     await writeTranscript(projectsDir(taskId, 'pm'), 'sess-1.jsonl', [
       assistantLine({ id: 'pm-1', usage: tokens }),
     ]);
@@ -379,7 +536,15 @@ describe('AC8: SDK-reported / subscription-auth divergence disclosure', () => {
   it('labels cost SDK-reported and discloses subscription-auth divergence', async () => {
     const taskId = 'task-20260101-1200-ac8';
     await writeTranscript(projectsDir(taskId, 'pm'), 'sess-1.jsonl', [
-      assistantLine({ id: 'x', usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } }),
+      assistantLine({
+        id: 'x',
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
+      }),
     ]);
     await writeUsage(taskId, [{ query_nonce: 'N1', agentKey: 'pm', total_cost_usd: 0.42 }]);
 
@@ -420,7 +585,12 @@ describe('SECURITY: taskId path-injection guard', () => {
     await writeTranscript(projectsDir(realTaskId, 'pm'), 'sess-1.jsonl', [
       assistantLine({
         id: 'real',
-        usage: { input_tokens: 500, output_tokens: 500, cache_creation_input_tokens: 500, cache_read_input_tokens: 500 },
+        usage: {
+          input_tokens: 500,
+          output_tokens: 500,
+          cache_creation_input_tokens: 500,
+          cache_read_input_tokens: 500,
+        },
       }),
     ]);
     await writeUsage(realTaskId, [{ query_nonce: 'R1', agentKey: 'pm', total_cost_usd: 9.99 }]);

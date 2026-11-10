@@ -31,15 +31,32 @@ vi.mock('../../connectors/slack/client.js', async (importOriginal) => ({
 }));
 vi.mock('../../agents/spawn.js', () => ({ spawnAgent: vi.fn() }));
 vi.mock('../../system/logger.js', () => ({
-  logger: { warn: vi.fn(), system: vi.fn(), error: vi.fn(), debug: vi.fn(), agent: vi.fn(), slack: vi.fn() },
+  logger: {
+    warn: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    agent: vi.fn(),
+    slack: vi.fn(),
+  },
 }));
 
 import { Task } from '../task.js';
 import { getKnowledgeLogPath, getMetadataPath, persistTaskMetadata } from '../persistence.js';
 
-const TaskCtor = Task as unknown as new (taskId: string, metadata: TaskMetadata, pmDef: AgentDef) => Task;
+const TaskCtor = Task as unknown as new (
+  taskId: string,
+  metadata: TaskMetadata,
+  pmDef: AgentDef,
+) => Task;
 const PM_DEF = {
-  id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', pluginName: 'core', visibility: 'global', isPm: true,
+  id: 'pm-agent',
+  key: 'pm',
+  role: 'PM',
+  expertise: '',
+  pluginName: 'core',
+  visibility: 'global',
+  isPm: true,
 } as AgentDef;
 
 function metadata(taskId: string): TaskMetadata {
@@ -64,14 +81,21 @@ function thread(ts: string): SlackThread {
     shared: false,
     currentMessageTs: ts,
     rootAuthorWasBot: false,
-    messages: [{
-      user: {
-        id: 'U07PERSON1', username: 'person', realName: 'Person',
-        isRestricted: false, isUltraRestricted: false, isBot: false, isAppUser: false,
+    messages: [
+      {
+        user: {
+          id: 'U07PERSON1',
+          username: 'person',
+          realName: 'Person',
+          isRestricted: false,
+          isUltraRestricted: false,
+          isBot: false,
+          isAppUser: false,
+        },
+        ownText: `message ${ts}`,
+        ts,
       },
-      ownText: `message ${ts}`,
-      ts,
-    }],
+    ],
   };
 }
 
@@ -113,7 +137,9 @@ describe('task metadata memory persistence', () => {
 
     const persisted = JSON.parse(await readFile(getMetadataPath(taskId), 'utf-8')) as TaskMetadata;
     expect(persisted.memory_destination).toEqual({ channel_id: 'C07PUBLIC1' });
-    expect((await readdir(dirname(getMetadataPath(taskId)))).filter((name) => name.includes('.tmp'))).toEqual([]);
+    expect(
+      (await readdir(dirname(getMetadataPath(taskId)))).filter((name) => name.includes('.tmp')),
+    ).toEqual([]);
   });
 
   it('merges memory authors from stale writers under the metadata lock', async () => {
@@ -143,7 +169,9 @@ describe('task metadata memory persistence', () => {
     const firstProcess = new TaskCtor(taskId, metadata(taskId), PM_DEF);
 
     await firstProcess.append(thread('1.0'));
-    const afterFirstIngest = JSON.parse(await readFile(getMetadataPath(taskId), 'utf-8')) as TaskMetadata;
+    const afterFirstIngest = JSON.parse(
+      await readFile(getMetadataPath(taskId), 'utf-8'),
+    ) as TaskMetadata;
     expect(afterFirstIngest.memory_destination).toEqual({ channel_id: 'C07PUBLIC1' });
 
     memoryReady = true;
@@ -151,7 +179,9 @@ describe('task metadata memory persistence', () => {
     await restarted.append(thread('2.0'));
 
     expect(restarted.metadata.memory_destination).toEqual({ channel_id: 'C07PUBLIC1' });
-    const afterRestart = JSON.parse(await readFile(getMetadataPath(taskId), 'utf-8')) as TaskMetadata;
+    const afterRestart = JSON.parse(
+      await readFile(getMetadataPath(taskId), 'utf-8'),
+    ) as TaskMetadata;
     expect(afterRestart.memory_destination).toEqual({ channel_id: 'C07PUBLIC1' });
   });
 });

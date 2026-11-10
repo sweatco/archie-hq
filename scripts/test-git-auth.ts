@@ -56,10 +56,10 @@ async function checkEnvVars(): Promise<string> {
     'GITHUB_APP_ID',
     'GITHUB_APP_PRIVATE_KEY_PATH',
     'GITHUB_INSTALLATION_ID',
-    'GIT_ASKPASS'
+    'GIT_ASKPASS',
   ];
 
-  const missing = required.filter(v => !process.env[v]);
+  const missing = required.filter((v) => !process.env[v]);
   if (missing.length > 0) {
     throw new Error(`Missing env vars: ${missing.join(', ')}`);
   }
@@ -101,7 +101,9 @@ async function testTokenGeneration(): Promise<string> {
       throw new Error('Empty token returned');
     }
     if (!token.startsWith('ghs_')) {
-      throw new Error(`Token doesn't look like GitHub installation token: ${token.substring(0, 10)}...`);
+      throw new Error(
+        `Token doesn't look like GitHub installation token: ${token.substring(0, 10)}...`,
+      );
     }
 
     return `Token generated: ${token.substring(0, 10)}...${token.substring(token.length - 4)}`;
@@ -122,7 +124,9 @@ async function testRemoteUrl(repoPath: string): Promise<string> {
   const url = await getRemoteUrl(repoPath);
 
   if (url.startsWith('git@')) {
-    throw new Error(`SSH URL detected: ${url}\n    GIT_ASKPASS only works with HTTPS URLs.\n    Fix: git remote set-url origin https://github.com/OWNER/REPO.git`);
+    throw new Error(
+      `SSH URL detected: ${url}\n    GIT_ASKPASS only works with HTTPS URLs.\n    Fix: git remote set-url origin https://github.com/OWNER/REPO.git`,
+    );
   }
 
   if (!url.startsWith('https://')) {
@@ -196,7 +200,9 @@ async function testWorktreeCreate(repoPath: string, branch: string): Promise<str
   } catch (error: any) {
     // Try to cleanup on failure
     try {
-      await execAsync(`git worktree remove "${testPath}" --force`, { cwd: repoPath }).catch(() => {});
+      await execAsync(`git worktree remove "${testPath}" --force`, { cwd: repoPath }).catch(
+        () => {},
+      );
       await execAsync(`git branch -D ${testBranch}`, { cwd: repoPath }).catch(() => {});
     } catch {}
 
@@ -237,8 +243,8 @@ async function main() {
 
   // Summary
   console.log('\n' + '='.repeat(40));
-  const passed = results.filter(r => r.success).length;
-  const failed = results.filter(r => !r.success).length;
+  const passed = results.filter((r) => r.success).length;
+  const failed = results.filter((r) => !r.success).length;
 
   if (failed === 0) {
     console.log(green(`\n✓ All ${passed} tests passed\n`));
@@ -248,7 +254,7 @@ async function main() {
   }
 }
 
-main().catch(error => {
+main().catch((error) => {
   console.error(red('\nFatal error:'), error.message);
   process.exit(1);
 });

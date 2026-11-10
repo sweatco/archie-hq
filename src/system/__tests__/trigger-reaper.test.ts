@@ -24,19 +24,40 @@ const { listTriggers, deleteTrigger, saveTrigger, countActiveTriggers } = vi.hoi
   saveTrigger: vi.fn().mockResolvedValue(undefined),
   countActiveTriggers: vi.fn().mockResolvedValue(0),
 }));
-vi.mock('../trigger-store.js', () => ({ listTriggers, deleteTrigger, saveTrigger, countActiveTriggers }));
+vi.mock('../trigger-store.js', () => ({
+  listTriggers,
+  deleteTrigger,
+  saveTrigger,
+  countActiveTriggers,
+}));
 
 vi.mock('../logger.js', () => ({
   logger: {
-    system: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), info: vi.fn(),
-    plain: vi.fn(), server: vi.fn(), slack: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    warn: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    plain: vi.fn(),
+    server: vi.fn(),
+    slack: vi.fn(),
   },
 }));
-vi.mock('../../tasks/task.js', () => ({ Task: { get: vi.fn(), create: vi.fn() }, activeTasks: new Map() }));
-vi.mock('../../tasks/persistence.js', () => ({ appendSlackMessage: vi.fn(), loadMetadata: vi.fn(), findTaskByThread: vi.fn() }));
+vi.mock('../../tasks/task.js', () => ({
+  Task: { get: vi.fn(), create: vi.fn() },
+  activeTasks: new Map(),
+}));
+vi.mock('../../tasks/persistence.js', () => ({
+  appendSlackMessage: vi.fn(),
+  loadMetadata: vi.fn(),
+  findTaskByThread: vi.fn(),
+}));
 vi.mock('../event-bus.js', () => ({ emitEvent: vi.fn(), onEvent: vi.fn(), offEvent: vi.fn() }));
 
-const { initTriggerScheduler, getEnabledTriggerIds } = await import('../trigger-scheduler.js') as typeof import('../trigger-scheduler.js') & { getEnabledTriggerIds?: () => string[] };
+const { initTriggerScheduler, getEnabledTriggerIds } =
+  (await import('../trigger-scheduler.js')) as typeof import('../trigger-scheduler.js') & {
+    getEnabledTriggerIds?: () => string[];
+  };
 
 const DAY = 24 * 60 * 60_000;
 const now = () => Date.now();
@@ -49,7 +70,14 @@ function trigger(over: Partial<Trigger>): Trigger {
     created_by: 'U1',
     created_at: new Date(now() - 2 * DAY).toISOString(),
     binding: { type: 'channel', channel_id: 'C1', channel_name: 'general' },
-    conditions: [{ type: 'schedule', cron: '0 9 * * *', tz: 'UTC', next_run_at: new Date(now() + DAY).toISOString() }],
+    conditions: [
+      {
+        type: 'schedule',
+        cron: '0 9 * * *',
+        tz: 'UTC',
+        next_run_at: new Date(now() + DAY).toISOString(),
+      },
+    ],
     action: { prompt: 'p' },
     ...over,
   } as Trigger;
@@ -70,17 +98,24 @@ describe('the boot scan reaps abandoned proposals', () => {
   it('spares one revised inside the window — an edit renews the clock', async () => {
     // Created two days ago, edited a minute ago. Measuring from created_at would
     // reap this and take its just-posted Approve/Deny card with it.
-    listTriggers.mockResolvedValue([trigger({
-      id: 'trg-20260801-0900-revised',
-      created_at: new Date(now() - 2 * DAY).toISOString(),
-      updated_at: new Date(now() - 60_000).toISOString(),
-    })]);
+    listTriggers.mockResolvedValue([
+      trigger({
+        id: 'trg-20260801-0900-revised',
+        created_at: new Date(now() - 2 * DAY).toISOString(),
+        updated_at: new Date(now() - 60_000).toISOString(),
+      }),
+    ]);
     await initTriggerScheduler();
     expect(deleteTrigger).not.toHaveBeenCalled();
   });
 
   it('spares a fresh proposal', async () => {
-    listTriggers.mockResolvedValue([trigger({ id: 'trg-20260824-0900-fresh', created_at: new Date(now() - 60_000).toISOString() })]);
+    listTriggers.mockResolvedValue([
+      trigger({
+        id: 'trg-20260824-0900-fresh',
+        created_at: new Date(now() - 60_000).toISOString(),
+      }),
+    ]);
     await initTriggerScheduler();
     expect(deleteTrigger).not.toHaveBeenCalled();
   });
@@ -88,17 +123,25 @@ describe('the boot scan reaps abandoned proposals', () => {
   it('never reaps an enabled trigger, however old', async () => {
     // The reaper is for proposals nobody answered. An approved automation is not
     // one, and age says nothing about it.
-    listTriggers.mockResolvedValue([trigger({
-      id: 'trg-20250101-0900-ancient',
-      status: 'enabled',
-      created_at: new Date(now() - 400 * DAY).toISOString(),
-    })]);
+    listTriggers.mockResolvedValue([
+      trigger({
+        id: 'trg-20250101-0900-ancient',
+        status: 'enabled',
+        created_at: new Date(now() - 400 * DAY).toISOString(),
+      }),
+    ]);
     await initTriggerScheduler();
     expect(deleteTrigger).not.toHaveBeenCalled();
   });
 
   it('never reaps a paused trigger', async () => {
-    listTriggers.mockResolvedValue([trigger({ id: 'trg-20250101-0900-paused', status: 'paused', created_at: new Date(now() - 400 * DAY).toISOString() })]);
+    listTriggers.mockResolvedValue([
+      trigger({
+        id: 'trg-20250101-0900-paused',
+        status: 'paused',
+        created_at: new Date(now() - 400 * DAY).toISOString(),
+      }),
+    ]);
     await initTriggerScheduler();
     expect(deleteTrigger).not.toHaveBeenCalled();
   });

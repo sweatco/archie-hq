@@ -13,7 +13,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../system/logger.js', () => ({
-  logger: { warn: vi.fn(), system: vi.fn(), error: vi.fn(), debug: vi.fn(), agent: vi.fn(), slack: vi.fn() },
+  logger: {
+    warn: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    agent: vi.fn(),
+    slack: vi.fn(),
+  },
 }));
 
 vi.mock('../../agents/spawn.js', () => ({ spawnAgent: vi.fn() }));
@@ -33,8 +40,11 @@ vi.mock('../../connectors/slack/client.js', async (importOriginal) => {
     isExternalUser: (user: { teamId?: string }) => user.teamId === 'T_OTHER',
     classifySlackMemoryScope: vi.fn().mockResolvedValue({ kind: 'public' }),
     getBotUserId: () => 'U07ARCHIE1',
-    isInternalMemoryUser: (user: { teamId?: string; isRestricted?: boolean; isUltraRestricted?: boolean }) =>
-      user.teamId !== 'T_OTHER' && !user.isRestricted && !user.isUltraRestricted,
+    isInternalMemoryUser: (user: {
+      teamId?: string;
+      isRestricted?: boolean;
+      isUltraRestricted?: boolean;
+    }) => user.teamId !== 'T_OTHER' && !user.isRestricted && !user.isUltraRestricted,
   };
 });
 
@@ -61,7 +71,13 @@ const TaskCtor = Task as unknown as new (
   pmDef: AgentDef,
 ) => Task;
 const PM_DEF = {
-  id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', pluginName: 'core', visibility: 'global', isPm: true,
+  id: 'pm-agent',
+  key: 'pm',
+  role: 'PM',
+  expertise: '',
+  pluginName: 'core',
+  visibility: 'global',
+  isPm: true,
 } as AgentDef;
 
 const LOCAL_PATH = '/sessions/t1/attachments/runbook.pdf';
@@ -73,15 +89,29 @@ function threadWithFile(): SlackThread {
     shared: false,
     currentMessageTs: '100.000',
     rootAuthorWasBot: false,
-    messages: [{
-      user: {
-        id: 'U07RAMIN01', username: 'ramin', realName: 'Ramin M',
-        isRestricted: false, isUltraRestricted: false, isBot: false, isAppUser: false,
+    messages: [
+      {
+        user: {
+          id: 'U07RAMIN01',
+          username: 'ramin',
+          realName: 'Ramin M',
+          isRestricted: false,
+          isUltraRestricted: false,
+          isBot: false,
+          isAppUser: false,
+        },
+        ownText: 'runbook attached',
+        ts: '100.000',
+        files: [
+          {
+            id: 'F1',
+            name: 'runbook.pdf',
+            mimetype: 'application/pdf',
+            url_private: 'https://x/y',
+          },
+        ],
       },
-      ownText: 'runbook attached',
-      ts: '100.000',
-      files: [{ id: 'F1', name: 'runbook.pdf', mimetype: 'application/pdf', url_private: 'https://x/y' }],
-    }],
+    ],
   };
 }
 
@@ -91,8 +121,10 @@ describe('Task.append renders after the file download', () => {
     appendMock.mockReset();
     appendMock.mockResolvedValue(undefined);
     // The download returns the file with `localPath` filled in — the only source of that value.
-    downloadMock.mockImplementation(async (_taskId: string, files: Array<Record<string, unknown>>) =>
-      files.map((f) => ({ ...f, localPath: LOCAL_PATH })));
+    downloadMock.mockImplementation(
+      async (_taskId: string, files: Array<Record<string, unknown>>) =>
+        files.map((f) => ({ ...f, localPath: LOCAL_PATH })),
+    );
   });
 
   function newTask(): Task {
@@ -105,7 +137,9 @@ describe('Task.append renders after the file download', () => {
     const task = new TaskCtor('t1', metadata, PM_DEF);
     // The debounced save writes to disk; this test is about the rendered body, not persistence.
     (task as unknown as { debouncedSave: () => void }).debouncedSave = () => {};
-    (task as unknown as { save: (flush?: boolean) => Promise<void> }).save = vi.fn().mockResolvedValue(undefined);
+    (task as unknown as { save: (flush?: boolean) => Promise<void> }).save = vi
+      .fn()
+      .mockResolvedValue(undefined);
     return task;
   }
 
@@ -122,11 +156,13 @@ describe('Task.append renders after the file download', () => {
 
   it('waits for the download to resolve before rendering', async () => {
     let downloadResolved = false;
-    downloadMock.mockImplementation(async (_taskId: string, files: Array<Record<string, unknown>>) => {
-      await new Promise((r) => setTimeout(r, 0));
-      downloadResolved = true;
-      return files.map((f) => ({ ...f, localPath: LOCAL_PATH }));
-    });
+    downloadMock.mockImplementation(
+      async (_taskId: string, files: Array<Record<string, unknown>>) => {
+        await new Promise((r) => setTimeout(r, 0));
+        downloadResolved = true;
+        return files.map((f) => ({ ...f, localPath: LOCAL_PATH }));
+      },
+    );
     appendMock.mockImplementation(async () => {
       // If the render were hoisted above the await, the body would be built while this is still false.
       expect(downloadResolved).toBe(true);
@@ -179,8 +215,14 @@ describe('Task.append renders after the file download', () => {
     const thread = threadWithFile();
     thread.shared = true;
     thread.messages[0]!.user = {
-      id: 'U07OUTSIDE', username: 'ext', realName: 'External Name', teamId: 'T_OTHER',
-      isRestricted: false, isUltraRestricted: false, isBot: false, isAppUser: false,
+      id: 'U07OUTSIDE',
+      username: 'ext',
+      realName: 'External Name',
+      teamId: 'T_OTHER',
+      isRestricted: false,
+      isUltraRestricted: false,
+      isBot: false,
+      isAppUser: false,
     };
 
     await task.append(thread);
@@ -192,8 +234,13 @@ describe('Task.append renders after the file download', () => {
     const task = newTask();
     const thread = threadWithFile();
     thread.messages[0]!.user = {
-      id: 'U07APPBOT1', username: 'release-bot', realName: 'Release Bot',
-      isRestricted: false, isUltraRestricted: false, isBot: true, isAppUser: true,
+      id: 'U07APPBOT1',
+      username: 'release-bot',
+      realName: 'Release Bot',
+      isRestricted: false,
+      isUltraRestricted: false,
+      isBot: true,
+      isAppUser: true,
     };
 
     await task.append(thread);

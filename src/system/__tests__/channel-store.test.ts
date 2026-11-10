@@ -54,7 +54,10 @@ function samplePin(): import('../channel-store.js').ChannelPinEntry {
 
 describe('loadChannelStore — pins normalisation', () => {
   it('fills in the pins fields for a legacy store that predates them', async () => {
-    await writeRaw('C_legacy', JSON.stringify({ canvases: [], announced: { F1: true }, checkedAt: 42 }));
+    await writeRaw(
+      'C_legacy',
+      JSON.stringify({ canvases: [], announced: { F1: true }, checkedAt: 42 }),
+    );
 
     const loaded = await store.loadChannelStore('C_legacy');
 
@@ -71,7 +74,14 @@ describe('loadChannelStore — pins normalisation', () => {
     const pin = samplePin();
     await writeRaw(
       'C_pins',
-      JSON.stringify({ canvases: [], announced: {}, checkedAt: 0, pins: [pin], pinsCheckedAt: 999, pinsEligible: 7 }),
+      JSON.stringify({
+        canvases: [],
+        announced: {},
+        checkedAt: 0,
+        pins: [pin],
+        pinsCheckedAt: 999,
+        pinsEligible: 7,
+      }),
     );
 
     const loaded = await store.loadChannelStore('C_pins');
@@ -114,12 +124,15 @@ describe('loadChannelStore — forward compatibility', () => {
   // field list would make an older build silently delete a field a newer one had written.
   it('preserves a field it does not know about, across a load and a write', async () => {
     const channelId = 'C_FORWARD';
-    await writeRaw(channelId, JSON.stringify({
-      canvases: [],
-      announced: {},
-      checkedAt: 7,
-      somethingNewer: { keep: 'me' },
-    }));
+    await writeRaw(
+      channelId,
+      JSON.stringify({
+        canvases: [],
+        announced: {},
+        checkedAt: 7,
+        somethingNewer: { keep: 'me' },
+      }),
+    );
 
     const loaded = await store.loadChannelStore(channelId);
     expect((loaded as unknown as Record<string, unknown>).somethingNewer).toEqual({ keep: 'me' });

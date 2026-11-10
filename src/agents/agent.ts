@@ -45,7 +45,6 @@ export class Agent {
    */
   editModeAtSpawn?: boolean;
 
-
   /**
    * In-flight background task ids (SDK `task_started` → `task_notification`): a
    * backgrounded Bash wait, a subagent, etc. The agent's turn can END while one
@@ -144,9 +143,10 @@ export class Agent {
     if (!this.session.session_id) {
       const entry = task.metadata.agent_sessions[this.def.id];
       if (entry) {
-        this.session = typeof entry === 'string'
-          ? { session_id: entry, active: false }
-          : { ...entry, active: false };
+        this.session =
+          typeof entry === 'string'
+            ? { session_id: entry, active: false }
+            : { ...entry, active: false };
       }
     }
 
@@ -174,7 +174,9 @@ export class Agent {
 
     // Log
     if (hadSession && this.session.session_id) {
-      logger.system(`Resumed ${this.def.id} for task ${task.taskId} (session: ${this.session.session_id})`);
+      logger.system(
+        `Resumed ${this.def.id} for task ${task.taskId} (session: ${this.session.session_id})`,
+      );
     } else {
       logger.system(`Spawned ${this.def.id} for task ${task.taskId}`);
     }

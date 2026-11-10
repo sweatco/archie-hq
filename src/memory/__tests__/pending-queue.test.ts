@@ -86,7 +86,11 @@ describe('pending-queue', () => {
   });
 
   it('survives a malformed file by skipping unparseable lines', async () => {
-    await writeFile(pendingPath, '# Pending Extractions\n\n- task-001\nbogus line\n- task-002\n', 'utf-8');
+    await writeFile(
+      pendingPath,
+      '# Pending Extractions\n\n- task-001\nbogus line\n- task-002\n',
+      'utf-8',
+    );
     expect(await readPending()).toEqual(['task-001', 'task-002']);
   });
 

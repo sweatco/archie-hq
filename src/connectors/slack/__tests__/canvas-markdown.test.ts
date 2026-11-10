@@ -27,7 +27,9 @@ describe('canvasHtmlToMarkdown', () => {
   });
 
   it('renders a pasted-URL file reference as a markdown link', () => {
-    expect(markdown).toContain('(https://sweatcoin.slack.com/files/U08JNK1A6/F0BDH8SN79P/trust_classification_proposal.md)');
+    expect(markdown).toContain(
+      '(https://sweatcoin.slack.com/files/U08JNK1A6/F0BDH8SN79P/trust_classification_proposal.md)',
+    );
   });
 
   it('renders an expanded-card file reference as a markdown link', () => {
@@ -54,7 +56,8 @@ describe('canvasHtmlToMarkdown', () => {
 // only discriminator. Captured verbatim from the real `Archie — bot-test` canvas:
 //   Testing users: <control data-remapped="true"><a>@U08JNK1A6</a></control>
 describe('canvasHtmlToMarkdown — @/# mentions', () => {
-  const control = (text: string) => `<p class="line">x: <control data-remapped="true"><a>${text}</a></control></p>`;
+  const control = (text: string) =>
+    `<p class="line">x: <control data-remapped="true"><a>${text}</a></control></p>`;
 
   it('emits a user mention in native Slack syntax instead of dropping it', () => {
     const { markdown, fileIds } = canvasHtmlToMarkdown(control('@U08JNK1A6'));
@@ -98,8 +101,10 @@ describe('canvasHtmlToMarkdown — @/# mentions', () => {
   });
 
   it('still surfaces an empty control as unreadable', () => {
-    expect(canvasHtmlToMarkdown('<p class="line">x: <control data-remapped="true"></control></p>').markdown)
-      .toContain('[unreadable embed]');
+    expect(
+      canvasHtmlToMarkdown('<p class="line">x: <control data-remapped="true"></control></p>')
+        .markdown,
+    ).toContain('[unreadable embed]');
   });
 });
 

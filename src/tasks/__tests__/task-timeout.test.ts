@@ -11,7 +11,9 @@ import { getTaskTimeoutMs } from '../task.js';
 const DEFAULT = 3_600_000;
 let saved: string | undefined;
 
-beforeEach(() => { saved = process.env.ARCHIE_TASK_TIMEOUT_MS; });
+beforeEach(() => {
+  saved = process.env.ARCHIE_TASK_TIMEOUT_MS;
+});
 afterEach(() => {
   if (saved === undefined) delete process.env.ARCHIE_TASK_TIMEOUT_MS;
   else process.env.ARCHIE_TASK_TIMEOUT_MS = saved;

@@ -28,8 +28,16 @@ describe('createKeyedLock', () => {
     const lock = createKeyedLock();
     const log: string[] = [];
     await Promise.all([
-      lock('x', async () => { log.push('x:start'); await tick(20); log.push('x:end'); }),
-      lock('y', async () => { log.push('y:start'); await tick(0); log.push('y:end'); }),
+      lock('x', async () => {
+        log.push('x:start');
+        await tick(20);
+        log.push('x:end');
+      }),
+      lock('y', async () => {
+        log.push('y:start');
+        await tick(0);
+        log.push('y:end');
+      }),
     ]);
     // y (different key) does not wait for x — it starts and finishes inside x's window.
     expect(log).toEqual(['x:start', 'y:start', 'y:end', 'x:end']);
@@ -38,8 +46,14 @@ describe('createKeyedLock', () => {
   it('continues the chain after a rejection (one failure does not wedge the key)', async () => {
     const lock = createKeyedLock();
     const order: string[] = [];
-    const failing = lock('k', async () => { order.push('1'); throw new Error('boom'); });
-    const next = lock('k', async () => { order.push('2'); return 'ok'; });
+    const failing = lock('k', async () => {
+      order.push('1');
+      throw new Error('boom');
+    });
+    const next = lock('k', async () => {
+      order.push('2');
+      return 'ok';
+    });
 
     await expect(failing).rejects.toThrow('boom');
     await expect(next).resolves.toBe('ok');
