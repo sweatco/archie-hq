@@ -13,11 +13,9 @@ import type { SlackAttachment } from '../../../types/index.js';
 
 // events.ts loads Bolt through `createRequire`, which bypasses vitest's module registry entirely — so `module` itself is mocked and its `createRequire` returns a require that hands back a fake Bolt while every other id falls through to the real one. That is what makes the registered `message` handler reachable from a unit test: the gate and its drop-log live inside it, not inside an exported function.
 const bolt = vi.hoisted(() => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handlers = new Map<string, (arg: any) => unknown>();
   class FakeApp {
     constructor(_opts: unknown) {}
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     event(name: string, handler: (arg: any) => unknown) {
       handlers.set(name, handler);
     }
@@ -170,7 +168,6 @@ async function deliverAmbientPost(raw: Record<string, unknown>): Promise<void> {
     channel: { id: CHANNEL, name: 'watched' },
     rootAuthorWasBot: false,
     messages: [],
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any);
 
   await handleSlackEvent({
@@ -355,7 +352,6 @@ describe('the author filter matches the author the payload actually carries', ()
 });
 
 describe('routing-gate drop log', () => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let messageHandler: (arg: { event: any }) => unknown;
 
   beforeEach(async () => {
@@ -426,7 +422,6 @@ describe('the content floor on task creation', () => {
       channel: { id: 'D0USER', name: 'dm' },
       rootAuthorWasBot: false,
       messages: [],
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
 
     await handleSlackEvent({
@@ -467,7 +462,6 @@ describe('the content floor on task creation', () => {
           ts: '1700000000.001100',
         },
       ],
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
 
     await handleSlackEvent({
@@ -519,7 +513,6 @@ describe('self-loop guard', () => {
       channel: { id: CHANNEL, name: 'watched' },
       rootAuthorWasBot: false,
       messages: [],
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
 
     await messageHandler({
@@ -544,7 +537,6 @@ describe('self-loop guard', () => {
       channel: { id: CHANNEL, name: 'watched' },
       rootAuthorWasBot: false,
       messages: [],
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
 
     await messageHandler({

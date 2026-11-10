@@ -13,11 +13,9 @@ import type { SlackAttachment } from '../../../types/index.js';
 
 // events.ts loads Bolt through `createRequire`, which bypasses vitest's module registry entirely — so `module` itself is mocked and its `createRequire` returns a require that hands back a fake Bolt while every other id falls through to the real one. That is what makes the registered `message` handler reachable from a unit test: the gate and its drop-log live inside it, not inside an exported function.
 const bolt = vi.hoisted(() => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handlers = new Map<string, (arg: any) => unknown>();
   class FakeApp {
     constructor(_opts: unknown) {}
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     event(name: string, handler: (arg: any) => unknown) {
       handlers.set(name, handler);
     }
@@ -215,7 +213,6 @@ beforeEach(async () => {
         ts: '1700000000.000001',
       },
     ],
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any);
   await mountSlackApp({} as Application, {
     slackBotToken: 'xoxb-test',
@@ -300,7 +297,6 @@ describe('a body-less DM cannot seed a task, whatever its subtype', () => {
       currentMessageTs: '1700000000.000900',
       rootAuthorWasBot: false,
       messages: [],
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
   });
 
@@ -330,7 +326,6 @@ describe('a body-less DM cannot seed a task, whatever its subtype', () => {
           ts: '1700000000.000901',
         },
       ],
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
     vi.mocked(Task.create).mockResolvedValue({
       metadata: { channels: {}, title: 'x' },

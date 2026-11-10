@@ -1,0 +1,101 @@
+# Adopt Archie's coding guidelines and automated checks
+
+Status: Implemented in [draft PR #370](https://github.com/sweatco/archie-hq/pull/370). Approved 2026-11-09. Starting revision: `b3aae37033d166762db2adff7c95ae249307358c`; rebased onto `26821b177d3c20467559898f5dc0cf02f4322c97` on 2026-11-10. Verification results and remaining debt are recorded below; readability benefit remains unmeasured. No deployment was performed.
+
+## Outcome and constraints
+
+Make the [researched coding guidelines](../guides/coding-guidelines.md) active, enforce reliable mechanical rules locally and in CI, and preserve existing behavior. The [research note](../proposals/coding-guidelines-research.md) retains the community comparisons and empirical limits.
+
+Use Oxlint **1.93.0**, oxlint-tsgolint **7.0.2006** and Prettier **3.9.10**, pinned in the manifest and lockfile. This supersedes the earlier proposed ESLint integration: [typescript-eslint supports TypeScript below 6.1](https://typescript-eslint.io/users/dependency-versions/), while Archie uses 7.0.2 and [Oxlint's stable engine tracks that release](https://oxc.rs/blog/2026-07-22-type-aware-linting-stable.html). Keep the existing compiler/build authoritative; do not add a compiler shim or second TypeScript version.
+
+Confirmed decisions: baseline existing debt through the native per-file/rule-count mechanism, review equal-count substitutions and baseline changes, and perform one separate mechanical formatting pass. No public runtime API change, broad refactor, mandatory Git hook, quality bot, architecture rewrite or complexity/file-length quota is planned. Remote Git writes and releases require separate explicit approval.
+
+## Guidance and documentation
+
+- Move the ten guidelines and five-question rubric into the canonical guide. Preserve research, repair references and remove the superseded proposal.
+- Add a concise root `AGENTS.md` pointer and have Claude's entry point reference it. Preserve existing project instructions and scoped memory invariants.
+- Update contributor/local-development guidance, documentation indexes and the PR template with commands, baseline maintenance and review expectations.
+- Keep ownership, meaningful names, abstraction quality and sufficient rationale as review judgements. Use existing PR feedback for the next five substantive changes to assess useful findings, rejected stylistic suggestions, rework and review overhead; do not add telemetry state.
+
+## Automated checks
+
+Configure one explicit error-rule allowlist, disabling unrelated default categories. The configuration owns exact rule IDs and scopes.
+
+| Concern | Required checks |
+|---|---|
+| Basic correctness and cleanup | `no-debugger`, `no-var`, `prefer-const`, `no-empty`, `no-unused-vars`; only unused callback parameters may use an `_` prefix |
+| Unsafe type escapes | `no-explicit-any`, `no-non-null-assertion`, `ban-ts-comment`; prohibit `ts-ignore`/`ts-nocheck`, require explanations for `ts-expect-error` |
+| Unsafe operations | TypeScript `no-unsafe-assignment`, `no-unsafe-argument`, `no-unsafe-call`, `no-unsafe-member-access`, `no-unsafe-return` |
+| Async handling | `no-floating-promises` with `ignoreVoid: false`, `no-misused-promises`, `await-thenable` |
+| Dependencies | `import/no-cycle`, ignoring type-only imports and external packages |
+| React CLI | `react/rules-of-hooks`, `react/exhaustive-deps` |
+| Tests | `vitest/no-focused-tests`, `vitest/valid-expect` |
+| Logging | `no-console` in application source except the logger implementation |
+
+Apply syntax checks across owned source, tools, scripts, examples and root code configuration, including TypeScript and TSX. Add nearest no-emit TypeScript projects for tools/scripts so typed lint has proper coverage. Preserve the emitting script configuration consumed by both Dockerfiles. Route CLI help through the existing `logger.plain` with identical output; standalone tools retain stdout/stderr contracts.
+
+Configure Prettier with two spaces, single quotes, semicolons, trailing commas, 100-column print width, LF endings, `proseWrap: "never"` and embedded-language formatting disabled. Format owned code/configuration and active contributor/agent guidance once, preserving import order. Exclude runtime data, secrets, generated output/changelog, lockfile, prompts, skills and historical documentation/evidence.
+
+## Baseline and CI rollout
+
+- Install dependencies before measuring debt. Review straightforward fixes and complete formatting before generating `oxlint-suppressions.json`; never use dependency-incomplete probe counts.
+- Replace obsolete ESLint directives with captured baseline debt or narrow explained Oxlint exceptions. Fail unused disable directives.
+- Normal lint must fail counts exceeding committed allowances and stale entries until pruned. Equal-count substitutions remain a documented review limitation. Never regenerate allowances automatically in CI.
+- Provide `lint`, `lint:fix`, `lint:prune`, `format`, `format:check` and `check`. Normal checks are read-only; safe fixing and baseline pruning are explicit commands. `check` runs format verification, lint, typecheck, build and tests.
+- Add format/lint to the existing CI job without changing its status-check name. Retain gitleaks, CodeQL and Dependabot.
+- Keep tooling/guidance, formatting and necessary semantic repairs separately reviewable. Review changed code for scope, readability and unnecessary complexity before handoff.
+
+## Verification and acceptance
+
+- Qualify a clean install under CI's Node 24 and pinned npm 11.16.0.
+- Run actual CLIs against temporary cases for TS/TSX coverage, bare-`void` versus handled promises, logger exceptions and tool stdout, focused tests, invalid hooks, runtime versus type-only cycles, baseline overages and pruning.
+- Verify formatter idempotence and that excluded prompts, generated files and historical artifacts remain byte-identical.
+- Run the complete `check`, the standalone Git-helper compilation and CLI help smoke check. Confirm normal checks leave tracked files unchanged, with build output remaining ignored.
+- Inspect semantic repairs through the affected runtime. Load the existing E2E skill if a repair changes engine behavior.
+- Record executed checks, remaining debt and unverified behavior. Tool startup/rule recognition was probed read-only on 307 files during planning; dependency-backed counts and full qualification were still outstanding at approval.
+
+## Implementation results
+
+### Delivered
+
+The canonical guide, shared agent entry point, contributor/local-development guidance, PR rubric, explicit Oxlint allowlist, no-emit tooling projects, pinned dependencies and CI steps are implemented. The emitting Docker script configuration is unchanged. The existing CI job name remains `Typecheck, build & test`; gitleaks, CodeQL and Dependabot remain in place. Superseded proposal links and 35 obsolete ESLint directives were removed.
+
+The initial formatting pass changed 285 of 337 selected files and left all 237 excluded files in its snapshot byte-identical. Inspection caught Prettier collapsing significant JSX spaces in three CLI views; explicit string expressions now preserve them. After that correction, normalized emitted JavaScript matched the pre-format snapshot for all 307 existing owned source files. The new check test is outside that existing-source comparison. CLI help before and after routing through `logger.plain` matched byte for byte.
+
+Two integration details were qualified against the owning tools: `vitest/valid-expect` accepts two arguments because Vitest supports an optional diagnostic message, and the formatter excludes the native lint baseline because Oxlint owns its generated formatting. Both are covered by the CLI smoke tests. The installed source types confirmed the Vitest signature; a temporary false-positive baseline entry for the new test was pruned rather than retained.
+
+### Executed verification
+
+| Check | Observed result |
+|---|---|
+| Clean install | Node 24.22.2 and npm 11.16.0; `npm ci` exited 0 and installed 319 packages. npm reported pending approval for existing esbuild/fsevents install scripts; no approval policy was changed. |
+| Check integration | Nine tests passed through the installed Oxlint and Prettier CLIs, including nearest-project typed coverage for source/tools/scripts, promise handling, logger/tool output, hooks, focused/incomplete assertions, cycles, unused directives, baseline overage/pruning and formatting/ignore behavior. |
+| Complete gate | `npm run check` passed: formatting, lint, typecheck, build and all **2,272 tests across 161 files**. |
+| Sandbox retry | An initial full run passed 2,271 tests and failed one API localhost request with `EPERM`. With local networking permitted and no source/config change, the full gate passed. |
+| Docker helper | `tsc -p tsconfig.scripts.json` passed with the same Node/npm toolchain. No Docker image was built. |
+| Output preservation | CLI help was byte-identical; normalized emitted JavaScript matched for 307 existing source files after preserving significant JSX spacing. |
+| Read-only gate | Hashes of all 575 tracked and task-created files were unchanged by the full gate. Build outputs remained ignored. |
+
+Self-review checked the changed code, rule scopes, existing owners, source-output preservation and necessity of the new configuration. No custom baseline engine, hook orchestration or quality service was added. Source formatting is supplied as a separate local patch alongside the tooling/guidance patch for review.
+
+### Local commit organization, 2026-11-10
+
+The one-time formatting is isolated in `27fc93f` (`style: format owned source and configuration`): 285 files after rebasing, with normalized emitted JavaScript verified equivalent to current `main` for all 310 existing code files checked. The following `chore: adopt coding guidelines and automated checks` commit groups the guide, agent routing, tooling, tests, baseline, CI and the small logger/directive changes. The initial split preserved the implementation's file contents apart from its commit-status record.
+
+For this split, `npm run check` passed again under Node 24 and npm 11.16.0 with local networking permitted: formatting, lint, typecheck, build and all 2,272 tests across 161 files. No source, configuration or baseline content changed during the split.
+
+### Merge conflict repair, 2026-11-10
+
+Current `main` added team-based proactivity, full proposal evidence and the Fable 5.2 default after the starting revision. Its changes overlapped the formatting pass in 31 files. The rebase preserves current `main` behavior and applies the configured formatter to affected code, including its new team-proactivity test. The separate formatting and tooling commits remain intact in structure. Normalized emitted JavaScript matches `main` across all 310 existing code files; no runtime repair or refactor was needed.
+
+The initial adoption baseline was remeasured with Oxlint after installing the rebased lockfile. Its 15 changed rule allowances are confined to 11 files changed upstream: existing non-null assertions and unsafe test operations add 44 findings. The baseline now records 2,449 findings across 167 files. This incorporates pre-adoption code from `main`; it does not introduce routine baseline generation or change lint rules.
+
+The rebased `npm run check` passed under Node 24.22.2 and npm 11.16.0: formatting, lint, typecheck, build and all **2,309 tests across 162 files**. All 576 tracked-file hashes remained unchanged by the gate. The standalone Git-helper compilation also passed. Hosted CI and live-provider behavior remain separate from this local verification.
+
+### Remaining debt and limits
+
+The native baseline records **2,449 findings across 167 files**, measured after the rebase, clean install, directive cleanup, final formatting and the Vitest compatibility adjustment. The original pre-rebase snapshot had 2,405 findings across 164 files. It includes existing unsafe types/operations, non-null assertions, promise handling, runtime cycles and cleanup findings. The new check tests have no baseline entry. Baseline generation is not part of CI; routine pruning only reduces resolved allowances.
+
+The baseline counts findings per file/rule and can miss an equal-count substitution. Config/baseline changes and code readability still require review. The CI workflow has been edited and its commands passed locally; hosted Linux CI, a Docker image build, provider-backed live E2E and production behavior were not exercised. The engine's control flow and APIs were not changed.
+
+No readability or productivity benefit has been measured. The five-change evaluation follows adoption through existing PR feedback and remains pending.

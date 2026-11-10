@@ -16,9 +16,11 @@ rest. Setup and commands live in README.md / CONTRIBUTING.md.
      and anything subtle or surprising. No file-by-file list; the diff shows
      that. Note what you deliberately left out of scope. -->
 
+<!-- Apply docs/guides/coding-guidelines.md: check ownership, traceable flow, state lifecycle, necessary abstraction and behavioral proof. Explain any new lint exception or increased baseline allowance. For the first five substantive changes after adoption, note useful readability findings, stylistic churn and review/rework cost when available. -->
+
 ## Verification
 
-<!-- What you actually checked, honestly. The static checks (typecheck, build,
+<!-- What you actually checked, honestly. The static checks (format, lint, typecheck, build,
      tests) and — the part CI can't see — that the running app still works end
      to end for the path you touched. If you couldn't run something (no API key,
      no integration access), say so plainly rather than implying it passed. -->

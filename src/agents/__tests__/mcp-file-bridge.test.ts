@@ -90,8 +90,6 @@ function runTool(
 ) {
   return createSendFileToMcpTool(agent, liveServers).handler(args as never, {});
 }
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const textOf = (res: any): string =>
   (res.content as Array<{ text?: string }>).map((c) => c.text ?? '').join('');
 

@@ -47,7 +47,6 @@ async function runGate(
     ...port,
   };
   const [matcher] = createToolApprovalHooks(policy, fullPort);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (await matcher.hooks[0](
     { tool_name, tool_input } as any,
     undefined as any,

@@ -313,7 +313,6 @@ export function createToolApprovalHooks(
       // inside the hook, and what a host does with a TIMED-OUT PreToolUse decision
       // is its policy, not ours — so never get near the default.
       timeout: 120,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       hooks: [
         async (input: any): Promise<HookJSONOutput> => {
           const toolName = typeof input?.tool_name === 'string' ? input.tool_name : undefined;

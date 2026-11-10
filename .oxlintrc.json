@@ -1,0 +1,88 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "import", "react", "vitest"],
+  "categories": {
+    "correctness": "off",
+    "suspicious": "off",
+    "pedantic": "off",
+    "perf": "off",
+    "style": "off",
+    "restriction": "off",
+    "nursery": "off"
+  },
+  "options": {
+    "typeAware": true,
+    "reportUnusedDisableDirectives": "error",
+    "respectEslintDisableDirectives": false,
+    "denyWarnings": true
+  },
+  "ignorePatterns": [
+    "node_modules/",
+    "dist/",
+    "build/",
+    "coverage/",
+    "workdir/",
+    "workdir-*/",
+    "claude-data/",
+    "secrets/",
+    "prompts/",
+    "core-plugin/",
+    ".claude/",
+    ".agents/",
+    "openspec/",
+    "docs/",
+    "e2e-evidence/",
+    "qa-evidence/",
+    "tmp/",
+    "temp/",
+    "**/*.generated.*"
+  ],
+  "rules": {
+    "eslint/no-debugger": "error",
+    "eslint/no-var": "error",
+    "eslint/prefer-const": "error",
+    "eslint/no-empty": "error",
+    "eslint/no-unused-vars": [
+      "error",
+      { "vars": "all", "args": "all", "argsIgnorePattern": "^_", "caughtErrors": "all" }
+    ],
+    "typescript/no-explicit-any": "error",
+    "typescript/no-non-null-assertion": "error",
+    "typescript/ban-ts-comment": [
+      "error",
+      { "ts-ignore": true, "ts-nocheck": true, "ts-expect-error": "allow-with-description" }
+    ],
+    "import/no-cycle": ["error", { "ignoreTypes": true, "ignoreExternal": true }]
+  },
+  "overrides": [
+    {
+      "files": ["{src,tools,scripts}/**/*.{ts,tsx,mts,cts}"],
+      "rules": {
+        "typescript/no-unsafe-assignment": "error",
+        "typescript/no-unsafe-argument": "error",
+        "typescript/no-unsafe-call": "error",
+        "typescript/no-unsafe-member-access": "error",
+        "typescript/no-unsafe-return": "error",
+        "typescript/no-floating-promises": ["error", { "ignoreVoid": false }],
+        "typescript/no-misused-promises": "error",
+        "typescript/await-thenable": "error"
+      }
+    },
+    {
+      "files": ["src/**/*.{ts,tsx,mts,cts}"],
+      "excludeFiles": ["src/system/logger.ts"],
+      "rules": { "eslint/no-console": "error" }
+    },
+    {
+      "files": ["src/cli/**/*.{ts,tsx}"],
+      "rules": { "react/rules-of-hooks": "error", "react/exhaustive-deps": "error" }
+    },
+    {
+      "files": ["**/*.{test,spec}.{ts,tsx,mts,js,mjs}"],
+      "rules": {
+        "vitest/no-focused-tests": "error",
+        "vitest/valid-expect": ["error", { "maxArgs": 2 }]
+      }
+    }
+  ]
+}

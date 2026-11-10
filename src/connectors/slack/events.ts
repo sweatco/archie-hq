@@ -175,7 +175,6 @@ export async function mountSlackApp(
   });
 
   // Handle thread messages (replies without @mention) and DM messages
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   app!.event('message', async ({ event, body }: { event: any; body?: { event_id?: string } }) => {
     if (getIsShuttingDown()) return;
     if (await observeSlack({ ...event, event_id: body?.event_id })) return;
@@ -260,7 +259,6 @@ export async function mountSlackApp(
   // the channel isn't missed until the first message). Only the bot's own join
   // matters; `routeSlackEvent`'s own-bot filter is not on this path, so the
   // self-join check here is load-bearing.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   app!.event('member_joined_channel', async ({ event }: { event: any }) => {
     if (getIsShuttingDown()) return;
     const botUserId = getBotUserId();
@@ -280,7 +278,6 @@ export async function mountSlackApp(
   }
 
   // Handle edit mode approval button
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   app!.action('approve_edit_mode', async ({ action, ack, body }: any) => {
     await ack();
 
@@ -324,7 +321,6 @@ export async function mountSlackApp(
   });
 
   // Handle edit mode denial button
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   app!.action('deny_edit_mode', async ({ action, ack, body }: any) => {
     await ack();
 
@@ -344,7 +340,6 @@ export async function mountSlackApp(
   });
 
   // Handle max mode approval button
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   app!.action('approve_max_mode', async ({ action, ack, body }: any) => {
     await ack();
 
@@ -375,7 +370,6 @@ export async function mountSlackApp(
   });
 
   // Handle max mode denial button
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   app!.action('deny_max_mode', async ({ action, ack, body }: any) => {
     await ack();
 
@@ -395,7 +389,6 @@ export async function mountSlackApp(
   });
 
   // Handle research budget approval button (Defense 4)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   app!.action('approve_research_budget', async ({ action, ack, body }: any) => {
     await ack();
 
@@ -419,7 +412,6 @@ export async function mountSlackApp(
   });
 
   // Handle research budget denial button (Defense 4)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   app!.action('deny_research_budget', async ({ action, ack, body }: any) => {
     await ack();
 
@@ -447,7 +439,6 @@ export async function mountSlackApp(
   registerMemoryPreferenceHandlers(app!);
 
   // Handle trigger approval button
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   app!.action('approve_trigger', async ({ action, ack, body }: any) => {
     await ack();
 
@@ -499,7 +490,6 @@ export async function mountSlackApp(
   });
 
   // Handle trigger denial button
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   app!.action('deny_trigger', async ({ action, ack, body }: any) => {
     await ack();
 
@@ -593,7 +583,6 @@ const STALE_MERGE_PROMPT_TEXT =
  * registrations; production registration happens in mountSlackApp.
  */
 export function registerMergeActionHandlers(boltApp: Pick<AppType, 'action'>): void {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   boltApp.action('approve_merge', async ({ action, ack, body }: any) => {
     await ack();
 
@@ -638,8 +627,6 @@ export function registerMergeActionHandlers(boltApp: Pick<AppType, 'action'>): v
       logger.error('Server', 'Error handling merge approval', error);
     }
   });
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   boltApp.action('deny_merge', async ({ action, ack, body }: any) => {
     await ack();
 
@@ -736,8 +723,6 @@ export function registerToolApprovalHandlers(boltApp: Pick<AppType, 'action'>): 
       return { id: userId, name: userId };
     }
   };
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   boltApp.action('approve_tool_call', async ({ action, ack, body }: any) => {
     await ack();
 
@@ -761,8 +746,6 @@ export function registerToolApprovalHandlers(boltApp: Pick<AppType, 'action'>): 
       logger.error('Server', 'Error handling tool-call approval', error);
     }
   });
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   boltApp.action('deny_tool_call', async ({ action, ack, body }: any) => {
     await ack();
 
@@ -1034,7 +1017,6 @@ async function dispatchChannelMessageTriggers(
  * inline, as one more piece of thread activity. The agent decides whether the
  * change is material; a cosmetic edit can simply be a no-op on its end.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function handleSlackEdit(event: any): Promise<void> {
   const msg = event.message;
   const prev = event.previous_message;

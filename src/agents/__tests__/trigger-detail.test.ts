@@ -98,7 +98,6 @@ function getHandler(
   task: Task,
 ): (args: Record<string, unknown>) => Promise<{ content: { text: string }[] }> {
   const server = createOrchestrationMcpServer(makeAgent(), task);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const raw =
     (server.instance as any)._registeredTools ??
     Object.fromEntries((server.instance as any)._tools ?? []);

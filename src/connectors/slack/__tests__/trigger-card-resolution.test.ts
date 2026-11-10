@@ -25,12 +25,10 @@ import type { Trigger } from '../../../types/trigger.js';
 // registry — so `module` is mocked and its `createRequire` hands back a fake Bolt.
 // Unlike the sweep's fake, this one KEEPS the action handlers: they are the subject.
 const bolt = vi.hoisted(() => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const actions = new Map<string, (arg: any) => Promise<unknown>>();
   class FakeApp {
     constructor(_opts: unknown) {}
     event(_name: string, _handler: unknown) {}
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     action(name: string, handler: (arg: any) => Promise<unknown>) {
       actions.set(name, handler);
     }
@@ -199,8 +197,6 @@ const clickBody = {
   channel: { id: 'C_THREAD' },
   message: { ts: '1722250000.000100', thread_ts: '1722249000.000100' },
 };
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function click(actionId: 'approve_trigger' | 'deny_trigger'): Promise<void> {
   const handler = bolt.actions.get(actionId);
   expect(handler, `${actionId} handler was never registered`).toBeDefined();
