@@ -3,6 +3,7 @@ import {
   parseMcpToolName,
   deniedToolNames,
   classifyToolCall,
+  approverGroupsFor,
   callDigest,
   renderCall,
   createToolApprovalHooks,
@@ -100,6 +101,25 @@ describe('classifyToolCall', () => {
   // A tool the server ships next quarter arrives gated, not silently open.
   it('falls back to the server default for unlisted tools', () => {
     expect(classifyToolCall(POLICY, tool('some_tool_shipped_next_quarter'))?.tier).toBe('ask');
+  });
+});
+
+describe('approverGroupsFor', () => {
+  const RESTRICTED: McpServerPolicy = {
+    ...TRAMLINE,
+    approverGroups: { default: ['SRELEASE'], tools: { fully_release_rollout: ['SLEADS'] } },
+  };
+
+  it('returns the per-tool list over the default', () => {
+    expect(approverGroupsFor(RESTRICTED, 'fully_release_rollout')).toEqual(['SLEADS']);
+  });
+
+  it('falls back to the default list for an unlisted tool', () => {
+    expect(approverGroupsFor(RESTRICTED, 'retry_workflow_run')).toEqual(['SRELEASE']);
+  });
+
+  it('returns undefined when the policy restricts nothing', () => {
+    expect(approverGroupsFor(TRAMLINE, 'retry_workflow_run')).toBeUndefined();
   });
 });
 

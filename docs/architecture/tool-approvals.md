@@ -2,7 +2,7 @@
 
 Human-in-the-loop approval for critical MCP tools (issue #168). Without it a tool is either allowed — and then invoked with no human check — or blocked outright. This gate adds the middle ground: a tool can be declared as needing **per-call human approval**, so genuinely useful but sensitive tools (retry a release build, publish an offer, send a campaign) can be enabled instead of withheld.
 
-> A sibling of [edit mode](edit-mode.md) in spirit, but not in shape. Edit mode is a one-way, task-lifetime grant over a *capability class* (repo writes). This gate is per-call, single-use, and bound to the call's arguments. The closest existing relative is the per-PR `merge` gate, and its two key properties — approval bound to a specific target, resolution by any workspace member with identity recorded — are borrowed directly.
+> A sibling of [edit mode](edit-mode.md) in spirit, but not in shape. Edit mode is a one-way, task-lifetime grant over a *capability class* (repo writes). This gate is per-call, single-use, and bound to the call's arguments. The closest existing relative is the per-PR `merge` gate, and its two key properties — approval bound to a specific target, resolution by any workspace member with identity recorded — are borrowed directly. The second can be narrowed per server or tool to members of named Slack user groups (see [Who may approve](#who-may-approve)).
 
 **This gate is now load-bearing.** A task runs one session that mounts every configured MCP server, so the tiers here are the primary protection for production writes — they replace the per-agent credential scoping the multi-process model used to provide. See [Security → What the flat model gave up](security.md#what-the-flat-model-gave-up).
 
@@ -32,7 +32,7 @@ Three tiers, deliberately the same three words Claude Code uses for permissions:
 | `ask` | a human approves this one call, arguments included |
 | `deny` | never runs — withheld from the session entirely |
 
-`titles` is optional and covered under [what the approver reads](#what-the-approver-reads).
+`titles` is optional and covered under [what the approver reads](#what-the-approver-reads). `access` is optional and limits who may approve `ask` calls; it is covered under [who may approve](#who-may-approve).
 
 `default` covers every tool not listed and is `ask` when omitted, so a tool the server ships next quarter arrives gated rather than silently open. Invert `default` to suit the server: for a mostly-dangerous one list the safe reads under `allow`, for a mostly-safe one list the exceptions under `ask`/`deny`.
 
@@ -80,7 +80,7 @@ Both halves are rendered **by the engine, never by the agent**: an agent's own s
 
 ### Validation
 
-The loader validates the block strictly and **throws on a malformed policy** — unknown tier, unknown key, a tool in two tiers, a non-list tier: this block decides which external mutations need a human, so a silently-dropped typo must not reclassify a tool. A misspelled tier key (`asks:`) would otherwise read as "nothing listed", quietly dropping every tool in it to the default.
+The loader validates the block strictly and **throws on a malformed policy** — unknown tier, unknown key, a tool in two tiers, a non-list tier: this block decides which external mutations need a human, so a silently-dropped typo must not reclassify a tool. A misspelled tier key (`asks:`) would otherwise read as "nothing listed", quietly dropping every tool in it to the default. The same holds inside `access`: only `default` and a `tools` map are accepted, each rule must be exactly `{ "approverGroups": [<strings>] }`, and groups on a tool whose tier is not `ask` are rejected, since they would mean nothing. Tool names under `access.tools` are trimmed like tier names. A misspelled tool *name* cannot be caught when the server's default tier is `ask` (the server's tool list is not known at load); the real tool then falls back to `access.default`, or is unrestricted without one, so put the restriction in `default` when every gated tool of the server needs it.
 
 It also refuses a **server key that cannot carry a policy**. The gate finds a policy by splitting the SDK's `mcp__<server>__<tool>` name back into its parts, and a key containing `__` (or with a leading/trailing `_`) does not survive that round trip — `mcp__sweat__admin__publish_offer` splits as server `sweat`, no policy matches, and every tool of that server would run ungated. That is the same class of silent failure the strict parsing exists to prevent, so such a key is rejected at load rather than accepted with an unenforceable policy. Server keys without a policy are unaffected.
 
@@ -100,8 +100,10 @@ agent calls mcp__tramline__retry_workflow_run { id: "226284f5…" }
   │    ├─ post Approve/Deny to Slack, write pending_tool_approval, park the task
   │    └─ deny this attempt: "needs human approval, you'll be reactivated"
   │
-  ├─ a human clicks Approve (any workspace member, as with edit mode / merge)
+  ├─ a human clicks Approve (any workspace member, as with edit mode / merge,
+  │  │                        unless `access` names approver groups)
   │    ├─ digest verified against the pending slot (mismatch/expired → stale no-op)
+  │    ├─ approver groups, if any, checked against the current policy (no → ephemeral refusal, prompt stays)
   │    ├─ grant stored in approved_tool_calls (single-use, 30-min TTL)
   │    └─ the requesting agent is woken
   │
@@ -121,7 +123,28 @@ agent calls mcp__tramline__retry_workflow_run { id: "226284f5…" }
 
 ## Who may approve
 
-Anyone in the workspace — deliberately the same trust model as the edit-mode and merge gates. Identity is resolved for the audit trail; external/guest clickers resolve with identity omitted, mirroring the other gates. What keeps the button meaningful is what it says and its single-use binding, not who may press it.
+By default, anyone in the workspace — deliberately the same trust model as the edit-mode and merge gates. Identity is resolved for the audit trail; external/guest clickers resolve with identity omitted, mirroring the other gates. What keeps the button meaningful is what it says and its single-use binding, not who may press it.
+
+A server can narrow that to members of Slack user groups (issue #327):
+
+```json
+"archie": {
+  "default": "ask",
+  "access": {
+    "default": { "approverGroups": ["S0123ABCD"] },
+    "tools": { "fully_release_rollout": { "approverGroups": ["S0456EFGH"] } }
+  }
+}
+```
+
+A per-tool list replaces the default; it does not add to it. Only Approve is restricted — anyone may still Deny, so whoever asked can always cancel. For a restricted call:
+
+- **Judged at the click, against the current policy.** `Task.handleToolCallApproval` runs `syncPlugins()` and reads the cached PM definition, so a plugins-repo change to the groups applies to prompts already posted. The gate's per-call path reads no config.
+- **Membership is a live Slack lookup** (`usergroups.users.list`, under the existing `usergroups:read` scope), uncached, one group at a time on each click. A clicker Slack reports as a guest or external user is refused; otherwise membership in one of the groups decides. Any lookup error refuses, and an empty list means nobody can approve.
+- **A refusal changes nothing.** No grant is minted, the slot and the prompt stay, a `decision` finding records who was refused, and the clicker gets an ephemeral message saying the request is still open.
+- **Fail closed when the policy is gone.** If the pending call's server has no loaded policy at click time — removed, or the root `.mcp.json` is missing or unparseable, which leaves the cached definition empty — Approve is refused for every call of that server, restricted or not.
+- **Not from the API.** The API path carries no verified Slack identity, so a restricted call approved through it gets 403 and no grant.
+- **A parked task is reloaded per click**, so the Approve path re-reads the slot from disk after its awaits and resolves as stale if a Deny on another instance landed meanwhile.
 
 Resolution has the same surfaces as every other gate: Slack buttons, and the CLI/API path (`POST /tasks/:id/approve` with `type: 'tool_call'` and `ref` set to the call digest from the approval event). The `/api` router is unauthenticated — the same accepted trade every other approval type makes for dev convenience and e2e drivability; deployments exposing the port must restrict it at the ingress.
 
@@ -134,11 +157,13 @@ Resolution has the same surfaces as every other gate: Slack buttons, and the CLI
 
 ## Relevant source files
 
-- `src/agents/tool-approval-gate.ts` — tiers, classification, digest, rendering/sanitization, hook factory
-- `src/system/plugin-loader.ts` — `loadMcpJson` / `parseServerPolicy` (strict validation, throws on a malformed policy)
+- `src/agents/tool-approval-gate.ts` — tiers, classification, digest, rendering/sanitization, hook factory, `approverGroupsFor`
+- `src/system/plugin-loader.ts` — `loadMcpJson` / `parseServerPolicy` (strict validation including `access`, throws on a malformed policy)
 - `src/agents/registry.ts` — `buildPmDef` (unions every server's policy onto the session; `deny` → `disallowedTools` via `deniedToolNames`)
 - `src/tasks/task.ts` — `requestToolApproval`, `consumeToolApproval`, `handleToolCallApproval` / `…Denial`
 - `src/types/task.ts` — `pending_tool_approval`, `approved_tool_calls`, `ApprovedToolCall`
-- `src/connectors/slack/events.ts` — `registerToolApprovalHandlers`
+- `src/connectors/slack/events.ts` — `registerToolApprovalHandlers` (ephemeral refusal for a restricted call)
+- `src/connectors/slack/client.ts` — `isInAnyUserGroup` (approver-group membership lookup)
+- `src/connectors/api/routes.ts` — the `tool_call` approve path (403 for a restricted call)
 - `src/agents/spawn.ts` — hook wiring (only when some server declares a policy) and the tool-description capture
-- Tests: `src/agents/__tests__/tool-approval-gate.test.ts`, `src/agents/__tests__/registry-mcp-policy.test.ts`, `src/tasks/__tests__/tool-approval.test.ts`, `src/system/__tests__/plugin-loader.test.ts`
+- Tests: `src/agents/__tests__/tool-approval-gate.test.ts`, `src/agents/__tests__/registry-mcp-policy.test.ts`, `src/tasks/__tests__/tool-approval.test.ts`, `src/system/__tests__/plugin-loader.test.ts`, `src/connectors/__tests__/tool-approval-surfaces.test.ts`

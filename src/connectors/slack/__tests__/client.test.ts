@@ -18,7 +18,7 @@ const slackApi = {
   auth: { test: vi.fn() },
   conversations: { info: vi.fn(), replies: vi.fn(), history: vi.fn(), members: vi.fn() },
   users: { info: vi.fn(), conversations: vi.fn(), list: vi.fn() },
-  usergroups: { list: vi.fn() },
+  usergroups: { list: vi.fn(), users: { list: vi.fn() } },
   pins: { list: vi.fn() },
   reactions: { get: vi.fn() },
 };
@@ -1426,5 +1426,36 @@ describe('getMessageReactions — failure is not emptiness', () => {
     slackApi.reactions.get.mockRejectedValue(new Error('socket hang up'));
 
     expect(await client.getMessageReactions('C1', '100.0')).toEqual({ ok: false, error: 'unknown_error' });
+  });
+});
+
+describe('isInAnyUserGroup — fail-closed membership check', () => {
+  it('returns true for a member of a later group and stops querying', async () => {
+    slackApi.usergroups.users.list.mockImplementation(async ({ usergroup }: { usergroup: string }) => ({
+      ok: true,
+      users: usergroup === 'S2' ? ['U1'] : ['U9'],
+    }));
+
+    expect(await client.isInAnyUserGroup('U1', ['S1', 'S2', 'S3'])).toBe(true);
+    expect(slackApi.usergroups.users.list.mock.calls.map(([args]) => args.usergroup)).toEqual(['S1', 'S2']);
+  });
+
+  it('returns false for a member of none', async () => {
+    slackApi.usergroups.users.list.mockResolvedValue({ ok: true, users: ['U9'] });
+
+    expect(await client.isInAnyUserGroup('U1', ['S1', 'S2'])).toBe(false);
+  });
+
+  it('refuses when the lookup throws', async () => {
+    slackApi.usergroups.users.list.mockRejectedValue(new Error('missing_scope'));
+
+    expect(await client.isInAnyUserGroup('U1', ['S1'])).toBe(false);
+    expect(loggerWarn).toHaveBeenCalledWith('Slack', expect.stringContaining('S1'), expect.any(Error));
+  });
+
+  it('refuses when Slack answers ok: false', async () => {
+    slackApi.usergroups.users.list.mockResolvedValue({ ok: false, error: 'no_such_subteam', users: ['U1'] });
+
+    expect(await client.isInAnyUserGroup('U1', ['S1'])).toBe(false);
   });
 });

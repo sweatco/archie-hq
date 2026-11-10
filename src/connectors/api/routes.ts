@@ -344,11 +344,10 @@ export function mountApiRoutes(app: Application): void {
           }
         }
       } else if (type === 'tool_call') {
-        // Same trust model as every other gate's API path: reaching this route
-        // means operator access to the engine. `ref` carries the digest of the
-        // exact (server, tool, arguments) call being resolved — echoed from the
-        // approval event — and is verified against the pending slot inside the
-        // Task methods.
+        // Operator access, as on every other gate; `ref` is the call digest,
+        // verified against the pending slot in the Task methods. A restricted
+        // call (approverGroups) can only be approved from Slack, so this route
+        // gets 'forbidden' → 403.
         if (typeof ref !== 'string' || !ref) {
           res.status(400).json({ error: 'tool_call approval requires ref (the call digest)' });
           return;
@@ -362,6 +361,10 @@ export function mountApiRoutes(app: Application): void {
             stale: true,
             error: `No pending tool-call approval for ${ref}`,
           });
+          return;
+        }
+        if (disposition === 'forbidden') {
+          res.status(403).json({ ok: false, error: 'This tool call can only be approved in Slack by a member of its approver groups, or its tool policy is no longer loaded.' });
           return;
         }
       } else if (type === 'max_mode') {

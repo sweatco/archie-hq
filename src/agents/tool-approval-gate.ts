@@ -70,6 +70,8 @@ export interface McpServerPolicy {
    * (verified against a live instance and a minimal repro, 2026-08-20).
    */
   titles: Record<string, string>;
+  /** Slack user groups whose members alone may approve this server's `ask` calls; a per-tool list replaces the default. */
+  approverGroups?: { default?: string[]; tools: Record<string, string[]> };
 }
 
 /** serverKey (as in .mcp.json) → policy. Lives on AgentDef. */
@@ -134,6 +136,12 @@ export function classifyToolCall(policy: McpToolPolicy | undefined, toolName: st
     tool: parsed.tool,
     tier: Object.hasOwn(serverPolicy.tiers, parsed.tool) ? serverPolicy.tiers[parsed.tool] : serverPolicy.default,
   };
+}
+
+export function approverGroupsFor(serverPolicy: McpServerPolicy, tool: string): string[] | undefined {
+  const groups = serverPolicy.approverGroups;
+  if (!groups) return undefined;
+  return Object.hasOwn(groups.tools, tool) ? groups.tools[tool] : groups.default;
 }
 
 // ---- Digest ------------------------------------------------------------------
