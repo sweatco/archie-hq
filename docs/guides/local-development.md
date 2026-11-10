@@ -222,8 +222,11 @@ For Socket Mode you also need to flip `socket_mode_enabled: true` in `slack-mani
 
 ## Running Without Docker
 
+Use Node 24 to match CI. Its bundled Corepack selects the npm version from `package.json`'s `packageManager` field after enabling the npm shim. Corepack requires separate provisioning on Node 25 and later; see the [Corepack installation guide](https://github.com/nodejs/corepack#how-to-install) when upgrading.
+
 ```bash
-npm install
+corepack enable npm
+npm ci
 npm run dev          # Development with hot reload (tsx watch)
 npm run build        # TypeScript compilation (tsc)
 npm run typecheck    # Type checking only (tsc --noEmit)

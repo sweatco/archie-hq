@@ -20,8 +20,7 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - name: Use the project's npm version
-        run: npm install --global "$(node --print 'require("./package.json").packageManager')"
+      - run: corepack enable npm
       - run: npm ci
       - run: npm run format:check
       - run: npm run lint

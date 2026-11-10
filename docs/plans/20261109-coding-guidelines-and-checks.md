@@ -121,10 +121,16 @@ CI reads the npm package specifier from `package.json`'s `packageManager` field,
 
 `npm run check` passed under Node 24.22.2/npm 11.16.0: formatting, lint, typecheck, build and all 2,329 tests across 164 files. All 577 tracked-file hashes in the gate snapshot remained unchanged. Root guidance links resolve, and the scoped memory instructions, manifest, lockfile and lint baseline remain byte-identical. This review update changes instructions and CI version selection, with no runtime code change.
 
+### Native package-manager selection, 2026-11-10
+
+CI now runs `corepack enable npm` after setting up Node 24. Corepack reads the existing `packageManager` field and downloads/caches that exact npm version. This replaces both the global npm installation and the hand-written Node expression used in the preceding review update. The local-development guide documents the same activation step. Node 24 bundles Corepack; a later Node 25+ upgrade needs separate Corepack provisioning.
+
+Qualification used Node 24.22.2 and Corepack 0.36.0, the version bundled by that Node release. Corepack created npm shims and its cache in a temporary directory, selected npm 11.16.0 directly from the unchanged manifest, and passed the complete `npm run check`: formatting, lint, typecheck, build and all 2,329 tests across 164 files. All 577 tracked-file hashes remained unchanged by the check. The host toolchain was not changed. Hosted verification of the Corepack workflow follows publication.
+
 ### Remaining debt and limits
 
 The native baseline records **2,449 findings across 167 files**, measured after the rebase, clean install, directive cleanup, final formatting and the Vitest compatibility adjustment. The original pre-rebase snapshot had 2,405 findings across 164 files. It includes existing unsafe types/operations, non-null assertions, promise handling, runtime cycles and cleanup findings. The new check tests have no baseline entry. Baseline generation is not part of CI; routine pruning only reduces resolved allowances.
 
-The baseline counts findings per file/rule and can miss an equal-count substitution. Config/baseline changes and code readability still require review. Hosted Linux format/lint/typecheck/build/test, gitleaks and CodeQL passed at `f990cc0`; hosted checks for the root-instructions review update remain pending. A Docker image build, provider-backed live E2E and production behavior were not exercised. The original guideline adoption preserved runtime behavior; the subsequent security edge-case changes are recorded above.
+The baseline counts findings per file/rule and can miss an equal-count substitution. Config/baseline changes and code readability still require review. Hosted Linux format/lint/typecheck/build/test, gitleaks and CodeQL passed at `46059b9`; hosted checks for the Corepack workflow update remain pending. A Docker image build, provider-backed live E2E and production behavior were not exercised. The original guideline adoption preserved runtime behavior; the subsequent security edge-case changes are recorded above.
 
 No readability or productivity benefit has been measured. The five-change evaluation follows adoption through existing PR feedback and remains pending.
