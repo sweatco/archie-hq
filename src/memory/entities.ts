@@ -92,7 +92,7 @@ export function serializeEntity(record: EntityRecord): string {
   const lines: string[] = ['---'];
   lines.push(`entity: ${record.entity}`);
   lines.push(`type: ${record.type}`);
-  lines.push(`display_name: "${record.displayName.replace(/"/g, '\\"')}"`);
+  lines.push(`display_name: ${JSON.stringify(record.displayName)}`);
   lines.push(`aliases: ${serializeInlineList(record.aliases)}`);
   lines.push(`scope: ${record.scope}`);
   lines.push(`repos: ${serializeInlineList(record.repos)}`);
@@ -391,7 +391,13 @@ function parseFrontmatter(content: string): Frontmatter | null {
 
 function unquote(s: string): string {
   if (s.startsWith('"') && s.endsWith('"') && s.length >= 2) {
-    return s.slice(1, -1).replace(/\\"/g, '"');
+    try {
+      const value: unknown = JSON.parse(s);
+      return typeof value === 'string' ? value : s;
+    } catch {
+      // Older pages escaped quotes only and can contain non-JSON backslashes.
+      return s.slice(1, -1).replace(/\\"/g, '"');
+    }
   }
   return s;
 }

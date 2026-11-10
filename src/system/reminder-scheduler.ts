@@ -5,7 +5,7 @@
  * A 5-minute interval checks for due reminders and reactivates tasks.
  */
 
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { Task } from '../tasks/task.js';
 import { SESSIONS_DIR } from './workdir.js';
 import { loadMetadata, taskExistsOnDisk } from '../tasks/persistence.js';
@@ -154,8 +154,14 @@ export function getReminder(taskId: string): PendingReminder | undefined {
  */
 async function rebuildFromDisk(): Promise<void> {
   try {
-    const grepResult = execSync(
-      `grep -l '"trigger_at"' ${SESSIONS_DIR}/task-*/shared/metadata.json 2>/dev/null || true`,
+    const grepResult = execFileSync(
+      'sh',
+      [
+        '-c',
+        'grep -l \'"trigger_at"\' "$1"/task-*/shared/metadata.json 2>/dev/null || true',
+        'sh',
+        SESSIONS_DIR,
+      ],
       { encoding: 'utf-8' },
     ).trim();
 

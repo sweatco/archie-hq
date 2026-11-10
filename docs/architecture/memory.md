@@ -63,6 +63,8 @@ WORKDIR/memory/
 
 `public/users/` contains public profiles, not DM history. Every task directory uses its Slack conversation ID; DMs therefore use `D…`, while public/private channels and MPIMs use `C…` or `G…`.
 
+Profile and entity display names are written as JSON-quoted YAML scalar values. Quotes, backslashes and line breaks stay inside that value rather than introducing frontmatter fields. The entity reader decodes those escapes and retains the older quote-only reader for legacy values that are not valid JSON strings.
+
 Every public and private task has one canonical Markdown file with trusted task ID, channel ID, status, quoted creation/extraction timestamps, and a sanitized `# Summary`. Public files additionally retain links, domain, applied profile/entity updates, related task IDs, and housekeeping projections. Private files end after the summary.
 
 `rolling-summary.md` is a derived inspection table rebuilt from that channel directory after each canonical replacement. It lists the newest 50 records by extraction time and task ID, with relative links and normalized excerpts of at most 200 characters. Older canonical files remain indefinitely and stay available to tools. Overviews are neither injected nor searched.

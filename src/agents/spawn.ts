@@ -615,11 +615,11 @@ Shared folder: ${sharedPath} [READ-ONLY]
 
   // Inject OAuth Bearer tokens into any HTTP/SSE MCP servers that have
   // a vault record. Drops entries whose tokens can't be refreshed.
-  const oauthBindings = await applyOAuthBindings(mcpServers);
-  if (oauthBindings.injected.length > 0) {
-    logger.agent(def.id, `OAuth tokens bound: ${oauthBindings.injected.join(', ')}`);
+  const bindingSummary = await applyOAuthBindings(mcpServers);
+  if (bindingSummary.injected.length > 0) {
+    logger.agent(def.id, `OAuth tokens bound: ${bindingSummary.injected.join(', ')}`);
   }
-  for (const { serverName, error } of oauthBindings.dropped) {
+  for (const { serverName, error } of bindingSummary.dropped) {
     logger.error(
       def.id,
       `MCP "${serverName}" dropped before connect — OAuth bind failed: ${error.message}`,

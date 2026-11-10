@@ -96,11 +96,11 @@ export function softCapExceeded(content: string, totalCap: number, sectionCap: n
 }
 
 function buildUserFrontmatter(userId: string, displayName: string): string {
-  const safeDisplay = displayName.replace(/"/g, '\\"');
+  const safeDisplay = JSON.stringify(displayName);
   return [
     '---',
     `slack_user_id: ${userId}`,
-    `display_name: "${safeDisplay}"`,
+    `display_name: ${safeDisplay}`,
     'aliases: []',
     '---',
     '',

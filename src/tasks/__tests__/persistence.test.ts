@@ -56,6 +56,7 @@ import {
   getMetadataPath,
   taskExistsOnDisk,
   findTaskOnDisk,
+  getTaskPath,
 } from '../persistence.js';
 import { renderMessageBody } from '../../connectors/slack/message-body.js';
 import type { SlackFile } from '../../types/index.js';
@@ -63,6 +64,26 @@ import type { TaskMetadata } from '../../types/task.js';
 
 afterAll(async () => {
   await rm(SESSIONS_ROOT, { recursive: true, force: true });
+});
+
+describe('task path boundary', () => {
+  it.each([
+    '',
+    '.',
+    '..',
+    '../outside',
+    'task-one/../../outside',
+    'task-one\\outside',
+    '/tmp/outside',
+  ])('rejects unsafe task ID %j before constructing a path', (taskId) => {
+    expect(() => getTaskPath(taskId)).toThrow('Invalid task ID');
+  });
+
+  it('preserves canonical and existing single-segment task IDs', () => {
+    for (const taskId of ['task-20261110-0215-abc123', 'task-merge-approval-rt']) {
+      expect(getTaskPath(taskId)).toBe(join(SESSIONS_ROOT, taskId));
+    }
+  });
 });
 
 /**
@@ -173,8 +194,8 @@ describe('renderEditForContext', () => {
 describe('taskExistsOnDisk', () => {
   it('rejects an id that is not a plain task id, even when the path it would build exists', async () => {
     // A real metadata.json outside the task folder, reachable only by traversal.
-    const escaped = getMetadataPath('../escaped-task');
     const escapedRoot = join(SESSIONS_ROOT, '..', 'escaped-task');
+    const escaped = join(escapedRoot, 'shared', 'metadata.json');
     await mkdir(dirname(escaped), { recursive: true });
     await writeFile(escaped, '{}');
     try {

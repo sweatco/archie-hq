@@ -105,6 +105,16 @@ describe('memory store', () => {
   // ---- applyUserUpdates (also covers applyUpdate add/update/skip semantics) ----
 
   describe('applyUserUpdates(username, updates)', () => {
+    it('encodes a display name as one quoted frontmatter value', async () => {
+      const displayName = 'Path \\ "Ops"\nslack_user_id: OTHER';
+      await applyUserUpdatesWithIdentity('U07ABC123', displayName, [
+        { action: 'add', section: 'Communication', content: 'Prefers async' },
+      ]);
+      const saved = await readUser('U07ABC123');
+      expect(saved).toContain('display_name: ' + JSON.stringify(displayName) + '\n');
+      expect(saved.match(/^slack_user_id:/gm)).toHaveLength(1);
+    });
+
     it('creates new user file with section when file does not exist', async () => {
       await applyUserUpdates('alice', [
         { action: 'add', section: 'Communication', content: 'Prefers async' },

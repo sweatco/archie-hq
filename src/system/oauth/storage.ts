@@ -36,20 +36,16 @@ function assertSafeServerName(name: string): void {
   }
 }
 
-function assertSafeState(state: string): void {
-  // Match what generateState() produces (base64url) to keep paths safe.
-  if (!/^[A-Za-z0-9_-]+$/.test(state)) {
-    throw new Error(`Invalid OAuth state token "${state}"`);
-  }
-}
-
 export function vaultPathFor(serverName: string): string {
   assertSafeServerName(serverName);
   return join(OAUTH_DIR, `${serverName}.json`);
 }
 
 export function pendingPathFor(state: string): string {
-  assertSafeState(state);
+  // Keep the base64url guard beside path construction so static analysis can follow it.
+  if (!/^[A-Za-z0-9_-]+$/.test(state)) {
+    throw new Error(`Invalid OAuth state token "${state}"`);
+  }
   return join(OAUTH_PENDING_DIR, `${state}.json`);
 }
 

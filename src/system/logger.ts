@@ -308,7 +308,7 @@ export class Logger {
    */
   debug(prefix: string, message: string, data?: any): void {
     if (data !== undefined) {
-      console.log(`${c.dim('[' + prefix + ']')} ${message}`, data);
+      console.log('%s', `${c.dim('[' + prefix + ']')} ${message}`, data);
     } else {
       console.log(`${c.dim('[' + prefix + ']')} ${message}`);
     }

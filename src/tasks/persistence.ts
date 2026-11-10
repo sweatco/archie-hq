@@ -112,6 +112,9 @@ export function isSafeTaskId(id: string): boolean {
  * Get the path to a task's directory
  */
 export function getTaskPath(taskId: string): string {
+  if (!/^[A-Za-z0-9_-]+$/.test(taskId)) {
+    throw new Error('Invalid task ID');
+  }
   return join(SESSIONS_DIR, taskId);
 }
 

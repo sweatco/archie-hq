@@ -70,6 +70,21 @@ describe('entity store', () => {
       expect(parsed).toEqual(REC);
     });
 
+    it('round-trips quotes, backslashes and line breaks without injecting frontmatter', () => {
+      const displayName = 'Path \\ "Ops"\nstatus: archived';
+      const serialized = serializeEntity({ ...REC, displayName });
+      expect(serialized).toContain('display_name: ' + JSON.stringify(displayName) + '\n');
+      expect(parseEntity(serialized)).toEqual({ ...REC, displayName });
+    });
+
+    it('still reads quote-only legacy names with non-JSON backslashes', () => {
+      const legacy = serializeEntity(REC).replace(
+        'display_name: "Payment Service"',
+        'display_name: "Path \\queue \\"Ops\\""',
+      );
+      expect(parseEntity(legacy)?.displayName).toBe('Path \\queue "Ops"');
+    });
+
     it('returns null on content with no frontmatter', () => {
       expect(parseEntity('## Facts\n- [fact] x')).toBeNull();
     });

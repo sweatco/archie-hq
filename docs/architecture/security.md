@@ -47,6 +47,12 @@ Slack and GitHub events are authenticated at the receiver layer before they reac
   **The author bail-out is `event.user`-gated, so it never classifies an app post** — an app post carries no `user`. Any path an app post can reach therefore gates on the bot's own team itself, mirroring thread ingestion's rule (drop a bot from a foreign team, keep internal bots): `channel-pins.ts` for pins, `dispatchChannelMessageTriggers` for triggers.
 - **GitHub:** Webhook payloads are HMAC-SHA256 verified against `GITHUB_WEBHOOK_SECRET` before any routing or task lookup.
 
+## Host input and persistence
+
+The task-directory constructor accepts a single identifier containing letters, digits, underscores or hyphens before joining it to the sessions root. This preserves generated IDs and existing short task IDs while rejecting traversal, path separators, empty identifiers and dot segments. OAuth pending-file paths validate their state token against the generated base64url alphabet at the path-construction boundary.
+
+Reminder discovery passes the sessions root as a positional argument to a fixed shell command, so directory names cannot become executable shell syntax. Debug logging uses a fixed format string when appending data. The OAuth binding summary's injected list contains MCP server names; access tokens remain in the configured authorization headers and are not returned in that list.
+
 ## Defense Layer 1: The task sandbox
 
 One sandbox policy per task, built once at spawn from `metadata.edit_allowed` and shared by the PM and every worker it spawns.

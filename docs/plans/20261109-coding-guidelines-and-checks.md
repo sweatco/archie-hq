@@ -92,10 +92,29 @@ The initial adoption baseline was remeasured with Oxlint after installing the re
 
 The rebased `npm run check` passed under Node 24.22.2 and npm 11.16.0: formatting, lint, typecheck, build and all **2,309 tests across 162 files**. All 576 tracked-file hashes remained unchanged by the gate. The standalone Git-helper compilation also passed. Hosted CI and live-provider behavior remain separate from this local verification.
 
+### CodeQL follow-up, 2026-11-10
+
+At PR head `7cc67d6`, the hosted format/lint/typecheck/build/test job, gitleaks and CodeQL analysis all succeeded. The separate CodeQL results gate failed on 24 annotations: 23 high-severity alerts and one medium. All 24 match alert IDs already open on `main`; both branch analyses contain 46 results and expose the same 41 open alerts. The broad formatting diff placed these existing locations inside the PR's changed code. They were not new findings introduced by the guideline tooling.
+
+The follow-up is a separate security repair, preserving the formatting/tooling split:
+
+| Reported locations | Repair |
+|---|---|
+| 12 task-persistence path alerts | Validate a single task-ID path segment in the owning directory constructor before any derived read/write path. Preserve canonical and existing short IDs. |
+| Seven OAuth pending-file path alerts | Move the existing base64url state guard into its path constructor so the analyzer can follow it; accepted states and rejection behavior are unchanged. |
+| Two memory escaping alerts | Serialize display names as JSON-quoted YAML values and decode entity strings accordingly, retaining the older reader for non-JSON legacy values. |
+| One debug format-string alert | Use a literal format string before the caller's message and attached data. |
+| One OAuth summary logging alert | Name the returned metadata `bindingSummary`. The SARIF source was the `oauthBindings` identifier, while inspection and existing injection tests confirm the injected list contains only server names. Token values are neither added to the summary nor newly logged. |
+| One reminder shell-path alert | Pass the sessions directory as a quoted positional argument to a fixed shell script rather than interpolating it into executable text. |
+
+Regression tests reproduced 11 failures before the repair, including actual shell execution of a controlled marker in a temporary directory. The final `npm run check` passed under Node 24.22.2/npm 11.16.0: formatting, lint, typecheck, build and **2,329 tests across 164 files**. The 20 added cases cover unsafe and ordinary IDs, OAuth state paths, encoded and legacy display names, literal debug output and reminder reconstruction from a path containing shell syntax. An existing traversal test still creates an outside-root fixture directly, since the guarded helper now rejects that setup. The lint baseline is unchanged; no CodeQL query settings, gate settings or alert states were changed.
+
+Hosted CodeQL verification of this repair is pending publication; no local CodeQL CLI is installed. The existing E2E skill's boot command was checked with preparation disabled and stopped at `.env not found at the repo root — copy .env.example and set ANTHROPIC_API_KEY`. No live instance or paid provider scenario ran. Valid task IDs and ordinary output retain their existing behavior; the security repair intentionally rejects path-shaped task IDs and correctly encodes special characters.
+
 ### Remaining debt and limits
 
 The native baseline records **2,449 findings across 167 files**, measured after the rebase, clean install, directive cleanup, final formatting and the Vitest compatibility adjustment. The original pre-rebase snapshot had 2,405 findings across 164 files. It includes existing unsafe types/operations, non-null assertions, promise handling, runtime cycles and cleanup findings. The new check tests have no baseline entry. Baseline generation is not part of CI; routine pruning only reduces resolved allowances.
 
-The baseline counts findings per file/rule and can miss an equal-count substitution. Config/baseline changes and code readability still require review. The CI workflow has been edited and its commands passed locally; hosted Linux CI, a Docker image build, provider-backed live E2E and production behavior were not exercised. The engine's control flow and APIs were not changed.
+The baseline counts findings per file/rule and can miss an equal-count substitution. Config/baseline changes and code readability still require review. Hosted Linux format/lint/typecheck/build/test and gitleaks passed at `7cc67d6`; hosted checks for the security follow-up remain pending. A Docker image build, provider-backed live E2E and production behavior were not exercised. The original guideline adoption preserved runtime behavior; the subsequent security edge-case changes are recorded above.
 
 No readability or productivity benefit has been measured. The five-change evaluation follows adoption through existing PR feedback and remains pending.

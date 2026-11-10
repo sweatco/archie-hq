@@ -28,7 +28,7 @@ export interface OAuthBindingResult {
 /**
  * Mutates `mcpServers` in place, injecting Authorization headers and
  * deleting entries whose refresh fails. Returns a summary so callers
- * can log or alert.
+ * can log or alert. The injected list contains server names, not token values.
  */
 export async function applyOAuthBindings(
   mcpServers: Record<string, any>,
