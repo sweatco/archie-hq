@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import type {
@@ -95,10 +96,11 @@ export class ModelGateway implements BackgroundModel {
     ];
     if (counts.some((n) => typeof n !== 'number' || !Number.isSafeInteger(n) || n < 0)) return;
     const prices = PRICES[model];
+    assert(prices, `Missing price for admitted background model ${model}`);
+    if (usage.cache_creation_input_tokens === null || usage.cache_read_input_tokens === null)
+      return;
     const amount = Math.ceil(
-      (usage.input_tokens +
-        usage.cache_creation_input_tokens! * 2 +
-        usage.cache_read_input_tokens!) *
+      (usage.input_tokens + usage.cache_creation_input_tokens * 2 + usage.cache_read_input_tokens) *
         prices.input +
         usage.output_tokens * prices.output,
     );

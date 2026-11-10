@@ -30,6 +30,7 @@ vi.mock('../logger.js', () => ({
 }));
 
 import { initPlugins, getPlugins, getArchieConfig } from '../plugin-loader.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 function writePlugin(dirName: string, manifest: unknown): void {
   const dir = join(PLUGINS_DIR, dirName);
@@ -58,7 +59,9 @@ describe('plugin directory enumeration', () => {
     initPlugins();
     const plugins = getPlugins();
     expect(plugins.map((p) => p.name).sort()).toEqual(['engineering', 'growth']);
-    expect(plugins.find((p) => p.name === 'growth')!.dir).toBe(join(PLUGINS_DIR, 'growth'));
+    expect(expectDefined(plugins.find((p) => p.name === 'growth')).dir).toBe(
+      join(PLUGINS_DIR, 'growth'),
+    );
   });
 
   it('skips a directory with no manifest, an unparseable one, or missing fields', () => {

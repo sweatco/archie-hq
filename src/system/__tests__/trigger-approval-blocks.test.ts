@@ -16,6 +16,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildTriggerApprovalBlocks } from '../trigger-scheduler.js';
 import type { Trigger } from '../../types/trigger.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const TRIGGER_ID = 'trg-20260824-0900-blocks';
 
@@ -51,9 +52,10 @@ const actionsOf = (blocks: unknown[]) => (blocks as Block[]).find((b) => b.type 
 
 describe('buildTriggerApprovalBlocks', () => {
   it('describes what, when and where as separate fields rather than raw cron', () => {
-    const fields = (buildTriggerApprovalBlocks(trigger()) as Block[]).find(
-      (b) => b.fields,
-    )!.fields!;
+    const fields = expectDefined(
+      expectDefined((buildTriggerApprovalBlocks(trigger()) as Block[]).find((b) => b.fields))
+        .fields,
+    );
     const text = fields.map((f) => f.text).join('\n');
 
     expect(text).toContain('*What*\nthe standup digest');
@@ -66,32 +68,42 @@ describe('buildTriggerApprovalBlocks', () => {
   });
 
   it('carries both buttons, each addressed to this trigger', () => {
-    const actions = actionsOf(buildTriggerApprovalBlocks(trigger()))!;
-    expect(actions.elements!.map((e) => e.action_id)).toEqual(['approve_trigger', 'deny_trigger']);
+    const actions = expectDefined(actionsOf(buildTriggerApprovalBlocks(trigger())));
+    expect(expectDefined(actions.elements).map((e) => e.action_id)).toEqual([
+      'approve_trigger',
+      'deny_trigger',
+    ]);
     // The id on the button is what makes a card for one trigger unable to resolve
     // another — several cards for one trigger are normal, cards are never retracted.
-    expect(actions.elements!.every((e) => e.value === TRIGGER_ID)).toBe(true);
+    expect(expectDefined(actions.elements).every((e) => e.value === TRIGGER_ID)).toBe(true);
   });
 
   it('leads with the setup question when no notice is given', () => {
-    const first = (buildTriggerApprovalBlocks(trigger()) as Block[])[0]!;
-    expect(first.text!.text).toBe('*Set up this automation?*');
+    const first = expectDefined((buildTriggerApprovalBlocks(trigger()) as Block[])[0]);
+    expect(expectDefined(first.text).text).toBe('*Set up this automation?*');
   });
 
   it('replaces the heading with a notice but KEEPS the buttons — the cap-refusal case', () => {
     const notice = '⚠️ the active-trigger limit was reached';
     const blocks = buildTriggerApprovalBlocks(trigger(), notice);
 
-    expect((blocks as Block[])[0]!.text!.text).toBe(notice);
+    expect(expectDefined(expectDefined((blocks as Block[])[0]).text).text).toBe(notice);
     const actions = actionsOf(blocks);
     expect(actions, 'a refused approval must leave the card clickable').toBeDefined();
-    expect(actions!.elements!.map((e) => e.action_id)).toEqual(['approve_trigger', 'deny_trigger']);
+    expect(expectDefined(expectDefined(actions).elements).map((e) => e.action_id)).toEqual([
+      'approve_trigger',
+      'deny_trigger',
+    ]);
   });
 
   it('falls back to a clipped action prompt when the PM wrote no summary', () => {
-    const fields = (buildTriggerApprovalBlocks(trigger({ summary: undefined })) as Block[]).find(
-      (b) => b.fields,
-    )!.fields!;
-    expect(fields[0]!.text).toContain('post the digest');
+    const fields = expectDefined(
+      expectDefined(
+        (buildTriggerApprovalBlocks(trigger({ summary: undefined })) as Block[]).find(
+          (b) => b.fields,
+        ),
+      ).fields,
+    );
+    expect(expectDefined(fields[0]).text).toContain('post the digest');
   });
 });

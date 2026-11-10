@@ -11,6 +11,7 @@
  * asserted.
  */
 
+import type { Mock } from 'vitest';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../slack/client.js', () => ({
@@ -19,7 +20,7 @@ vi.mock('../slack/client.js', () => ({
   getBotUserId: vi.fn(),
   fetchSlackThread: vi.fn(),
   getBotId: vi.fn(),
-  addReaction: vi.fn(),
+  addReaction: vi.fn().mockResolvedValue(undefined),
   setSlackDryRun: vi.fn(),
   getUserInfo: vi.fn(),
   isExternalUser: vi.fn().mockReturnValue(false),
@@ -74,20 +75,21 @@ import { mountApiRoutes } from '../api/routes.js';
 import { Task } from '../../tasks/task.js';
 import { getUserInfo, isExternalUser } from '../slack/client.js';
 import { emitEvent } from '../../system/event-bus.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const EXPECTED = { github: 'org/backend', pr_number: 42 };
 const BUTTON_VALUE = 'task-123|org/backend#42';
 
 type FakeTask = {
-  handleMergeApproval: ReturnType<typeof vi.fn>;
-  handleMergeDenial: ReturnType<typeof vi.fn>;
+  handleMergeApproval: Mock<Task['handleMergeApproval']>;
+  handleMergeDenial: Mock<Task['handleMergeDenial']>;
   updateSlackMessageSafely: ReturnType<typeof vi.fn>;
 };
 
 function makeFakeTask(): FakeTask {
   return {
-    handleMergeApproval: vi.fn().mockResolvedValue('resolved'),
-    handleMergeDenial: vi.fn().mockResolvedValue('resolved'),
+    handleMergeApproval: vi.fn<Task['handleMergeApproval']>().mockResolvedValue('resolved'),
+    handleMergeDenial: vi.fn<Task['handleMergeDenial']>().mockResolvedValue('resolved'),
     updateSlackMessageSafely: vi.fn().mockResolvedValue(undefined),
   };
 }
@@ -108,7 +110,10 @@ function captureSlackHandlers(): { approve: BoltHandler; deny: BoltHandler } {
     }),
   };
   registerMergeActionHandlers(fakeApp as unknown as Pick<AppType, 'action'>);
-  return { approve: registrations.get('approve_merge')!, deny: registrations.get('deny_merge')! };
+  return {
+    approve: expectDefined(registrations.get('approve_merge')),
+    deny: expectDefined(registrations.get('deny_merge')),
+  };
 }
 
 function slackPayload(value: string = BUTTON_VALUE) {
@@ -126,7 +131,7 @@ type RouteHandler = (req: Request, res: Response) => Promise<void>;
 function captureApproveRoute(): RouteHandler {
   const fakeApp = { use: vi.fn() };
   mountApiRoutes(fakeApp as unknown as Application);
-  const router = fakeApp.use.mock.calls[0]![1] as {
+  const router = expectDefined(fakeApp.use.mock.calls[0])[1] as {
     stack: Array<{
       route?: {
         path: string;
@@ -138,7 +143,7 @@ function captureApproveRoute(): RouteHandler {
   const layer = router.stack.find(
     (l) => l.route?.path === '/tasks/:id/approve' && l.route.methods['post'],
   );
-  return layer!.route!.stack[0]!.handle;
+  return expectDefined(expectDefined(expectDefined(layer).route).stack[0]).handle;
 }
 
 function makeRes() {
@@ -172,7 +177,7 @@ describe('merge approval — Slack button and API route resolve identically (AC8
     await approve(slackPayload() as never);
 
     expect(task.handleMergeApproval).toHaveBeenCalledTimes(1);
-    const [slackApprover, slackExpected] = task.handleMergeApproval.mock.calls[0]!;
+    const [slackApprover, slackExpected] = expectDefined(task.handleMergeApproval.mock.calls[0]);
     expect(slackApprover).toEqual({ id: 'U1', name: 'Dana', email: 'dana@example.com' });
     expect(slackExpected).toEqual(EXPECTED);
     expect(task.updateSlackMessageSafely).toHaveBeenCalledWith(
@@ -190,7 +195,7 @@ describe('merge approval — Slack button and API route resolve identically (AC8
     );
 
     expect(task.handleMergeApproval).toHaveBeenCalledTimes(2);
-    const [, apiExpected] = task.handleMergeApproval.mock.calls[1]!;
+    const [, apiExpected] = expectDefined(task.handleMergeApproval.mock.calls[1]);
     expect(apiExpected).toEqual(slackExpected);
     expect(res.json).toHaveBeenCalledWith({ ok: true });
     expect(task.handleMergeDenial).not.toHaveBeenCalled();
@@ -204,7 +209,7 @@ describe('merge approval — Slack button and API route resolve identically (AC8
     await deny(slackPayload() as never);
 
     expect(task.handleMergeDenial).toHaveBeenCalledTimes(1);
-    expect(task.handleMergeDenial.mock.calls[0]![0]).toEqual(EXPECTED);
+    expect(expectDefined(task.handleMergeDenial.mock.calls[0])[0]).toEqual(EXPECTED);
     expect(task.updateSlackMessageSafely).toHaveBeenCalledWith(
       'C1',
       '111.222',
@@ -220,8 +225,8 @@ describe('merge approval — Slack button and API route resolve identically (AC8
     );
 
     expect(task.handleMergeDenial).toHaveBeenCalledTimes(2);
-    expect(task.handleMergeDenial.mock.calls[1]![0]).toEqual(
-      task.handleMergeDenial.mock.calls[0]![0],
+    expect(expectDefined(task.handleMergeDenial.mock.calls[1])[0]).toEqual(
+      expectDefined(task.handleMergeDenial.mock.calls[0])[0],
     );
     expect(task.handleMergeApproval).not.toHaveBeenCalled();
   });

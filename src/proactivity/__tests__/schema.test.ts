@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { InitiativeStore } from '../store.js';
 import { SCHEMA_VERSION } from '../persistence/schema.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const NOW = Date.parse('2026-10-20T10:00:00Z');
 let root: string;
@@ -48,7 +49,7 @@ it('reopens current state without resetting evidence, approvals or unresolved li
     budget: 'task',
     delivery: 'card',
   });
-  const charge = store.reserve(50_000, false, NOW)!;
+  const charge = expectDefined(store.reserve(50_000, false, NOW));
   store.dispatchRequest(charge, 'claude-haiku-5-5', 'request-fingerprint');
   store.close();
   const reopened = new InitiativeStore(path, 'T1', NOW + 86_400_000);

@@ -59,14 +59,14 @@ vi.mock('../../../tasks/task.js', () => ({
   activeTasks: new Map(),
   migrateRepositoriesShape: migrateSpy,
   readRepositories: (m: { repositories?: unknown }) =>
-    Array.isArray(m.repositories) ? m.repositories : [],
+    Array.isArray(m.repositories) ? (m.repositories as unknown[]) : [],
 }));
 
 import { mountApiRoutes } from '../routes.js';
 import { logger } from '../../../system/logger.js';
 import { SESSIONS_DIR } from '../../../system/workdir.js';
 
-const express = require('express');
+const express = require('express') as typeof import('express');
 
 const LEGACY = 'task-20260301-0900-legacy';
 

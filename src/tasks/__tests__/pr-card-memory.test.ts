@@ -33,6 +33,7 @@ vi.mock('../../system/logger.js', () => ({
 }));
 
 import { Task } from '../task.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const TaskCtor = Task as unknown as new (
   taskId: string,
@@ -116,9 +117,9 @@ describe('PR-card memory audience checks', () => {
     await task.resurfacePrCards();
 
     expect(task.prepareMemoryDelivery).toHaveBeenCalledWith('C07CHANNEL');
-    expect(vi.mocked(task.prepareMemoryDelivery).mock.invocationCallOrder[0]!).toBeLessThan(
-      postInteractiveToThread.mock.invocationCallOrder[0]!,
-    );
+    expect(
+      expectDefined(vi.mocked(task.prepareMemoryDelivery).mock.invocationCallOrder[0]),
+    ).toBeLessThan(expectDefined(postInteractiveToThread.mock.invocationCallOrder[0]));
   });
 
   it('classifies the destination before an in-place card update', async () => {
@@ -127,8 +128,8 @@ describe('PR-card memory audience checks', () => {
     await task.refreshPrCardInPlace('acme/app', 42);
 
     expect(task.prepareMemoryDelivery).toHaveBeenCalledWith('C07CHANNEL');
-    expect(vi.mocked(task.prepareMemoryDelivery).mock.invocationCallOrder[0]!).toBeLessThan(
-      updateMessage.mock.invocationCallOrder[0]!,
-    );
+    expect(
+      expectDefined(vi.mocked(task.prepareMemoryDelivery).mock.invocationCallOrder[0]),
+    ).toBeLessThan(expectDefined(updateMessage.mock.invocationCallOrder[0]));
   });
 });

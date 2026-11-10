@@ -8,6 +8,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Trigger } from '../../../types/trigger.js';
+import { expectDefined } from '../../../test-support/assertions.js';
 
 // One shared fake WebClient; methods are reconfigured per test. `WebClient` is used with `new`, so the mock implementation must be a regular (constructable) function that returns the shared fake.
 const slackApi = {
@@ -61,7 +62,7 @@ vi.mock('module', async (importOriginal) => {
     ...actual,
     createRequire: (url: string | URL) => {
       const real = actual.createRequire(url);
-      const patched = (id: string) => (id === '@slack/bolt' ? bolt.exports : real(id));
+      const patched = (id: string): unknown => (id === '@slack/bolt' ? bolt.exports : real(id));
       return Object.assign(patched, real);
     },
   };
@@ -264,7 +265,7 @@ describe('an attachment-only bot post survives into every agent-facing entry poi
     const { pinBody } = await import('../message-body.js');
 
     const pins = await client.listChannelPins(CHANNEL);
-    const item = pins![0];
+    const item = expectDefined(pins)[0];
     // Calls `pinBody`, the function `channel-pins.ts:145` actually uses, rather than re-implementing its
     // options inline. Inlining `renderMessageBody(..., { includeReactions: false })` here looked equivalent
     // but left the case green against any change INSIDE `pinBody` — including dropping the reactions

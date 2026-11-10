@@ -375,7 +375,7 @@ export async function runBoot(deps: BootDeps, opts: BootOpts): Promise<number> {
 export function parseArgs(argv: string[]): { timeoutFlag?: string; noPrepare?: true } {
   const result: { timeoutFlag?: string; noPrepare?: true } = {};
   for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i]!;
+    const arg = argv[i];
     if (arg === '--timeout-seconds') {
       const value = argv[++i];
       if (value === undefined) {

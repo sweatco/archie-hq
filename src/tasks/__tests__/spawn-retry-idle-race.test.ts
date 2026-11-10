@@ -1,3 +1,4 @@
+import { expectNext } from '../../test-support/assertions.js';
 /**
  * Regression test for recovery racing the spawn loop's fresh-session retry.
  *
@@ -105,7 +106,7 @@ describe('the idle check during a fresh-session retry', () => {
     // Attempt 2 — the fresh session. It reads the replayed wake and is still
     // working when the check armed by attempt 1 fires.
     const retry = recoverable.generator();
-    expect((await retry.next()).value?.message.content).toContain('the follow-up the user sent');
+    expect((await expectNext(retry)).message.content).toContain('the follow-up the user sent');
     const reading = retry.next();
 
     await vi.advanceTimersByTimeAsync(3000);
@@ -133,7 +134,7 @@ describe('the idle check during a fresh-session retry', () => {
     await vi.advanceTimersByTimeAsync(3000);
 
     expect(task.recoveryAttempts).toBe(1);
-    expect((await reading).value?.message.content).toContain('RECOVERY');
+    expect((await expectNext({ next: () => reading })).message.content).toContain('RECOVERY');
     expect(task.agent.session.active).toBe(true); // re-marked active after the nudge
     expect(task.stop).not.toHaveBeenCalled();
   });

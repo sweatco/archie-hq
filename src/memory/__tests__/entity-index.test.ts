@@ -20,6 +20,7 @@ vi.mock('../../system/logger.js', () => ({
 import { writeEntity } from '../entities.js';
 import { rebuildIndex, readIndexMarkdown, renderIndex } from '../entity-index.js';
 import type { EntityRecord } from '../types.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 function rec(over: Partial<EntityRecord> & { entity: string }): EntityRecord {
   return {
@@ -95,7 +96,7 @@ describe('entity index', () => {
     const slugs = markdown
       .split('\n')
       .filter((line) => line.startsWith('| [['))
-      .map((line) => line.match(/\[\[([^\]]+)/)![1]);
+      .map((line) => expectDefined(line.match(/\[\[([^\]]+)/))[1]);
     expect(slugs).toEqual(['alpha', 'zulu', 'older', 'undated']);
   });
 

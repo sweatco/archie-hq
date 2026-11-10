@@ -254,6 +254,7 @@ describe('isFullyStale', () => {
 // ============================================================================
 
 import { writeEntity, readEntity, listEntities } from '../entities.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 describe('runHousekeeping("entities")', () => {
   beforeEach(async () => {
@@ -281,7 +282,7 @@ describe('runHousekeeping("entities")', () => {
     await runHousekeeping('entities');
 
     expect(existsSync(join(entitiesDir, 'payments-api.md'))).toBe(false);
-    const survivor = (await readEntity('payment-service'))!;
+    const survivor = expectDefined(await readEntity('payment-service'));
     const texts = survivor.observations.map((o) => o.text);
     expect(texts).toContain('canonical fact');
     expect(texts).toContain('duplicate fact');
@@ -299,6 +300,6 @@ describe('runHousekeeping("entities")', () => {
     await runHousekeeping('entities');
 
     expect(existsSync(join(entitiesDir, 'legacy-thing.md'))).toBe(true);
-    expect((await readEntity('legacy-thing'))!.status).toBe('archived');
+    expect(expectDefined(await readEntity('legacy-thing')).status).toBe('archived');
   });
 });

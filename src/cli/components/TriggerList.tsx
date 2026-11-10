@@ -1,18 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Box, Text, useInput, useStdout } from 'ink';
 import { fetchTriggers, updateTrigger, deleteTrigger } from '../api.js';
-
-interface TriggerSummary {
-  id: string;
-  status: string;
-  created_by: string;
-  created_at: string;
-  last_fired_at: string | null;
-  binding_kind: 'channel' | 'user';
-  channel_name: string;
-  action_prompt: string;
-  summary: string;
-}
+import type { TriggerSummary } from '../api-contract.js';
 
 interface TriggerListProps {
   onBack: () => void;
@@ -48,8 +37,8 @@ export function TriggerList({ onBack, active, refreshTrigger }: TriggerListProps
       const { triggers: t } = await fetchTriggers();
       setTriggers(t);
       setError(null);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
@@ -57,7 +46,9 @@ export function TriggerList({ onBack, active, refreshTrigger }: TriggerListProps
 
   useEffect(() => {
     setLoading(true);
-    load();
+    load().catch((error: unknown) =>
+      setError(error instanceof Error ? error.message : String(error)),
+    );
   }, [load, refreshTrigger]);
 
   useInput((input, key) => {
@@ -78,7 +69,7 @@ export function TriggerList({ onBack, active, refreshTrigger }: TriggerListProps
         const next = t.status === 'enabled' ? 'paused' : 'enabled';
         updateTrigger(t.id, { status: next })
           .then(load)
-          .catch((e: any) => setError(e.message));
+          .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
       }
     } else if ((input === 'd' || input === 'D') && triggers[cursor]) {
       deleteTrigger(triggers[cursor].id)
@@ -86,9 +77,11 @@ export function TriggerList({ onBack, active, refreshTrigger }: TriggerListProps
           setCursor((c) => Math.max(0, c - 1));
           return load();
         })
-        .catch((e: any) => setError(e.message));
+        .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
     } else if (input === 'r' || input === 'R') {
-      load();
+      load().catch((error: unknown) =>
+        setError(error instanceof Error ? error.message : String(error)),
+      );
     }
   });
 

@@ -1,3 +1,4 @@
+import { GitHubClient } from '../../connectors/github/client.js';
 /**
  * Unit tests for Task.handleMergeApproval / Task.handleMergeDenial.
  *
@@ -43,6 +44,7 @@ import { appendAgentFinding } from '../persistence.js';
 import { logger } from '../../system/logger.js';
 import { emitEvent } from '../../system/event-bus.js';
 import type { TaskMetadata } from '../../types/task.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const mockGitHubClient = {
   getPRStatus: vi.fn(),
@@ -117,7 +119,9 @@ function reposWithPR(pr: { github: string; pr_number: number }): TaskMetadata['r
 
 /** Read the merge_armed flag off the reposWithPR branch state. */
 function armedFlag(task: FakeTask): boolean | undefined {
-  return task.metadata.repositories[0]!.branch_states!['feat/x']!.merge_armed;
+  return expectDefined(
+    expectDefined(expectDefined(task.metadata.repositories[0]).branch_states)['feat/x'],
+  ).merge_armed;
 }
 
 const approver = { id: 'U1', name: 'Dana' };
@@ -132,7 +136,12 @@ function deny(task: FakeTask, expected: { github: string; pr_number: number }) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(getGitHubClient).mockReturnValue(mockGitHubClient as any);
+  vi.mocked(getGitHubClient).mockReturnValue(
+    Object.assign(
+      new GitHubClient({ appId: '1', privateKey: 'unused', installationId: 1 }),
+      mockGitHubClient,
+    ),
+  );
 });
 
 describe('handleMergeApproval', () => {
@@ -225,8 +234,8 @@ describe('handleMergeApproval', () => {
 
     expect(armedFlag(task)).toBe(true);
     expect(task.save).toHaveBeenCalledWith(true);
-    expect(task.save.mock.invocationCallOrder[0]!).toBeLessThan(
-      task.sendMessage.mock.invocationCallOrder[0]!,
+    expect(expectDefined(task.save.mock.invocationCallOrder[0])).toBeLessThan(
+      expectDefined(task.sendMessage.mock.invocationCallOrder[0]),
     );
   });
 

@@ -26,6 +26,7 @@ import {
   readTaskSummariesFromChannel,
   writeTaskSummary,
 } from '../task-summaries.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 function taskMarkdown(
   taskId: string,
@@ -140,9 +141,9 @@ describe('canonical task summaries', () => {
       join(tempRoot, 'public', 'C07PUBLIC1', 'rolling-summary.md'),
       'utf-8',
     );
-    const row = overview.split('\n').find((line) => line.includes('[task-1]'))!;
+    const row = expectDefined(overview.split('\n').find((line) => line.includes('[task-1]')));
     expect(row).toContain('First \\| line');
-    const excerpt = row.match(/\.md\) \| (.*) \|$/)![1]!;
+    const excerpt = expectDefined(expectDefined(row.match(/\.md\) \| (.*) \|$/))[1]);
     expect(excerpt.replace(/\\\|/g, '|')).toHaveLength(200);
   });
 

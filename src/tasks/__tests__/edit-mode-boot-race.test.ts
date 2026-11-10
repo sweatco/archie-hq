@@ -35,13 +35,16 @@ vi.mock('fs/promises', () => ({
   appendFile: vi.fn().mockResolvedValue(undefined),
   readFile: vi.fn().mockResolvedValue(''),
 }));
-const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
+const { spawnMock } = vi.hoisted(() => ({
+  spawnMock: vi.fn<typeof import('../../agents/spawn.js').spawnAgent>(),
+}));
 vi.mock('../../agents/spawn.js', () => ({ spawnAgent: spawnMock }));
 
 import { Task, activeTasks } from '../task.js';
 import type { Agent } from '../../agents/agent.js';
 import type { TaskMetadata } from '../../types/task.js';
 import type { AgentDef } from '../../types/agent.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const TaskCtor = Task as unknown as new (
   taskId: string,
@@ -106,7 +109,7 @@ describe('ensurePm — reconcile a read-only boot that raced edit-mode approval'
 
     // The agent boots read-only (edit mode not yet approved).
     await task.sendMessage('investigate read-only');
-    const roAgent = task.agent!;
+    const roAgent = expectDefined(task.agent);
     expect(roAgent.editModeAtSpawn).toBe(false);
     roAgent.session.session_id = 'sess-boot'; // SDK assigned one during the read-only boot
     const roAbort = (roAgent.handle as unknown as { abort: ReturnType<typeof vi.fn> }).abort;
@@ -117,7 +120,7 @@ describe('ensurePm — reconcile a read-only boot that raced edit-mode approval'
 
     // The next message must reconcile: tear down + fresh writable spawn.
     await task.sendMessage('now make the change');
-    const rwAgent = task.agent!;
+    const rwAgent = expectDefined(task.agent);
 
     expect(roAbort).toHaveBeenCalled(); // read-only process torn down
     expect(rwAgent).not.toBe(roAgent); // replaced with a fresh Agent
@@ -131,7 +134,7 @@ describe('ensurePm — reconcile a read-only boot that raced edit-mode approval'
     const task = new TaskCtor(TASK_ID, meta, pmDef());
 
     await task.sendMessage('work');
-    const first = task.agent!;
+    const first = expectDefined(task.agent);
     expect(first.editModeAtSpawn).toBe(true);
     const abort = (first.handle as unknown as { abort: ReturnType<typeof vi.fn> }).abort;
 
@@ -144,7 +147,7 @@ describe('ensurePm — reconcile a read-only boot that raced edit-mode approval'
     const task = new TaskCtor(TASK_ID, metadata(), pmDef());
 
     await task.sendMessage('hi');
-    const first = task.agent!;
+    const first = expectDefined(task.agent);
     expect(first.editModeAtSpawn).toBe(false);
 
     await task.sendMessage('hi again');

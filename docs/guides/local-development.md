@@ -229,15 +229,15 @@ corepack enable npm
 npm ci
 npm run dev          # Development with hot reload (tsx watch)
 npm run build        # TypeScript compilation (tsc)
-npm run typecheck    # Type checking only (tsc --noEmit)
-npm run lint         # Oxlint, including typed rules and the existing-debt baseline
+npm run typecheck    # No-emit type checks for source, tools and scripts
+npm run lint         # Oxlint, including typed rules, with zero suppressed findings
 npm run format:check # Verify Prettier formatting
 npm run check        # Format check, lint, typecheck, build and tests
 npm test             # Run vitest suite
 npm run test:watch   # vitest in watch mode
 ```
 
-Use `npm run format` to apply formatting and `npm run lint:fix` for safe lint fixes, then review the diff. After fixing existing lint debt, run `npm run lint:prune` to remove stale allowances. The [coding guidelines](coding-guidelines.md) explain rule scopes, baseline limitations, review expectations and runtime verification. Keep `tsconfig.scripts.json` for the Docker Git-helper build; the nearest projects under `tools/` and `scripts/` provide no-emit lint coverage.
+Use `npm run format` to apply formatting and `npm run lint:fix` for safe lint fixes, then review the diff. The [coding guidelines](coding-guidelines.md) explain rule scopes, the zero-debt policy, review expectations and runtime verification. Keep `tsconfig.scripts.json` for the Docker Git-helper build; the nearest projects under `tools/` and `scripts/` provide no-emit compiler and typed lint coverage.
 
 The server starts on `http://localhost:3000` with:
 

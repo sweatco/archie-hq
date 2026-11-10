@@ -165,9 +165,14 @@ export class Agent {
 
     // Wire crash detection: when the SDK iterator exits, mark inactive.
     if (this.handle) {
-      this.handle.running.then(() => {
-        task.updateAgentState(false);
-      });
+      this.handle.running
+        .then(() => {
+          task.updateAgentState(false);
+        })
+        .catch((error: unknown) => {
+          task.updateAgentState(false);
+          logger.error(this.def.id, 'Agent iterator failed', error);
+        });
     }
 
     task.debouncedSave();

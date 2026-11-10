@@ -22,6 +22,7 @@ import {
   observationToolGuidance,
   shouldAttachObservationTools,
 } from '../tools.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const NOW = Date.parse('2026-10-20T10:00:00Z');
 let store: InitiativeStore;
@@ -35,12 +36,14 @@ beforeEach(() => {
   for (const channel of ['C1', 'C2']) {
     store.channel(channel, true, false);
     const ts = (NOW / 1000).toFixed(6);
-    const evidence = store.record(
-      { channel, thread: ts, ts, version: ts, author: 'U_AUTHOR', text: `Source in ${channel}` },
-      NOW,
-    )!;
+    const evidence = expectDefined(
+      store.record(
+        { channel, thread: ts, ts, version: ts, author: 'U_AUTHOR', text: `Source in ${channel}` },
+        NOW,
+      ),
+    );
     store.apply(
-      [store.snapshot(channel, ts)!],
+      [expectDefined(store.snapshot(channel, ts))],
       [
         {
           id: channel,
@@ -55,11 +58,11 @@ beforeEach(() => {
     );
   }
   slack = {
-    inspect: vi.fn(async (channel) =>
+    inspect: vi.fn(async (channel: string) =>
       ['C1', 'C2'].includes(channel) ? { shared: false, recipientCanRead: true } : null,
     ),
-    recipient: vi.fn(async (channel) => (channel === 'D_OWNER' ? 'U_OWNER' : null)),
-    verifyDm: vi.fn(async (channel) => channel === 'D_OWNER'),
+    recipient: vi.fn(async (channel: string) => (channel === 'D_OWNER' ? 'U_OWNER' : null)),
+    verifyDm: vi.fn(async (channel: string) => channel === 'D_OWNER'),
     link: (channel: string, thread: string) => `https://slack.test/${channel}/${thread}`,
   } as unknown as ObservationSlack;
   recall = new ObservationRecall(store, slack);
@@ -131,7 +134,7 @@ describe('independent observation tools', () => {
     expect(await recall.read(destination('C1'), 'observation', 'C1')).toBe(
       'Observation unavailable.',
     );
-    const source = store.snapshot('C2', (NOW / 1000).toFixed(6))!;
+    const source = expectDefined(store.snapshot('C2', (NOW / 1000).toFixed(6)));
     store.record(
       { ...source.evidence[0], version: (NOW / 1000 + 1).toFixed(6), deleted: true, text: '' },
       NOW,
@@ -143,7 +146,7 @@ describe('independent observation tools', () => {
 
   it('bounds and escapes tool evidence and gives callers no channel-scope argument', async () => {
     const ts = (NOW / 1000).toFixed(6);
-    const snapshot = store.snapshot('C1', ts)!;
+    const snapshot = expectDefined(store.snapshot('C1', ts));
     store.apply(
       [snapshot],
       [
@@ -175,7 +178,7 @@ describe('independent observation tools', () => {
 
   it('does not expose a revision invalidated while source authorization is pending', async () => {
     vi.mocked(slack.inspect).mockImplementationOnce(async (channel) => {
-      const source = store.snapshot(channel, (NOW / 1000).toFixed(6))!;
+      const source = expectDefined(store.snapshot(channel, (NOW / 1000).toFixed(6)));
       store.record(
         { ...source.evidence[0], version: (NOW / 1000 + 1).toFixed(6), deleted: true, text: '' },
         NOW,
@@ -186,7 +189,7 @@ describe('independent observation tools', () => {
       'Observation unavailable.',
     );
     vi.mocked(slack.inspect).mockImplementationOnce(async (channel) => {
-      const source = store.snapshot(channel, (NOW / 1000).toFixed(6))!;
+      const source = expectDefined(store.snapshot(channel, (NOW / 1000).toFixed(6)));
       store.record(
         { ...source.evidence[0], version: (NOW / 1000 + 1).toFixed(6), deleted: true, text: '' },
         NOW,

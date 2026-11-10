@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import assert from 'node:assert/strict';
+import { z } from 'zod';
 import { proposalVersion, suggestionId } from './proposals.js';
 import type { CapabilityProposal, TaskHandoffRecord } from './types.js';
 import { reasonText, type DecisionReason } from './decisions.js';
@@ -10,6 +12,31 @@ import type { Delivery, Job, Matter, Observation, SourceMessage, ThreadSnapshot 
 import { lisbonDay } from './types.js';
 
 type Row = Record<string, string | number | null>;
+const evidenceIdsSchema = z.array(z.number());
+const stringListSchema = z.array(z.string());
+const proposalRefSchema = z.object({ id: z.string(), version: z.string() });
+const proposalBodySchema = z.object({
+  repository: z.string(),
+  outcome: z.string(),
+  matter: z.string(),
+  evidence: evidenceIdsSchema,
+});
+const matterBodySchema = z.object({
+  id: z.string(),
+  channel: z.string(),
+  thread: z.string(),
+  title: z.string(),
+  detail: z.string(),
+  evidence: evidenceIdsSchema,
+  state: z.enum(['open', 'snoozed', 'resolved', 'dismissed']),
+  owner: z.string().nullable(),
+  deadline: z.number().nullable(),
+  explicit: z.boolean(),
+  nextCheck: z.number(),
+  valid: z.boolean(),
+  reopen: z.boolean().optional(),
+});
+
 const DAY = 86_400_000;
 
 export class InitiativeStore {
@@ -39,6 +66,11 @@ export class InitiativeStore {
   }
   private row(sql: string, ...args: SQLInputValue[]): Row | undefined {
     return this.db.prepare(sql).get(...args) as Row | undefined;
+  }
+  private requiredRow(sql: string, ...args: SQLInputValue[]): Row {
+    const row = this.row(sql, ...args);
+    assert(row, `Expected one SQLite row: ${sql}`);
+    return row;
   }
   private rows(sql: string, ...args: SQLInputValue[]): Row[] {
     return this.db.prepare(sql).all(...args) as Row[];
@@ -138,7 +170,7 @@ export class InitiativeStore {
         id,
         Number(allowed),
         Number(shared),
-        this.setting('watermark')!,
+        this.setting('watermark') ?? null,
         gap ?? null,
         Number(gap !== undefined),
       );
@@ -158,19 +190,25 @@ export class InitiativeStore {
 
   workloadState(now: number) {
     return {
-      queue: Number(this.row('SELECT count(*) AS n FROM jobs')!.n),
-      due: Number(this.row('SELECT count(*) AS n FROM jobs WHERE due<=?', now)!.n),
-      deferred: Number(this.row('SELECT count(*) AS n FROM jobs WHERE attempts>0')!.n),
-      revisions: Number(this.row('SELECT count(*) AS n FROM revisions')!.n),
-      observations: Number(this.row('SELECT count(*) AS n FROM observations WHERE valid=1')!.n),
+      queue: Number(this.requiredRow('SELECT count(*) AS n FROM jobs').n),
+      due: Number(this.requiredRow('SELECT count(*) AS n FROM jobs WHERE due<=?', now).n),
+      deferred: Number(this.requiredRow('SELECT count(*) AS n FROM jobs WHERE attempts>0').n),
+      revisions: Number(this.requiredRow('SELECT count(*) AS n FROM revisions').n),
+      observations: Number(
+        this.requiredRow('SELECT count(*) AS n FROM observations WHERE valid=1').n,
+      ),
       rawBytes: Number(
-        this.row('SELECT COALESCE(SUM(length(CAST(text AS BLOB))),0) AS n FROM revisions')!.n,
+        this.requiredRow('SELECT COALESCE(SUM(length(CAST(text AS BLOB))),0) AS n FROM revisions')
+          .n,
       ),
       unsettled: Number(
-        this.row('SELECT COALESCE(SUM(maximum),0) AS n FROM charges WHERE settled IS NULL')!.n,
+        this.requiredRow('SELECT COALESCE(SUM(maximum),0) AS n FROM charges WHERE settled IS NULL')
+          .n,
       ),
       settled: Number(
-        this.row('SELECT COALESCE(SUM(actual),0) AS n FROM charges WHERE settled IS NOT NULL')!.n,
+        this.requiredRow(
+          'SELECT COALESCE(SUM(actual),0) AS n FROM charges WHERE settled IS NOT NULL',
+        ).n,
       ),
       budget: this.budget(now),
       threads: this.rows(
@@ -258,9 +296,13 @@ export class InitiativeStore {
       code: row.code,
       explanation: reasonText[row.code as DecisionReason],
       nextDue: row.next_due,
-      evidence: JSON.parse(String(row.evidence)),
+      evidence: z
+        .array(z.object({ id: z.number(), hash: z.string().nullable() }))
+        .parse(JSON.parse(String(row.evidence))),
       delivery: row.delivery,
-      requests: JSON.parse(String(row.requests)),
+      requests: z
+        .array(z.record(z.string(), z.union([z.string(), z.number(), z.null()])))
+        .parse(JSON.parse(String(row.requests))),
     }));
     const deliveries = this.rows(
       `SELECT id,state,created,ts,proposal FROM deliveries
@@ -323,15 +365,8 @@ export class InitiativeStore {
   proposal(id: string): CapabilityProposal | null {
     const row = this.row('SELECT * FROM proposals WHERE id=?', id);
     if (!row) return null;
-    const body = JSON.parse(String(row.body));
-    if (
-      typeof body.repository !== 'string' ||
-      typeof body.outcome !== 'string' ||
-      typeof body.matter !== 'string' ||
-      !Array.isArray(body.evidence)
-    )
-      return null;
-    return { ...body, id };
+    const body = proposalBodySchema.safeParse(JSON.parse(String(row.body)));
+    return body.success ? { ...body.data, id } : null;
   }
 
   proposalCurrent(proposal: CapabilityProposal, now: number, checkAccess = true): boolean {
@@ -381,13 +416,15 @@ export class InitiativeStore {
       channel: String(row.channel),
       thread: row.thread as string | null,
       text: String(row.text),
-      matters: JSON.parse(String(row.matters)),
-      evidence: JSON.parse(String(row.evidence)),
+      matters: stringListSchema.parse(JSON.parse(String(row.matters))),
+      evidence: evidenceIdsSchema.parse(JSON.parse(String(row.evidence))),
       digest: row.digest === 1,
       state: row.state as Delivery['state'],
       ts: row.ts as string | null,
       created: Number(row.created),
-      proposal: row.proposal ? JSON.parse(String(row.proposal)) : undefined,
+      proposal: row.proposal
+        ? proposalRefSchema.parse(JSON.parse(String(row.proposal)))
+        : undefined,
     };
   }
 
@@ -742,7 +779,11 @@ export class InitiativeStore {
       ORDER BY g.oldest,p.channel,p.changed LIMIT ?`,
       limit,
     )
-      .map((r) => this.snapshot(String(r.channel), String(r.thread))!)
+      .map((r) => {
+        const snapshot = this.snapshot(String(r.channel), String(r.thread));
+        assert(snapshot, `Missing selected thread ${r.channel}:${r.thread}`);
+        return snapshot;
+      })
       .filter(Boolean);
   }
 
@@ -783,7 +824,8 @@ export class InitiativeStore {
         }
         if (
           item.evidence.every((id) => {
-            const evidence = snapshot.evidence.find((e) => e.id === id)!;
+            const evidence = snapshot.evidence.find((e) => e.id === id);
+            assert(evidence, `Missing validated evidence ${id}`);
             return evidence.own || evidence.bot;
           })
         )
@@ -880,7 +922,7 @@ export class InitiativeStore {
       channel: String(r.channel),
       thread: String(r.thread),
       text: String(r.text),
-      evidence: JSON.parse(String(r.evidence)),
+      evidence: evidenceIdsSchema.parse(JSON.parse(String(r.evidence))),
       kind: r.kind as Observation['kind'],
     }));
   }
@@ -889,7 +931,7 @@ export class InitiativeStore {
     const row = this.row('SELECT body,valid,next_check FROM matters WHERE id=?', id);
     return row
       ? {
-          ...JSON.parse(String(row.body)),
+          ...matterBodySchema.parse(JSON.parse(String(row.body))),
           valid: row.valid === 1,
           nextCheck: Number(row.next_check),
         }
@@ -900,12 +942,20 @@ export class InitiativeStore {
     return this.rows(
       "SELECT id FROM matters WHERE valid=1 AND next_check<=? AND json_extract(body,'$.state') IN ('open','snoozed') ORDER BY next_check LIMIT 100",
       now,
-    ).map((r) => this.matter(String(r.id))!);
+    ).map((r) => {
+      const matter = this.matter(String(r.id));
+      assert(matter, `Missing selected matter ${r.id}`);
+      return matter;
+    });
   }
 
   threadMatters(channel: string, thread: string): Matter[] {
     return this.rows('SELECT id FROM matters WHERE channel=? AND thread=?', channel, thread).map(
-      (r) => this.matter(String(r.id))!,
+      (r) => {
+        const matter = this.matter(String(r.id));
+        assert(matter, `Missing selected matter ${r.id}`);
+        return matter;
+      },
     );
   }
 
@@ -926,7 +976,8 @@ export class InitiativeStore {
       if (action === 'not useful' || action === 'stop following') matter.state = 'dismissed';
       if (action === 'later') {
         matter.state = 'snoozed';
-        matter.nextCheck = later!;
+        assert(later !== undefined, 'Snoozing a matter requires a next-check time');
+        matter.nextCheck = later;
       }
       this.run(
         'UPDATE matters SET body=?,next_check=? WHERE id=?',
@@ -938,7 +989,7 @@ export class InitiativeStore {
         "UPDATE deliveries SET state='cancelled' WHERE state='pending' AND EXISTS (SELECT 1 FROM json_each(matters) WHERE value=?)",
         id,
       );
-      if (action === 'later') this.schedule('investigate', id, later!);
+      if (action === 'later') this.schedule('investigate', id, matter.nextCheck);
     });
   }
 
@@ -1030,12 +1081,12 @@ export class InitiativeStore {
       if (
         scope &&
         Number(
-          this.row(
+          this.requiredRow(
             `SELECT COALESCE(SUM(COALESCE(c.actual,c.maximum)),0) AS n
         FROM charges c JOIN charge_scopes s ON s.charge=c.id
         WHERE s.scope=?`,
             scope,
-          )!.n,
+          ).n,
         ) +
           maximum >
           scopeLimit
@@ -1052,13 +1103,16 @@ export class InitiativeStore {
   budget(now: number): number {
     return (
       Number(
-        this.row('SELECT COALESCE(SUM(amount),0) AS n FROM debits WHERE day=?', lisbonDay(now))!.n,
+        this.requiredRow(
+          'SELECT COALESCE(SUM(amount),0) AS n FROM debits WHERE day=?',
+          lisbonDay(now),
+        ).n,
       ) +
       Number(
-        this.row(
+        this.requiredRow(
           'SELECT COALESCE(SUM(maximum),0) AS n FROM charges WHERE settled IS NULL AND admitted<=?',
           now,
-        )!.n,
+        ).n,
       )
     );
   }
@@ -1158,23 +1212,28 @@ export class InitiativeStore {
       channel: String(r.channel),
       thread: r.thread as string | null,
       text: String(r.text),
-      matters: JSON.parse(String(r.matters)),
-      evidence: JSON.parse(String(r.evidence)),
+      matters: stringListSchema.parse(JSON.parse(String(r.matters))),
+      evidence: evidenceIdsSchema.parse(JSON.parse(String(r.evidence))),
       digest: r.digest === 1,
       state,
       ts: r.ts as string | null,
       created: Number(r.created),
-      proposal: r.proposal ? JSON.parse(String(r.proposal)) : undefined,
+      proposal: r.proposal ? proposalRefSchema.parse(JSON.parse(String(r.proposal))) : undefined,
     }));
   }
 
   admitDelivery(id: string, now: number): boolean {
     return this.transaction(() => {
       const delivery = this.row("SELECT * FROM deliveries WHERE id=? AND state='pending'", id);
-      if (!delivery || !this.evidenceCurrent(JSON.parse(String(delivery.evidence)))) return false;
-      if (!this.deliveryRecipientCurrent(this.delivery(id)!)) return false;
+      if (
+        !delivery ||
+        !this.evidenceCurrent(evidenceIdsSchema.parse(JSON.parse(String(delivery.evidence))))
+      )
+        return false;
+      const current = this.delivery(id);
+      if (!current || !this.deliveryRecipientCurrent(current)) return false;
       if (delivery.proposal) {
-        const ref = JSON.parse(String(delivery.proposal));
+        const ref = proposalRefSchema.parse(JSON.parse(String(delivery.proposal)));
         const proposal = this.proposal(ref.id);
         if (
           !proposal ||
@@ -1191,13 +1250,13 @@ export class InitiativeStore {
       );
       if (ineligible) return false;
       const count = Number(
-        this.row(
+        this.requiredRow(
           `SELECT count(*) AS n FROM deliveries
         WHERE slot_day=? AND digest=? AND channel=? AND state IN ('sending','uncertain','sent')`,
           lisbonDay(now),
           delivery.digest,
           delivery.channel,
-        )!.n,
+        ).n,
       );
       if (count >= (delivery.digest === 1 ? 1 : 2)) return false;
       this.run("UPDATE deliveries SET state='sending',slot_day=? WHERE id=?", lisbonDay(now), id);

@@ -225,6 +225,12 @@ function resolveGithub(
   };
 }
 
+function hasLocalClone(
+  attached: AttachedRepo | undefined,
+): attached is AttachedRepo & { clone_path: string } {
+  return !!attached?.clone_path;
+}
+
 /**
  * Resolve and require that the github has a local clone available.
  *
@@ -233,11 +239,13 @@ function resolveGithub(
 function requireAttached(
   task: Task,
   requested?: string,
-): { ok: true; github: string; attached: AttachedRepo } | { ok: false; error: string } {
+):
+  | { ok: true; github: string; attached: AttachedRepo & { clone_path: string } }
+  | { ok: false; error: string } {
   const resolved = resolveGithub(task, requested);
   if (!resolved.ok) return resolved;
   const attached = getAttached(task, resolved.github);
-  if (!attached?.clone_path) {
+  if (!hasLocalClone(attached)) {
     return {
       ok: false,
       error: `Repo "${resolved.github}" has no local clone. Call mount_repo("${resolved.github}") first.`,
@@ -1370,7 +1378,7 @@ function createPushBranchTool(agent: Agent, task: Task) {
       try {
         const forceFlag = force ? '--force-with-lease ' : '';
         await execAsync(`git push ${forceFlag}-u origin HEAD:${branch}`, {
-          cwd: attached.clone_path!,
+          cwd: attached.clone_path,
         });
 
         task.debouncedSave();
@@ -2209,7 +2217,7 @@ function createFetchTool(task: Task) {
     async (args) => {
       const resolved = requireAttached(task, args.github);
       if (!resolved.ok) return err(resolved.error);
-      await gitExec(resolved.attached.clone_path!, 'fetch origin');
+      await gitExec(resolved.attached.clone_path, 'fetch origin');
       return ok(`Fetched latest from origin (${resolved.github})`);
     },
   );
@@ -2227,7 +2235,7 @@ function createSwitchBranchTool(task: Task) {
       const resolved = requireAttached(task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const { attached } = resolved;
-      const clonePath = attached.clone_path!;
+      const clonePath = attached.clone_path;
 
       const branch = args.branch;
       const currentBranch = attached.current_branch;
@@ -2297,7 +2305,7 @@ function createCreateBranchTool(task: Task) {
       const branchName = taskBranchName(task.taskId, existing);
 
       const base = args.base || 'HEAD';
-      await gitExec(attached.clone_path!, `checkout -b ${branchName} ${base}`);
+      await gitExec(attached.clone_path, `checkout -b ${branchName} ${base}`);
 
       attached.branch_states ??= {};
       attached.branch_states[branchName] = {};
@@ -2811,7 +2819,8 @@ function makePrivacyResolver(): (channelId: string) => Promise<boolean> {
     let p = cache.get(channelId);
     if (!p) {
       p = workspaceMap().then((map) => {
-        if (map.has(channelId)) return map.get(channelId)!;
+        const isPrivate = map.get(channelId);
+        if (isPrivate !== undefined) return isPrivate;
         // Miss — a brand-new, just-converted, or (crucially) a private channel
         // the bot was removed from and so dropped out of the workspace cache.
         // Resolve it live via the STRICT lookup that throws on error, and fail
@@ -3374,7 +3383,8 @@ function createUpdateTriggerTool(task: Task) {
         else deindexTrigger(candidate.id);
         if (statusChange === 'resumed')
           emitEvent('trigger:resumed', task.taskId, { trigger_id: candidate.id });
-        await announceTriggerChange(candidate, editedContent ? 'edited' : statusChange!);
+        const change = editedContent ? 'edited' : statusChange;
+        if (change) await announceTriggerChange(candidate, change);
       }
 
       const updated = statusChange === 'paused' && !editedContent ? trigger : candidate;

@@ -18,6 +18,7 @@
  * test module graph stays a single mock; all paths are built locally.
  */
 
+import { z } from 'zod';
 import { createReadStream, existsSync } from 'fs';
 import { readdir } from 'fs/promises';
 import { createInterface } from 'readline';
@@ -151,7 +152,7 @@ async function scanTranscript(filePath: string, ctx: ScanContext): Promise<void>
       if (!line.trim()) continue;
       let entry: Record<string, unknown>;
       try {
-        entry = JSON.parse(line);
+        entry = z.record(z.string(), z.unknown()).parse(JSON.parse(line));
       } catch {
         continue; // skip malformed
       }
@@ -283,7 +284,15 @@ async function collectCost(
     for await (const line of rl) {
       if (!line.trim()) continue;
       try {
-        records.push(JSON.parse(line));
+        records.push(
+          z
+            .object({
+              query_nonce: z.string().optional(),
+              agentKey: z.string().optional(),
+              total_cost_usd: z.number().optional(),
+            })
+            .parse(JSON.parse(line)),
+        );
       } catch {
         continue; // skip malformed
       }

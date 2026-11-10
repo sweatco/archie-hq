@@ -1,3 +1,5 @@
+import { MessageQueue } from '../message-queue.js';
+import { registeredMcpTools } from '../../test-support/mcp.js';
 /**
  * Handler-level tests for the `post_to_channel` explore tool — the success path
  * (returns the posted ts, message not linked to the task) plus the DM-rejection
@@ -94,11 +96,12 @@ import { createCommsMcpServer } from '../tools.js';
 import { DmPostError } from '../../connectors/slack/client.js';
 import type { Agent } from '../agent.js';
 import type { Task } from '../../tasks/task.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 function makeAgent(): Agent {
   return {
     def: { id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', pluginName: 'pm', isPm: true },
-    queue: {} as any,
+    queue: new MessageQueue(),
     session: { active: false },
   } as unknown as Agent;
 }
@@ -143,11 +146,9 @@ function getHandler(
   task: Task = makeTask(),
 ): (args: Record<string, unknown>) => Promise<{ content: { text: string }[] }> {
   const server = createCommsMcpServer(makeAgent(), task);
-  const raw =
-    (server.instance as any)._registeredTools ??
-    Object.fromEntries((server.instance as any)._tools ?? []);
+  const raw = registeredMcpTools(server);
   const entry = raw[name];
-  const fn = entry.callback ?? entry.handler ?? entry.cb;
+  const fn = entry.callback;
   return (args) => fn(args, {});
 }
 
@@ -187,9 +188,9 @@ describe('post_to_channel handler', () => {
       threadTs: undefined,
     });
     expect(task.prepareMemoryDelivery).toHaveBeenCalledWith('C123');
-    expect(vi.mocked(task.prepareMemoryDelivery).mock.invocationCallOrder[0]!).toBeLessThan(
-      postSlackMessage.mock.invocationCallOrder[0]!,
-    );
+    expect(
+      expectDefined(vi.mocked(task.prepareMemoryDelivery).mock.invocationCallOrder[0]),
+    ).toBeLessThan(expectDefined(postSlackMessage.mock.invocationCallOrder[0]));
     expect(out).toContain('1716998400.123456');
     expect(out).toMatch(/not linked to this task/i);
   });

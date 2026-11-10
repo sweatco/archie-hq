@@ -1,6 +1,6 @@
 # Adopt Archie's coding guidelines and automated checks
 
-Status: Implemented in [draft PR #370](https://github.com/sweatco/archie-hq/pull/370). Approved 2026-11-09. Starting revision: `b3aae37033d166762db2adff7c95ae249307358c`; rebased onto `26821b177d3c20467559898f5dc0cf02f4322c97` on 2026-11-10. Verification results and remaining debt are recorded below; readability benefit remains unmeasured. No deployment was performed.
+Status: Guidelines, checks and the verified suppression-free follow-up are prepared for publication in [draft PR #370](https://github.com/sweatco/archie-hq/pull/370). Approved 2026-11-09; publication of the zero-debt follow-up authorized 2026-11-10. Starting revision: `b3aae37033d166762db2adff7c95ae249307358c`; rebased onto `26821b177d3c20467559898f5dc0cf02f4322c97` on 2026-11-10. Verification results and remaining debt are recorded below; readability benefit remains unmeasured. No deployment was performed.
 
 ## Outcome and constraints
 
@@ -8,7 +8,7 @@ Make the [researched coding guidelines](../guides/coding-guidelines.md) active, 
 
 Use Oxlint **1.93.0**, oxlint-tsgolint **7.0.2006** and Prettier **3.9.10**, pinned in the manifest and lockfile. This supersedes the earlier proposed ESLint integration: [typescript-eslint supports TypeScript below 6.1](https://typescript-eslint.io/users/dependency-versions/), while Archie uses 7.0.2 and [Oxlint's stable engine tracks that release](https://oxc.rs/blog/2026-07-22-type-aware-linting-stable.html). Keep the existing compiler/build authoritative; do not add a compiler shim or second TypeScript version.
 
-Confirmed decisions: baseline existing debt through the native per-file/rule-count mechanism, review equal-count substitutions and baseline changes, and perform one separate mechanical formatting pass. No public runtime API change, broad refactor, mandatory Git hook, quality bot, architecture rewrite or complexity/file-length quota is planned. Remote Git writes and releases require separate explicit approval.
+Initial adoption decisions (superseded by the zero-debt update below): baseline existing debt through the native per-file/rule-count mechanism, review equal-count substitutions and baseline changes, and perform one separate mechanical formatting pass. No public runtime API change, broad refactor, mandatory Git hook, quality bot, architecture rewrite or complexity/file-length quota is planned. Remote Git writes and releases require separate explicit approval.
 
 ## Guidance and documentation
 
@@ -127,10 +127,41 @@ CI now runs `corepack enable npm` after setting up Node 24. Corepack reads the e
 
 Qualification used Node 24.22.2 and Corepack 0.36.0, the version bundled by that Node release. Corepack created npm shims and its cache in a temporary directory, selected npm 11.16.0 directly from the unchanged manifest, and passed the complete `npm run check`: formatting, lint, typecheck, build and all 2,329 tests across 164 files. All 577 tracked-file hashes remained unchanged by the check. The host toolchain was not changed. Hosted verification of the Corepack workflow follows publication.
 
-### Remaining debt and limits
+### Initial adoption debt and limits (historical)
 
-The native baseline records **2,449 findings across 167 files**, measured after the rebase, clean install, directive cleanup, final formatting and the Vitest compatibility adjustment. The original pre-rebase snapshot had 2,405 findings across 164 files. It includes existing unsafe types/operations, non-null assertions, promise handling, runtime cycles and cleanup findings. The new check tests have no baseline entry. Baseline generation is not part of CI; routine pruning only reduces resolved allowances.
+The native baseline recorded **2,449 findings across 167 files**, measured after the rebase, clean install, directive cleanup, final formatting and the Vitest compatibility adjustment. The original pre-rebase snapshot had 2,405 findings across 164 files. It includes existing unsafe types/operations, non-null assertions, promise handling, runtime cycles and cleanup findings. The new check tests have no baseline entry. Baseline generation is not part of CI; routine pruning only reduces resolved allowances.
 
 The baseline counts findings per file/rule and can miss an equal-count substitution. Config/baseline changes and code readability still require review. Hosted Linux format/lint/typecheck/build/test, gitleaks and CodeQL passed at `46059b9`; hosted checks for the Corepack workflow update remain pending. A Docker image build, provider-backed live E2E and production behavior were not exercised. The original guideline adoption preserved runtime behavior; the subsequent security edge-case changes are recorded above.
 
 No readability or productivity benefit has been measured. The five-change evaluation follows adoption through existing PR feedback and remains pending.
+
+
+### Zero-debt follow-up, 2026-11-10
+
+The user replaced the baseline rollout with immediate remediation. `oxlint-suppressions.json`, `lint:prune` and the formatter's baseline exception are removed. The rule allowlist and severities are unchanged; there are no inline disable directives or suppressed findings. The CLI integration test now verifies that findings fail without writing allowances and that the repository contains no native suppression file.
+
+The first unsuppressed run reported 2,449 findings across 167 files. Some were caused by missing Node ambient types in the scripts project rather than runtime defects; the root compiler configuration now explicitly includes Node types. `typecheck` also checks the nearest no-emit projects for tools and scripts, while the separate emitting Docker helper project remains intact.
+
+Repairs use typed SDK/Bolt/Octokit contracts, checked external configuration and JSON boundaries, explicit nullable paths and test fixture assertions. Background work and timers own their rejection handling. Runtime cycles are removed by separating startup from path constants, giving the active-task map one independent owner and passing task construction/loading into schedulers. No permissions, model selection, memory audience or approval policy is intentionally broadened. Scoped memory guidance remains unchanged.
+
+Self-review caught and corrected an attachment-identity mistake in the initial type narrowing: branch tools must update the canonical mounted repository, not a copy. New switch/create regressions exercise those updates. Additional boundary regressions cover malformed MCP connection data, CLI response validation and a refusal prompt with no parent checkpoint. Existing GitHub full-description fallback behavior is preserved by narrowing its optional wire field.
+
+Final executed verification used Node **24.22.2** and npm **11.16.0**:
+
+| Check | Observed result |
+|---|---|
+| Clean install | `npm ci` passed with the existing lockfile; dependency versions and install-script policy are unchanged. |
+| Complete gate | `npm run check` passed: formatting, Oxlint with **zero findings**, all three no-emit TypeScript projects, build and **2,338 tests across 164 files**. |
+| Read-only checks | All **582 tracked and task-created paths** in the final snapshot remained unchanged by the complete gate. |
+| Formatting | A second full formatting pass changed no files. CLI integration tests also verify formatter idempotence and excluded-file preservation. |
+| Standalone helper and CLI | `tsc -p tsconfig.scripts.json` and CLI `--help` passed; help output matched the earlier smoke snapshot byte for byte. |
+| Preserved artifacts | The lockfile, generated changelog, prompts, skills and scoped memory instructions have no diff. The Oxlint allowlist and severities have no diff. |
+| Docker boot | The existing E2E skill built and booted an isolated project, attested as `9722510c81c042b977dd6be1027ff616d87b4954-dirty`, healthy at `http://localhost:3001`. Fresh runtime storage and example plugins were used; Slack, GitHub, memory, proactivity and scheduled firing were disabled. |
+| Live basic task | `basic-nonce` completed for `E2E-2e0e7538`, task `task-20261110-1636-5aeima`, with a PM reply and `task:completed`. Evidence was written through the validated writer to `e2e-evidence/coding-guidelines-zero-debt/basic-nonce.json` and its Markdown companion. |
+| Live egress | Claude CLI **2.1.321** blocked the non-allowlisted host, reached the allowlisted host, installed an npm package and reported the Yarn proxy mapped. |
+| Live approval gate | Fresh nonce `E2E-GATE-ecf94665`, task `task-20261110-1640-17210c`: zero markers before approval, one marker after approval, one approval request, read-only tool ungated. The unchanged check reported PASS. |
+| Teardown | `docker compose down` succeeded; the skill verified no containers remained for the isolated project. The worktree's prepared workdir link was restored. |
+
+The first live gate attempt did not complete: the model initially supplied `{}` to `write_marker`, then retried with `{ "value": "E2E-GATE-78e74f43" }`. The two payloads reproduced the recorded distinct digests (`0f49cf60c4472520` and `6c9b7d08a6beff48`), so the second call correctly requested another approval and no marker was written. That stalled runner was stopped, its transcript retained locally, and one unchanged-fixture rerun passed. No gate policy was relaxed to obtain the pass.
+
+Remaining lint debt is **zero**, with no suppression file or inline disable directives. Hosted CI/CodeQL for the zero-debt follow-up await publication. The live checks cover the isolated normal task, network and approval paths; real Slack/GitHub delivery, OAuth providers, Perplexity, Bedrock and production operation were not exercised. The final refusal-checkpoint and GitHub wire-field compatibility adjustments were made after live scenarios and verified by the final full gate. Readability benefit and the five-change review evaluation remain unmeasured. The user separately authorized committing and pushing this follow-up to PR #370; no release or deployment is authorized.

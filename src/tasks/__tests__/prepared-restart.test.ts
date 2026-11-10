@@ -36,7 +36,7 @@ describe('prepared task process restarts', () => {
         encoding: 'utf8',
         timeout: 20_000,
       });
-    const metadata = () =>
+    const metadata = (): unknown =>
       JSON.parse(
         readFileSync(join(root, 'sessions', input.taskId, 'shared/metadata.json'), 'utf8'),
       );
@@ -56,7 +56,7 @@ describe('prepared task process restarts', () => {
         approved_start: {
           correlation: input.correlation,
           phase: 'prepared',
-          brief: expect.stringContaining(evidencePath),
+          brief: expect.stringContaining(evidencePath) as unknown,
         },
         memory_destination: { channel_id: 'D_OWNER' },
       });
@@ -73,7 +73,7 @@ describe('prepared task process restarts', () => {
         approved_start: {
           phase: 'ready',
           correlation: input.correlation,
-          brief: expect.stringContaining(input.brief),
+          brief: expect.stringContaining(input.brief) as unknown,
         },
       });
       const fourth = run(

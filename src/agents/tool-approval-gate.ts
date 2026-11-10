@@ -314,8 +314,9 @@ export function createToolApprovalHooks(
       // is its policy, not ours — so never get near the default.
       timeout: 120,
       hooks: [
-        async (input: any): Promise<HookJSONOutput> => {
-          const toolName = typeof input?.tool_name === 'string' ? input.tool_name : undefined;
+        async (input): Promise<HookJSONOutput> => {
+          if (input.hook_event_name !== 'PreToolUse') return { continue: true };
+          const toolName = typeof input.tool_name === 'string' ? input.tool_name : undefined;
           // Classify before the try, so a throw can be attributed: an unmanaged
           // tool must proceed even if something below would have failed, and a
           // managed mutation must be denied rather than left to the SDK's handling

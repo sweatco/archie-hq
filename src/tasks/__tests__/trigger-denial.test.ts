@@ -36,7 +36,7 @@ vi.mock('../../system/logger.js', () => ({
 vi.mock('../../system/event-bus.js', () => ({ emitEvent: vi.fn() }));
 
 const { loadTrigger, deleteTrigger, withdrawPendingTrigger } = vi.hoisted(() => {
-  const loadTrigger = vi.fn();
+  const loadTrigger = vi.fn<typeof import('../../system/trigger-store.js').loadTrigger>();
   const deleteTrigger = vi.fn().mockResolvedValue(undefined);
   // Faithful stand-in over the mocked reads and writes. The real one does the
   // pending check and the removal together inside the trigger's lock — that
@@ -152,7 +152,7 @@ describe('handleTriggerDenial', () => {
     await deny(makeFakeTask(), TRIGGER_ID);
 
     expect(appendAgentFinding).toHaveBeenCalledOnce();
-    const [, , text] = (appendAgentFinding as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    const [, , text] = vi.mocked(appendAgentFinding).mock.calls[0];
     expect(String(text)).toMatch(/refused/i);
     expect(String(text)).toContain(TRIGGER_ID);
   });

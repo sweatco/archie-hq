@@ -318,7 +318,7 @@ export async function startInitiative(
               if (!matter?.valid) continue;
               const access = await slack.inspect(
                 matter.channel,
-                channel.startsWith('D') ? row.recipient! : undefined,
+                channel.startsWith('D') ? (row.recipient ?? undefined) : undefined,
               );
               if (
                 !access ||

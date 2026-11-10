@@ -10,6 +10,7 @@ import {
   type Evidence,
   type EvidenceFs,
 } from './evidence.js';
+import { expectDefined } from '../../src/test-support/assertions.js';
 
 function validPayload(): Evidence {
   return {
@@ -65,7 +66,7 @@ describe('validateEvidence', () => {
 
   it('rejects a result inconsistent with assertion outcomes', () => {
     const p = validPayload();
-    p.assertions[1]!.pass = false;
+    expectDefined(p.assertions[1]).pass = false;
     // result still claims pass
     const r = validateEvidence(p);
     expect(r.ok).toBe(false);
@@ -120,7 +121,7 @@ describe('renderEvidenceMarkdown', () => {
 
   it('marks a failing run FAIL in the verdict', () => {
     const p = validPayload();
-    p.assertions[1]!.pass = false;
+    expectDefined(p.assertions[1]).pass = false;
     p.result = 'fail';
     const md = renderEvidenceMarkdown(p);
     expect(md).toContain('**FAIL** — 1/2 assertions passed.');
@@ -130,7 +131,7 @@ describe('renderEvidenceMarkdown', () => {
 
   it('escapes backslashes before pipes in table cells so escapes stay unambiguous', () => {
     const p = validPayload();
-    p.assertions[0]!.observed = 'path C:\\dir | raw pipe';
+    expectDefined(p.assertions[0]).observed = 'path C:\\dir | raw pipe';
     const md = renderEvidenceMarkdown(p);
     expect(md).toContain('C:\\\\dir \\| raw pipe');
   });
@@ -257,7 +258,9 @@ describe('runEvidenceWriter — all-or-nothing', () => {
       '/evidence/edit-mode-approval.json',
       '/evidence/edit-mode-approval.md',
     ]);
-    const roundTripped: unknown = JSON.parse(disk.get('/evidence/edit-mode-approval.json')!);
+    const roundTripped: unknown = JSON.parse(
+      expectDefined(disk.get('/evidence/edit-mode-approval.json')),
+    );
     expect(validateEvidence(roundTripped).ok).toBe(true);
   });
 

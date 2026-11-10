@@ -11,7 +11,7 @@
  * orchestration that needs both must sit above them.
  */
 
-import { refreshPlugins } from './workdir.js';
+import { refreshPlugins } from './bootstrap-workdir.js';
 import { initRegistry } from '../agents/registry.js';
 
 /**

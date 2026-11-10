@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import {
   toolCallApprovalRequests,
   firstToolCallRef,
-  nonceCount,
   decideGate,
   type GateEvent,
 } from './tool-gate-check.js';

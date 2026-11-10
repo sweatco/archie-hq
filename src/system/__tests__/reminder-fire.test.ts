@@ -14,7 +14,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../logger.js', () => ({
   logger: { warn: vi.fn(), system: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
-const { emitEvent } = vi.hoisted(() => ({ emitEvent: vi.fn() }));
+const { emitEvent } = vi.hoisted(() => ({
+  emitEvent: vi.fn<typeof import('../event-bus.js').emitEvent>(),
+}));
 vi.mock('../event-bus.js', () => ({ emitEvent }));
 vi.mock('../workdir.js', () => ({ SESSIONS_DIR: '/sessions', WORKDIR: '/workdir' }));
 vi.mock('../../agents/prompts.js', () => ({
@@ -37,6 +39,7 @@ import {
   announceRecurrence,
 } from '../reminder-scheduler.js';
 import type { Task } from '../../tasks/task.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 /**
  * A stand-in for the canonical Task instance. Its `fireReminder` mirrors the real one acting on
@@ -92,7 +95,7 @@ describe('checkDueReminders — recurring', () => {
       cron: '0 * * * *',
       tz: 'UTC',
     });
-    await checkDueReminders();
+    await checkDueReminders(taskGet);
 
     // The instance the rest of the system holds must carry the NEXT occurrence.
     const next = task.metadata.reminder as {
@@ -116,11 +119,11 @@ describe('checkDueReminders — recurring', () => {
       cron: '0 * * * *',
       tz: 'UTC',
     });
-    await checkDueReminders();
+    await checkDueReminders(taskGet);
 
     const armed = getReminder('task-1');
     expect(armed?.cron).toBe('0 * * * *');
-    expect(armed!.trigger_at.getTime()).toBeGreaterThan(Date.now());
+    expect(expectDefined(armed).trigger_at.getTime()).toBeGreaterThan(Date.now());
   });
 
   it('does not fire a reminder that is not due yet', async () => {
@@ -131,7 +134,7 @@ describe('checkDueReminders — recurring', () => {
       cron: '0 * * * *',
       tz: 'UTC',
     });
-    await checkDueReminders();
+    await checkDueReminders(taskGet);
 
     expect(task.sendMessage).not.toHaveBeenCalled();
     expect(getReminder('task-1')).toBeDefined();
@@ -144,7 +147,7 @@ describe('checkDueReminders — one-shot', () => {
     taskGet.mockResolvedValue(task as unknown as Task);
 
     scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'check CI');
-    await checkDueReminders();
+    await checkDueReminders(taskGet);
 
     expect(task.metadata.reminder).toBeUndefined();
     expect(getReminder('task-1')).toBeUndefined();
@@ -171,7 +174,7 @@ describe('cancel_reminder is a complete off switch', () => {
     // The off switch is observable — consumers clear their indicator on this event.
     expect(emitEvent).toHaveBeenCalledWith('reminder:cancelled', 'task-1');
     // Nothing left to fire.
-    await checkDueReminders();
+    await checkDueReminders(taskGet);
     expect(task.sendMessage).not.toHaveBeenCalled();
   });
 
@@ -186,7 +189,7 @@ describe('cancel_reminder is a complete off switch', () => {
       cron: '0 * * * *',
       tz: 'UTC',
     });
-    await checkDueReminders();
+    await checkDueReminders(taskGet);
     expect(getReminder('task-1')).toBeDefined(); // re-armed
 
     cancelReminder(task as unknown as Task);
@@ -206,7 +209,7 @@ describe('checkDueReminders — the index survives a failed or overtaken fire', 
       tz: 'UTC',
     });
 
-    await checkDueReminders();
+    await checkDueReminders(taskGet);
 
     expect(getReminder('task-1')?.cron).toBe('0 * * * *');
   });
@@ -223,7 +226,7 @@ describe('checkDueReminders — the index survives a failed or overtaken fire', 
       tz: 'UTC',
     });
 
-    await checkDueReminders();
+    await checkDueReminders(taskGet);
 
     expect(getReminder('task-1')?.reason).toBe('replacement');
     expect(task.sendMessage).not.toHaveBeenCalled();
@@ -242,7 +245,7 @@ describe('checkDueReminders — the index survives a failed or overtaken fire', 
       return false;
     });
 
-    await checkDueReminders();
+    await checkDueReminders(taskGet);
 
     expect(getReminder('task-1')?.reason).toBe('replacement');
     expect(getReminder('task-1')?.trigger_at.getTime()).toBe(replacementAt.getTime());
@@ -313,7 +316,7 @@ describe('a recurring reminder is never silent', () => {
       until: new Date(Date.now() + 7 * 24 * 3_600_000).toISOString(),
     });
 
-    await checkDueReminders();
+    await checkDueReminders(taskGet);
     await flush();
 
     expect(task.sendMessage).toHaveBeenCalledOnce();
@@ -339,7 +342,7 @@ describe('checkDueReminders — missing task', () => {
     metadataExists.value = false; // the task really is gone, not just unreadable
     taskGet.mockRejectedValue(new Error('Task task-1 not found'));
 
-    await expect(checkDueReminders()).resolves.toBeUndefined();
+    await expect(checkDueReminders(taskGet)).resolves.toBeUndefined();
     expect(getReminder('task-1')).toBeUndefined();
     metadataExists.value = true;
   });
@@ -358,7 +361,7 @@ describe('event order is a UI contract', () => {
       tz: 'UTC',
     });
     emitEvent.mockClear();
-    await checkDueReminders();
+    await checkDueReminders(taskGet);
 
     const order = emitEvent.mock.calls.map((c) => c[0]);
     expect(order).toEqual(['reminder:fired', 'reminder:set']);
@@ -370,7 +373,7 @@ describe('event order is a UI contract', () => {
 
     scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r');
     emitEvent.mockClear();
-    await checkDueReminders();
+    await checkDueReminders(taskGet);
 
     expect(emitEvent.mock.calls.map((c) => c[0])).toEqual(['reminder:fired']);
   });
@@ -390,7 +393,7 @@ describe('a failure loading the task must not silently kill the cadence', () => 
     metadataExists.value = true;
     taskGet.mockRejectedValue(new Error('Unexpected token } in JSON'));
 
-    await expect(checkDueReminders()).resolves.toBeUndefined();
+    await expect(checkDueReminders(taskGet)).resolves.toBeUndefined();
 
     expect(getReminder('task-1')).toBeDefined(); // still armed, retried next tick
     metadataExists.value = true;
@@ -405,7 +408,7 @@ describe('a failure loading the task must not silently kill the cadence', () => 
       tz: 'UTC',
     });
 
-    for (let i = 0; i < 10; i++) await checkDueReminders();
+    for (let i = 0; i < 10; i++) await checkDueReminders(taskGet);
 
     expect(taskGet.mock.calls.length).toBeLessThan(10);
     expect(getReminder('task-1')).toBeUndefined();
@@ -420,7 +423,7 @@ describe('a failure loading the task must not silently kill the cadence', () => 
     metadataExists.value = false;
     taskGet.mockRejectedValue(new Error('Task task-1 not found'));
 
-    await checkDueReminders();
+    await checkDueReminders(taskGet);
 
     expect(getReminder('task-1')).toBeUndefined(); // no infinite retry loop
     metadataExists.value = true;
@@ -443,7 +446,7 @@ describe('a bounded recurrence expires on its own', () => {
         tz: 'UTC',
         until,
       });
-      await checkDueReminders();
+      await checkDueReminders(taskGet);
       await flush();
 
       expect(task.metadata.reminder).toBeUndefined();
@@ -468,7 +471,7 @@ describe('a bounded recurrence expires on its own', () => {
       tz: 'UTC',
       until,
     });
-    await checkDueReminders();
+    await checkDueReminders(taskGet);
 
     const next = task.metadata.reminder as { until: string; cron: string };
     expect(next).toBeDefined();
@@ -490,7 +493,7 @@ describe('one tick handles each task exactly once', () => {
     metadataExists.value = true;
     taskGet.mockRejectedValue(new Error('torn read'));
 
-    await expect(checkDueReminders()).resolves.toBeUndefined();
+    await expect(checkDueReminders(taskGet)).resolves.toBeUndefined();
 
     expect(taskGet).toHaveBeenCalledTimes(1); // one attempt, not an endless retry
     expect(getReminder('task-1')).toBeDefined();
@@ -508,7 +511,7 @@ describe('one tick handles each task exactly once', () => {
       tz: 'UTC',
     });
 
-    await checkDueReminders();
+    await checkDueReminders(taskGet);
 
     expect(taskGet).toHaveBeenCalledTimes(1);
     expect(task.sendMessage).not.toHaveBeenCalled();

@@ -16,7 +16,7 @@ rest. Setup and commands live in README.md / CONTRIBUTING.md.
      and anything subtle or surprising. No file-by-file list; the diff shows
      that. Note what you deliberately left out of scope. -->
 
-<!-- Apply docs/guides/coding-guidelines.md: check ownership, traceable flow, state lifecycle, necessary abstraction and behavioral proof. Explain any new lint exception or increased baseline allowance. For the first five substantive changes after adoption, note useful readability findings, stylistic churn and review/rework cost when available. -->
+<!-- Apply docs/guides/coding-guidelines.md: check ownership, traceable flow, state lifecycle, necessary abstraction and behavioral proof. Keep lint free of suppression allowances; explain any unavoidable, narrow exception. For the first five substantive changes after adoption, note useful readability findings, stylistic churn and review/rework cost when available. -->
 
 ## Verification
 

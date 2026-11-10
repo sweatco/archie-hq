@@ -11,6 +11,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import { mkdir, writeFile, readFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const loggerWarn = vi.fn();
 vi.mock('../logger.js', () => ({
@@ -62,12 +63,12 @@ describe('loadChannelStore — pins normalisation', () => {
     const loaded = await store.loadChannelStore('C_legacy');
 
     expect(loaded).not.toBeNull();
-    expect(loaded!.pins).toEqual([]);
-    expect(loaded!.pinsCheckedAt).toBe(0);
-    expect(loaded!.pinsEligible).toBe(0);
+    expect(expectDefined(loaded).pins).toEqual([]);
+    expect(expectDefined(loaded).pinsCheckedAt).toBe(0);
+    expect(expectDefined(loaded).pinsEligible).toBe(0);
     // Existing fields survive untouched.
-    expect(loaded!.announced).toEqual({ F1: true });
-    expect(loaded!.checkedAt).toBe(42);
+    expect(expectDefined(loaded).announced).toEqual({ F1: true });
+    expect(expectDefined(loaded).checkedAt).toBe(42);
   });
 
   it('round-trips pins that are already present on disk', async () => {
@@ -86,9 +87,9 @@ describe('loadChannelStore — pins normalisation', () => {
 
     const loaded = await store.loadChannelStore('C_pins');
 
-    expect(loaded!.pins).toEqual([pin]);
-    expect(loaded!.pinsCheckedAt).toBe(999);
-    expect(loaded!.pinsEligible).toBe(7);
+    expect(expectDefined(loaded).pins).toEqual([pin]);
+    expect(expectDefined(loaded).pinsCheckedAt).toBe(999);
+    expect(expectDefined(loaded).pinsEligible).toBe(7);
   });
 
   it('reloads pins written through updateChannelStore', async () => {
@@ -101,12 +102,12 @@ describe('loadChannelStore — pins normalisation', () => {
     });
 
     const loaded = await store.loadChannelStore('C_write');
-    expect(loaded!.pins).toEqual([pin]);
-    expect(loaded!.pinsCheckedAt).toBe(1234);
-    expect(loaded!.pinsEligible).toBe(1);
+    expect(expectDefined(loaded).pins).toEqual([pin]);
+    expect(expectDefined(loaded).pinsCheckedAt).toBe(1234);
+    expect(expectDefined(loaded).pinsEligible).toBe(1);
     // And it really went to disk in that shape.
-    const onDisk = JSON.parse(await readFile(join(CHANNELS_DIR, 'C_write.json'), 'utf-8'));
-    expect(onDisk.pins).toEqual([pin]);
+    const onDisk: unknown = JSON.parse(await readFile(join(CHANNELS_DIR, 'C_write.json'), 'utf-8'));
+    expect(onDisk).toMatchObject({ pins: [pin] });
   });
 
   it('still returns null and warns on unparseable JSON', async () => {

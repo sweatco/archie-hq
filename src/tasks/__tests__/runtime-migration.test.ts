@@ -1,3 +1,4 @@
+import type { MockInstance } from 'vitest';
 /**
  * One-time migration notice for tasks created before the flat-PM rework.
  *
@@ -16,7 +17,9 @@ vi.mock('../../system/logger.js', () => ({
 
 // No real SDK subprocess — just flip the agent's handle to "running", the way
 // spawn.ts wires it.
-const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
+const { spawnMock } = vi.hoisted(() => ({
+  spawnMock: vi.fn<typeof import('../../agents/spawn.js').spawnAgent>(),
+}));
 vi.mock('../../agents/spawn.js', () => ({ spawnAgent: spawnMock }));
 
 // Every save in these cases would otherwise write into a real sessions dir.
@@ -43,7 +46,9 @@ vi.mock('../../system/plugin-sync.js', () => ({
 
 // Task.get reads the folder through this one function; everything else in
 // persistence stays real.
-const { loadMetadataMock } = vi.hoisted(() => ({ loadMetadataMock: vi.fn() }));
+const { loadMetadataMock } = vi.hoisted(() => ({
+  loadMetadataMock: vi.fn<typeof import('../persistence.js').loadMetadata>(),
+}));
 vi.mock('../persistence.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../persistence.js')>();
   return { ...actual, loadMetadata: loadMetadataMock };
@@ -55,6 +60,7 @@ import { MessageQueue } from '../../agents/message-queue.js';
 import { logger } from '../../system/logger.js';
 import type { TaskMetadata } from '../../types/task.js';
 import type { AgentDef } from '../../types/agent.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const TASK_ID = 'task-20260101-0000-legacy';
 
@@ -253,7 +259,7 @@ describe('buildMigrationNotice', () => {
 });
 
 describe('migration notice delivery', () => {
-  let addSpy: ReturnType<typeof vi.spyOn>;
+  let addSpy: MockInstance<MessageQueue['addMessage']>;
 
   beforeEach(() => {
     vi.useFakeTimers();
@@ -407,7 +413,7 @@ describe('Task.create', () => {
       String(c[0]).includes('/metadata.json.'),
     );
     expect(written).toBeDefined();
-    const onDisk = JSON.parse(String(written![1])) as TaskMetadata;
+    const onDisk = JSON.parse(String(expectDefined(written)[1])) as TaskMetadata;
     expect(onDisk.runtime_version).toBe(RUNTIME_VERSION);
     expect(stampRuntimeVersion(onDisk)).toBe(false);
   });

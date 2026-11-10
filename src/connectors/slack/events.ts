@@ -7,10 +7,12 @@
 
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
-const { App, ExpressReceiver, SocketModeReceiver } = require('@slack/bolt');
+const { App, ExpressReceiver, SocketModeReceiver } =
+  require('@slack/bolt') as typeof import('@slack/bolt');
 
 import type { Application } from 'express';
-import type { App as AppType } from '@slack/bolt';
+import { z } from 'zod';
+import type { App as AppType, BlockAction, ButtonAction } from '@slack/bolt';
 
 import {
   initSlackClient,
@@ -24,7 +26,6 @@ import {
   isChannelShared,
   postEphemeral,
   getSlackClient,
-  cleanSlackText,
   invalidateMemoryMemberTrust,
 } from './client.js';
 import { ensureChannelCanvas } from './channel-canvas.js';
@@ -83,6 +84,33 @@ export interface SlackLifecycle {
   stop: () => Promise<void>;
 }
 
+const inboundMessageSchema = z
+  .object({
+    type: z.literal('message'),
+    channel: z.string(),
+    ts: z.string().optional(),
+    subtype: z.string().optional(),
+    user: z.string().optional(),
+    bot_id: z.string().optional(),
+    text: z.string().optional(),
+    thread_ts: z.string().optional(),
+  })
+  .passthrough();
+const editedMessageSchema = z.object({
+  channel: z.string(),
+  message: z
+    .object({
+      ts: z.string(),
+      user: z.string().optional(),
+      bot_id: z.string().optional(),
+      subtype: z.string().optional(),
+      text: z.string().optional(),
+      thread_ts: z.string().optional(),
+    })
+    .passthrough(),
+  previous_message: z.object({ text: z.string().optional() }).passthrough().optional(),
+});
+
 let app: AppType | null = null;
 
 async function updateTaskApprovalMessage(
@@ -109,10 +137,11 @@ export async function mountSlackApp(
   expressApp: Application,
   config: SlackConfig,
 ): Promise<SlackLifecycle> {
-  const useSocketMode = !!config.slackAppToken;
+  const appToken = config.slackAppToken;
+  const useSocketMode = !!appToken;
 
   if (useSocketMode) {
-    if (!config.slackAppToken!.startsWith('xapp-')) {
+    if (!appToken?.startsWith('xapp-')) {
       throw new Error(
         'SLACK_APP_TOKEN must start with "xapp-" (app-level token with connections:write scope)',
       );
@@ -135,21 +164,28 @@ export async function mountSlackApp(
   await initSlackClient(config.slackBotToken);
 
   // Create Bolt app with the appropriate receiver
-  const receiver = useSocketMode
-    ? new SocketModeReceiver({ appToken: config.slackAppToken })
-    : new ExpressReceiver({
-        signingSecret: config.slackSigningSecret!,
-        endpoints: '/webhooks/slack',
-        app: expressApp,
-      });
+  let receiver: InstanceType<typeof SocketModeReceiver> | InstanceType<typeof ExpressReceiver>;
+  if (appToken) {
+    receiver = new SocketModeReceiver({ appToken });
+  } else {
+    const signingSecret = config.slackSigningSecret;
+    if (!signingSecret) throw new Error('SLACK_SIGNING_SECRET is required in HTTP mode');
+    receiver = new ExpressReceiver({
+      signingSecret,
+      endpoints: '/webhooks/slack',
+      app: expressApp,
+    });
+  }
 
-  app = new App({
+  const boltApp = new App({
     token: config.slackBotToken,
     receiver,
   });
 
+  app = boltApp;
+
   // Handle app mentions - process inline
-  app!.event('app_mention', async ({ event, body }) => {
+  boltApp.event('app_mention', async ({ event, body }) => {
     if (getIsShuttingDown()) {
       logger.system('Ignoring Slack event during shutdown');
       return;
@@ -175,7 +211,10 @@ export async function mountSlackApp(
   });
 
   // Handle thread messages (replies without @mention) and DM messages
-  app!.event('message', async ({ event, body }: { event: any; body?: { event_id?: string } }) => {
+  boltApp.event('message', async ({ event: rawEvent, body }) => {
+    const parsedEvent = inboundMessageSchema.safeParse(rawEvent);
+    if (!parsedEvent.success) return;
+    const event = parsedEvent.data;
     if (getIsShuttingDown()) return;
     if (await observeSlack({ ...event, event_id: body?.event_id })) return;
     // Message edits arrive as a `message_changed` subtype carrying both the new
@@ -195,13 +234,20 @@ export async function mountSlackApp(
       return;
     }
 
+    if (!event.ts) return;
+
     // Decide whether this message should flow into task routing at all. A
     // top-level channel post is only forwarded when an enabled channel-message
     // trigger is watching this exact channel — kept cheap via the in-memory
     // index (consulted lazily, so unwatched channels and DMs/thread-replies
     // stay a no-op). handleSlackEvent then runs the same own-bot/external/
     // @mention filtering before firing any trigger.
-    if (!shouldForwardMessageEvent(event, (ch) => getChannelMessageTriggers(ch).length > 0)) {
+    if (
+      !shouldForwardMessageEvent(
+        { ...event, ts: event.ts },
+        (ch) => getChannelMessageTriggers(ch).length > 0,
+      )
+    ) {
       // Record, for a channel someone is actively watching, that the gate dropped an event and why — from the trigger owner's side a silent drop is indistinguishable from "nothing was posted", and this line is what makes "why didn't my trigger fire?" answerable.
       //
       // Deliberately `debug`, not `warn`. Two classes reach here and both are routine: a denylisted noise subtype, and an app post that is not a top-level channel message (app posts reach triggers but never wake a task, so a bot thread reply satisfies neither arm). Neither is an anomaly worth a warning, and the class this was originally written to catch — an unenumerated subtype vanishing — is now structurally impossible rather than merely logged, because the gate is a denylist.
@@ -247,7 +293,7 @@ export async function mountSlackApp(
     }).catch((err: unknown) => logger.error('Server', 'Error processing Slack event', err));
   });
 
-  app!.action(/^initiative_/, async ({ ack, body, action }: any) => {
+  boltApp.action<BlockAction<ButtonAction>>(/^initiative_/, async ({ ack, body, action }) => {
     await ack();
     initiativeAction(body.user?.id ?? '', action.value ?? '').catch((error) =>
       logger.warn('initiative', 'Control failed', error),
@@ -259,7 +305,7 @@ export async function mountSlackApp(
   // the channel isn't missed until the first message). Only the bot's own join
   // matters; `routeSlackEvent`'s own-bot filter is not on this path, so the
   // self-join check here is load-bearing.
-  app!.event('member_joined_channel', async ({ event }: { event: any }) => {
+  boltApp.event('member_joined_channel', async ({ event }) => {
     if (getIsShuttingDown()) return;
     const botUserId = getBotUserId();
     if (!botUserId || event.user !== botUserId) return;
@@ -270,18 +316,19 @@ export async function mountSlackApp(
     );
   });
 
-  for (const eventName of ['user_change', 'team_join']) {
-    app!.event(eventName, async ({ event }: { event: any }) => {
+  for (const eventName of ['user_change', 'team_join'] as const) {
+    boltApp.event(eventName, async ({ event }) => {
       const userId = event.user?.id;
       if (typeof userId === 'string') invalidateMemoryMemberTrust(userId);
     });
   }
 
   // Handle edit mode approval button
-  app!.action('approve_edit_mode', async ({ action, ack, body }: any) => {
+  boltApp.action<BlockAction<ButtonAction>>('approve_edit_mode', async ({ action, ack, body }) => {
     await ack();
 
     const taskId = action.value;
+    if (!taskId) return;
     const userId = body.user?.id || 'unknown';
 
     logger.server(`Edit mode approved by ${userId} for task ${taskId}`);
@@ -321,10 +368,11 @@ export async function mountSlackApp(
   });
 
   // Handle edit mode denial button
-  app!.action('deny_edit_mode', async ({ action, ack, body }: any) => {
+  boltApp.action<BlockAction<ButtonAction>>('deny_edit_mode', async ({ action, ack, body }) => {
     await ack();
 
     const taskId = action.value;
+    if (!taskId) return;
     const userId = body.user?.id || 'unknown';
 
     logger.server(`Edit mode denied by ${userId} for task ${taskId}`);
@@ -340,10 +388,11 @@ export async function mountSlackApp(
   });
 
   // Handle max mode approval button
-  app!.action('approve_max_mode', async ({ action, ack, body }: any) => {
+  boltApp.action<BlockAction<ButtonAction>>('approve_max_mode', async ({ action, ack, body }) => {
     await ack();
 
     const taskId = action.value;
+    if (!taskId) return;
     const userId = body.user?.id || 'unknown';
 
     logger.server(`Max mode approved by ${userId} for task ${taskId}`);
@@ -370,10 +419,11 @@ export async function mountSlackApp(
   });
 
   // Handle max mode denial button
-  app!.action('deny_max_mode', async ({ action, ack, body }: any) => {
+  boltApp.action<BlockAction<ButtonAction>>('deny_max_mode', async ({ action, ack, body }) => {
     await ack();
 
     const taskId = action.value;
+    if (!taskId) return;
     const userId = body.user?.id || 'unknown';
 
     logger.server(`Max mode denied by ${userId} for task ${taskId}`);
@@ -389,65 +439,75 @@ export async function mountSlackApp(
   });
 
   // Handle research budget approval button (Defense 4)
-  app!.action('approve_research_budget', async ({ action, ack, body }: any) => {
-    await ack();
+  boltApp.action<BlockAction<ButtonAction>>(
+    'approve_research_budget',
+    async ({ action, ack, body }) => {
+      await ack();
 
-    const taskId = action.value;
-    const userId = body.user?.id || 'unknown';
+      const taskId = action.value;
+      if (!taskId) return;
+      const userId = body.user?.id || 'unknown';
 
-    logger.server(`Research budget approved by ${userId} for task ${taskId}`);
+      logger.server(`Research budget approved by ${userId} for task ${taskId}`);
 
-    try {
-      await updateTaskApprovalMessage(
-        taskId,
-        body,
-        `✅ *Research budget extended* by <@${userId}> (+5 requests)`,
-      );
+      try {
+        await updateTaskApprovalMessage(
+          taskId,
+          body,
+          `✅ *Research budget extended* by <@${userId}> (+5 requests)`,
+        );
 
-      const task = await Task.get(taskId);
-      await task.handleResearchBudgetApproval();
-    } catch (error) {
-      logger.error('Server', 'Error handling research budget approval', error);
-    }
-  });
+        const task = await Task.get(taskId);
+        await task.handleResearchBudgetApproval();
+      } catch (error) {
+        logger.error('Server', 'Error handling research budget approval', error);
+      }
+    },
+  );
 
   // Handle research budget denial button (Defense 4)
-  app!.action('deny_research_budget', async ({ action, ack, body }: any) => {
-    await ack();
+  boltApp.action<BlockAction<ButtonAction>>(
+    'deny_research_budget',
+    async ({ action, ack, body }) => {
+      await ack();
 
-    const taskId = action.value;
-    const userId = body.user?.id || 'unknown';
+      const taskId = action.value;
+      if (!taskId) return;
+      const userId = body.user?.id || 'unknown';
 
-    logger.server(`Research budget denied by ${userId} for task ${taskId}`);
+      logger.server(`Research budget denied by ${userId} for task ${taskId}`);
 
-    try {
-      await updateTaskApprovalMessage(
-        taskId,
-        body,
-        `❌ *Additional research denied* by <@${userId}>`,
-      );
+      try {
+        await updateTaskApprovalMessage(
+          taskId,
+          body,
+          `❌ *Additional research denied* by <@${userId}>`,
+        );
 
-      const task = await Task.get(taskId);
-      await task.handleResearchBudgetDenial();
-    } catch (error) {
-      logger.error('Server', 'Error handling research budget denial', error);
-    }
-  });
+        const task = await Task.get(taskId);
+        await task.handleResearchBudgetDenial();
+      } catch (error) {
+        logger.error('Server', 'Error handling research budget denial', error);
+      }
+    },
+  );
 
-  registerMergeActionHandlers(app!);
-  registerToolApprovalHandlers(app!);
-  registerMemoryPreferenceHandlers(app!);
+  registerMergeActionHandlers(app);
+  registerToolApprovalHandlers(app);
+  registerMemoryPreferenceHandlers(app);
 
   // Handle trigger approval button
-  app!.action('approve_trigger', async ({ action, ack, body }: any) => {
+  boltApp.action<BlockAction<ButtonAction>>('approve_trigger', async ({ action, ack, body }) => {
     await ack();
 
     const triggerId = action.value;
+    if (!triggerId) return;
     const userId = body.user?.id || 'unknown';
     // The approval prompt was posted into a task thread; that task carries the
     // pending_trigger_id. Find it by the message thread so the same task-level
     // handler (shared with the CLI /approve path) runs.
-    const threadId = body.message?.thread_ts || body.message?.ts;
+    const parentTs: unknown = body.message?.thread_ts;
+    const threadId = typeof parentTs === 'string' ? parentTs : body.message?.ts;
 
     logger.server(`Trigger ${triggerId} approved by ${userId}`);
 
@@ -490,12 +550,14 @@ export async function mountSlackApp(
   });
 
   // Handle trigger denial button
-  app!.action('deny_trigger', async ({ action, ack, body }: any) => {
+  boltApp.action<BlockAction<ButtonAction>>('deny_trigger', async ({ action, ack, body }) => {
     await ack();
 
     const triggerId = action.value;
+    if (!triggerId) return;
     const userId = body.user?.id || 'unknown';
-    const threadId = body.message?.thread_ts || body.message?.ts;
+    const parentTs: unknown = body.message?.thread_ts;
+    const threadId = typeof parentTs === 'string' ? parentTs : body.message?.ts;
 
     logger.server(`Deny clicked on trigger ${triggerId} by ${userId}`);
 
@@ -539,13 +601,13 @@ export async function mountSlackApp(
   return {
     async start() {
       if (useSocketMode) {
-        await app!.start();
+        await boltApp.start();
         logger.plain('Slack: Socket Mode connected');
       }
     },
     async stop() {
       if (useSocketMode && app) {
-        await app.stop();
+        await boltApp.stop();
         logger.plain('Slack: Socket Mode disconnected');
       }
     },
@@ -583,7 +645,7 @@ const STALE_MERGE_PROMPT_TEXT =
  * registrations; production registration happens in mountSlackApp.
  */
 export function registerMergeActionHandlers(boltApp: Pick<AppType, 'action'>): void {
-  boltApp.action('approve_merge', async ({ action, ack, body }: any) => {
+  boltApp.action<BlockAction<ButtonAction>>('approve_merge', async ({ action, ack, body }) => {
     await ack();
 
     const { taskId, expected } = parseMergeButtonValue(String(action.value ?? ''));
@@ -627,7 +689,7 @@ export function registerMergeActionHandlers(boltApp: Pick<AppType, 'action'>): v
       logger.error('Server', 'Error handling merge approval', error);
     }
   });
-  boltApp.action('deny_merge', async ({ action, ack, body }: any) => {
+  boltApp.action<BlockAction<ButtonAction>>('deny_merge', async ({ action, ack, body }) => {
     await ack();
 
     const { taskId, expected } = parseMergeButtonValue(String(action.value ?? ''));
@@ -723,7 +785,7 @@ export function registerToolApprovalHandlers(boltApp: Pick<AppType, 'action'>): 
       return { id: userId, name: userId };
     }
   };
-  boltApp.action('approve_tool_call', async ({ action, ack, body }: any) => {
+  boltApp.action<BlockAction<ButtonAction>>('approve_tool_call', async ({ action, ack, body }) => {
     await ack();
 
     const { taskId, digest } = parseToolApprovalButtonValue(String(action.value ?? ''));
@@ -746,7 +808,7 @@ export function registerToolApprovalHandlers(boltApp: Pick<AppType, 'action'>): 
       logger.error('Server', 'Error handling tool-call approval', error);
     }
   });
-  boltApp.action('deny_tool_call', async ({ action, ack, body }: any) => {
+  boltApp.action<BlockAction<ButtonAction>>('deny_tool_call', async ({ action, ack, body }) => {
     await ack();
 
     const { taskId, digest } = parseToolApprovalButtonValue(String(action.value ?? ''));
@@ -844,7 +906,9 @@ export async function handleSlackEvent(event: {
   // messages.
   const isAckable = isAckableEvent(event.type, event.channel);
   if (isAckable) {
-    addReaction(event.channel, event.ts, 'eyes');
+    addReaction(event.channel, event.ts, 'eyes').catch((error: unknown) =>
+      logger.warn('Slack', 'Could not acknowledge message', error),
+    );
   }
 
   const thread = await fetchSlackThread(event.channel, threadId, event.ts);
@@ -918,7 +982,10 @@ export async function handleSlackEvent(event: {
     const { entries } = await task.append(thread);
     // Ack the triggering message. For @mention/DM the :eyes: was already added
     // before the thread fetch; for a reply to a bot-started thread, add it now.
-    if (!isAckable && thread.rootAuthorWasBot) addReaction(event.channel, event.ts, 'eyes');
+    if (!isAckable && thread.rootAuthorWasBot)
+      addReaction(event.channel, event.ts, 'eyes').catch((error: unknown) =>
+        logger.warn('Slack', 'Could not acknowledge message', error),
+      );
     if (isAckable || thread.rootAuthorWasBot) task.ackMessage(channelKey, event.ts);
     if (!task.metadata.title) {
       generateTitleAndSync(task, thread).catch((err) =>
@@ -989,13 +1056,17 @@ async function dispatchChannelMessageTriggers(
   for (const trigger of triggers) {
     if (!messageMatchesTrigger(trigger, { channelId: event.channel, body, author })) continue;
     try {
-      await fireTrigger(trigger, {
-        kind: 'message',
-        thread,
-        body,
-        authorId: author.userId || author.botId,
-        channelName,
-      });
+      await fireTrigger(
+        trigger,
+        {
+          kind: 'message',
+          thread,
+          body,
+          authorId: author.userId || author.botId,
+          channelName,
+        },
+        () => Task.create(),
+      );
     } catch (err) {
       logger.error('Slack', `Failed to fire channel-message trigger ${trigger.id}`, err);
     }
@@ -1017,10 +1088,14 @@ async function dispatchChannelMessageTriggers(
  * inline, as one more piece of thread activity. The agent decides whether the
  * change is material; a cosmetic edit can simply be a no-op on its end.
  */
-async function handleSlackEdit(event: any): Promise<void> {
+async function handleSlackEdit(raw: unknown): Promise<void> {
+  const parsedEvent = editedMessageSchema.safeParse(raw);
+  if (!parsedEvent.success) return;
+  const event = parsedEvent.data;
   const msg = event.message;
   const prev = event.previous_message;
-  if (!msg || !msg.ts) return;
+  if (!msg.user) return;
+  const authorId = msg.user;
 
   // Skip bot-authored edits (our own messages or other integrations).
   if (msg.bot_id || msg.subtype === 'bot_message' || msg.user === getBotUserId()) return;
@@ -1041,7 +1116,7 @@ async function handleSlackEdit(event: any): Promise<void> {
   // External-author bail-out + author resolution in one (cached) lookup.
   let authorInfo: Awaited<ReturnType<typeof getUserInfo>> | undefined;
   try {
-    authorInfo = await getUserInfo(msg.user);
+    authorInfo = await getUserInfo(authorId);
     if (isExternalUser(authorInfo)) {
       logger.system(`Skipping edit from external/guest user ${msg.user}`);
       return;
@@ -1070,9 +1145,9 @@ async function handleSlackEdit(event: any): Promise<void> {
   // under the same `msg:<ts>` id.
   const newText = await rawMessageBody(msg, channelId);
   const author: SlackAuthor = {
-    id: msg.user,
-    username: authorInfo?.name ?? msg.user,
-    realName: authorInfo?.realName ?? msg.user,
+    id: authorId,
+    username: authorInfo?.name ?? authorId,
+    realName: authorInfo?.realName ?? authorId,
     teamId: authorInfo?.teamId,
     isRestricted: authorInfo?.isRestricted,
     isUltraRestricted: authorInfo?.isUltraRestricted,

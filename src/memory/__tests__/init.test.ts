@@ -9,7 +9,7 @@ const originalMemoryFlag = process.env.ARCHIE_MEMORY;
 const { onEventMock, readPendingMock, linkMock } = vi.hoisted(() => ({
   onEventMock: vi.fn(),
   readPendingMock: vi.fn(),
-  linkMock: vi.fn(),
+  linkMock: vi.fn<typeof import('fs/promises').link>(),
 }));
 
 vi.mock('fs/promises', async (importOriginal) => {
@@ -83,7 +83,9 @@ describe('scoped memory initialization', () => {
 
     await expect(memory.initMemory('TWORKSPACE')).resolves.toBe(true);
 
-    const marker = JSON.parse(await readFile(join(tempRoot, 'memory', '.scoped-v1.json'), 'utf-8'));
+    const marker: unknown = JSON.parse(
+      await readFile(join(tempRoot, 'memory', '.scoped-v1.json'), 'utf-8'),
+    );
     expect(marker).toEqual({ version: 1, team_id: 'TWORKSPACE' });
     expect(linkMock).toHaveBeenCalledTimes(1);
     const [[from, to]] = linkMock.mock.calls;

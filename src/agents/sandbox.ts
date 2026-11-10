@@ -313,7 +313,8 @@ export function createPmOnlyToolGuardHooks(): HookCallbackMatcher[] {
   return [
     {
       hooks: [
-        async (input: any) => {
+        async (input) => {
+          if (input.hook_event_name !== 'PreToolUse') return { continue: true };
           const { tool_name, agent_id } = input;
 
           // Main thread (the PM or a specialist's own session) — untouched.
@@ -342,7 +343,8 @@ export function createFilesystemGuardHooks(opts: SandboxOptions): HookCallbackMa
   return [
     {
       hooks: [
-        async (input: any) => {
+        async (input) => {
+          if (input.hook_event_name !== 'PreToolUse') return { continue: true };
           const { tool_name, tool_input } = input;
 
           if (!READ_TOOLS.has(tool_name) && !WRITE_TOOLS.has(tool_name)) {
@@ -352,8 +354,10 @@ export function createFilesystemGuardHooks(opts: SandboxOptions): HookCallbackMa
           // Extract path from tool input
           let rawPath: string | undefined;
           if (tool_input && typeof tool_input === 'object') {
-            if ('file_path' in tool_input) rawPath = tool_input.file_path as string;
-            else if ('path' in tool_input) rawPath = tool_input.path as string;
+            if ('file_path' in tool_input && typeof tool_input.file_path === 'string')
+              rawPath = tool_input.file_path;
+            else if ('path' in tool_input && typeof tool_input.path === 'string')
+              rawPath = tool_input.path;
           }
 
           // No path specified (Glob/Grep default to cwd) → allowed

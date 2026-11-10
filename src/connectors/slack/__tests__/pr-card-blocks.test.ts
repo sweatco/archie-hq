@@ -6,6 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import type { PrCardData } from '../../../types/task.js';
 import { buildPrCardBlocks } from '../client.js';
+import { expectDefined } from '../../../test-support/assertions.js';
 
 const baseCard: PrCardData = {
   repo: 'sweatco/sweatcoin-mobile',
@@ -25,14 +26,18 @@ function card(c: PrCardData) {
     title?: { type: string; text: string };
     subtitle?: { type: string; text: string };
   }>;
-  return { block: blocks[0], title: blocks[0].title!.text, subtitle: blocks[0].subtitle!.text };
+  return {
+    block: blocks[0],
+    title: expectDefined(blocks[0].title).text,
+    subtitle: expectDefined(blocks[0].subtitle).text,
+  };
 }
 
 describe('buildPrCardBlocks', () => {
   it('emits a single card block with linked #number + branch title and a CI subtitle', () => {
     const { block, title, subtitle } = card(baseCard);
     expect(block.type).toBe('card');
-    expect(block.title!.type).toBe('mrkdwn');
+    expect(expectDefined(block.title).type).toBe('mrkdwn');
     expect(title).toBe(
       '<https://github.com/sweatco/sweatcoin-mobile/pull/6543|#6543> fix/recovery-teardown-race',
     );

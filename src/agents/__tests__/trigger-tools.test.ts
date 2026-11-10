@@ -58,7 +58,7 @@ const {
   updatePendingTrigger,
   withdrawPendingTrigger,
 } = vi.hoisted(() => {
-  const loadTrigger = vi.fn();
+  const loadTrigger = vi.fn<typeof import('../../system/trigger-store.js').loadTrigger>();
   const saveTrigger = vi.fn();
   // Faithful stand-in for the real store helper. The property that matters about
   // the real one — that the re-read, the status check and the write happen
@@ -143,7 +143,7 @@ import { createOrchestrationMcpServer } from '../tools.js';
 import type { Agent } from '../agent.js';
 import type { Task } from '../../tasks/task.js';
 
-const postInteractiveToUser = vi.fn().mockResolvedValue(true);
+const postInteractiveToUser = vi.fn<Task['postInteractiveToUser']>().mockResolvedValue(true);
 
 function makeAgent(): Agent {
   return {
@@ -300,7 +300,8 @@ describe('update_trigger — a pending proposal is editable', () => {
     });
 
     expect(postInteractiveToUser).toHaveBeenCalledOnce();
-    const [cardText, , approvalType, , , ref] = postInteractiveToUser.mock.calls[0];
+    const [cardText, , approvalType, , , ref]: Parameters<Task['postInteractiveToUser']> =
+      postInteractiveToUser.mock.calls[0];
     expect(cardText).toContain('Revised watch');
     expect(approvalType).toBe('trigger');
     expect(ref).toBe('trg-20260729-1056-pending'); // same id — the old card can't enable a superseded version

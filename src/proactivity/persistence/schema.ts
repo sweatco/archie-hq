@@ -1,12 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import assert from 'node:assert/strict';
 import type { DatabaseSync } from 'node:sqlite';
 
 export const SCHEMA_VERSION = 12;
 
+function schemaVersion(db: DatabaseSync): number {
+  const row = db.prepare('PRAGMA user_version').get();
+  assert(row, 'SQLite did not return its schema version');
+  return Number(row.user_version);
+}
+
 export function initializeSchema(db: DatabaseSync, team: string, now: number): void {
   db.exec('BEGIN IMMEDIATE');
   try {
-    const version = Number(db.prepare('PRAGMA user_version').get()!.user_version);
+    const version = schemaVersion(db);
     if (version === 0) {
       if (db.prepare("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1").get())
         throw new Error('Unversioned initiative database is not empty; use a fresh database');
@@ -57,7 +64,7 @@ export function initializeSchema(db: DatabaseSync, team: string, now: number): v
 }
 
 export function validateSchema(db: DatabaseSync, team: string): void {
-  const version = Number(db.prepare('PRAGMA user_version').get()!.user_version);
+  const version = schemaVersion(db);
   if (version > SCHEMA_VERSION) throw new Error('Observation database is newer than this binary');
   if (version !== SCHEMA_VERSION)
     throw new Error(

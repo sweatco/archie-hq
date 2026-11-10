@@ -1,3 +1,5 @@
+import { MessageQueue } from '../message-queue.js';
+import { registeredMcpTools } from '../../test-support/mcp.js';
 /**
  * Handler-level tests for the sequencing gate a trigger-fired task sits behind: while it has a `home_channel` but no channel of its own, `post_to_channel` must refuse (it posts WITHOUT linking, which is the detached message homing a fired task exists to replace), while `post_to_user` and `report_completion` must be allowed through — their first post is what opens the task's thread.
  *
@@ -90,7 +92,7 @@ const MANDATE = 'Sergei: "can you flag this in #incidents when you know"';
 function makeAgent(): Agent {
   return {
     def: { id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', pluginName: 'pm', isPm: true },
-    queue: {} as any,
+    queue: new MessageQueue(),
     session: { active: false },
   } as unknown as Agent;
 }
@@ -148,16 +150,14 @@ function makeTask(opts: { home?: boolean; originChannelId?: string } = {}): Task
 
 /** Build an MCP server and pull a tool's invokable handler out of its registry. `post_to_channel`/`post_to_user` live on the comms server, `report_completion` on the orchestration one. */
 function handlerFrom(
-  build: (agent: Agent, task: Task) => { instance: unknown },
+  build: (agent: Agent, task: Task) => Parameters<typeof registeredMcpTools>[0],
   name: string,
   task: Task,
 ): (args: Record<string, unknown>) => Promise<{ content: { text: string }[] }> {
   const server = build(makeAgent(), task);
-  const raw =
-    (server.instance as any)._registeredTools ??
-    Object.fromEntries((server.instance as any)._tools ?? []);
+  const raw = registeredMcpTools(server);
   const entry = raw[name];
-  const fn = entry.callback ?? entry.handler ?? entry.cb;
+  const fn = entry.callback;
   return (args) => fn(args, {});
 }
 

@@ -15,6 +15,7 @@ import { mkdir, writeFile, readFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import type { Trigger } from '../../types/trigger.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const WORK = mkdtempSync(join(tmpdir(), 'archie-trigger-store-'));
 process.env.ARCHIE_WORKDIR = WORK;
@@ -114,12 +115,14 @@ describe('ensureTriggerDataDir', () => {
 
     const first = await ensureTriggerDataDir(id);
     expect(first).not.toBeNull();
-    await writeFile(join(first!, 'notes.md'), 'previous fire wrote this');
+    await writeFile(join(expectDefined(first), 'notes.md'), 'previous fire wrote this');
 
     const second = await ensureTriggerDataDir(id);
 
     expect(second).toBe(first);
-    expect(await readFile(join(first!, 'notes.md'), 'utf-8')).toBe('previous fire wrote this');
+    expect(await readFile(join(expectDefined(first), 'notes.md'), 'utf-8')).toBe(
+      'previous fire wrote this',
+    );
   });
 
   it('creates nothing and returns null once the trigger record is gone', async () => {
@@ -128,13 +131,13 @@ describe('ensureTriggerDataDir', () => {
     const id = 'trg-20260817-1205-deleted';
     await saveTrigger(sampleTrigger(id));
     const path = await ensureTriggerDataDir(id);
-    await writeFile(join(path!, 'notes.md'), 'carry-over');
+    await writeFile(join(expectDefined(path), 'notes.md'), 'carry-over');
 
     await deleteTrigger(id);
-    expect(existsSync(path!)).toBe(false);
+    expect(existsSync(expectDefined(path))).toBe(false);
 
     expect(await ensureTriggerDataDir(id)).toBeNull();
-    expect(existsSync(path!)).toBe(false);
+    expect(existsSync(expectDefined(path))).toBe(false);
   });
 
   it('returns null for a trigger that never existed', async () => {
@@ -147,7 +150,7 @@ describe('removeTriggerDataDir', () => {
   it('removes a populated directory, nested subdirectories included', async () => {
     const id = 'trg-20260817-1202-rmtree';
     await saveTrigger(sampleTrigger(id));
-    const path = (await ensureTriggerDataDir(id))!;
+    const path = expectDefined(await ensureTriggerDataDir(id));
     await writeFile(join(path, 'state.json'), '{"seen":1}');
     await mkdir(join(path, 'nested', 'deeper'), { recursive: true });
     await writeFile(join(path, 'nested', 'deeper', 'log.txt'), 'entry');
@@ -171,7 +174,7 @@ describe('removeTriggerDataDir', () => {
     async () => {
       const id = 'trg-20260817-1207-eacces';
       await saveTrigger(sampleTrigger(id));
-      const path = (await ensureTriggerDataDir(id))!;
+      const path = expectDefined(await ensureTriggerDataDir(id));
       await writeFile(join(path, 'state.json'), '{"seen":1}');
 
       // Strip write permission from the PARENT, so removing `path` itself fails.
@@ -190,7 +193,7 @@ describe('deleteTrigger', () => {
   it('removes both the record file and the data directory', async () => {
     const id = 'trg-20260817-1204-both01';
     await saveTrigger(sampleTrigger(id));
-    const dataPath = (await ensureTriggerDataDir(id))!;
+    const dataPath = expectDefined(await ensureTriggerDataDir(id));
     await writeFile(join(dataPath, 'notes.md'), 'carry-over');
 
     await deleteTrigger(id);

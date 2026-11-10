@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Box, Text, useInput, useStdout } from 'ink';
 import Spinner from 'ink-spinner';
 import { fetchTasks } from '../api.js';
+import type { TaskSummary } from '../api-contract.js';
 
 function formatDateTime(iso: string): string {
   const d = new Date(iso);
@@ -12,16 +13,6 @@ function formatDateTime(iso: string): string {
     minute: '2-digit',
     hour12: false,
   });
-}
-
-interface TaskSummary {
-  task_id: string;
-  status: string;
-  created_at: string;
-  updated_at: string;
-  title: string | null;
-  channel_name: string | null;
-  reminder: { trigger_at: string; reason: string } | null;
 }
 
 interface TaskListProps {
@@ -62,7 +53,7 @@ export function TaskList({ onSelect, onCreate, refreshTrigger, active }: TaskLis
   // Reserve lines for: title bar (1) + header with margin (2) + status bar (1)
   const visibleRows = Math.max(1, termHeight - 4);
 
-  const [allTasks, setAllTasks] = useState<TaskSummary[]>([]);
+  const [allTasks, setAllTasks] = useState<Array<TaskSummary | undefined>>([]);
   const [total, setTotal] = useState(0);
   const [cursor, setCursor] = useState(0);
   const [scrollTop, setScrollTop] = useState(0);
@@ -124,7 +115,7 @@ export function TaskList({ onSelect, onCreate, refreshTrigger, active }: TaskLis
           pendingShift.current = false;
           const shift = t - prevTotal.current;
           if (shift > 0) {
-            setAllTasks((prev) => [...new Array<TaskSummary>(shift), ...prev]);
+            setAllTasks((prev) => [...new Array<TaskSummary | undefined>(shift), ...prev]);
             // Pinned to the top: let new tasks appear rather than scrolling away
             // from them. Scrolled anywhere else: hold the viewport still.
             if (scrollTopRef.current > 0) {
@@ -140,7 +131,7 @@ export function TaskList({ onSelect, onCreate, refreshTrigger, active }: TaskLis
           const next = [...prev];
           // Ensure array is large enough
           while (next.length < page * PAGE_SIZE + tasks.length) {
-            next.push(undefined as any);
+            next.push(undefined);
           }
           for (let i = 0; i < tasks.length; i++) {
             next[page * PAGE_SIZE + i] = tasks[i];
@@ -196,7 +187,9 @@ export function TaskList({ onSelect, onCreate, refreshTrigger, active }: TaskLis
       // Keep everything on screen; page 0's `total` drives the index shift.
       pendingShift.current = true;
     }
-    loadPage(0);
+    loadPage(0).catch((error: unknown) =>
+      setError(error instanceof Error ? error.message : String(error)),
+    );
   }, [refreshTrigger, loadPage]);
 
   // Fetch (and retry) every page overlapping the visible window + buffer.
@@ -207,14 +200,18 @@ export function TaskList({ onSelect, onCreate, refreshTrigger, active }: TaskLis
     if (total === 0) {
       // Page 0 hasn't established the total yet (still loading or it failed).
       // Re-attempt it; loadPage de-dupes if it is already in flight.
-      loadPage(0);
+      loadPage(0).catch((error: unknown) =>
+        setError(error instanceof Error ? error.message : String(error)),
+      );
       return;
     }
     const needed = cursor + visibleRows + PREFETCH_BUFFER;
     const firstPage = Math.max(0, Math.floor(scrollTop / PAGE_SIZE));
     const lastPage = Math.floor(Math.min(needed, total - 1) / PAGE_SIZE);
     for (let p = firstPage; p <= lastPage; p++) {
-      loadPage(p);
+      loadPage(p).catch((error: unknown) =>
+        setError(error instanceof Error ? error.message : String(error)),
+      );
     }
   }, [cursor, scrollTop, total, visibleRows, retryTick, loadPage]);
 

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import assert from 'node:assert/strict';
 import type { InitiativeStore } from './store.js';
 import type { ObservationSlack } from './slack.js';
 import { SourceAccess } from './access.js';
@@ -43,7 +44,8 @@ export class SourceCollector {
 
   async collect(channel: string, now: number, signal: AbortSignal): Promise<number> {
     if (!(await this.access.check(channel))) return now + HOUR;
-    const progress = this.store.attention.channelProgress(channel)!;
+    const progress = this.store.attention.channelProgress(channel);
+    assert(progress, `Missing collection progress for authorized channel ${channel}`);
     const latest = this.store.setting(`scan:${channel}`) ?? String(now / 1000);
     this.store.set(`scan:${channel}`, latest);
     const page = await this.slack.page(
@@ -74,7 +76,8 @@ export class SourceCollector {
     maxReads = 10,
   ): Promise<ThreadSnapshot | null> {
     if (!(await this.access.check(matter.channel))) return null;
-    const oldest = this.store.setting('watermark')!;
+    const oldest = this.store.setting('watermark');
+    assert(oldest, 'Initiative store is missing its collection watermark');
     const key = `thread-scan:${matter.channel}:${matter.thread}`;
     const scan = JSON.parse(
       this.store.setting(key) ??

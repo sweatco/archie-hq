@@ -170,3 +170,7 @@ Everything in `src/` is domain-agnostic: the task runtime, the single agent spaw
 - [Agents](./agents.md) — the PM, plugin agents, and the general-purpose worker
 - [Tool Approvals](./tool-approvals.md) — the `archie` block and the approval gate
 - [Security](./security.md) — sandbox grants and the shared-credential posture
+
+## Bootstrap and configuration boundaries
+
+`src/system/workdir.ts` owns runtime path constants. `src/system/bootstrap-workdir.ts` owns directory initialization, plugin checkout/refresh and base-clone warming; path consumers do not import startup effects. The plugin loader validates disk configuration before passing typed MCP connection entries to the SDK, and malformed connection entries fail explicitly. Archie approval metadata remains separate from connection configuration and malformed policies still fail closed.

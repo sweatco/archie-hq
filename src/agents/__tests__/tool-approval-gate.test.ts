@@ -1,3 +1,4 @@
+import type { HookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
 import { describe, it, expect, vi } from 'vitest';
 import {
   parseMcpToolName,
@@ -47,17 +48,31 @@ async function runGate(
     ...port,
   };
   const [matcher] = createToolApprovalHooks(policy, fullPort);
-  return (await matcher.hooks[0](
-    { tool_name, tool_input } as any,
-    undefined as any,
-    {} as any,
-  )) as any;
+  return await matcher.hooks[0](
+    {
+      hook_event_name: 'PreToolUse',
+      session_id: 'test',
+      transcript_path: '/tmp/test.jsonl',
+      cwd: '/tmp',
+      tool_use_id: 'call-1',
+      tool_name,
+      tool_input,
+    },
+    undefined,
+    { signal: new AbortController().signal },
+  );
 }
 
-const denialReason = (r: { hookSpecificOutput?: { permissionDecisionReason?: string } }) =>
-  r.hookSpecificOutput?.permissionDecisionReason ?? '';
-const isDeny = (r: { hookSpecificOutput?: { permissionDecision?: string } }) =>
-  r.hookSpecificOutput?.permissionDecision === 'deny';
+const denialReason = (r: HookJSONOutput) =>
+  'hookSpecificOutput' in r &&
+  r.hookSpecificOutput &&
+  'permissionDecisionReason' in r.hookSpecificOutput
+    ? (r.hookSpecificOutput.permissionDecisionReason ?? '')
+    : '';
+const isDeny = (r: HookJSONOutput) =>
+  'hookSpecificOutput' in r && r.hookSpecificOutput && 'permissionDecision' in r.hookSpecificOutput
+    ? r.hookSpecificOutput.permissionDecision === 'deny'
+    : false;
 
 describe('parseMcpToolName', () => {
   it('splits server and tool', () => {

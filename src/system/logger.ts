@@ -7,6 +7,7 @@
 
 import { relative } from 'path';
 import pc from 'picocolors';
+import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 
 // Project root path to trim from all file paths
 const PROJECT_ROOT = process.cwd();
@@ -137,20 +138,21 @@ export class Logger {
   agentTool(
     agentName: string,
     toolName: string,
-    input: any,
+    rawInput: unknown,
     opts?: { editMode?: boolean; cwds?: string[]; subagentLabel?: string },
   ): void {
+    const input = parseToolLogInput(rawInput);
     const label = formatAgentLabel(agentName, opts?.editMode);
     const cwds = opts?.cwds || [];
 
     if (toolName === 'Read') {
-      const displayPath = trimFilePath(input.file_path, cwds);
+      const displayPath = trimFilePath(input.file_path ?? '', cwds);
       console.log(`${label} ${c.dim('Reading:')} ${displayPath}`);
     } else if (toolName === 'Write') {
-      const displayPath = trimFilePath(input.file_path, cwds);
+      const displayPath = trimFilePath(input.file_path ?? '', cwds);
       console.log(`${label} ${c.dim('Writing:')} ${displayPath}`);
     } else if (toolName === 'Edit') {
-      const displayPath = trimFilePath(input.file_path, cwds);
+      const displayPath = trimFilePath(input.file_path ?? '', cwds);
       console.log(`${label} ${c.dim('Editing:')} ${displayPath}`);
     } else if (toolName === 'Grep') {
       console.log(`${label} ${c.dim('Searching:')} "${input.pattern}"`);
@@ -196,9 +198,9 @@ export class Logger {
       const server = parts[1] || '';
       const tool = parts.slice(2).join('__') || '';
       // Show key params inline, truncated
-      const params = Object.entries(input || {})
+      const params = Object.entries(rawInput && typeof rawInput === 'object' ? rawInput : {})
         .map(([k, v]) => {
-          const s = typeof v === 'string' ? v : JSON.stringify(v);
+          const s = typeof v === 'string' ? v : (JSON.stringify(v) ?? String(v));
           return `${k}=${s.length > 60 ? s.substring(0, 57) + '...' : s}`;
         })
         .join(', ');
@@ -275,7 +277,7 @@ export class Logger {
   /**
    * Log an error
    */
-  error(prefix: string, message: string, error?: any): void {
+  error(prefix: string, message: string, error?: unknown): void {
     if (error) {
       // '%s' pins the format string so % specifiers in caller-provided text are never interpreted
       console.error('%s', `${c.red('[' + prefix + ']')} ${message}`, error);
@@ -287,7 +289,7 @@ export class Logger {
   /**
    * Log a warning
    */
-  warn(prefix: string, message: string, error?: any): void {
+  warn(prefix: string, message: string, error?: unknown): void {
     if (error) {
       // '%s' pins the format string so % specifiers in caller-provided text are never interpreted
       console.warn('%s', `${c.yellow('[' + prefix + ']')} ${message}`, error);
@@ -306,7 +308,7 @@ export class Logger {
   /**
    * Log a debug message with an object (logged as-is for console inspection)
    */
-  debug(prefix: string, message: string, data?: any): void {
+  debug(prefix: string, message: string, data?: unknown): void {
     if (data !== undefined) {
       console.log('%s', `${c.dim('[' + prefix + ']')} ${message}`, data);
     } else {
@@ -323,6 +325,35 @@ interface AgentSpawnInput {
   subagent_type?: string;
   model?: string;
   description?: string;
+}
+
+interface ToolLogInput extends AgentSpawnInput {
+  file_path?: string;
+  pattern?: string;
+  command?: string;
+  skill?: string;
+  prompt?: string;
+  name?: string;
+  query?: string;
+  url?: string;
+}
+
+function parseToolLogInput(raw: unknown): ToolLogInput {
+  if (!raw || typeof raw !== 'object') return {};
+  const input = raw as Record<string, unknown>;
+  return {
+    file_path: typeof input.file_path === 'string' ? input.file_path : undefined,
+    pattern: typeof input.pattern === 'string' ? input.pattern : undefined,
+    command: typeof input.command === 'string' ? input.command : undefined,
+    skill: typeof input.skill === 'string' ? input.skill : undefined,
+    description: typeof input.description === 'string' ? input.description : undefined,
+    prompt: typeof input.prompt === 'string' ? input.prompt : undefined,
+    subagent_type: typeof input.subagent_type === 'string' ? input.subagent_type : undefined,
+    name: typeof input.name === 'string' ? input.name : undefined,
+    model: typeof input.model === 'string' ? input.model : undefined,
+    query: typeof input.query === 'string' ? input.query : undefined,
+    url: typeof input.url === 'string' ? input.url : undefined,
+  };
 }
 
 /**
@@ -354,7 +385,7 @@ const subagentLabelCounts = new Map<string, number>();
  * Extract a short label from a Task tool call for subagent identification.
  * Numbers duplicates: researcher#1, researcher#2, etc.
  */
-function extractSubagentLabel(input: any): string {
+function extractSubagentLabel(input: ToolLogInput): string {
   // Prefer subagent_type (e.g. "researcher", "report-writer") or name
   let base: string;
   if (input.subagent_type) {
@@ -380,7 +411,7 @@ function extractSubagentLabel(input: any): string {
  * Tracks parent_tool_use_id to label events from subagents.
  */
 export function processAgentEventForLogging(
-  event: any,
+  event: SDKMessage,
   agentName: string,
   cwds: string[],
   editMode?: boolean,
@@ -399,7 +430,7 @@ export function processAgentEventForLogging(
       for (const block of content) {
         if (block.type === 'tool_use') {
           const toolName = block.name;
-          const input = block.input as any;
+          const input = parseToolLogInput(block.input);
 
           // Track Task tool calls for subagent labeling
           let subagentLabel: string | undefined;
@@ -408,7 +439,7 @@ export function processAgentEventForLogging(
             subagentLabels.set(block.id, subagentLabel);
           }
 
-          logger.agentTool(displayName, toolName, input, { editMode, cwds, subagentLabel });
+          logger.agentTool(displayName, toolName, block.input, { editMode, cwds, subagentLabel });
         }
       }
     }

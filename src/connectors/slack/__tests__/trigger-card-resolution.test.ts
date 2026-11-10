@@ -25,11 +25,33 @@ import type { Trigger } from '../../../types/trigger.js';
 // registry — so `module` is mocked and its `createRequire` hands back a fake Bolt.
 // Unlike the sweep's fake, this one KEEPS the action handlers: they are the subject.
 const bolt = vi.hoisted(() => {
-  const actions = new Map<string, (arg: any) => Promise<unknown>>();
+  const actions = new Map<
+    string,
+    (arg: {
+      ack: () => Promise<void>;
+      action: { value: string };
+      body: {
+        user: { id: string };
+        channel: { id: string };
+        message: { ts: string; thread_ts?: string };
+      };
+    }) => Promise<unknown>
+  >();
   class FakeApp {
     constructor(_opts: unknown) {}
     event(_name: string, _handler: unknown) {}
-    action(name: string, handler: (arg: any) => Promise<unknown>) {
+    action(
+      name: string,
+      handler: (arg: {
+        ack: () => Promise<void>;
+        action: { value: string };
+        body: {
+          user: { id: string };
+          channel: { id: string };
+          message: { ts: string; thread_ts?: string };
+        };
+      }) => Promise<unknown>,
+    ) {
       actions.set(name, handler);
     }
     async start() {}
@@ -50,7 +72,7 @@ vi.mock('module', async (importOriginal) => {
     ...actual,
     createRequire: (url: string | URL) => {
       const real = actual.createRequire(url);
-      const patched = (id: string) => (id === '@slack/bolt' ? bolt.exports : real(id));
+      const patched = (id: string): unknown => (id === '@slack/bolt' ? bolt.exports : real(id));
       return Object.assign(patched, real);
     },
   };
@@ -65,7 +87,7 @@ vi.mock('../client.js', () => ({
   getBotUserId: vi.fn().mockReturnValue('U_BOT'),
   fetchSlackThread: vi.fn(),
   getBotId: vi.fn().mockReturnValue('B_OURS'),
-  addReaction: vi.fn(),
+  addReaction: vi.fn().mockResolvedValue(undefined),
   setSlackDryRun: vi.fn(),
   getUserInfo: vi.fn(),
   isExternalUser: vi.fn().mockReturnValue(false),
@@ -78,7 +100,7 @@ vi.mock('../client.js', () => ({
 
 const { loadTrigger, deleteTrigger, enableProposedTrigger, withdrawPendingTrigger } = vi.hoisted(
   () => {
-    const loadTrigger = vi.fn();
+    const loadTrigger = vi.fn<typeof import('../../../system/trigger-store.js').loadTrigger>();
     const deleteTrigger = vi.fn().mockResolvedValue(undefined);
     const enableProposedTrigger = vi.fn().mockResolvedValue(null);
     // Faithful stand-in: the real one does the pending check and the removal
@@ -168,6 +190,7 @@ vi.mock('../../../system/logger.js', () => ({
 }));
 
 import { mountSlackApp } from '../events.js';
+import { expectDefined } from '../../../test-support/assertions.js';
 
 const TRIGGER_ID = 'trg-20260729-1056-6nd69p';
 
@@ -200,7 +223,7 @@ const clickBody = {
 async function click(actionId: 'approve_trigger' | 'deny_trigger'): Promise<void> {
   const handler = bolt.actions.get(actionId);
   expect(handler, `${actionId} handler was never registered`).toBeDefined();
-  await handler!({
+  await expectDefined(handler)({
     action: { value: TRIGGER_ID },
     ack: vi.fn().mockResolvedValue(undefined),
     body: clickBody,
@@ -210,13 +233,13 @@ async function click(actionId: 'approve_trigger' | 'deny_trigger'): Promise<void
 /** The text the card was rewritten to. */
 function cardText(): string {
   expect(updateSlackMessageSafely).toHaveBeenCalledTimes(1);
-  return updateSlackMessageSafely.mock.calls[0]![2] as string;
+  return expectDefined(updateSlackMessageSafely.mock.calls[0])[2] as string;
 }
 
 /** The blocks the card was rewritten to. Empty means the buttons were retired. */
 function cardBlocks(): unknown[] {
   expect(updateSlackMessageSafely).toHaveBeenCalledTimes(1);
-  return updateSlackMessageSafely.mock.calls[0]![3] as unknown[];
+  return expectDefined(updateSlackMessageSafely.mock.calls[0])[3] as unknown[];
 }
 
 beforeEach(async () => {

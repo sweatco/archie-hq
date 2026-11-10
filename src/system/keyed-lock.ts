@@ -17,15 +17,12 @@ export function createKeyedLock() {
   return function run<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const prev = chains.get(key) ?? Promise.resolve();
     const result = prev.then(fn, fn); // run fn whatever the previous outcome
-    const tracked = result.then(
-      () => {},
-      () => {},
-    ); // never-rejecting chain link
-    chains.set(key, tracked);
-    void tracked.then(() => {
+    const release = () => {
       // Drop the entry only if no later call has extended the chain.
       if (chains.get(key) === tracked) chains.delete(key);
-    });
+    };
+    const tracked = result.then(release, release); // never-rejecting chain link
+    chains.set(key, tracked);
     return result;
   };
 }

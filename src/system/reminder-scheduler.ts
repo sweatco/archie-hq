@@ -5,12 +5,15 @@
  * A 5-minute interval checks for due reminders and reactivates tasks.
  */
 
-import { Task } from '../tasks/task.js';
+import type { Task } from '../tasks/task.js';
 import { findAllTasks, taskExistsOnDisk } from '../tasks/persistence.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { emitEvent } from './event-bus.js';
 import { computeNextRun, describeSchedule } from './trigger-scheduler.js';
 import { logger } from './logger.js';
+
+type ReminderTask = Pick<Task, 'taskId' | 'metadata' | 'fireReminder' | 'postToUser'>;
+type LoadReminderTask = (taskId: string) => Promise<ReminderTask>;
 
 // ---- In-memory index ----
 
@@ -34,7 +37,8 @@ let schedulerTimer: ReturnType<typeof setInterval> | undefined;
  * Initialize the reminder scheduler.
  * Scans task metadata on disk to rebuild the in-memory index, then starts the interval.
  */
-export async function initReminderScheduler(): Promise<void> {
+export async function initReminderScheduler(loadTask: LoadReminderTask): Promise<void> {
+  if (schedulerTimer) clearInterval(schedulerTimer);
   await rebuildFromDisk();
 
   const count = pendingReminders.size;
@@ -45,13 +49,13 @@ export async function initReminderScheduler(): Promise<void> {
   // Tick every minute. A schedule slot is therefore honoured within a minute of
   // its cron instant, and an overdue reminder is caught up on the first tick.
   schedulerTimer = setInterval(() => {
-    checkDueReminders().catch((err) =>
+    checkDueReminders(loadTask).catch((err) =>
       logger.error('reminder-scheduler', 'Error checking due reminders', err),
     );
   }, 60_000);
 
   // Also run immediately to fire any overdue reminders from downtime
-  checkDueReminders().catch((err) =>
+  checkDueReminders(loadTask).catch((err) =>
     logger.error('reminder-scheduler', 'Error on initial reminder check', err),
   );
 }
@@ -92,7 +96,7 @@ type Recurrence = { cron?: string; tz?: string; until?: string };
  * that stop a reminder.
  */
 export function announceRecurrence(
-  task: Task,
+  task: Pick<Task, 'taskId' | 'postToUser'>,
   kind: 'set' | 'ended' | 'cancelled',
   r: Recurrence,
 ): void {
@@ -223,7 +227,7 @@ export function planReminderRearm(
 const MAX_LOAD_FAILURES = 5;
 const loadFailures = new Map<string, number>();
 
-export async function checkDueReminders(): Promise<void> {
+export async function checkDueReminders(loadTask: LoadReminderTask): Promise<void> {
   const now = new Date();
 
   // Iterate a snapshot: a Map iterator revisits a key re-inserted mid-loop, so an already-due
@@ -236,9 +240,9 @@ export async function checkDueReminders(): Promise<void> {
 
     try {
       // 2. Load the task.
-      let task: Task;
+      let task: ReminderTask;
       try {
-        task = await Task.get(taskId);
+        task = await loadTask(taskId);
       } catch (err) {
         // Retry a transient load failure for a few ticks, but not forever: an unreadable task
         // would otherwise re-run Task.get (and its plugin sync) every minute until restart.

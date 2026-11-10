@@ -9,6 +9,7 @@ import { publicFollowupAt } from '../decisions.js';
 import type { Matter, SourceMessage } from '../types.js';
 import type { ObservationSlack } from '../slack.js';
 import type { BackgroundModel } from '../model.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const START = Date.parse('2026-10-19T10:00:00Z');
 const DAY = 86_400_000;
@@ -56,7 +57,7 @@ beforeEach(() => {
     link: (channel, thread) => `${channel}/${thread}`,
   };
   model = {
-    complete: vi.fn(async (request) => ({
+    complete: vi.fn(async (request: Parameters<BackgroundModel['complete']>[0]) => ({
       resolved: false,
       help: null,
       public: false,
@@ -74,7 +75,7 @@ afterEach(() => {
 });
 
 function seed(nextCheck = START, deadline: number | null = null): Matter {
-  const snapshot = store.snapshot('C1', message.thread)!;
+  const snapshot = expectDefined(store.snapshot('C1', message.thread));
   const matter: Matter = {
     id: `C1:${message.thread}:m:release`,
     channel: 'C1',
@@ -103,7 +104,7 @@ async function editDeadline(matter: Matter, deadline: number): Promise<void> {
     text: `The checklist deadline changed to ${deadline}.`,
   };
   store.record(message, now);
-  const evidence = store.snapshot('C1', message.thread)!.evidence.map((e) => e.id);
+  const evidence = expectDefined(store.snapshot('C1', message.thread)).evidence.map((e) => e.id);
   vi.mocked(model.complete).mockResolvedValueOnce({
     threads: [
       {
@@ -137,7 +138,9 @@ it('reassesses after restart at the inactivity boundary and reuses stable phases
   const matter = seed();
   await service.tick(START, true);
   expect(model.complete).toHaveBeenCalledTimes(1);
-  const boundary = publicFollowupAt(store.snapshot('C1', message.thread)!)!;
+  const boundary = expectDefined(
+    publicFollowupAt(expectDefined(store.snapshot('C1', message.thread))),
+  );
   vi.setSystemTime(boundary - 60_000);
   await service.tick(Date.now(), true);
   expect(model.complete).toHaveBeenCalledTimes(1);
@@ -170,10 +173,12 @@ it('counts Friday inactivity through Tuesday and treats a later human edit as ne
   message = { ...message, ts, thread: ts, version: ts, context: true };
   store.record(message, friday);
   const tuesday = Date.parse('2026-10-20T10:00:00Z');
-  expect(publicFollowupAt(store.snapshot('C1', ts)!)).toBe(tuesday);
+  expect(publicFollowupAt(expectDefined(store.snapshot('C1', ts)))).toBe(tuesday);
   message = { ...message, version: (tuesday / 1000).toFixed(6), text: 'Updated request' };
   store.record(message, tuesday);
-  expect(publicFollowupAt(store.snapshot('C1', ts)!)).toBe(Date.parse('2026-10-22T10:00:00Z'));
+  expect(publicFollowupAt(expectDefined(store.snapshot('C1', ts)))).toBe(
+    Date.parse('2026-10-22T10:00:00Z'),
+  );
 });
 
 it('advances a shortened source deadline to its preparation window', async () => {

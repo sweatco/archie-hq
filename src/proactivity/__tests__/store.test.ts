@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { InitiativeStore } from '../store.js';
 import { lisbonDay, type Delivery, type Matter, type SourceMessage } from '../types.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const NOW = Date.parse('2026-10-20T10:00:00Z');
 let root: string;
@@ -24,7 +25,7 @@ function message(overrides: Partial<SourceMessage> = {}): SourceMessage {
 
 function populate(): Matter {
   store.record(message(), NOW);
-  const snapshot = store.snapshot('C1', message().thread)!;
+  const snapshot = expectDefined(store.snapshot('C1', message().thread));
   const matter: Matter = {
     id: 'C1:release',
     channel: 'C1',
@@ -108,7 +109,7 @@ describe('observation memory', () => {
     expect(
       store.record(message({ version: '1792490404.000001', text: 'Release Monday' }), NOW),
     ).toBeNull();
-    expect(store.snapshot('C1', message().thread)!.evidence).toEqual([]);
+    expect(expectDefined(store.snapshot('C1', message().thread)).evidence).toEqual([]);
   });
 
   it('deduplicates envelope IDs and canonical revisions across overlapping handlers', () => {
@@ -124,17 +125,21 @@ describe('observation memory', () => {
   it('requires changed human evidence and an explicit reopening decision', () => {
     const matter = populate();
     store.feedback(matter.id, 'handled', NOW);
-    store.apply([store.snapshot('C1', matter.thread)!], [], [{ ...matter, reopen: true }]);
+    store.apply(
+      [expectDefined(store.snapshot('C1', matter.thread))],
+      [],
+      [{ ...matter, reopen: true }],
+    );
     expect(store.matter(matter.id)?.state).toBe('resolved');
     store.record(message({ version: '1792490402.000001', text: 'Reinstated for Monday' }), NOW);
-    let snapshot = store.snapshot('C1', matter.thread)!;
+    let snapshot = expectDefined(store.snapshot('C1', matter.thread));
     store.apply([snapshot], [], [{ ...matter, evidence: snapshot.evidence.map((e) => e.id) }]);
     expect(store.matter(matter.id)?.state).toBe('resolved');
     store.record(
       message({ version: '1792490403.000001', text: 'Please reopen the release for next Friday' }),
       NOW,
     );
-    snapshot = store.snapshot('C1', matter.thread)!;
+    snapshot = expectDefined(store.snapshot('C1', matter.thread));
     store.apply(
       [snapshot],
       [],
@@ -156,10 +161,10 @@ describe('observation memory', () => {
 
   it('rejects late extraction and citations from other source threads', () => {
     store.record(message(), NOW);
-    const snapshot = store.snapshot('C1', message().thread)!;
+    const snapshot = expectDefined(store.snapshot('C1', message().thread));
     store.record(message({ version: '1792490402.000001', text: 'Release Monday' }), NOW);
     expect(store.apply([snapshot], [], [])).toBe(false);
-    const current = store.snapshot('C1', message().thread)!;
+    const current = expectDefined(store.snapshot('C1', message().thread));
     expect(() =>
       store.apply(
         [current],
@@ -184,7 +189,7 @@ describe('observation memory', () => {
     expect(store.search('Friday', ['C1'])).toHaveLength(1);
     expect(store.search('Friday', ['C2'])).toEqual([]);
     store.feedback(matter.id, 'not useful', NOW);
-    const snapshot = store.snapshot('C1', matter.thread)!;
+    const snapshot = expectDefined(store.snapshot('C1', matter.thread));
     store.apply([snapshot], [], [{ ...matter, state: 'open' }]);
     expect(store.matter(matter.id)?.state).toBe('dismissed');
   });
@@ -197,7 +202,7 @@ describe('observation memory', () => {
       evidence: matter.evidence,
       matter: matter.id,
     });
-    const charge = store.reserve(50_000, false, NOW)!;
+    const charge = expectDefined(store.reserve(50_000, false, NOW));
     store.expire(NOW + 31 * 86_400_000);
     expect(store['row']('SELECT text,excerpt FROM revisions')?.text).toBe('');
     expect(store.snapshot('C1', matter.thread)?.evidence[0]?.text).toBe('Release Friday');
@@ -215,9 +220,9 @@ describe('observation memory', () => {
 describe('durable admission', () => {
   it('leases work to one worker and refuses an expired worker completion', () => {
     store.schedule('extract', 'C1', NOW);
-    const first = store.claim(NOW, 100)!;
+    const first = expectDefined(store.claim(NOW, 100));
     expect(store.claim(NOW)).toBeNull();
-    const replacement = store.claim(NOW + 101)!;
+    const replacement = expectDefined(store.claim(NOW + 101));
     expect(store.finish(first)).toBe(false);
     expect(store.finish(replacement)).toBe(true);
   });
@@ -237,7 +242,7 @@ describe('durable admission', () => {
   it('retains uncertain liabilities across midnight and replaces them with daily debits', () => {
     const before = Date.parse('2026-10-20T22:59:00Z');
     const after = Date.parse('2026-10-20T23:01:00Z');
-    const id = store.reserve(150_000_000, false, before)!;
+    const id = expectDefined(store.reserve(150_000_000, false, before));
     expect(lisbonDay(before)).not.toBe(lisbonDay(after));
     expect(store.budget(after)).toBe(150_000_000);
     store.settle(id, 140_000_000, after);
@@ -249,7 +254,7 @@ describe('durable admission', () => {
   });
 
   it('accounts for known overruns and stops admitting unverified pricing', () => {
-    const id = store.reserve(100, false, NOW)!;
+    const id = expectDefined(store.reserve(100, false, NOW));
     store.settle(id, 101, NOW);
     expect(store.budget(NOW)).toBe(101);
     expect(store.reserve(1, false, NOW)).toBeNull();
@@ -273,7 +278,7 @@ describe('durable admission', () => {
 
   it('preserves work rescheduled during a lease without overlapping it', () => {
     store.schedule('investigate', 'm1', NOW, 'old');
-    const job = store.claim(NOW)!;
+    const job = expectDefined(store.claim(NOW));
     store.schedule('investigate', 'm1', NOW + 1, 'new');
     expect(store.claim(NOW + 1)).toBeNull();
     expect(store.owns(job)).toBe(false);
@@ -298,7 +303,7 @@ describe('review regressions', () => {
         }),
         NOW,
       );
-    const snapshot = store.snapshot('C1', message().thread)!;
+    const snapshot = expectDefined(store.snapshot('C1', message().thread));
     expect(snapshot.evidence).toHaveLength(200);
     expect(snapshot.evidence.at(-1)?.text).toBe('CANCELLED');
     expect(snapshot.gap).toContain('omitted');
@@ -315,11 +320,11 @@ describe('review regressions', () => {
 
   it('rejects a pre-expiry extraction and a pre-revocation extraction after restoration', () => {
     populate();
-    const snapshot = store.snapshot('C1', message().thread)!;
+    const snapshot = expectDefined(store.snapshot('C1', message().thread));
     store.channel('C1', false, false);
     store.channel('C1', true, false);
     expect(store.apply([snapshot], [], [])).toBe(false);
-    const restored = store.snapshot('C1', message().thread)!;
+    const restored = expectDefined(store.snapshot('C1', message().thread));
     store.expire(NOW + 91 * 86_400_000);
     expect(store.apply([restored], [], [])).toBe(false);
   });
@@ -327,14 +332,14 @@ describe('review regressions', () => {
   it('lets cancellation resolve a snoozed commitment', () => {
     const matter = populate();
     store.feedback(matter.id, 'later', NOW, NOW + 86_400_000);
-    const snapshot = store.snapshot('C1', matter.thread)!;
+    const snapshot = expectDefined(store.snapshot('C1', matter.thread));
     store.apply([snapshot], [], [{ ...matter, state: 'resolved' }]);
     expect(store.matter(matter.id)?.state).toBe('resolved');
   });
 
   it('does not let resolved matters starve open matters', () => {
     const matter = populate();
-    const snapshot = store.snapshot('C1', matter.thread)!;
+    const snapshot = expectDefined(store.snapshot('C1', matter.thread));
     store.apply(
       [snapshot],
       [],
@@ -364,9 +369,9 @@ describe('review regressions', () => {
       }),
       NOW,
     );
-    const snapshot = store.snapshot('C1', matter.thread)!;
+    const snapshot = expectDefined(store.snapshot('C1', matter.thread));
     store.apply([snapshot], [], [{ ...matter, evidence: snapshot.evidence.map((e) => e.id) }]);
-    store.enqueueDelivery(delivery('context-reminder', store.matter(matter.id)!));
+    store.enqueueDelivery(delivery('context-reminder', expectDefined(store.matter(matter.id))));
     store.record(
       message({
         ts: '1792490402.000001',

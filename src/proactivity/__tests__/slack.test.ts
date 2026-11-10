@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import { z } from 'zod';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const f = vi.hoisted(() => ({
@@ -13,7 +14,7 @@ const f = vi.hoisted(() => ({
     users: { info: vi.fn(), conversations: vi.fn() },
   },
   extract: vi.fn(async (raw: Record<string, unknown>) => ({ text: raw.text as string })),
-  post: vi.fn(),
+  post: vi.fn<typeof import('../../connectors/slack/client.js').postSlackMessage>(),
 }));
 vi.mock('@slack/web-api', () => ({
   WebClient: vi.fn(function () {
@@ -125,12 +126,15 @@ describe('public-source Slack boundary', () => {
         proposal,
       });
       const message = f.post.mock.calls[0][0];
+      const actions = z
+        .array(z.object({ action_id: z.string(), visible_to_user_ids: z.array(z.string()) }))
+        .parse(message.actions);
       expect(message).toMatchObject({
         channel,
         threadTs: '10.000001',
         text: 'Follow up on the release',
       });
-      expect(message.actions.map((button: { action_id: string }) => button.action_id)).toEqual(
+      expect(actions.map((button) => button.action_id)).toEqual(
         proposal
           ? ['initiative_start_task']
           : [
@@ -140,7 +144,7 @@ describe('public-source Slack boundary', () => {
               'initiative_stop_following',
             ],
       );
-      for (const button of message.actions) {
+      for (const button of actions) {
         expect(button.visible_to_user_ids).toEqual(['U_OWNER']);
       }
     },

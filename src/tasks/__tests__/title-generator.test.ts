@@ -13,13 +13,13 @@ import type { SlackThread } from '../../types/index.js';
 // ---- Mocks ----
 
 const state = vi.hoisted(() => ({
-  queryEvents: [] as any[],
+  queryEvents: [] as unknown[],
   queryShouldThrow: false,
-  lastQueryArgs: null as any,
+  lastQueryArgs: null as Parameters<typeof query>[0] | null,
 }));
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
-  query: vi.fn((args: any) => {
+  query: vi.fn((args: Parameters<typeof query>[0]) => {
     state.lastQueryArgs = args;
     if (state.queryShouldThrow) {
       throw new Error('boom');
@@ -64,6 +64,7 @@ vi.mock('../task.js', () => ({
 import { generateTaskTitle } from '../title-generator.js';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { logger } from '../../system/logger.js';
+import { expectDefined } from '../../test-support/assertions.js';
 const warnSpy = logger.warn as unknown as ReturnType<typeof vi.fn>;
 
 // ---- Helpers ----
@@ -86,7 +87,7 @@ function makeThread(overrides?: Partial<SlackThread>): SlackThread {
   };
 }
 
-function successEvent(title: string): any {
+function successEvent(title: string): unknown {
   return { type: 'result', subtype: 'success', structured_output: { title } };
 }
 
@@ -95,7 +96,7 @@ beforeEach(() => {
   state.queryShouldThrow = false;
   state.lastQueryArgs = null;
   warnSpy.mockClear();
-  (query as any).mockClear();
+  vi.mocked(query).mockClear();
 });
 
 // ---- Tests ----
@@ -117,7 +118,7 @@ describe('generateTaskTitle', () => {
     state.queryEvents = [successEvent('A'.repeat(120))];
     const title = await generateTaskTitle(makeThread());
     expect(title).not.toBeNull();
-    expect(title!.length).toBe(60);
+    expect(expectDefined(title).length).toBe(60);
   });
 
   it('returns null when model returns empty/whitespace', async () => {
@@ -181,7 +182,7 @@ describe('generateTaskTitle', () => {
     });
     await generateTaskTitle(thread);
     expect(query).toHaveBeenCalled();
-    const transcript = state.lastQueryArgs.prompt as string;
+    const transcript = expectDefined(state.lastQueryArgs).prompt as string;
     expect(transcript).toContain('[external]: [redacted: external participant in shared channel]');
     expect(transcript).toContain('[Dana]: internal subject');
     expect(transcript).not.toContain('should be redacted');
@@ -206,7 +207,7 @@ describe('generateTaskTitle', () => {
       ],
     });
     await generateTaskTitle(thread);
-    const transcript = state.lastQueryArgs.prompt as string;
+    const transcript = expectDefined(state.lastQueryArgs).prompt as string;
     expect(transcript).toContain('[forwarded from <@UEXT:External> — external, team T_OTHER]');
     expect(transcript).toContain('forwarded body');
   });
@@ -214,8 +215,10 @@ describe('generateTaskTitle', () => {
   it('uses haiku model and json_schema output format', async () => {
     state.queryEvents = [successEvent('A title')];
     await generateTaskTitle(makeThread());
-    expect(state.lastQueryArgs.options.model).toBe('haiku');
-    expect(state.lastQueryArgs.options.outputFormat?.type).toBe('json_schema');
-    expect(state.lastQueryArgs.options.tools).toEqual([]);
+    expect(expectDefined(expectDefined(state.lastQueryArgs).options).model).toBe('haiku');
+    expect(expectDefined(expectDefined(state.lastQueryArgs).options).outputFormat?.type).toBe(
+      'json_schema',
+    );
+    expect(expectDefined(expectDefined(state.lastQueryArgs).options).tools).toEqual([]);
   });
 });

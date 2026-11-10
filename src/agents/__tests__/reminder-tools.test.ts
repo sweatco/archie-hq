@@ -44,7 +44,7 @@ vi.mock('../registry.js', () => ({
 // The scheduler is the collaborator under observation — stub it, keep the real
 // cron helpers it delegates to (validateRecurringInterval / computeNextRun).
 const { scheduleReminder, cancelReminder, announceRecurrence } = vi.hoisted(() => ({
-  scheduleReminder: vi.fn(),
+  scheduleReminder: vi.fn<typeof import('../../system/reminder-scheduler.js').scheduleReminder>(),
   cancelReminder: vi.fn(),
   announceRecurrence: vi.fn(),
 }));

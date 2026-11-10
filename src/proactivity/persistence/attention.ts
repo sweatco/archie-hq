@@ -201,6 +201,6 @@ export class AttentionRecords {
       (SELECT count(*) FROM threads) AS threads,
       (SELECT count(*) FROM deliveries WHERE state='sent') AS sent,
       (SELECT count(*) FROM feedback) AS feedback,
-      (SELECT count(*) FROM charges WHERE settled IS NULL) AS unsettled`)!;
+      (SELECT count(*) FROM charges WHERE settled IS NULL) AS unsettled`);
   }
 }

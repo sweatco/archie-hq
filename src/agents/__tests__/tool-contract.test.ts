@@ -1,3 +1,5 @@
+import { MessageQueue } from '../message-queue.js';
+import { registeredMcpTools } from '../../test-support/mcp.js';
 /**
  * MCP server contract tests.
  *
@@ -72,7 +74,7 @@ function makeAgent(overrides: Partial<AgentDef> = {}): Agent {
       visibility: 'global',
       ...overrides,
     },
-    queue: {} as any,
+    queue: new MessageQueue(),
     session: { active: false },
   } as Agent;
 }
@@ -114,10 +116,7 @@ function makeTask(): Task {
 function getRegisteredTools(
   server: ReturnType<typeof createRepoToolsMcpServer>,
 ): Record<string, { description?: string }> {
-  return (
-    (server.instance as any)._registeredTools ??
-    Object.fromEntries((server.instance as any)._tools ?? [])
-  );
+  return registeredMcpTools(server);
 }
 
 function getRegisteredToolNames(server: ReturnType<typeof createRepoToolsMcpServer>): string[] {

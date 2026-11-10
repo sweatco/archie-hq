@@ -38,6 +38,7 @@ vi.mock('../../system/logger.js', () => ({
 }));
 
 import { Task } from '../task.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const TaskCtor = Task as unknown as new (
   taskId: string,
@@ -100,8 +101,8 @@ describe('trigger approval destination check', () => {
 
     await expect(value.handleTriggerApproval('U07APPROVER')).resolves.toBeNull();
 
-    expect(value.prepareTriggerDelivery).toHaveBeenCalledWith(state.trigger!.binding);
+    expect(value.prepareTriggerDelivery).toHaveBeenCalledWith(expectDefined(state.trigger).binding);
     expect(state.enable).not.toHaveBeenCalled();
-    expect(value.metadata.pending_trigger_id).toBe(state.trigger!.id);
+    expect(value.metadata.pending_trigger_id).toBe(expectDefined(state.trigger).id);
   });
 });

@@ -299,10 +299,15 @@ export function handleMergeCheckDirect(taskId: string): void {
   }
 
   // Schedule new merge check after debounce delay
-  const timer = setTimeout(async () => {
+  const checkLinkedPullRequests = async () => {
     mergeCheckTimers.delete(taskId);
     logger.system(`GitHub: Running merge check for task ${taskId}`);
     await checkAndMergeLinkedPRs(taskId);
+  };
+  const timer = setTimeout(() => {
+    checkLinkedPullRequests().catch((error: unknown) =>
+      logger.error('runtime', 'Merge check failed', error),
+    );
   }, MERGE_CHECK_DEBOUNCE_MS);
 
   mergeCheckTimers.set(taskId, timer);
@@ -341,7 +346,7 @@ export function handleChecksReadyDirect(
     logger.system(`GitHub: Debouncing checks_ready for ${key}`);
   }
 
-  const timer = setTimeout(async () => {
+  const notifyChecksReady = async () => {
     checksReadyTimers.delete(key);
     logger.system(`GitHub: Firing checks_ready for ${key}`);
     try {
@@ -355,6 +360,11 @@ export function handleChecksReadyDirect(
     } catch (error) {
       logger.error('checks-ready', `Failed to deliver checks_ready ping for ${key}`, error);
     }
+  };
+  const timer = setTimeout(() => {
+    notifyChecksReady().catch((error: unknown) =>
+      logger.error('runtime', 'Check notification failed', error),
+    );
   }, CHECKS_READY_DEBOUNCE_MS);
 
   checksReadyTimers.set(key, timer);

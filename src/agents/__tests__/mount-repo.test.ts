@@ -1,3 +1,6 @@
+import { GitHubClient } from '../../connectors/github/client.js';
+import { MessageQueue } from '../message-queue.js';
+import { registeredMcpTools } from '../../test-support/mcp.js';
 /**
  * `mount_repo` — the only path by which a task gets a clone.
  *
@@ -17,7 +20,8 @@ import type { AttachedRepo } from '../../types/task.js';
 
 // ---- Module mocks ----
 
-vi.mock('../../connectors/github/client.js', () => ({
+vi.mock('../../connectors/github/client.js', async (original) => ({
+  GitHubClient: (await original<typeof import('../../connectors/github/client.js')>()).GitHubClient,
   getGitHubClient: vi.fn(),
   parseCheckRef: vi.fn(),
   fetchOrigin: vi.fn().mockResolvedValue(undefined),
@@ -68,6 +72,7 @@ vi.mock('../registry.js', () => ({
 
 import { getGitHubClient } from '../../connectors/github/client.js';
 import { ensureTaskClone } from '../../connectors/github/repo-clone.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 // ---- Helpers ----
 
@@ -87,7 +92,7 @@ function makeAgent(): Agent {
       pluginName: 'pm',
       visibility: 'global',
     },
-    queue: {} as any,
+    queue: new MessageQueue(),
     session: { active: false },
   } as unknown as Agent;
 }
@@ -112,10 +117,9 @@ function makeTask(overrides: Partial<Task['metadata']> = {}): Task {
 }
 
 function mountTool(agent: Agent, task: Task) {
-  const server: any = createOrchestrationMcpServer(agent, task);
-  const tools: Record<string, any> =
-    server.instance._registeredTools ?? Object.fromEntries(server.instance._tools ?? []);
-  return tools['mount_repo'].callback ?? tools['mount_repo'].handler;
+  const server = createOrchestrationMcpServer(agent, task);
+  const tools = registeredMcpTools(server);
+  return tools['mount_repo'].callback;
 }
 
 /** The options object mount_repo handed the clone layer on call `n`. */
@@ -125,7 +129,12 @@ function ensureArgs(n = 0) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(getGitHubClient).mockReturnValue(client as any);
+  vi.mocked(getGitHubClient).mockReturnValue(
+    Object.assign(
+      new GitHubClient({ appId: '1', privateKey: 'unused', installationId: 1 }),
+      client,
+    ),
+  );
   client.resolveRepo.mockResolvedValue({ default_branch: 'trunk' });
   vi.mocked(ensureTaskClone).mockImplementation(async (opts) => {
     // Stand in for the real clone layer: record the checkout the way it would.
@@ -133,7 +142,7 @@ beforeEach(() => {
     opts.attached.current_branch = opts.editAllowed ? opts.taskBranch : opts.baseBranch;
     return {
       clone_path: opts.clonePath,
-      branch: opts.attached.current_branch!,
+      branch: expectDefined(opts.attached.current_branch),
       base_branch: opts.baseBranch ?? 'main',
       created: true,
     };
@@ -257,7 +266,7 @@ describe('mount_repo', () => {
   });
 
   it('says GitHub is not configured rather than failing obscurely', async () => {
-    vi.mocked(getGitHubClient).mockReturnValue(null as any);
+    vi.mocked(getGitHubClient).mockReturnValue(null);
     const task = makeTask();
     const result = await mountTool(makeAgent(), task)({ github: 'org/backend' });
 

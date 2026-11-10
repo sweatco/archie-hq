@@ -41,6 +41,16 @@ describe('loadMcpJson', () => {
     expect(result).toEqual({ servers: {}, descriptions: {}, policies: {} });
   });
 
+  it.each([
+    { type: 'http', url: 42 },
+    { type: 'http', url: 'https://example.com/mcp', headers: { Authorization: 42 } },
+    { command: 'node', args: [42] },
+    null,
+  ])('refuses malformed MCP connection data before handing it to the SDK: %j', async (config) => {
+    const path = await writeMcpJson({ mcpServers: { example: config } });
+    expect(() => loadMcpJson(path)).toThrow();
+  });
+
   it('extracts description into descriptions and strips it from the server config', async () => {
     const path = await writeMcpJson({
       mcpServers: {
@@ -117,7 +127,7 @@ describe('loadMcpJson', () => {
       const { servers, descriptions } = loadMcpJson(path);
 
       expect(descriptions.example).toBe('Example service');
-      expect(servers.example.headers.Authorization).toBe('Bearer secret-token');
+      expect(servers.example).toMatchObject({ headers: { Authorization: 'Bearer secret-token' } });
       expect(servers.example).not.toHaveProperty('description');
     } finally {
       delete process.env.MCP_TEST_TOKEN;

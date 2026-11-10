@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { InitiativeStore } from '../store.js';
 import { runInitiativeOperator } from '../../cli/initiative.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 let root: string;
 let path: string;
@@ -16,12 +17,14 @@ beforeEach(() => {
   const now = Date.now();
   const ts = (now / 1000).toFixed(6);
   store.channel('C1', true, false);
-  const evidence = store.record(
-    { channel: 'C1', thread: ts, ts, version: ts, author: 'U1', text: 'Review the release' },
-    now,
-  )!;
+  const evidence = expectDefined(
+    store.record(
+      { channel: 'C1', thread: ts, ts, version: ts, author: 'U1', text: 'Review the release' },
+      now,
+    ),
+  );
   store.apply(
-    [store.snapshot('C1', ts)!],
+    [expectDefined(store.snapshot('C1', ts))],
     [],
     [
       {
@@ -78,9 +81,12 @@ it.each(['explain', 'proposals'])('exports %s read-only to a private file', asyn
     ...(command === 'explain' ? ['matter'] : []),
     output,
   ]);
-  const result = JSON.parse(readFileSync(output, 'utf8'));
+  const result: unknown = JSON.parse(readFileSync(output, 'utf8'));
   if (command === 'proposals')
-    expect(result[0]).toMatchObject({ id: proposal, body: { outcome: 'Review the release' } });
+    expect(Array.isArray(result) ? (result as unknown[])[0] : undefined).toMatchObject({
+      id: proposal,
+      body: { outcome: 'Review the release' },
+    });
   else expect(result).toMatchObject({ decisions: [], deliveries: [] });
   expect(statSync(output).mode & 0o777).toBe(0o600);
   expect(readFileSync(path)).toEqual(before);

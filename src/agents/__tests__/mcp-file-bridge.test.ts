@@ -36,13 +36,13 @@ vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => ({
 const mockStat = vi.fn();
 const mockReadFile = vi.fn();
 vi.mock('fs/promises', () => ({
-  stat: (...a: unknown[]) => mockStat(...a),
-  readFile: (...a: unknown[]) => mockReadFile(...a),
+  stat: (...a: unknown[]): unknown => mockStat(...a),
+  readFile: (...a: unknown[]): unknown => mockReadFile(...a),
 }));
 
 const mockAssertReadable = vi.fn();
 vi.mock('../artifacts.js', () => ({
-  assertReadable: (...a: unknown[]) => mockAssertReadable(...a),
+  assertReadable: (...a: unknown[]): unknown => mockAssertReadable(...a),
 }));
 
 vi.mock('../../system/logger.js', () => ({
@@ -90,7 +90,7 @@ function runTool(
 ) {
   return createSendFileToMcpTool(agent, liveServers).handler(args as never, {});
 }
-const textOf = (res: any): string =>
+const textOf = (res: Awaited<ReturnType<typeof runTool>>): string =>
   (res.content as Array<{ text?: string }>).map((c) => c.text ?? '').join('');
 
 beforeEach(() => {

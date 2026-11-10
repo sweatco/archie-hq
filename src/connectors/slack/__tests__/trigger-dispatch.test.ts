@@ -13,10 +13,16 @@ import type { SlackAttachment } from '../../../types/index.js';
 
 // events.ts loads Bolt through `createRequire`, which bypasses vitest's module registry entirely — so `module` itself is mocked and its `createRequire` returns a require that hands back a fake Bolt while every other id falls through to the real one. That is what makes the registered `message` handler reachable from a unit test: the gate and its drop-log live inside it, not inside an exported function.
 const bolt = vi.hoisted(() => {
-  const handlers = new Map<string, (arg: any) => unknown>();
+  const handlers = new Map<
+    string,
+    (arg: { event: unknown; body?: { event_id?: string } }) => unknown
+  >();
   class FakeApp {
     constructor(_opts: unknown) {}
-    event(name: string, handler: (arg: any) => unknown) {
+    event(
+      name: string,
+      handler: (arg: { event: unknown; body?: { event_id?: string } }) => unknown,
+    ) {
       handlers.set(name, handler);
     }
     action(_name: string, _handler: unknown) {}
@@ -38,7 +44,7 @@ vi.mock('module', async (importOriginal) => {
     ...actual,
     createRequire: (url: string | URL) => {
       const real = actual.createRequire(url);
-      const patched = (id: string) => (id === '@slack/bolt' ? bolt.exports : real(id));
+      const patched = (id: string): unknown => (id === '@slack/bolt' ? bolt.exports : real(id));
       return Object.assign(patched, real);
     },
   };
@@ -51,7 +57,7 @@ vi.mock('../client.js', () => ({
   getBotUserId: vi.fn().mockReturnValue('U_BOT'),
   fetchSlackThread: vi.fn(),
   getBotId: vi.fn().mockReturnValue('B_OURS'),
-  addReaction: vi.fn(),
+  addReaction: vi.fn().mockResolvedValue(undefined),
   setSlackDryRun: vi.fn(),
   getUserInfo: vi.fn().mockResolvedValue({
     name: 'dev',
@@ -137,6 +143,7 @@ import { getChannelMessageTriggers, fireTrigger } from '../../../system/trigger-
 import { logger } from '../../../system/logger.js';
 import { Task } from '../../../tasks/task.js';
 import { findTaskByThread } from '../../../tasks/persistence.js';
+import { expectDefined } from '../../../test-support/assertions.js';
 
 const CHANNEL = 'C0WATCHED';
 
@@ -165,10 +172,12 @@ function makeTrigger(contains?: string, from_user?: string): Trigger {
 async function deliverAmbientPost(raw: Record<string, unknown>): Promise<void> {
   vi.mocked(fetchSlackThread).mockResolvedValue({
     threadId: raw.ts as string,
+    shared: false,
+    currentMessageTs: raw.ts as string,
     channel: { id: CHANNEL, name: 'watched' },
     rootAuthorWasBot: false,
     messages: [],
-  } as any);
+  });
 
   await handleSlackEvent({
     type: 'message',
@@ -352,14 +361,14 @@ describe('the author filter matches the author the payload actually carries', ()
 });
 
 describe('routing-gate drop log', () => {
-  let messageHandler: (arg: { event: any }) => unknown;
+  let messageHandler: (arg: { event: unknown }) => unknown;
 
   beforeEach(async () => {
     await mountSlackApp({} as Application, {
       slackBotToken: 'xoxb-test',
       slackAppToken: 'xapp-test',
     });
-    messageHandler = bolt.handlers.get('message')!;
+    messageHandler = expectDefined(bolt.handlers.get('message'));
     vi.mocked(logger.debug).mockClear();
   });
 
@@ -419,10 +428,12 @@ describe('the content floor on task creation', () => {
   it('does not create a task for a DM whose fetched thread has no visible messages', async () => {
     vi.mocked(fetchSlackThread).mockResolvedValue({
       threadId: '1700000000.001000',
+      shared: false,
+      currentMessageTs: '1700000000.001000',
       channel: { id: 'D0USER', name: 'dm' },
       rootAuthorWasBot: false,
       messages: [],
-    } as any);
+    });
 
     await handleSlackEvent({
       type: 'message',
@@ -453,6 +464,8 @@ describe('the content floor on task creation', () => {
     vi.mocked(Task.create).mockResolvedValue(task as never);
     vi.mocked(fetchSlackThread).mockResolvedValue({
       threadId: '1700000000.001100',
+      shared: false,
+      currentMessageTs: '1700000000.001100',
       channel: { id: 'D0USER', name: 'dm' },
       rootAuthorWasBot: false,
       messages: [
@@ -462,7 +475,7 @@ describe('the content floor on task creation', () => {
           ts: '1700000000.001100',
         },
       ],
-    } as any);
+    });
 
     await handleSlackEvent({
       type: 'message',
@@ -502,7 +515,7 @@ describe('self-loop guard', () => {
       slackBotToken: 'xoxb-test',
       slackAppToken: 'xapp-test',
     });
-    messageHandler = bolt.handlers.get('message')!;
+    messageHandler = expectDefined(bolt.handlers.get('message'));
   });
 
   it('discards an event Slack attributes to our own bot user', async () => {
@@ -510,10 +523,12 @@ describe('self-loop guard', () => {
     vi.mocked(getChannelMessageTriggers).mockReturnValue([makeTrigger()]);
     vi.mocked(fetchSlackThread).mockResolvedValue({
       threadId: '1700000000.001200',
+      shared: false,
+      currentMessageTs: '1700000000.001200',
       channel: { id: CHANNEL, name: 'watched' },
       rootAuthorWasBot: false,
       messages: [],
-    } as any);
+    });
 
     await messageHandler({
       event: {
@@ -534,10 +549,12 @@ describe('self-loop guard', () => {
     vi.mocked(getChannelMessageTriggers).mockReturnValue([makeTrigger()]);
     vi.mocked(fetchSlackThread).mockResolvedValue({
       threadId: '1700000000.001300',
+      shared: false,
+      currentMessageTs: '1700000000.001300',
       channel: { id: CHANNEL, name: 'watched' },
       rootAuthorWasBot: false,
       messages: [],
-    } as any);
+    });
 
     await messageHandler({
       event: {
@@ -570,7 +587,7 @@ describe('the message-edit entry point renders through the shared module', () =>
       slackBotToken: 'xoxb-test',
       slackAppToken: 'xapp-test',
     });
-    messageHandler = bolt.handlers.get('message')!;
+    messageHandler = expectDefined(bolt.handlers.get('message'));
   });
 
   it('renders an edited message from its attachment card, not from the raw text field', async () => {
@@ -608,10 +625,13 @@ describe('the message-edit entry point renders through the shared module', () =>
     await flushHandler();
 
     expect(appendSlackEdit).toHaveBeenCalledTimes(1);
-    expect(appendSlackEdit.mock.calls[0]![1]).toMatchObject({ isBot: false, isAppUser: false });
+    expect(expectDefined(appendSlackEdit.mock.calls[0])[1]).toMatchObject({
+      isBot: false,
+      isAppUser: false,
+    });
     // The body must carry the attachment card, which only the shared renderer folds in. Reverting the
     // production call to `msg.text` yields 'after' alone and fails here.
-    const body = appendSlackEdit.mock.calls[0]![3] as string;
+    const body = expectDefined(appendSlackEdit.mock.calls[0])[3] as string;
     expect(body).toContain('deploy failed on prod (build 4711)');
   });
 });

@@ -19,7 +19,7 @@ import { createRequire } from 'module';
 import http from 'node:http';
 import { readdirSync } from 'fs';
 const require = createRequire(import.meta.url);
-const express = require('express');
+const express = require('express') as typeof import('express');
 
 import type { Application, Request, Response } from 'express';
 
@@ -28,9 +28,10 @@ import { mountGitHubWebhook } from './connectors/github/events.js';
 import { mountApiRoutes } from './connectors/api/routes.js';
 import { mountOAuthRoutes } from './connectors/oauth/routes.js';
 import { getIsShuttingDown, setShuttingDown } from './system/shutdown.js';
-import { getActiveTaskIds } from './tasks/task.js';
+import { Task, getActiveTaskIds } from './tasks/task.js';
 import { logger } from './system/logger.js';
-import { bootstrapWorkdir, cloneRepos, OAUTH_DIR } from './system/workdir.js';
+import { OAUTH_DIR } from './system/workdir.js';
+import { bootstrapWorkdir, cloneRepos } from './system/bootstrap-workdir.js';
 import { validateMasterKey } from './system/secrets-vault.js';
 import { initPlugins, getPlugins, getArchieConfig } from './system/plugin-loader.js';
 import { startContextProbe } from './system/context-probe.js';
@@ -183,9 +184,9 @@ async function main(): Promise<void> {
     const slackHttpReady = !!(config.slackBotToken && config.slackSigningSecret);
     const slackSocketReady = !!(config.slackBotToken && config.slackAppToken);
     let slackLifecycle: SlackLifecycle | null = null;
-    if (slackHttpReady || slackSocketReady) {
+    if (config.slackBotToken && (slackHttpReady || slackSocketReady)) {
       slackLifecycle = await mountSlackApp(app, {
-        slackBotToken: config.slackBotToken!,
+        slackBotToken: config.slackBotToken,
         slackSigningSecret: config.slackSigningSecret,
         slackAppToken: config.slackAppToken,
         dryRun: process.env.SLACK_DRY_RUN === 'true',
@@ -202,8 +203,8 @@ async function main(): Promise<void> {
     const server = http.createServer(app);
 
     await recoverActiveTasks();
-    await initReminderScheduler();
-    await initTriggerScheduler();
+    await initReminderScheduler((id) => Task.get(id));
+    await initTriggerScheduler(() => Task.create());
     startInitiativeScheduler();
 
     // Now accept events: start the HTTP server and open the Socket Mode WebSocket.
@@ -231,8 +232,18 @@ async function main(): Promise<void> {
       process.exit(0);
     };
 
-    process.on('SIGINT', () => shutdown('SIGINT'));
-    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT', () => {
+      shutdown('SIGINT').catch((error: unknown) => {
+        logger.error('index', 'Shutdown failed', error);
+        process.exitCode = 1;
+      });
+    });
+    process.on('SIGTERM', () => {
+      shutdown('SIGTERM').catch((error: unknown) => {
+        logger.error('index', 'Shutdown failed', error);
+        process.exitCode = 1;
+      });
+    });
   } catch (error) {
     logger.error('index', 'Failed to start server', error);
     process.exit(1);

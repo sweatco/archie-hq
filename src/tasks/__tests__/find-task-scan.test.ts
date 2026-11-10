@@ -42,7 +42,7 @@ vi.mock('../task.js', () => ({
   // The lookups read the repositories in their flat shape without migrating —
   // fixtures here are already flat, so the read is the identity.
   readRepositories: (m: { repositories?: unknown }) =>
-    Array.isArray(m.repositories) ? m.repositories : [],
+    Array.isArray(m.repositories) ? (m.repositories as unknown[]) : [],
 }));
 
 import {

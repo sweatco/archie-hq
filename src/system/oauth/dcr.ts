@@ -32,7 +32,7 @@ export async function registerClient(
     );
   }
 
-  const metadata: Record<string, unknown> = {
+  const metadata: Parameters<typeof oauth.dynamicClientRegistrationRequest>[1] = {
     redirect_uris: [req.redirectUri],
     client_name: req.clientName ?? 'archie-hq',
     grant_types: ['authorization_code', 'refresh_token'],
@@ -42,7 +42,7 @@ export async function registerClient(
   };
   if (req.scope) metadata.scope = req.scope;
 
-  const res = await oauth.dynamicClientRegistrationRequest(as, metadata as any);
+  const res = await oauth.dynamicClientRegistrationRequest(as, metadata);
   const registered = await oauth.processDynamicClientRegistrationResponse(res);
 
   return {

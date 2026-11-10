@@ -24,7 +24,7 @@ These are separate features that share only a pattern:
 | Floor | none for a one-shot; ≥1h for a recurring cron | ≥1h, **recurring schedules only** |
 | Governance | No approval step. Agent-facing `cancel_reminder`, plus an operator off switch (`DELETE /api/tasks/:id/reminder`) | Propose-then-confirm, listable/pausable, announced, capped, global kill switch |
 
-The two schedulers (`reminder-scheduler.ts`, `trigger-scheduler.ts`) run side by side and never interfere, though the reminder scheduler reuses the trigger cron helpers (`computeNextRun`, `validateRecurringInterval`) rather than carrying a second recurrence engine.
+The two schedulers (`reminder-scheduler.ts`, `trigger-scheduler.ts`) receive their task loader/factory from the startup composition root; Slack dispatch passes the same factory when firing a message trigger. This keeps cron/index operations independent of the Task → Agent → tools dependency chain. They run side by side and never interfere, though the reminder scheduler reuses the trigger cron helpers (`computeNextRun`, `validateRecurringInterval`) rather than carrying a second recurrence engine.
 
 **Every recurring reminder ends, and says so.** There is no approval gate, so the engine bounds it instead: `until` is required and at most 30 days ahead (to run longer, ask again or use a trigger), and the engine posts one line in the task's thread when a recurring reminder is set and one when it ends — at its last run, on `cancel_reminder`, on the operator's `DELETE` route, when a one-shot replaces it, or when recovery pauses a task that keeps stalling (a new schedule replacing it just posts its own start line). Nothing is posted per run. A task with no thread yet — a trigger-fired task before its first post — is refused a recurring reminder, since its notices would have nowhere to land.
 
@@ -89,7 +89,7 @@ A one-off schedule auto-pauses after it fires (its condition is consumed). **Res
 
 ### Firing
 
-`fireTrigger(trigger, context)` (`src/system/trigger-scheduler.ts`) is shared by the scheduler (schedule context) and the Slack dispatch hook (message context):
+`fireTrigger(trigger, context, createTask)` (`src/system/trigger-scheduler.ts`) is shared by the scheduler (schedule context) and the Slack dispatch hook (message context):
 
 1. Create a fresh task; set `metadata.triggered_by = trigger.id`.
 2. Wire delivery, differently per mode (below).

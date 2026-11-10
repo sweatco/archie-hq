@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import assert from 'node:assert/strict';
 import type { CapabilityProposal, TaskHandoffRecord, ThreadSnapshot } from './types.js';
 import type { InitiativeStore } from './store.js';
 import type { ProposalSlack } from './slack.js';
@@ -134,7 +135,9 @@ export class ProposalHandoff {
         throw new HandoffRejection('Proposal approval has changed');
       this.queueCard(previous.proposal);
       await this.continue(previous);
-      return this.store.handoff(previous.proposal)!;
+      const updated = this.store.handoff(previous.proposal);
+      assert(updated, 'Approved handoff disappeared while continuing it');
+      return updated;
     }
     const proposal = this.store.proposal(delivery.proposal.id);
     if (!proposal || proposalVersion(proposal) !== version)
@@ -144,19 +147,23 @@ export class ProposalHandoff {
       throw new HandoffRejection(
         validation.reason + '; request a fresh proposal or retry after access recovers.',
       );
+    const team = this.store.setting('team');
+    assert(team, 'Initiative store is missing its workspace identity');
     const record = this.store.approveHandoff({
       proposal: proposal.id,
       version,
       actor,
       approved: Date.now(),
-      task: proposalTaskId(this.store.setting('team')!, proposal.id),
+      task: proposalTaskId(team, proposal.id),
       state: 'approved',
       budget: 'task',
       delivery: delivery.id,
     });
     this.queueCard(record.proposal);
     await this.continue(record);
-    return this.store.handoff(proposal.id)!;
+    const updated = this.store.handoff(proposal.id);
+    assert(updated, 'Approved handoff disappeared while continuing it');
+    return updated;
   }
 
   private async continue(record: TaskHandoffRecord): Promise<void> {

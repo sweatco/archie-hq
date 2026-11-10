@@ -6,6 +6,7 @@
  */
 
 import fs from 'fs';
+import type { Endpoints } from '@octokit/types';
 import path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
@@ -505,7 +506,7 @@ export class GitHubClient {
       per_page: filters.per_page || 10,
     });
 
-    return response.data.map((pr: any) => ({
+    return response.data.map((pr) => ({
       number: pr.number,
       title: pr.title,
       state: pr.state as 'open' | 'closed',
@@ -710,7 +711,11 @@ export class GitHubClient {
    * but is kept so every PR method on this client takes the same
    * `(githubRepo, prNumber, …)` shape callers rely on.
    */
-  async resolveReviewThread(githubRepo: string, prNumber: number, threadId: string): Promise<void> {
+  async resolveReviewThread(
+    _githubRepo: string,
+    prNumber: number,
+    threadId: string,
+  ): Promise<void> {
     const octokit = await this.getOctokit();
 
     await octokit.graphql(
@@ -1044,15 +1049,21 @@ export class GitHubClient {
    * Normalize a raw code-scanning alert payload (list item or single alert)
    * into the trimmed shape agents consume.
    */
-  private mapCodeScanningAlert(a: any): CodeScanningAlert {
+  private mapCodeScanningAlert(
+    a: Endpoints['GET /repos/{owner}/{repo}/code-scanning/alerts']['response']['data'][number],
+  ): CodeScanningAlert {
     const instance = a.most_recent_instance;
+    const fullDescription =
+      a.rule && 'full_description' in a.rule && typeof a.rule.full_description === 'string'
+        ? a.rule.full_description
+        : null;
     return {
-      number: a.number,
-      state: a.state,
+      number: narrowGithubId(a.number),
+      state: a.state ?? 'unknown',
       tool: a.tool?.name ?? 'unknown',
       ruleId: a.rule?.id ?? null,
       ruleName: a.rule?.name ?? null,
-      ruleDescription: a.rule?.description ?? a.rule?.full_description ?? null,
+      ruleDescription: a.rule?.description ?? fullDescription,
       severity: a.rule?.severity ?? null,
       securitySeverity: a.rule?.security_severity_level ?? null,
       url: a.html_url ?? null,
@@ -1097,7 +1108,7 @@ export class GitHubClient {
       per_page: filters.per_page ?? 30,
     });
 
-    const alerts = response.data.map((a: any) => this.mapCodeScanningAlert(a));
+    const alerts = response.data.map((a) => this.mapCodeScanningAlert(a));
     logger.system(
       `GitHub: code scanning alerts for ${githubRepo}` +
         `${filters.state ? ` (state=${filters.state})` : ''}: ${alerts.length}`,
@@ -1236,7 +1247,7 @@ export function createGitHubClient(): GitHubClient | null {
   let privateKey: string;
   try {
     privateKey = fs.readFileSync(privateKeyPath, 'utf8');
-  } catch (error) {
+  } catch {
     logger.error('GitHub', `Failed to read private key from ${privateKeyPath}`);
     return null;
   }
@@ -1400,7 +1411,7 @@ export async function fetchOrigin(repoPath: string, branch?: string): Promise<vo
     const target = branch ? `origin ${branch}` : 'origin';
     await execAsync(`git fetch ${target}`, { cwd: repoPath });
     logger.system(branch ? `Fetched origin/${branch}` : 'Fetched origin');
-  } catch (error) {
+  } catch {
     // Non-fatal - log and continue with existing refs
     logger.system(
       branch

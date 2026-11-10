@@ -11,7 +11,7 @@
  */
 
 import { Cron } from 'croner';
-import { Task } from '../tasks/task.js';
+import type { Task } from '../tasks/task.js';
 import { appendSlackMessage } from '../tasks/persistence.js';
 import type { SlackThread } from '../types/task.js';
 import type { Trigger, TriggerBinding, TriggerCondition } from '../types/trigger.js';
@@ -107,6 +107,12 @@ export function validateRecurringInterval(
   return { ok: true };
 }
 
+type TriggerTask = Pick<
+  Task,
+  'taskId' | 'metadata' | 'append' | 'setMemoryDestination' | 'save' | 'sendMessage'
+>;
+type CreateTriggerTask = () => Promise<TriggerTask>;
+
 // ---- Public API ----
 
 /**
@@ -115,7 +121,8 @@ export function validateRecurringInterval(
  * after downtime). No-op firing if the kill switch is off, but the index is
  * still built so list/management endpoints stay consistent.
  */
-export async function initTriggerScheduler(): Promise<void> {
+export async function initTriggerScheduler(createTask: CreateTriggerTask): Promise<void> {
+  if (schedulerTimer) clearInterval(schedulerTimer);
   await rebuildFromDisk();
   const count = enabledTriggers.size;
   if (count > 0) {
@@ -126,11 +133,11 @@ export async function initTriggerScheduler(): Promise<void> {
     return;
   }
   schedulerTimer = setInterval(() => {
-    checkDue().catch((err) =>
+    checkDue(createTask).catch((err) =>
       logger.error('trigger-scheduler', 'Error checking due triggers', err),
     );
   }, 60_000);
-  checkDue().catch((err) =>
+  checkDue(createTask).catch((err) =>
     logger.error('trigger-scheduler', 'Error on initial trigger check', err),
   );
 }
@@ -315,14 +322,14 @@ export function planStatusChange(input: {
 let ticking = false;
 
 /** Check for due schedule conditions and fire them (at most once per trigger per tick). */
-async function checkDue(): Promise<void> {
+async function checkDue(createTask: CreateTriggerTask): Promise<void> {
   if (!triggersEnabled() || ticking) return;
   ticking = true;
   try {
     const now = new Date();
     for (const trigger of [...enabledTriggers.values()]) {
       try {
-        await tickTrigger(trigger, now);
+        await tickTrigger(trigger, now, createTask);
       } catch (err) {
         // Isolate failures so one trigger's error (e.g. a disk write) doesn't
         // skip the rest of this tick.
@@ -336,13 +343,17 @@ async function checkDue(): Promise<void> {
 
 /** Fire a single trigger once if any of its schedule conditions are due, then
  * advance/expire those conditions and (de)persist. */
-async function tickTrigger(trigger: Trigger, now: Date): Promise<void> {
+async function tickTrigger(
+  trigger: Trigger,
+  now: Date,
+  createTask: CreateTriggerTask,
+): Promise<void> {
   const plan = planTick(trigger, now);
   if (plan.dueCount === 0) return;
 
   // Fire ONCE for the trigger this tick, even when several conditions coincide
   // (M2: "any match fires the trigger" — not one task per condition).
-  await fireTrigger(trigger, { kind: 'schedule' });
+  await fireTrigger(trigger, { kind: 'schedule' }, createTask);
 
   // fireTrigger may have paused + deindexed the trigger (daily cap, unreachable
   // channel). If so, leave its conditions alone.
@@ -368,7 +379,11 @@ async function tickTrigger(trigger: Trigger, now: Date): Promise<void> {
  * Firing posts no preamble — the spawned PM does the work and posts the result
  * itself, so the first message the channel sees is the actual output.
  */
-export async function fireTrigger(trigger: Trigger, context: FireContext): Promise<void> {
+export async function fireTrigger(
+  trigger: Trigger,
+  context: FireContext,
+  createTask: CreateTriggerTask,
+): Promise<void> {
   if (!triggersEnabled()) return;
 
   // Pre-flight for a channel-bound schedule fire: if the bound channel was
@@ -407,7 +422,7 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
     return;
   }
 
-  const task = await Task.create();
+  const task = await createTask();
   task.metadata.triggered_by = trigger.id;
 
   // Wire delivery. A message fire ingests the triggering thread, which links it as the default channel and
@@ -418,7 +433,8 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
   let scanChannelId: string | undefined;
   if (context.kind === 'message' && context.thread) {
     // Ingestion, not announcement. `append` is the one path every other Slack task uses, and it does five things this branch would otherwise have to reinvent (and previously simply skipped): it writes the message to knowledge.log through the single renderer with the author line and the `msg:<ts>` id, applies the redaction policy via `shouldRedact`, skips file downloads for a redacted message while downloading them otherwise so the `[Attachments: …]` suffix carries usable local paths, links `slack:<channel>:<threadId>` as a channel, and promotes it to `default_channel`. That last pair is why `linkSlackThread` is NOT also called here — `append` links the identical key with the same shape, so doing both would double-write the same record.
-    const { entries } = await task.append(context.thread);
+    const thread = context.thread;
+    const { entries } = await task.append(thread);
 
     // The ingestion floor, deliberately narrow. `fetchSlackThread` drops any raw message that has neither a `user` nor a `botId`, so the very message that fired this trigger can be missing from the thread it was fetched from — in which case `append` walked an empty (or incomplete) message list, returned no entry for it, and the PM would be woken by a fire whose triggering message it never sees. Writing it directly from the body dispatch already rendered is what closes that hole — and the line it returns joins the inline batch below.
     //
@@ -426,7 +442,7 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
     if (
       !context.authorId &&
       context.body &&
-      !context.thread.messages.some((m) => m.ts === context.thread!.threadId)
+      !thread.messages.some((m) => m.ts === thread.threadId)
     ) {
       const author = 'unknown';
       entries.push(

@@ -1,3 +1,4 @@
+import { expectDefined } from '../../../test-support/assertions.js';
 /**
  * Unit tests for the pinned-message summariser.
  *
@@ -11,13 +12,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const state = vi.hoisted(() => ({
-  queryEvents: [] as any[],
+  queryEvents: [] as unknown[],
   queryShouldThrow: false,
-  lastQueryArgs: null as any,
+  lastQueryArgs: null as Parameters<typeof query>[0] | null,
 }));
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
-  query: vi.fn((args: any) => {
+  query: vi.fn((args: Parameters<typeof query>[0]) => {
     state.lastQueryArgs = args;
     if (state.queryShouldThrow) {
       throw new Error('boom');
@@ -44,7 +45,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { logger } from '../../../system/logger.js';
 const warnSpy = logger.warn as unknown as ReturnType<typeof vi.fn>;
 
-function successEvent(summary: string): any {
+function successEvent(summary: string): unknown {
   return { type: 'result', subtype: 'success', structured_output: { summary } };
 }
 
@@ -57,7 +58,7 @@ beforeEach(() => {
   state.queryShouldThrow = false;
   state.lastQueryArgs = null;
   warnSpy.mockClear();
-  (query as any).mockClear();
+  vi.mocked(query).mockClear();
 });
 
 describe('summarisePinText', () => {
@@ -75,8 +76,10 @@ describe('summarisePinText', () => {
     const out = await summarisePinText(LONG);
 
     expect(query).toHaveBeenCalledTimes(1);
-    expect(state.lastQueryArgs.options.model).toBe('haiku');
-    expect(state.lastQueryArgs.options.outputFormat?.type).toBe('json_schema');
+    expect(expectDefined(expectDefined(state.lastQueryArgs).options).model).toBe('haiku');
+    expect(expectDefined(expectDefined(state.lastQueryArgs).options).outputFormat?.type).toBe(
+      'json_schema',
+    );
     expect(out.source).toBe('model');
     expect(out.summary).toBe('Release runbook lives in Notion and gates every deploy');
   });

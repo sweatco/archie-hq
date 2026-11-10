@@ -1,3 +1,14 @@
+import { z } from 'zod';
+import { logger } from '../system/logger.js';
+import {
+  taskListSchema,
+  taskDetailSchema,
+  taskEventsSchema,
+  triggerListSchema,
+  sseEventSchema,
+  type SseEvent,
+} from './api-contract.js';
+
 /**
  * CLI API Client — HTTP + SSE connection to the Archie server
  */
@@ -10,24 +21,21 @@ export function getBaseUrl(): string {
 
 // ---- REST helpers ----
 
-export async function fetchTasks(opts?: {
-  limit?: number;
-  offset?: number;
-}): Promise<{ tasks: any[]; total: number }> {
+export async function fetchTasks(opts?: { limit?: number; offset?: number }) {
   const params = new URLSearchParams();
   if (opts?.limit) params.set('limit', String(opts.limit));
   if (opts?.offset) params.set('offset', String(opts.offset));
   const qs = params.toString();
   const res = await fetch(`${getBaseUrl()}/api/tasks${qs ? `?${qs}` : ''}`);
   if (!res.ok) throw new Error(`Failed to fetch tasks: ${res.status}`);
-  const data = (await res.json()) as { tasks: any[]; total: number };
+  const data = taskListSchema.parse(await res.json());
   return { tasks: data.tasks, total: data.total };
 }
 
-export async function fetchTaskDetail(taskId: string): Promise<any> {
+export async function fetchTaskDetail(taskId: string) {
   const res = await fetch(`${getBaseUrl()}/api/tasks/${taskId}`);
   if (!res.ok) throw new Error(`Failed to fetch task: ${res.status}`);
-  return res.json();
+  return taskDetailSchema.parse(await res.json());
 }
 
 export async function createTask(message: string): Promise<string> {
@@ -37,7 +45,7 @@ export async function createTask(message: string): Promise<string> {
     body: JSON.stringify({ message }),
   });
   if (!res.ok) throw new Error(`Failed to create task: ${res.status}`);
-  const data = (await res.json()) as { task_id: string };
+  const data = z.object({ task_id: z.string() }).parse(await res.json());
   return data.task_id;
 }
 
@@ -50,23 +58,20 @@ export async function sendMessage(taskId: string, message: string): Promise<void
   if (!res.ok) throw new Error(`Failed to send message: ${res.status}`);
 }
 
-export async function fetchTaskEvents(
-  taskId: string,
-  after?: number,
-): Promise<{ events: any[]; total: number }> {
+export async function fetchTaskEvents(taskId: string, after?: number) {
   const url =
     after !== undefined
       ? `${getBaseUrl()}/api/tasks/${taskId}/events?after=${after}`
       : `${getBaseUrl()}/api/tasks/${taskId}/events`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Failed to fetch events: ${res.status}`);
-  return res.json() as Promise<{ events: any[]; total: number }>;
+  return taskEventsSchema.parse(await res.json());
 }
 
-export async function fetchTriggers(): Promise<{ triggers: any[]; total: number }> {
+export async function fetchTriggers() {
   const res = await fetch(`${getBaseUrl()}/api/triggers`);
   if (!res.ok) throw new Error(`Failed to fetch triggers: ${res.status}`);
-  return res.json() as Promise<{ triggers: any[]; total: number }>;
+  return triggerListSchema.parse(await res.json());
 }
 
 export async function updateTrigger(
@@ -116,7 +121,7 @@ export async function sendApproval(
 
 export interface SSEOptions {
   taskId?: string;
-  onEvent: (event: any) => void;
+  onEvent: (event: SseEvent) => void;
   onConnect?: () => void;
   onDisconnect?: () => void;
 }
@@ -145,7 +150,7 @@ export function connectSSE(opts: SSEOptions): () => void {
 
       opts.onConnect?.();
 
-      const reader = res.body.getReader();
+      const reader: ReadableStreamDefaultReader<Uint8Array> = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
 
@@ -160,7 +165,7 @@ export function connectSSE(opts: SSEOptions): () => void {
         for (const line of lines) {
           if (line.startsWith('data: ')) {
             try {
-              const event = JSON.parse(line.slice(6));
+              const event = sseEventSchema.parse(JSON.parse(line.slice(6)));
               opts.onEvent(event);
             } catch {
               // Skip malformed JSON
@@ -168,8 +173,8 @@ export function connectSSE(opts: SSEOptions): () => void {
           }
         }
       }
-    } catch (err: any) {
-      if (err.name === 'AbortError') return;
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === 'AbortError') return;
     }
 
     // If aborted, this was an intentional teardown — don't fire onDisconnect
@@ -179,10 +184,13 @@ export function connectSSE(opts: SSEOptions): () => void {
     opts.onDisconnect?.();
 
     // Reconnect after delay
-    setTimeout(connect, 3000);
+    setTimeout(startConnection, 3000);
   };
 
-  connect();
+  const startConnection = () => {
+    connect().catch((error: unknown) => logger.error('cli', 'Event stream failed', error));
+  };
+  startConnection();
 
   return () => {
     aborted = true;

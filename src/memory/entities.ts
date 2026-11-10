@@ -124,8 +124,8 @@ export async function readEntity(slug: string): Promise<EntityRecord | null> {
   let content: string;
   try {
     content = await readFile(getEntityPath(slug), 'utf-8');
-  } catch (err: any) {
-    if (err.code === 'ENOENT') return null;
+  } catch (err: unknown) {
+    if (err instanceof Error && 'code' in err && err.code === 'ENOENT') return null;
     throw err;
   }
   return parseEntity(content);

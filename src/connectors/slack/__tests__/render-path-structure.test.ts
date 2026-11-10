@@ -10,6 +10,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, relative, sep } from 'node:path';
+import { expectDefined } from '../../../test-support/assertions.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // src/connectors/slack/__tests__ → repo root is four levels up.
@@ -215,7 +216,7 @@ describe('the routing gate keeps its two questions separate', () => {
       literal,
       'MESSAGE_NOISE_SUBTYPES must be a Set literal this test can count',
     ).not.toBeNull();
-    const entries = Array.from(literal![1].matchAll(/'([^']+)'/g)).map((m) => m[1]);
+    const entries = Array.from(expectDefined(literal)[1].matchAll(/'([^']+)'/g)).map((m) => m[1]);
 
     expect(
       entries,

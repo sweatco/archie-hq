@@ -7,6 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildExtractionPrompt, parseExtractionResponse } from '../extractor.js';
 import type { ExtractionInput } from '../extractor.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const baseInput: ExtractionInput = {
   userMemory: '## alice\n- Prefers async\n',
@@ -107,10 +108,12 @@ describe('parseExtractionResponse(json)', () => {
   it('parses valid JSON and returns ExtractionResult', () => {
     const result = parseExtractionResponse(validResponse);
     expect(result).not.toBeNull();
-    expect(result!.user_updates.alice).toHaveLength(1);
-    expect(result!.task_summary).toBe('Task was completed successfully with major refactor.');
-    expect(result!.activity_summary).toBe('Refactored auth module');
-    expect(result!.domain).toBe('engineering');
+    expect(expectDefined(result).user_updates.alice).toHaveLength(1);
+    expect(expectDefined(result).task_summary).toBe(
+      'Task was completed successfully with major refactor.',
+    );
+    expect(expectDefined(result).activity_summary).toBe('Refactored auth module');
+    expect(expectDefined(result).domain).toBe('engineering');
   });
 
   it('preserves an optional Slack source timestamp on profile updates', () => {
@@ -223,19 +226,19 @@ describe('parseExtractionResponse(json)', () => {
     const wrapped = '```json\n' + validResponse + '\n```';
     const result = parseExtractionResponse(wrapped);
     expect(result).not.toBeNull();
-    expect(result!.domain).toBe('engineering');
+    expect(expectDefined(result).domain).toBe('engineering');
   });
 
   it('handles JSON wrapped in plain code fences (no language tag)', () => {
     const wrapped = '```\n' + validResponse + '\n```';
     const result = parseExtractionResponse(wrapped);
     expect(result).not.toBeNull();
-    expect(result!.domain).toBe('engineering');
+    expect(expectDefined(result).domain).toBe('engineering');
   });
 
   it('defaults entity_updates to [] when the field is absent', () => {
     const result = parseExtractionResponse(validResponse);
-    expect(result!.entity_updates).toEqual([]);
+    expect(expectDefined(result).entity_updates).toEqual([]);
   });
 
   it('parses well-formed entity_updates', () => {
@@ -253,8 +256,8 @@ describe('parseExtractionResponse(json)', () => {
       domain: 'engineering',
     });
     const result = parseExtractionResponse(withEntities);
-    expect(result!.entity_updates).toHaveLength(1);
-    expect(result!.entity_updates[0].slug).toBe('payment-service');
+    expect(expectDefined(result).entity_updates).toHaveLength(1);
+    expect(expectDefined(result).entity_updates[0].slug).toBe('payment-service');
   });
 
   it('tolerates malformed entity updates by dropping them, not failing the result', () => {
@@ -271,8 +274,8 @@ describe('parseExtractionResponse(json)', () => {
     });
     const result = parseExtractionResponse(mixed);
     expect(result).not.toBeNull();
-    expect(result!.entity_updates).toHaveLength(1);
-    expect(result!.entity_updates[0].slug).toBe('good-entity');
+    expect(expectDefined(result).entity_updates).toHaveLength(1);
+    expect(expectDefined(result).entity_updates[0].slug).toBe('good-entity');
   });
 
   it('treats a non-array entity_updates as empty', () => {
@@ -285,7 +288,7 @@ describe('parseExtractionResponse(json)', () => {
     });
     const result = parseExtractionResponse(bad);
     expect(result).not.toBeNull();
-    expect(result!.entity_updates).toEqual([]);
+    expect(expectDefined(result).entity_updates).toEqual([]);
   });
 
   it('parses valid result with empty user_updates', () => {
@@ -297,7 +300,7 @@ describe('parseExtractionResponse(json)', () => {
     });
     const result = parseExtractionResponse(minimal);
     expect(result).not.toBeNull();
-    expect(Object.keys(result!.user_updates)).toHaveLength(0);
+    expect(Object.keys(expectDefined(result).user_updates)).toHaveLength(0);
   });
 
   it('validates user updates also have action and content', () => {

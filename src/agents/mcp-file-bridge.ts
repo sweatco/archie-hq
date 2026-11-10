@@ -49,7 +49,7 @@ function extractResultText(result: unknown): { text: string; isError: boolean } 
   } | null;
   const isError = r?.isError === true;
   const parts = Array.isArray(r?.content)
-    ? r!.content
+    ? r.content
         .filter((c) => c?.type === 'text' && typeof c.text === 'string')
         .map((c) => c.text as string)
     : [];

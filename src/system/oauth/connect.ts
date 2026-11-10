@@ -50,7 +50,10 @@ export function readMcpServerUrl(serverName: string): string {
     throw new Error(`Plugins .mcp.json not found at ${path}`);
   }
   const raw = readFileSync(path, 'utf-8');
-  const substituted = raw.replace(/\$\{(MCP_[A-Z0-9_]+)\}/g, (_, name) => process.env[name] ?? '');
+  const substituted = raw.replace(
+    /\$\{(MCP_[A-Z0-9_]+)\}/g,
+    (_, name: string) => process.env[name] ?? '',
+  );
   const parsed = JSON.parse(substituted) as {
     mcpServers?: Record<string, { type?: string; url?: string }>;
   };

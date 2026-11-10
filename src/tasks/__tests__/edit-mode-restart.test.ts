@@ -33,8 +33,9 @@ vi.mock('fs/promises', () => ({
   readFile: vi.fn().mockRejectedValue(Object.assign(new Error('missing'), { code: 'ENOENT' })),
 }));
 const { spawnMock, ensureTaskCloneMock } = vi.hoisted(() => ({
-  spawnMock: vi.fn(),
-  ensureTaskCloneMock: vi.fn(),
+  spawnMock: vi.fn<typeof import('../../agents/spawn.js').spawnAgent>(),
+  ensureTaskCloneMock:
+    vi.fn<typeof import('../../connectors/github/repo-clone.js').ensureTaskClone>(),
 }));
 vi.mock('../../agents/spawn.js', () => ({ spawnAgent: spawnMock }));
 vi.mock('../../connectors/github/repo-clone.js', () => ({
@@ -45,6 +46,7 @@ vi.mock('../../connectors/github/repo-clone.js', () => ({
 import { Task, activeTasks } from '../task.js';
 import type { TaskMetadata } from '../../types/task.js';
 import type { AgentDef } from '../../types/agent.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const TaskCtor = Task as unknown as new (
   taskId: string,
@@ -104,7 +106,8 @@ describe('handleEditModeApproval — restart for a writable mount', () => {
     await task.sendMessage('start work');
     const before = task.agent;
     expect(before?.isRunning).toBe(true);
-    const abort = (before!.handle as unknown as { abort: ReturnType<typeof vi.fn> }).abort;
+    const abort = (expectDefined(before).handle as unknown as { abort: ReturnType<typeof vi.fn> })
+      .abort;
 
     await task.handleEditModeApproval({ id: 'U1', name: 'Egor' });
 
@@ -116,7 +119,7 @@ describe('handleEditModeApproval — restart for a writable mount', () => {
     // ...and the reactivation spawned a fresh one that resumes the same session.
     expect(task.agent).toBeDefined();
     expect(task.agent).not.toBe(before);
-    expect(task.agent!.session.session_id).toBe('sess-1');
+    expect(expectDefined(task.agent).session.session_id).toBe('sess-1');
   });
 
   it('is a no-op on the teardown when nothing is running yet', async () => {

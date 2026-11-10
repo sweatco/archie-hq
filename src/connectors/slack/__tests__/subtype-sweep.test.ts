@@ -13,10 +13,16 @@ import type { SlackAttachment } from '../../../types/index.js';
 
 // events.ts loads Bolt through `createRequire`, which bypasses vitest's module registry entirely — so `module` itself is mocked and its `createRequire` returns a require that hands back a fake Bolt while every other id falls through to the real one. That is what makes the registered `message` handler reachable from a unit test: the gate and its drop-log live inside it, not inside an exported function.
 const bolt = vi.hoisted(() => {
-  const handlers = new Map<string, (arg: any) => unknown>();
+  const handlers = new Map<
+    string,
+    (arg: { event: unknown; body?: { event_id?: string } }) => unknown
+  >();
   class FakeApp {
     constructor(_opts: unknown) {}
-    event(name: string, handler: (arg: any) => unknown) {
+    event(
+      name: string,
+      handler: (arg: { event: unknown; body?: { event_id?: string } }) => unknown,
+    ) {
       handlers.set(name, handler);
     }
     action(_name: string, _handler: unknown) {}
@@ -38,7 +44,7 @@ vi.mock('module', async (importOriginal) => {
     ...actual,
     createRequire: (url: string | URL) => {
       const real = actual.createRequire(url);
-      const patched = (id: string) => (id === '@slack/bolt' ? bolt.exports : real(id));
+      const patched = (id: string): unknown => (id === '@slack/bolt' ? bolt.exports : real(id));
       return Object.assign(patched, real);
     },
   };
@@ -51,7 +57,7 @@ vi.mock('../client.js', () => ({
   getBotUserId: vi.fn().mockReturnValue('U_BOT'),
   fetchSlackThread: vi.fn(),
   getBotId: vi.fn().mockReturnValue('B_OURS'),
-  addReaction: vi.fn(),
+  addReaction: vi.fn().mockResolvedValue(undefined),
   setSlackDryRun: vi.fn(),
   getUserInfo: vi.fn().mockResolvedValue({ name: 'dev', realName: 'A Dev', teamId: 'T_HOME' }),
   isExternalUser: vi.fn().mockReturnValue(false),
@@ -118,17 +124,13 @@ vi.mock('../../../system/logger.js', () => ({
   },
 }));
 
-import { handleSlackEvent, mountSlackApp } from '../events.js';
-import {
-  fetchSlackThread,
-  getBotUserId,
-  isExternalUser,
-  extractMessageContent,
-} from '../client.js';
-import { getChannelMessageTriggers, fireTrigger } from '../../../system/trigger-scheduler.js';
+import { mountSlackApp } from '../events.js';
+import { fetchSlackThread, getBotUserId, isExternalUser } from '../client.js';
+import { getChannelMessageTriggers } from '../../../system/trigger-scheduler.js';
 import { logger } from '../../../system/logger.js';
 import { Task } from '../../../tasks/task.js';
 import { findTaskByThread } from '../../../tasks/persistence.js';
+import { expectDefined } from '../../../test-support/assertions.js';
 
 const CHANNEL = 'C0SWEEP';
 const DM = 'D0SWEEP';
@@ -213,12 +215,12 @@ beforeEach(async () => {
         ts: '1700000000.000001',
       },
     ],
-  } as any);
+  });
   await mountSlackApp({} as Application, {
     slackBotToken: 'xoxb-test',
     slackAppToken: 'xapp-test',
   });
-  messageHandler = bolt.handlers.get('message')!;
+  messageHandler = expectDefined(bolt.handlers.get('message'));
 });
 
 /** Drive the real registered handler and surface anything it threw. */
@@ -297,7 +299,7 @@ describe('a body-less DM cannot seed a task, whatever its subtype', () => {
       currentMessageTs: '1700000000.000900',
       rootAuthorWasBot: false,
       messages: [],
-    } as any);
+    });
   });
 
   for (const subtype of FORWARDED_SUBTYPES) {
@@ -326,7 +328,7 @@ describe('a body-less DM cannot seed a task, whatever its subtype', () => {
           ts: '1700000000.000901',
         },
       ],
-    } as any);
+    });
     vi.mocked(Task.create).mockResolvedValue({
       metadata: { channels: {}, title: 'x' },
       append: vi

@@ -56,7 +56,7 @@ vi.mock('../task.js', () => ({
   activeTasks: new Map(),
   migrateRepositoriesShape: migrateSpy,
   readRepositories: (m: { repositories?: unknown }) =>
-    Array.isArray(m.repositories) ? m.repositories : [],
+    Array.isArray(m.repositories) ? (m.repositories as unknown[]) : [],
 }));
 
 import { recoverActiveTasks } from '../recovery.js';

@@ -9,6 +9,7 @@
  * Session recovery pattern (try with session → reset → retry → give up) written once.
  */
 
+import { homedir } from 'node:os';
 import { join, dirname, resolve as resolvePath } from 'path';
 import { mkdir, readdir, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
@@ -17,6 +18,8 @@ import { randomUUID } from 'node:crypto';
 import {
   query,
   type Query,
+  type Options,
+  type McpServerConfig,
   type SDKAssistantMessage,
   type SDKResultMessage,
 } from '@anthropic-ai/claude-agent-sdk';
@@ -46,13 +49,8 @@ import {
   appendUsageRecord,
   readKnowledgeLog,
 } from '../tasks/persistence.js';
-import {
-  WORKDIR,
-  CACHES_DIR,
-  PLUGINS_DIR,
-  getBaseCachePath,
-  getPluginsHeadInfo,
-} from '../system/workdir.js';
+import { WORKDIR, CACHES_DIR, PLUGINS_DIR, getBaseCachePath } from '../system/workdir.js';
+import { getPluginsHeadInfo } from '../system/bootstrap-workdir.js';
 import { getPlugins } from '../system/plugin-loader.js';
 import { appendDeploymentContext } from './registry.js';
 import { ensureTriggerDataDir } from '../system/trigger-store.js';
@@ -343,10 +341,10 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   // Clones this task has mounted (created by `mount_repo`). Empty until the PM
   // mounts something, and empty again after a read-only teardown removed them.
   const repoMounts = metadata.repositories
-    .filter((att) => !!att.clone_path)
+    .filter((att): att is typeof att & { clone_path: string } => !!att.clone_path)
     .map((att) => ({
       github: att.github,
-      clonePath: att.clone_path!,
+      clonePath: att.clone_path,
       baseObjectsPath: join(att.base_path || getBaseCachePath(att.github), '.git', 'objects'),
       currentBranch: att.current_branch,
     }));
@@ -426,7 +424,7 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
       ...(editAllowed ? TRUSTED_PACKAGE_REGISTRY_DOMAINS : []),
     ],
   };
-  const mcpServers: Record<string, any> = {
+  const mcpServers: Record<string, McpServerConfig> = {
     ...(def.mcpServers || {}),
     'research-tools': researchServer,
   };
@@ -654,16 +652,16 @@ Shared folder: ${sharedPath} [READ-ONLY]
   const refusalRecoveryNotice =
     'The previous refused turn has been omitted from this conversation. Do not retry it or reload it from logs or Slack. Continue only with the new request, checking existing files and external state before repeating actions.';
 
-  const buildQueryOptions = (sessionId?: string) => ({
-    model: model as any,
+  const buildQueryOptions = (sessionId?: string): Options => ({
+    model,
     settings: { switchModelsOnFlag: false },
     systemPrompt,
     cwd,
-    additionalDirectories: additionalDirectories as any,
+    additionalDirectories,
     executable: 'node' as const,
     // The workspace `.claude/settings.json` (attribution). Skills, agents,
     // commands and hooks come from `plugins` below, not from here.
-    settingSources: ['project'] as any,
+    settingSources: ['project'],
     plugins,
     // The SDK replaces (not merges) process.env with this object, so any var the
     // spawned CLI needs must be listed here explicitly. HOME in particular must be
@@ -695,7 +693,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
       // DEBUG: when the context-probe is enabled, route this agent's API traffic
       // through the in-process logging proxy so we can measure its real context
       // breakdown. No-op (key absent) when the probe is disabled or not listening.
-      ...(getProbeBaseUrl() ? { ANTHROPIC_BASE_URL: getProbeBaseUrl()! } : {}),
+      ...(getProbeBaseUrl() ? { ANTHROPIC_BASE_URL: getProbeBaseUrl() } : {}),
       ...(useClaudeDirs
         ? {
             CLAUDE_CONFIG_DIR: claudeConfigDir,
@@ -895,7 +893,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
             refusalRecovery = recovery;
             refusalCheckpoint = sessionId
               ? await findRefusalCheckpoint(
-                  useClaudeDirs ? claudeConfigDir : join(process.env.HOME!, '.claude'),
+                  useClaudeDirs ? claudeConfigDir : join(homedir(), '.claude'),
                   sessionId,
                   recovery.prompt_uuid,
                 ).catch((error) => {
@@ -916,7 +914,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
           abortController = new AbortController();
           refusalSettlement = undefined;
           agentQuery = query({
-            prompt: recoverable.generator() as any,
+            prompt: recoverable.generator(),
             options: buildQueryOptions(sessionId),
           });
 
@@ -942,18 +940,17 @@ Shared folder: ${sharedPath} [READ-ONLY]
               // (e.g. opus → claude-opus-5) so the footer shows the real version
               // without the app hard-coding the alias→model mapping. The model
               // is fixed for the session; a max-mode swap starts a fresh session,
-              // so this fires again with the new model. `.model` is read via an
-              // `any` cast, so warn if it's ever absent (an SDK type-surface
-              // change) — otherwise the footer silently falls back to the alias.
-              if (!(event as any).model) {
+              // so this fires again with the new model. Warn if a malformed init
+              // event omits it rather than silently using the alias.
+              if (!event.model) {
                 logger.warn(
                   def.id,
                   'SDK init event missing .model — footer will use alias fallback',
                 );
               }
-              task.recordResolvedModel((event as any).model);
-              logger.agent(def.id, `Model: ${(event as any).model || 'unknown'}`);
-              assertPluginsLoaded(def.id, plugins, (event as any).plugins);
+              task.recordResolvedModel(event.model);
+              logger.agent(def.id, `Model: ${event.model || 'unknown'}`);
+              assertPluginsLoaded(def.id, plugins, event.plugins);
               if (Array.isArray(event.mcp_servers)) {
                 // The init snapshot only carries { name, status }. Pull the
                 // richer status so a non-connected server records WHY (its
@@ -1052,7 +1049,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
             // with this query() call's nonce so read-time cost aggregation can
             // delimit its cumulative window. Fire-and-forget — never await, the
             // writer never rejects, so this can't block or break the loop.
-            void appendUsageRecord({
+            appendUsageRecord({
               ts: new Date().toISOString(),
               taskId,
               agentId: def.id,
@@ -1062,9 +1059,11 @@ Shared folder: ${sharedPath} [READ-ONLY]
               subtype: event.subtype,
               num_turns: event.num_turns,
               total_cost_usd: event.total_cost_usd,
-              modelUsage: (event as any).modelUsage,
-              usage: (event as any).usage,
-            });
+              modelUsage: event.modelUsage,
+              usage: event.usage,
+            }).catch((error: unknown) =>
+              logger.warn(def.id, 'Could not persist agent usage', error),
+            );
             if (
               event.subtype !== 'success' &&
               event.errors?.some((error) =>

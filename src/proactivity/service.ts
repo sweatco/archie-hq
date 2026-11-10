@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { Cron } from 'croner';
 import { z } from 'zod';
@@ -88,7 +89,9 @@ export const decisionConfig = (config: InitiativeConfig): string =>
   JSON.stringify([config.extractionModel, config.investigationModel, config.repositories ?? []]);
 
 export function nextMorning(now: number): number {
-  return new Cron('0 9 * * 1-5', { timezone: TZ }).nextRun(new Date(now))!.getTime();
+  const next = new Cron('0 9 * * 1-5', { timezone: TZ }).nextRun(new Date(now));
+  assert(next, 'Weekday morning schedule has no next occurrence');
+  return next.getTime();
 }
 
 export function notificationWindow(now: number): boolean {
@@ -98,9 +101,9 @@ export function notificationWindow(now: number): boolean {
     hour: '2-digit',
     hourCycle: 'h23',
   }).formatToParts(now);
-  const day = parts.find((p) => p.type === 'weekday')!.value;
-  const hour = Number(parts.find((p) => p.type === 'hour')!.value);
-  return !['Sat', 'Sun'].includes(day) && hour >= 9 && hour < 18;
+  const day = parts.find((p) => p.type === 'weekday')?.value;
+  const hour = Number(parts.find((p) => p.type === 'hour')?.value);
+  return day !== undefined && !['Sat', 'Sun'].includes(day) && hour >= 9 && hour < 18;
 }
 
 function validateExtractionPart(
@@ -117,7 +120,8 @@ function validateExtractionPart(
       throw new Error('Unexpected or duplicate extraction source');
     }
     seenThreads.add(key);
-    const snapshot = snapshots.find((source) => sourceKey(source) === key)!;
+    const snapshot = snapshots.find((source) => sourceKey(source) === key);
+    assert(snapshot, `Missing source snapshot ${key} for extraction`);
     const suppliedEvidence = supplied.get(key);
     for (const item of [...thread.observations, ...thread.matters]) {
       const hasUnsupportedCitation = item.evidence.some((id) => !suppliedEvidence?.has(id));
@@ -136,9 +140,11 @@ function validateExtractionPart(
 
 function consumeExtractionBatch(remaining: ThreadSnapshot[], batch: ThreadSnapshot[]): void {
   for (const thread of batch) {
-    const pending = remaining.find((source) => sourceKey(source) === sourceKey(thread))!;
+    const pending = remaining.find((source) => sourceKey(source) === sourceKey(thread));
+    assert(pending, `Missing pending source ${sourceKey(thread)} for extraction`);
     for (const piece of thread.evidence) {
-      const first = pending.evidence[0];
+      const first: ThreadSnapshot['evidence'][number] | undefined = pending.evidence[0];
+      assert(first, 'Extraction partition exceeded its pending evidence');
       first.text = first.text.slice(piece.text.length);
       if (!first.text.length) pending.evidence.shift();
     }
@@ -259,6 +265,7 @@ export class InitiativeService {
     }
     if (job.kind === 'review') {
       const stats = this.store.attention.statistics();
+      assert(stats, 'SQLite did not return initiative statistics');
       this.store.set(
         'review_report',
         `Observed ${stats.threads} threads; delivered ${stats.sent} interventions; received ${stats.feedback} feedback actions. Usefulness needs human feedback; operation continues.`,
@@ -572,7 +579,8 @@ export class InitiativeService {
         this.store.proposeCapability({ ...suggestion, matter: matter.id });
       }
     }
-    const nextCheck = nextInvestigationCheck(matter, snapshot, now)!;
+    const nextCheck = nextInvestigationCheck(matter, snapshot, now);
+    assert(nextCheck !== undefined, `Investigation has no next check for matter ${matter.id}`);
     this.store.attention.setNextCheck(nextCheck, matter.id);
     if (!assessment.help) {
       this.store.rememberCheck(matter.id, signature, 'no_help', now);
@@ -607,10 +615,15 @@ export class InitiativeService {
       explain('already_notified', nextCheck);
       return nextCheck;
     }
+    let channel = matter.channel;
+    if (!publicReply) {
+      assert(recipient, 'Private delivery has no recipient');
+      channel = await this.slack.dm(recipient);
+    }
     const delivery: Delivery = {
       id: randomUUID(),
       recipient,
-      channel: publicReply ? matter.channel : await this.slack.dm(recipient!),
+      channel,
       thread: publicReply ? matter.thread : null,
       text: `${assessment.help}\n\n${this.slack.link(matter.channel, matter.thread)}`,
       matters: [matter.id],
@@ -761,7 +774,7 @@ export class InitiativeService {
           !snapshot ||
           !this.store.matter(id)?.valid ||
           (delivery.channel.startsWith('D') &&
-            !(await this.access.check(matter.channel, delivery.recipient!)))
+            !(await this.access.check(matter.channel, delivery.recipient ?? undefined)))
         ) {
           eligible = false;
           break;
@@ -780,7 +793,7 @@ export class InitiativeService {
             2,
           )) ||
           (delivery.channel.startsWith('D')
-            ? !(await this.access.check(String(source.channel), delivery.recipient!))
+            ? !(await this.access.check(String(source.channel), delivery.recipient ?? undefined))
             : source.channel !== delivery.channel)
         ) {
           eligible = false;
@@ -793,7 +806,7 @@ export class InitiativeService {
       }
       if (
         delivery.channel.startsWith('D') &&
-        !(await this.slack.verifyDm(delivery.channel, delivery.recipient!))
+        (!delivery.recipient || !(await this.slack.verifyDm(delivery.channel, delivery.recipient)))
       )
         continue;
       const sendTime = this.clock();

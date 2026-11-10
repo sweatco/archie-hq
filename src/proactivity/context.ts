@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import assert from 'node:assert/strict';
 import type { ThreadSnapshot } from './types.js';
 
 export function extractionBatch(
@@ -35,7 +36,11 @@ export function extractionBatch(
     }
   }
   for (const part of current) {
-    const original = threads.find((t) => t.channel === part.channel && t.thread === part.thread)!;
+    const original = threads.find((t) => t.channel === part.channel && t.thread === part.thread);
+    assert(
+      original,
+      `Missing source thread ${part.channel}:${part.thread} for extraction partition`,
+    );
     if (
       part.evidence.length === original.evidence.length &&
       part.evidence.every(

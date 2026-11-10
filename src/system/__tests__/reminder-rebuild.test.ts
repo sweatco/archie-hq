@@ -47,7 +47,9 @@ it('rebuilds reminders from a path containing shell syntax without executing it'
       reminder: { trigger_at: '2100-01-01T00:00:00Z', reason: 'restart' },
     }),
   );
-  await initReminderScheduler();
+  await initReminderScheduler(async () => {
+    throw new Error('Unexpected reminder fire');
+  });
   expect(existsSync(paths.marker)).toBe(false);
   expect(getReminder('task-20261110-0215-abc123')?.reason).toBe('restart');
 });

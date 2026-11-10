@@ -118,7 +118,7 @@ export function idleDecision(
  * racing with message delivery (a webhook may be about to wake it).
  */
 export function scheduleIdleCheck(task: Task): void {
-  setTimeout(async () => {
+  const checkIdleTask = async () => {
     if (getIsShuttingDown()) return;
     const action = idleDecision(task);
     if (action === 'complete') {
@@ -126,6 +126,11 @@ export function scheduleIdleCheck(task: Task): void {
     } else if (action === 'recover') {
       await triggerRecovery(task);
     }
+  };
+  setTimeout(() => {
+    checkIdleTask().catch((error: unknown) =>
+      logger.error('runtime', 'Idle task check failed', error),
+    );
   }, 3000);
 }
 

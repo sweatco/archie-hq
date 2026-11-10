@@ -23,7 +23,9 @@ vi.mock('../../system/logger.js', () => ({
 vi.mock('../../agents/spawn.js', () => ({ spawnAgent: vi.fn() }));
 
 // The seam under test: without stubbing `postSlackMessage` these cases would try to reach Slack.
-const { postMock } = vi.hoisted(() => ({ postMock: vi.fn() }));
+const { postMock } = vi.hoisted(() => ({
+  postMock: vi.fn<typeof import('../../connectors/slack/client.js').postSlackMessage>(),
+}));
 
 vi.mock('../../connectors/slack/client.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../connectors/slack/client.js')>();
@@ -42,6 +44,7 @@ import { appendMessageToUser } from '../persistence.js';
 import { logger } from '../../system/logger.js';
 import type { TaskMetadata } from '../../types/task.js';
 import type { AgentDef } from '../../types/agent.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const TaskCtor = Task as unknown as new (
   taskId: string,
@@ -91,7 +94,7 @@ function linkedChannel(threadTs: string) {
 }
 
 function lastPostArgs(): { channel: string; text: string; threadTs?: string } {
-  return postMock.mock.calls[postMock.mock.calls.length - 1]![0];
+  return expectDefined(postMock.mock.calls[postMock.mock.calls.length - 1])[0];
 }
 
 describe('postToUser opens the task thread in home_channel', () => {
@@ -112,7 +115,7 @@ describe('postToUser opens the task thread in home_channel', () => {
     expect(lastPostArgs().channel).toBe(HOME.channel_id);
 
     expect(key).toBe(`slack:${HOME.channel_id}:${TS}`);
-    expect(meta.channels[key!]).toMatchObject({
+    expect(meta.channels[expectDefined(key)]).toMatchObject({
       type: 'slack',
       channel_id: HOME.channel_id,
       thread_id: TS,
@@ -240,7 +243,10 @@ describe('postToUser opens the task thread in home_channel', () => {
 
     const reloaded = JSON.parse(JSON.stringify(meta)) as TaskMetadata;
     expect(reloaded.home_channel).toEqual(HOME);
-    expect(reloaded.channels[key!]).toMatchObject({ channel_id: HOME.channel_id, thread_id: TS });
+    expect(reloaded.channels[expectDefined(key)]).toMatchObject({
+      channel_id: HOME.channel_id,
+      thread_id: TS,
+    });
     expect(reloaded.default_channel).toBe(key);
 
     postMock.mockClear();

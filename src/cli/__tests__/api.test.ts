@@ -8,10 +8,11 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { sendApproval } from '../api.js';
+import { sendApproval, fetchTasks, fetchTaskDetail } from '../api.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 describe('sendApproval', () => {
-  const fetchMock = vi.fn();
+  const fetchMock = vi.fn<typeof fetch>();
 
   beforeEach(() => {
     fetchMock.mockReset();
@@ -24,7 +25,7 @@ describe('sendApproval', () => {
   });
 
   function bodyOf(callIndex = 0): Record<string, unknown> {
-    const init = fetchMock.mock.calls[callIndex]![1] as RequestInit;
+    const init = expectDefined(fetchMock.mock.calls[callIndex])[1] as RequestInit;
     return JSON.parse(init.body as string) as Record<string, unknown>;
   }
 
@@ -32,7 +33,7 @@ describe('sendApproval', () => {
     await sendApproval('task-123', 'merge', true, { github: 'org/backend', pr_number: 42 });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchMock.mock.calls[0]!;
+    const [url, init] = expectDefined(fetchMock.mock.calls[0]);
     expect(String(url)).toContain('/api/tasks/task-123/approve');
     expect((init as RequestInit).method).toBe('POST');
     expect(bodyOf()).toEqual({
@@ -69,5 +70,31 @@ describe('sendApproval', () => {
     const body = bodyOf();
     expect(body).toEqual({ type: 'merge', approve: true });
     expect(body).not.toHaveProperty('github');
+  });
+});
+
+describe('CLI response boundaries', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('rejects malformed task rows instead of storing them in the list', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(
+          Response.json({ tasks: [{ task_id: 'task-123', status: 42 }], total: 1 }),
+        ),
+    );
+    await expect(fetchTasks()).rejects.toThrow();
+  });
+
+  it('accepts task detail while retaining the fields the CLI displays', async () => {
+    const metadata = {
+      status: 'in_progress',
+      title: 'A readable task',
+      reminder: { trigger_at: '2026-11-11T09:00:00Z', reason: 'Follow up' },
+    };
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(Response.json({ metadata })));
+    await expect(fetchTaskDetail('task-123')).resolves.toEqual({ metadata });
   });
 });

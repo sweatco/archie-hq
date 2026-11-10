@@ -2,6 +2,7 @@
 import { spawnSync } from 'node:child_process';
 import {
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -164,26 +165,20 @@ describe('quality checks through the installed CLIs', () => {
     expect(lint().status).toBe(1);
   });
 
-  it('keeps normal lint read-only and rejects debt above its allowance or stale allowances', () => {
-    writeFixture('src/debt.ts', 'export const debt: any = 1;\n');
-    expect(lint('--suppress-all', '.').status).toBe(0);
-    const baselinePath = join(workspace, 'oxlint-suppressions.json');
-    const baseline = readFileSync(baselinePath, 'utf8');
-    expect(lint().status).toBe(0);
-    expect(readFileSync(baselinePath, 'utf8')).toBe(baseline);
-
-    writeFixture('src/debt.ts', 'export const debt: any = 1;\nexport const extraDebt: any = 2;\n');
-    expect(lint().status).toBe(1);
-    expect(readFileSync(baselinePath, 'utf8')).toBe(baseline);
-    expect(lint('--prune-suppressions', '.').status).toBe(1);
-    expect(readFileSync(baselinePath, 'utf8')).toBe(baseline);
+  it('rejects findings without creating allowances or rewriting source', () => {
+    const baselineName = 'oxlint-suppressions.json';
+    expect(existsSync(join(repository, baselineName))).toBe(false);
+    const debt = 'export const debt: any = 1;\n';
+    writeFixture('src/debt.ts', debt);
+    const result = lint();
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('typescript(no-explicit-any)');
+    expect(readFileSync(join(workspace, 'src/debt.ts'), 'utf8')).toBe(debt);
+    expect(existsSync(join(workspace, baselineName))).toBe(false);
 
     writeFixture('src/debt.ts', 'export const debt = 1;\n');
-    const stale = lint();
-    expect(stale.status).toBe(1);
-    expect(stale.stdout).toContain('--prune-suppressions');
-    expect(lint('--prune-suppressions', '.').status).toBe(0);
     expect(lint().status).toBe(0);
+    expect(existsSync(join(workspace, baselineName))).toBe(false);
   });
 
   it('formats idempotently without changing excluded prompts, skills, output or historical evidence', () => {
@@ -194,7 +189,6 @@ describe('quality checks through the installed CLIs', () => {
       'docs/plans/historical.md',
       'dist/generated.ts',
       'package-lock.json',
-      'oxlint-suppressions.json',
       'CHANGELOG.md',
     ];
     const original = 'intentionally   unformatted\n  preserve these bytes\n';

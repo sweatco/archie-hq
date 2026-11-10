@@ -9,10 +9,10 @@
 import type { Application, Request, Response } from 'express';
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
-const express = require('express');
+const express = require('express') as typeof import('express');
 
 import { readdirSync } from 'fs';
-import { onEvent, offEvent, emitEvent } from '../../system/event-bus.js';
+import { onEvent, offEvent, emitEvent, type SystemEvent } from '../../system/event-bus.js';
 import { Task } from '../../tasks/task.js';
 import {
   loadMetadata,
@@ -65,7 +65,7 @@ export function mountApiRoutes(app: Application): void {
     // Send initial connected event
     res.write(`data: ${JSON.stringify({ type: 'connected' })}\n\n`);
 
-    const listener = (event: any) => {
+    const listener = (event: SystemEvent) => {
       if (taskIdFilter && event.taskId !== taskIdFilter) return;
       res.write(`data: ${JSON.stringify(event)}\n\n`);
     };
@@ -165,7 +165,9 @@ export function mountApiRoutes(app: Application): void {
 
   router.post('/tasks', async (req: Request, res: Response) => {
     try {
-      const { message } = req.body;
+      const body: unknown = req.body;
+      const message =
+        body && typeof body === 'object' && 'message' in body ? body.message : undefined;
       if (!message || typeof message !== 'string') {
         res.status(400).json({ error: 'message is required' });
         return;
@@ -190,7 +192,9 @@ export function mountApiRoutes(app: Application): void {
   router.post('/tasks/:id/message', async (req: Request, res: Response) => {
     try {
       const taskId = req.params.id as string;
-      const { message } = req.body;
+      const body: unknown = req.body;
+      const message =
+        body && typeof body === 'object' && 'message' in body ? body.message : undefined;
       if (!message || typeof message !== 'string') {
         res.status(400).json({ error: 'message is required' });
         return;
@@ -529,7 +533,8 @@ export function mountApiRoutes(app: Application): void {
         emitEvent('trigger:paused', trigger.id, { trigger_id: trigger.id });
       else if (statusChange === 'resumed')
         emitEvent('trigger:resumed', trigger.id, { trigger_id: trigger.id });
-      await announceTriggerChange(trigger, editedContent ? 'edited' : statusChange!);
+      const change = editedContent ? 'edited' : statusChange;
+      if (change) await announceTriggerChange(trigger, change);
 
       res.json({ ok: true, trigger: shapeTrigger(trigger) });
     } catch (error) {

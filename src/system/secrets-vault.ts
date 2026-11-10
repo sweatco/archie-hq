@@ -115,8 +115,8 @@ export async function readJson<T = unknown>(path: string): Promise<T | null> {
   try {
     const raw = await readFile(path, 'utf-8');
     return JSON.parse(raw) as T;
-  } catch (err: any) {
-    if (err.code === 'ENOENT') return null;
+  } catch (err: unknown) {
+    if (err instanceof Error && 'code' in err && err.code === 'ENOENT') return null;
     throw err;
   }
 }
@@ -125,8 +125,8 @@ export async function deleteFileIfExists(path: string): Promise<boolean> {
   try {
     await unlink(path);
     return true;
-  } catch (err: any) {
-    if (err.code === 'ENOENT') return false;
+  } catch (err: unknown) {
+    if (err instanceof Error && 'code' in err && err.code === 'ENOENT') return false;
     throw err;
   }
 }
@@ -135,8 +135,8 @@ export async function fileExists(path: string): Promise<boolean> {
   try {
     await stat(path);
     return true;
-  } catch (err: any) {
-    if (err.code === 'ENOENT') return false;
+  } catch (err: unknown) {
+    if (err instanceof Error && 'code' in err && err.code === 'ENOENT') return false;
     throw err;
   }
 }

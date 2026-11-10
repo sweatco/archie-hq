@@ -1,4 +1,4 @@
-import type { App } from '@slack/bolt';
+import type { App, BlockAction, ButtonAction, SlackActionMiddlewareArgs } from '@slack/bolt';
 import { postEphemeral } from '../connectors/slack/client.js';
 import { Task } from '../tasks/task.js';
 import { logger } from '../system/logger.js';
@@ -8,11 +8,13 @@ import { isAllowedTaskId } from './paths.js';
 export function registerMemoryPreferenceHandlers(boltApp: Pick<App, 'action'>): void {
   const handle =
     (approve: boolean) =>
-    async ({ action, ack, body }: any) => {
+    async ({ action, ack, body }: SlackActionMiddlewareArgs<BlockAction<ButtonAction>>) => {
       await ack();
       const [taskId, id] = String(action.value ?? '').split('|');
       const userId = body.user?.id;
       const channelId = body.channel?.id;
+      const rawThreadTs: unknown = body.message?.thread_ts;
+      const threadTs = typeof rawThreadTs === 'string' ? rawThreadTs : undefined;
       if (!taskId || !id || !isAllowedTaskId(taskId) || !userId || !channelId) return;
       try {
         const task = await Task.get(taskId);
@@ -26,7 +28,7 @@ export function registerMemoryPreferenceHandlers(boltApp: Pick<App, 'action'>): 
           const text =
             outcome.status === 'saved' || outcome.status === 'unchanged'
               ? `✅ Preference saved across conversations for <@${userId}>: ${outcome.text}`
-              : outcome.message!;
+              : (outcome.message ?? 'The preference could not be saved.');
           if (body.message?.ts)
             await task
               .updateSlackMessageSafely(channelId, body.message.ts, text, [])
@@ -39,7 +41,7 @@ export function registerMemoryPreferenceHandlers(boltApp: Pick<App, 'action'>): 
           channelId,
           userId,
           outcome.message ?? 'The preference could not be saved.',
-          body.message?.thread_ts,
+          threadTs,
         );
       } catch (error) {
         logger.error('Server', 'Error handling preference approval', error);
@@ -47,7 +49,7 @@ export function registerMemoryPreferenceHandlers(boltApp: Pick<App, 'action'>): 
           channelId,
           userId,
           'The approval could not be processed. Please retry.',
-          body.message?.thread_ts,
+          threadTs,
         );
       }
     };

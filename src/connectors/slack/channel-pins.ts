@@ -186,8 +186,8 @@ export async function ensureChannelPins(channelId: string): Promise<void> {
           // A Slack message ts is a decimal epoch-seconds string; a file carries its own
           // creation time.
           postedAt: item.kind === 'message' ? Number(item.messageTs) : (item.fileCreated ?? 0),
-          summary: reuse ? prior!.summary : '',
-          summarySource: reuse ? prior!.summarySource : 'verbatim',
+          summary: reuse ? prior.summary : '',
+          summarySource: reuse ? prior.summarySource : 'verbatim',
           digest,
           ...(item.kind === 'file' ? { fileId: item.fileId } : {}),
           ...(item.permalink ? { permalink: item.permalink } : {}),

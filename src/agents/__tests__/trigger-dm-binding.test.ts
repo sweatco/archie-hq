@@ -1,3 +1,5 @@
+import { MessageQueue } from '../message-queue.js';
+import { registeredMcpTools } from '../../test-support/mcp.js';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../connectors/github/client.js', () => ({
@@ -98,6 +100,7 @@ import { createOrchestrationMcpServer } from '../tools.js';
 import type { Agent } from '../agent.js';
 import type { Task } from '../../tasks/task.js';
 import type { Trigger } from '../../types/trigger.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const DM_CHANNEL = 'D0DANA';
 const DM_USER = 'U1';
@@ -116,7 +119,7 @@ const PUBLIC_INFO = { id: PUBLIC_CHANNEL, name: 'general', isPrivate: false, isI
 function makeAgent(): Agent {
   return {
     def: { id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', pluginName: 'pm', isPm: true },
-    queue: {} as any,
+    queue: new MessageQueue(),
     session: { active: false },
   } as unknown as Agent;
 }
@@ -167,11 +170,9 @@ function getOrchestrationHandler(
   task: Task,
 ): (args: Record<string, unknown>) => Promise<{ content: { text: string }[] }> {
   const server = createOrchestrationMcpServer(makeAgent(), task);
-  const raw =
-    (server.instance as any)._registeredTools ??
-    Object.fromEntries((server.instance as any)._tools ?? []);
+  const raw = registeredMcpTools(server);
   const entry = raw[name];
-  const fn = entry.callback ?? entry.handler ?? entry.cb;
+  const fn = entry.callback;
   return (args) => fn(args, {});
 }
 
@@ -195,7 +196,7 @@ function proposal(
 
 function savedTrigger(): Trigger {
   expect(saveTrigger).toHaveBeenCalledTimes(1);
-  return saveTrigger.mock.calls[0]![0] as Trigger;
+  return expectDefined(saveTrigger.mock.calls[0])[0] as Trigger;
 }
 
 beforeEach(() => {

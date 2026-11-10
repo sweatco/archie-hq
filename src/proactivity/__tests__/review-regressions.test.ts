@@ -7,6 +7,7 @@ import type { TaskMetadata } from '../../types/task.js';
 import { InitiativeService } from '../service.js';
 import type { BackgroundModel } from '../model.js';
 import type { ObservationSlack } from '../slack.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const NOW = Date.parse('2026-10-20T10:00:00Z');
 const TS = ((NOW - 30_000) / 1000).toFixed(6);
@@ -37,15 +38,15 @@ beforeEach(() => {
     channels: vi.fn(async () => ['C1']),
     page: vi.fn(async () => ({ messages })),
     dm: vi.fn(async () => 'D1'),
-    recipient: vi.fn(async (channel) => (channel === 'D1' ? 'U1' : null)),
-    verifyDm: vi.fn(async (channel) => channel === 'D1'),
+    recipient: vi.fn(async (channel: string) => (channel === 'D1' ? 'U1' : null)),
+    verifyDm: vi.fn(async (channel: string) => channel === 'D1'),
     send: vi.fn(async () => 'sent-ts'),
     find: vi.fn(async () => undefined),
     active: vi.fn(() => false),
     link: (channel, thread) => `https://slack.test/${channel}/${thread}`,
   };
   model = {
-    complete: vi.fn(async (request) => ({
+    complete: vi.fn(async (request: Parameters<BackgroundModel['complete']>[0]) => ({
       resolved: false,
       help: null,
       public: false,
@@ -68,7 +69,7 @@ afterEach(() => {
 
 describe('independent PR review probes', () => {
   it('schedules a follow-up no later than an explicit approaching deadline', async () => {
-    const evidence = store.snapshot('C1', TS)!.evidence.map((e) => e.id);
+    const evidence = expectDefined(store.snapshot('C1', TS)).evidence.map((e) => e.id);
     vi.mocked(model.complete).mockResolvedValueOnce({
       threads: [
         {
@@ -95,9 +96,11 @@ describe('independent PR review probes', () => {
     const matter = store.matters()[0];
     expect(model.complete).toHaveBeenCalledTimes(2);
     const due = Number(
-      store['row']("SELECT due FROM jobs WHERE kind='investigate' AND target=?", matter.id)!.due,
+      expectDefined(
+        store['row']("SELECT due FROM jobs WHERE kind='investigate' AND target=?", matter.id),
+      ).due,
     );
-    expect(due).toBeLessThanOrEqual(matter.deadline!);
+    expect(due).toBeLessThanOrEqual(expectDefined(matter.deadline));
   });
 
   it('repairs a transient metadata-lookup gap after successful full reconciliation', async () => {
@@ -110,9 +113,11 @@ describe('independent PR review probes', () => {
     store.schedule('collect', 'C1', NOW);
     store.schedule('thread', `C1:${TS}`, NOW, JSON.stringify({ channel: 'C1', thread: TS }));
     await service.tick(NOW);
-    expect(store['row']("SELECT allowed FROM channels WHERE id='C1'")!.allowed).toBe(1);
+    expect(expectDefined(store['row']("SELECT allowed FROM channels WHERE id='C1'")).allowed).toBe(
+      1,
+    );
     expect(slack.page).toHaveBeenCalled();
-    expect(store.snapshot('C1', TS)!.gap).toBeNull();
+    expect(expectDefined(store.snapshot('C1', TS)).gap).toBeNull();
   });
 
   it('suppresses the same intervention when citation order changes', async () => {
@@ -126,7 +131,7 @@ describe('independent PR review probes', () => {
       text: 'The release checklist is ready.',
     });
     store.record(messages[1], NOW);
-    const snapshot = store.snapshot('C1', TS)!;
+    const snapshot = expectDefined(store.snapshot('C1', TS));
     const evidence = snapshot.evidence.map((e) => e.id);
     const matter: Matter = {
       id: 'release',

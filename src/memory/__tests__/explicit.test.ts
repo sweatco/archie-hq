@@ -28,7 +28,7 @@ vi.mock('../../connectors/slack/client.js', () => ({
       : { kind: state.scope, channel_id: channelId },
   getUserInfo: async (id: string) => ({ teamId: id === 'U07AUTHOR1' ? 'T1' : 'T2' }),
   isInternalMemoryUser: (user: { teamId: string }) => user.teamId === 'T1',
-  postInteractiveToThread: (...args: unknown[]) => state.postInteractiveToThread(...args),
+  postInteractiveToThread: (...args: unknown[]): unknown => state.postInteractiveToThread(...args),
 }));
 vi.mock('../lifecycle.js', () => ({
   enqueueMemoryWrite: async (write: () => Promise<unknown>) => {
@@ -44,8 +44,8 @@ vi.mock('../store.js', () => ({
     _name: string,
     updates: Array<{ content: string }>,
   ) => {
-    state.writeUser(updates[0]!.content);
-    state.profile += `- ${updates[0]!.content}\n`;
+    state.writeUser(expectDefined(updates[0]).content);
+    state.profile += `- ${expectDefined(updates[0]).content}\n`;
     return { appliedUpdates: updates, capExceeded: false };
   },
 }));
@@ -71,13 +71,14 @@ vi.mock('../entities.js', () => ({
     return { slug: update.slug, created: state.observations.length === 1, capExceeded: false };
   },
 }));
-vi.mock('../entity-index.js', () => ({ rebuildIndex: () => state.rebuildIndex() }));
+vi.mock('../entity-index.js', () => ({ rebuildIndex: (): unknown => state.rebuildIndex() }));
 vi.mock('../../tasks/persistence.js', () => ({
   loadMetadata: async () => ({ pending_memory_preference: state.pending }),
 }));
 vi.mock('../../system/logger.js', () => ({ logger: { warn: vi.fn() } }));
 
 import { rememberFact, rememberPreference, resolvePreferenceApproval } from '../explicit.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 function task(channelId = 'C07PUBLIC1'): Task {
   const metadata = {
@@ -140,7 +141,7 @@ describe('explicit memory', () => {
       'Approve sharing this preference across conversations?',
       expect.any(Array),
     );
-    const id = current.metadata.pending_memory_preference!.id;
+    const id = expectDefined(current.metadata.pending_memory_preference).id;
     expect(
       (await resolvePreferenceApproval(current, id, 'U07OTHER22', 'D07PRIVATE1', true)).status,
     ).toBe('rejected');
@@ -159,7 +160,7 @@ describe('explicit memory', () => {
       content: 'Prefers short answers',
       source_message_ts: '123.456',
     });
-    const id = current.metadata.pending_memory_preference!.id;
+    const id = expectDefined(current.metadata.pending_memory_preference).id;
     state.scope = 'none';
     expect(
       (await resolvePreferenceApproval(current, id, 'U07AUTHOR1', 'D07PRIVATE1', true)).status,
@@ -176,7 +177,7 @@ describe('explicit memory', () => {
     });
     const stale = task('D07PRIVATE1');
     stale.metadata.pending_memory_preference = {
-      ...cancelling.metadata.pending_memory_preference!,
+      ...expectDefined(cancelling.metadata.pending_memory_preference),
     };
     const id = stale.metadata.pending_memory_preference.id;
     const [cancelled, saved] = await Promise.all([
@@ -256,7 +257,7 @@ describe('explicit memory', () => {
       content: 'Prefers short answers',
       source_message_ts: '123.456',
     });
-    const pending = current.metadata.pending_memory_preference!;
+    const pending = expectDefined(current.metadata.pending_memory_preference);
     pending.requested_at = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
     const outcome = await resolvePreferenceApproval(
       current,
@@ -277,7 +278,7 @@ describe('explicit memory', () => {
       content: 'Prefers short answers',
       source_message_ts: '123.456',
     });
-    const id = current.metadata.pending_memory_preference!.id;
+    const id = expectDefined(current.metadata.pending_memory_preference).id;
     vi.mocked(current.save).mockRejectedValueOnce(new Error('disk unavailable'));
     await expect(
       resolvePreferenceApproval(current, id, 'U07AUTHOR1', 'D07PRIVATE1', false),

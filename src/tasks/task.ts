@@ -118,7 +118,8 @@ import { isMemoryReady } from '../memory/paths.js';
 
 // ---- Global state ----
 
-export const activeTasks = new Map<string, Task>();
+import { activeTasks } from './active-tasks.js';
+export { activeTasks } from './active-tasks.js';
 
 /**
  * Per-task serialization for PR-card writes. A PM turn-end (resurfacePrCards)
@@ -941,7 +942,8 @@ export class Task {
     footer: string,
     post: typeof postSlackMessage,
   ): Promise<string | null> {
-    const home = this.metadata.home_channel!;
+    const home = this.metadata.home_channel;
+    if (!home) throw new Error(`Task ${this.taskId} has no home channel to open`);
 
     // One thread per channel: if this task already has a thread in the home channel (a reply arrived
     // and linked it, or a restart re-read it from disk while default_channel was still null), post
@@ -1065,7 +1067,9 @@ export class Task {
       message,
       ...(footer ? { footer } : {}),
     });
-    appendMessageToUser(this.taskId, sender, message, logDest);
+    appendMessageToUser(this.taskId, sender, message, logDest).catch((error: unknown) =>
+      logger.error('task', 'Could not record outgoing message', error),
+    );
     // The app just posted into the thread — Slack auto-clears the loading
     // indicator, so sync our notion of what's shown (re-pushes if work continues).
     this.statusController.notePosted();
@@ -1092,7 +1096,9 @@ export class Task {
       destination: display,
       message: rendered,
     });
-    appendMessageToUser(this.taskId, sender, '', logDest, filePaths);
+    appendMessageToUser(this.taskId, sender, '', logDest, filePaths).catch((error: unknown) =>
+      logger.error('task', 'Could not record outgoing file', error),
+    );
   }
 
   /**
@@ -1161,7 +1167,9 @@ export class Task {
     const ch = this.metadata.channels[channelKey];
     if (ch?.type !== 'slack') return;
     if (ch.ack_ts && ch.ack_ts !== messageTs) {
-      removeReaction(ch.channel_id, ch.ack_ts, 'eyes');
+      removeReaction(ch.channel_id, ch.ack_ts, 'eyes').catch((error: unknown) =>
+        logger.warn('task', 'Could not remove acknowledgement', error),
+      );
     }
     ch.ack_ts = messageTs;
     this.debouncedSave();
@@ -1174,7 +1182,9 @@ export class Task {
   private clearAcks(): void {
     for (const ch of Object.values(this.metadata.channels)) {
       if (ch.type === 'slack' && ch.ack_ts) {
-        removeReaction(ch.channel_id, ch.ack_ts, 'eyes');
+        removeReaction(ch.channel_id, ch.ack_ts, 'eyes').catch((error: unknown) =>
+          logger.warn('task', 'Could not remove acknowledgement', error),
+        );
         ch.ack_ts = undefined;
       }
     }
@@ -1562,10 +1572,12 @@ export class Task {
       // Keep all reopen callers on this instance until its SDK iterator has closed.
       if (agent.handle) {
         activeTasks.set(this.taskId, this);
-        void agent.handle.running.then(() => {
-          if (!this.isActive && activeTasks.get(this.taskId) === this)
-            activeTasks.delete(this.taskId);
-        });
+        agent.handle.running
+          .finally(() => {
+            if (!this.isActive && activeTasks.get(this.taskId) === this)
+              activeTasks.delete(this.taskId);
+          })
+          .catch((error: unknown) => logger.error('task', 'Agent teardown failed', error));
       }
     });
   }
@@ -2642,7 +2654,7 @@ export class Task {
   }
 
   private startTaskTimeout(): void {
-    this.taskTimeoutTimer = setInterval(async () => {
+    const checkTaskTimeout = async () => {
       const elapsed = Date.now() - this.budgets.taskStartTime.getTime();
       if (elapsed < this.budgets.taskTimeoutMs) return;
 
@@ -2666,6 +2678,11 @@ export class Task {
       // complete() leaves an idle agent's process running while background
       // workers are in flight; past the cap they must not keep working.
       this.agent?.handle?.abort();
+    };
+    this.taskTimeoutTimer = setInterval(() => {
+      checkTaskTimeout().catch((error: unknown) =>
+        logger.error('runtime', 'Task timeout check failed', error),
+      );
     }, 60_000);
   }
 
@@ -2681,7 +2698,7 @@ export class Task {
 
   debouncedSave(): void {
     if (this.saveTimer) return;
-    this.saveTimer = setTimeout(async () => {
+    const flushSavedTask = async () => {
       this.saveTimer = undefined;
       try {
         this.syncAgentSession();
@@ -2690,6 +2707,11 @@ export class Task {
       } catch (err) {
         logger.error('task', `Failed to save task ${this.taskId}`, err);
       }
+    };
+    this.saveTimer = setTimeout(() => {
+      flushSavedTask().catch((error: unknown) =>
+        logger.error('runtime', 'Task save failed', error),
+      );
     }, 500);
   }
 }

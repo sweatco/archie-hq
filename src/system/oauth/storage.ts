@@ -76,8 +76,8 @@ export async function listOAuthServers(): Promise<string[]> {
   let entries: string[];
   try {
     entries = await readdir(OAUTH_DIR);
-  } catch (err: any) {
-    if (err.code === 'ENOENT') return [];
+  } catch (err: unknown) {
+    if (err instanceof Error && 'code' in err && err.code === 'ENOENT') return [];
     throw err;
   }
   return entries
@@ -129,8 +129,8 @@ export async function reapStalePending(maxAgeMs: number): Promise<number> {
   let entries: string[];
   try {
     entries = await readdir(OAUTH_PENDING_DIR);
-  } catch (err: any) {
-    if (err.code === 'ENOENT') return 0;
+  } catch (err: unknown) {
+    if (err instanceof Error && 'code' in err && err.code === 'ENOENT') return 0;
     throw err;
   }
   const cutoffSec = Math.floor((Date.now() - maxAgeMs) / 1000);

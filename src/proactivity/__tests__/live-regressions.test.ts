@@ -8,6 +8,7 @@ import { InitiativeService } from '../service.js';
 import { proposalVersion } from '../proposals.js';
 import type { ObservationSlack } from '../slack.js';
 import type { Matter, TaskHandoffRecord } from '../types.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const SOURCE =
   "Live test [PR360-LIVE-153122fe]: By Tuesday 27 Oct, 17:00 Lisbon, I need a tiny read-only task for sweatco/archie-hq to DM me 'PR360-LIVE-153122fe ACK' and finish. No shell, repo access or edits. Please prepare a short acknowledgement and the task suggestion for separate approval. If this stays unresolved, a brief follow-up here would help.";
@@ -72,7 +73,7 @@ afterEach(() => {
 });
 
 function populate(evidence = [1], id = 'ack'): Matter {
-  const snapshot = store.snapshot('C0BL50N2600', TS)!;
+  const snapshot = expectDefined(store.snapshot('C0BL50N2600', TS));
   const matter: Matter = {
     id,
     channel: snapshot.channel,
@@ -103,7 +104,7 @@ function suggest(matter: Matter, outcome = OUTCOMES[0], evidence = matter.eviden
 function approve(id: string, state: TaskHandoffRecord['state'] = 'approved') {
   store.approveHandoff({
     proposal: id,
-    version: proposalVersion(store.proposal(id)!),
+    version: proposalVersion(expectDefined(store.proposal(id))),
     actor: 'U03RQQTE1EF',
     approved: NOW,
     task: 'one-task',
@@ -111,14 +112,14 @@ function approve(id: string, state: TaskHandoffRecord['state'] = 'approved') {
     budget: 'task',
     delivery: 'card',
   });
-  const token = store.claimHandoff(id, NOW)!;
+  const token = expectDefined(store.claimHandoff(id, NOW));
   store.finishHandoff(id, token, state);
 }
 
 it('resolves the retained live local deadline on the host instead of accepting model epoch arithmetic', async () => {
   const slack = {
     inspect: async () => ({ shared: false, recipientCanRead: true }),
-    page: async () => ({ messages: store.snapshot('C0BL50N2600', TS)!.evidence }),
+    page: async () => ({ messages: expectDefined(store.snapshot('C0BL50N2600', TS)).evidence }),
     active: () => false,
   } as unknown as ObservationSlack;
   const model = {
@@ -160,22 +161,24 @@ it.each([false, true])(
 );
 
 it('uses order-insensitive citations and stable host work context even when the model cites a subset', () => {
-  const second = store.record(
-    {
-      channel: 'C0BL50N2600',
-      thread: TS,
-      ts: '1792935288.000001',
-      version: '1792935288.000001',
-      author: 'U03RQQTE1EF',
-      text: 'Keep the same tiny read-only ACK scope.',
-    },
-    NOW,
-  )!;
+  const second = expectDefined(
+    store.record(
+      {
+        channel: 'C0BL50N2600',
+        thread: TS,
+        ts: '1792935288.000001',
+        version: '1792935288.000001',
+        author: 'U03RQQTE1EF',
+        text: 'Keep the same tiny read-only ACK scope.',
+      },
+      NOW,
+    ),
+  );
   const matter = populate([1, second]);
   const id = suggest(matter, OUTCOMES[0], [1]);
   expect(suggest(matter, OUTCOMES[1], [second, 1])).toBe(id);
   expect(suggest({ ...matter, evidence: [second, 1] }, OUTCOMES[2], [1, second])).toBe(id);
-  const scope = store.proposal(id)!;
+  const scope = expectDefined(store.proposal(id));
   expect(proposalVersion({ ...scope, evidence: [...scope.evidence].reverse() })).toBe(
     proposalVersion(scope),
   );
@@ -186,26 +189,28 @@ it.each([false, true])(
   (approved) => {
     const matter = populate();
     const previous = suggest(matter);
-    const version = proposalVersion(store.proposal(previous)!);
+    const version = proposalVersion(expectDefined(store.proposal(previous)));
     if (approved) approve(previous, 'activated');
-    const fresh = store.record(
-      {
-        channel: 'C0BL50N2600',
-        thread: TS,
-        ts: '1792935289.000001',
-        version: '1792935289.000001',
-        author: 'U03RQQTE1EF',
-        text: 'Change the task: acknowledge the new scope as NEW ACK.',
-      },
-      NOW,
-    )!;
+    const fresh = expectDefined(
+      store.record(
+        {
+          channel: 'C0BL50N2600',
+          thread: TS,
+          ts: '1792935289.000001',
+          version: '1792935289.000001',
+          author: 'U03RQQTE1EF',
+          text: 'Change the task: acknowledge the new scope as NEW ACK.',
+        },
+        NOW,
+      ),
+    );
     const updated = populate([1, fresh]);
-    expect(store.proposalCurrent(store.proposal(previous)!, NOW)).toBe(false);
+    expect(store.proposalCurrent(expectDefined(store.proposal(previous)), NOW)).toBe(false);
     const next = suggest(updated, 'Send NEW ACK for the changed scope', [fresh]);
     expect(next).not.toBe(previous);
-    expect(proposalVersion(store.proposal(next)!)).not.toBe(version);
+    expect(proposalVersion(expectDefined(store.proposal(next)))).not.toBe(version);
     expect(store.handoff(next)).toBeNull();
-    expect(store.proposalCurrent(store.proposal(next)!, NOW)).toBe(true);
+    expect(store.proposalCurrent(expectDefined(store.proposal(next)), NOW)).toBe(true);
     expect(store.handoff(previous)?.version).toBe(approved ? version : undefined);
   },
 );
@@ -242,16 +247,18 @@ it.each(['resolved', 'dismissed', 'snoozed'] as const)(
     const matter = populate();
     const id = suggest(matter);
     store.attention.saveMatter({ ...matter, state });
-    expect(store.proposalCurrent(store.proposal(id)!, NOW)).toBe(false);
+    expect(store.proposalCurrent(expectDefined(store.proposal(id)), NOW)).toBe(false);
   },
 );
 
 it('excludes unavailable and expired source evidence without changing approval state', () => {
   const matter = populate();
   const id = suggest(matter);
-  expect(store.proposalCurrent(store.proposal(id)!, NOW + 91 * 86_400_000)).toBe(false);
+  expect(store.proposalCurrent(expectDefined(store.proposal(id)), NOW + 91 * 86_400_000)).toBe(
+    false,
+  );
   store.channel(matter.channel, false, false);
-  expect(store.proposalCurrent(store.proposal(id)!, NOW)).toBe(false);
+  expect(store.proposalCurrent(expectDefined(store.proposal(id)), NOW)).toBe(false);
 });
 
 it('keeps a matter open after activating its approved task', () => {
@@ -266,47 +273,51 @@ it('keeps a matter open after activating its approved task', () => {
 it('changes the approval version when host evidence context grows even if model wording and citations stay the same', () => {
   const matter = populate();
   const original = suggest(matter);
-  const version = proposalVersion(store.proposal(original)!);
-  const fresh = store.record(
-    {
-      channel: 'C0BL50N2600',
-      thread: TS,
-      ts: '1792935290.000001',
-      version: '1792935290.000001',
-      author: 'U03RQQTE1EF',
-      text: 'Additional scope: acknowledge the verification result only after this check.',
-    },
-    NOW,
-  )!;
+  const version = proposalVersion(expectDefined(store.proposal(original)));
+  const fresh = expectDefined(
+    store.record(
+      {
+        channel: 'C0BL50N2600',
+        thread: TS,
+        ts: '1792935290.000001',
+        version: '1792935290.000001',
+        author: 'U03RQQTE1EF',
+        text: 'Additional scope: acknowledge the verification result only after this check.',
+      },
+      NOW,
+    ),
+  );
   const updated = populate([1, fresh]);
   const next = suggest(updated, OUTCOMES[0], [1]);
   expect(next).not.toBe(original);
-  expect(proposalVersion(store.proposal(next)!)).not.toBe(version);
-  expect(store.proposalCurrent(store.proposal(original)!, NOW)).toBe(false);
+  expect(proposalVersion(expectDefined(store.proposal(next)))).not.toBe(version);
+  expect(store.proposalCurrent(expectDefined(store.proposal(original)), NOW)).toBe(false);
   expect(store.handoff(next)).toBeNull();
 });
 
 it.each([false, true])(
   'ignores changes in selected already-known work-thread citations, approved=%s',
   (approved) => {
-    const known = store.record(
-      {
-        channel: 'C0BL50N2600',
-        thread: TS,
-        ts: '1792935291.000001',
-        version: '1792935291.000001',
-        author: 'U03RQQTE1EF',
-        text: 'Keep this read-only; send the same single ACK and finish.',
-      },
-      NOW,
-    )!;
+    const known = expectDefined(
+      store.record(
+        {
+          channel: 'C0BL50N2600',
+          thread: TS,
+          ts: '1792935291.000001',
+          version: '1792935291.000001',
+          author: 'U03RQQTE1EF',
+          text: 'Keep this read-only; send the same single ACK and finish.',
+        },
+        NOW,
+      ),
+    );
     const matter = populate([1]);
     const first = suggest(matter, OUTCOMES[0], [1]);
-    const version = proposalVersion(store.proposal(first)!);
+    const version = proposalVersion(expectDefined(store.proposal(first)));
     if (approved) approve(first, 'activated');
     expect(suggest(matter, OUTCOMES[1], [known, 1])).toBe(first);
     expect(store.listProposals()).toHaveLength(1);
-    expect(proposalVersion(store.proposal(first)!)).toBe(version);
+    expect(proposalVersion(expectDefined(store.proposal(first)))).toBe(version);
     expect(store.pendingProposalIds()).toEqual(approved ? [] : [first]);
   },
 );

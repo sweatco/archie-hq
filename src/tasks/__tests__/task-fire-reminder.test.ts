@@ -1,3 +1,4 @@
+import type { MockInstance } from 'vitest';
 /**
  * Task.fireReminder applies the re-arm on the CANONICAL instance. A reminder resolved through a
  * Task.get miss is a detached copy; if a Slack event activated the task meanwhile, re-arming the
@@ -10,11 +11,13 @@ vi.mock('../../system/logger.js', () => ({
   logger: { warn: vi.fn(), system: vi.fn(), error: vi.fn(), debug: vi.fn(), agent: vi.fn() },
 }));
 
-const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
+const { spawnMock } = vi.hoisted(() => ({
+  spawnMock: vi.fn<typeof import('../../agents/spawn.js').spawnAgent>(),
+}));
 vi.mock('../../agents/spawn.js', () => ({ spawnAgent: spawnMock }));
 
 const { loadMetadataMock, persistMock } = vi.hoisted(() => ({
-  loadMetadataMock: vi.fn(),
+  loadMetadataMock: vi.fn<typeof import('../persistence.js').loadMetadata>(),
   persistMock: vi.fn(),
 }));
 vi.mock('../persistence.js', async (importOriginal) => ({
@@ -69,7 +72,7 @@ const firing = () => ({
 });
 
 describe('Task.fireReminder', () => {
-  let addSpy: ReturnType<typeof vi.spyOn>;
+  let addSpy: MockInstance<MessageQueue['addMessage']>;
 
   beforeEach(() => {
     vi.useFakeTimers();

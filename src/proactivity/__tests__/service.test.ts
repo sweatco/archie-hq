@@ -9,6 +9,7 @@ import { InitiativeService, nextMorning, notificationWindow } from '../service.j
 import type { BackgroundModel } from '../model.js';
 import type { ObservationSlack } from '../slack.js';
 import type { TaskMetadata } from '../../types/task.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const NOW = Date.parse('2026-10-20T10:00:00Z');
 const TS = '1792490401.000001';
@@ -29,15 +30,15 @@ beforeEach(() => {
     channels: vi.fn(async () => ['C1']),
     page: vi.fn(async () => ({ messages: store.snapshot('C1', TS)?.evidence ?? [] })),
     dm: vi.fn(async () => 'D1'),
-    recipient: vi.fn(async (channel) => (channel === 'D1' ? 'U1' : null)),
-    verifyDm: vi.fn(async (channel) => channel === 'D1'),
+    recipient: vi.fn(async (channel: string) => (channel === 'D1' ? 'U1' : null)),
+    verifyDm: vi.fn(async (channel: string) => channel === 'D1'),
     send: vi.fn(async () => '1792491000.000001'),
     find: vi.fn(async () => undefined),
     active: vi.fn(() => false),
     link: (channel, thread) => `https://slack.test/${channel}/${thread}`,
   };
   model = {
-    complete: vi.fn(async (request) => ({
+    complete: vi.fn(async (request: Parameters<BackgroundModel['complete']>[0]) => ({
       resolved: false,
       help: null,
       public: false,
@@ -63,7 +64,7 @@ async function extract(): Promise<string> {
     { channel: 'C1', thread: TS, ts: TS, version: TS, author: 'U1', text: 'I will release Friday' },
     NOW,
   );
-  const evidence = store.snapshot('C1', TS)!.evidence.map((e) => e.id);
+  const evidence = expectDefined(store.snapshot('C1', TS)).evidence.map((e) => e.id);
   vi.mocked(model.complete).mockResolvedValueOnce({
     threads: [
       {
@@ -99,7 +100,7 @@ async function investigate(
     resolved: false,
     help,
     public: false,
-    evidence: store.matter(id)!.evidence,
+    evidence: expectDefined(store.matter(id)).evidence,
   });
   await service.tick(NOW + 60_000);
   return id;
@@ -163,7 +164,7 @@ describe('initiative flow', () => {
         resolved: false,
         help: 'I can help.',
         public: false,
-        evidence: store.matter(id)!.evidence,
+        evidence: expectDefined(store.matter(id)).evidence,
       };
     });
     await service.tick(NOW + 60_000);
@@ -175,19 +176,21 @@ describe('initiative flow', () => {
   it('rejects a related-source revision changed while preparing the recipient', async () => {
     const id = await extract();
     const other = (Number(TS) + 0.5).toFixed(6);
-    const revision = store.record(
-      {
-        channel: 'C1',
-        thread: other,
-        ts: other,
-        version: other,
-        author: 'U_OTHER',
-        text: 'Release checklist ready',
-      },
-      NOW,
-    )!;
+    const revision = expectDefined(
+      store.record(
+        {
+          channel: 'C1',
+          thread: other,
+          ts: other,
+          version: other,
+          author: 'U_OTHER',
+          text: 'Release checklist ready',
+        },
+        NOW,
+      ),
+    );
     store.apply(
-      [store.snapshot('C1', other)!],
+      [expectDefined(store.snapshot('C1', other))],
       [
         {
           id: 'related',
@@ -209,7 +212,7 @@ describe('initiative flow', () => {
       resolved: false,
       help: 'Checklist is ready.',
       public: false,
-      evidence: [...store.matter(id)!.evidence, revision],
+      evidence: [...expectDefined(store.matter(id)).evidence, revision],
     });
     vi.mocked(slack.dm).mockImplementationOnce(async () => {
       store.record(
@@ -255,7 +258,7 @@ describe('initiative flow', () => {
     service.config.mode = 'live';
     vi.mocked(slack.page).mockImplementation(async () => {
       service.stop();
-      return { messages: store.snapshot('C1', TS)!.evidence };
+      return { messages: expectDefined(store.snapshot('C1', TS)).evidence };
     });
     await service.deliver(NOW + 60_000);
     expect(slack.send).not.toHaveBeenCalled();
@@ -352,7 +355,7 @@ describe('initiative flow', () => {
       },
       NOW,
     );
-    const snapshot = store.snapshot('C1', thread)!;
+    const snapshot = expectDefined(store.snapshot('C1', thread));
     const evidence = snapshot.evidence.map((e) => e.id);
     store.apply(
       [snapshot],
@@ -381,7 +384,11 @@ describe('initiative flow', () => {
     });
     await service.tick(NOW + 60_000);
     expect(
-      (vi.mocked(model.complete).mock.calls.at(-1)![0].input as { related: unknown[] }).related,
+      (
+        expectDefined(vi.mocked(model.complete).mock.calls.at(-1))[0].input as {
+          related: unknown[];
+        }
+      ).related,
     ).toHaveLength(1);
     expect(store.deliveries('pending')).toHaveLength(1);
     store.record(
@@ -411,7 +418,7 @@ describe('initiative flow', () => {
       },
       NOW,
     );
-    const snapshot = store.snapshot('C1', TS)!;
+    const snapshot = expectDefined(store.snapshot('C1', TS));
     const matter = {
       id: 'large',
       channel: 'C1',
@@ -600,7 +607,7 @@ describe('initiative flow', () => {
       { channel: 'C1', thread: root, ts: TS, version: TS, author: 'U1', text: 'New reply' },
       NOW,
     );
-    const snapshot = store.snapshot('C1', root)!;
+    const snapshot = expectDefined(store.snapshot('C1', root));
     const matter = {
       id: 'old-parent',
       channel: 'C1',
@@ -647,7 +654,7 @@ describe('initiative flow', () => {
   it('drains cheap jobs and does not refresh inactive threads forever', async () => {
     vi.mocked(slack.page).mockImplementation(
       async (channel, _oldest, _latest, _cursor, thread) => ({
-        messages: store.snapshot(channel, thread!)?.evidence ?? [],
+        messages: store.snapshot(channel, expectDefined(thread))?.evidence ?? [],
       }),
     );
     for (let i = 0; i < 70; i++) {

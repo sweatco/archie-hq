@@ -25,7 +25,7 @@ vi.mock('../client.js', () => ({
   getBotUserId: vi.fn(),
   fetchSlackThread: vi.fn(),
   getBotId: vi.fn(),
-  addReaction: vi.fn(),
+  addReaction: vi.fn().mockResolvedValue(undefined),
   setSlackDryRun: vi.fn(),
   getUserInfo: vi.fn(),
   // Faithful classification: external iff a guest or a different team_id than

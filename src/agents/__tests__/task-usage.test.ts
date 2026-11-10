@@ -27,6 +27,7 @@ vi.mock('../../system/workdir.js', () => ({
 }));
 
 import { aggregateTaskUsage, formatTaskUsageReport, type NonceReducer } from '../task-usage.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 afterAll(async () => {
   await rm(SESSIONS_ROOT, { recursive: true, force: true });
@@ -348,7 +349,9 @@ describe('AC6-unit: nonce-based cost', () => {
     const backend = report.agents.find((a) => a.agentKey === 'backend');
     expect(pm?.cost).toBeCloseTo(0.25, 10);
     expect(backend?.cost).toBeCloseTo(0.3, 10);
-    expect(pm!.cost! + backend!.cost!).toBeCloseTo(report.cost!.grand, 10);
+    expect(
+      expectDefined(expectDefined(pm).cost) + expectDefined(expectDefined(backend).cost),
+    ).toBeCloseTo(expectDefined(report.cost).grand, 10);
     expect(report.cost?.grand).toBeCloseTo(0.55, 10);
   });
 

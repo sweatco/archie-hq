@@ -402,7 +402,7 @@ export function parseArgs(argv: string[]): { inFile?: string; outDir?: string } 
     return value;
   };
   for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i]!;
+    const arg = argv[i];
     if (arg === '--in') result.inFile = takeValue('--in', ++i);
     else if (arg.startsWith('--in=')) result.inFile = arg.slice('--in='.length);
     else if (arg === '--out-dir') result.outDir = takeValue('--out-dir', ++i);

@@ -1,3 +1,4 @@
+import type { MockInstance } from 'vitest';
 /**
  * Activation-lock regression test.
  *
@@ -23,10 +24,14 @@ vi.mock('../../system/logger.js', () => ({
 
 // Mock the SDK spawn: no real subprocess, just flip the agent's handle to
 // "running" so the per-Agent isRunning guard behaves like production.
-const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
+const { spawnMock } = vi.hoisted(() => ({
+  spawnMock: vi.fn<typeof import('../../agents/spawn.js').spawnAgent>(),
+}));
 vi.mock('../../agents/spawn.js', () => ({ spawnAgent: spawnMock }));
 
-const { loadMetadataMock } = vi.hoisted(() => ({ loadMetadataMock: vi.fn() }));
+const { loadMetadataMock } = vi.hoisted(() => ({
+  loadMetadataMock: vi.fn<typeof import('../persistence.js').loadMetadata>(),
+}));
 vi.mock('../persistence.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../persistence.js')>()),
   loadMetadata: loadMetadataMock,
@@ -36,6 +41,7 @@ import { Task, activeTasks } from '../task.js';
 import { MessageQueue } from '../../agents/message-queue.js';
 import type { TaskMetadata } from '../../types/task.js';
 import type { AgentDef } from '../../types/agent.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 // Runtime-callable view of the private constructor — mirrors the two separate
 // instances two concurrent `Task.get` misses would create for one taskId.
@@ -73,7 +79,7 @@ function pmDef(): AgentDef {
 const TASK_ID = 'task-20260630-0000-locktst';
 
 describe('Task activation lock (double-spawn guard)', () => {
-  let addSpy: ReturnType<typeof vi.spyOn>;
+  let addSpy: MockInstance<MessageQueue['addMessage']>;
 
   beforeEach(() => {
     vi.useFakeTimers();
@@ -166,7 +172,7 @@ describe('Task activation lock (double-spawn guard)', () => {
 
     await Promise.all([staleA.sendMessage('from-a'), staleB.sendMessage('from-b')]);
 
-    const canonical = activeTasks.get(TASK_ID)!;
+    const canonical = expectDefined(activeTasks.get(TASK_ID));
     expect(canonical.metadata.memory_destination).toEqual({ channel_id: 'C07PUBLIC1' });
     expect(canonical.metadata.memory_authors).toEqual(
       expect.objectContaining({

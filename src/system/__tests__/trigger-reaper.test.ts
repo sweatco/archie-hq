@@ -54,7 +54,7 @@ vi.mock('../../tasks/persistence.js', () => ({
 }));
 vi.mock('../event-bus.js', () => ({ emitEvent: vi.fn(), onEvent: vi.fn(), offEvent: vi.fn() }));
 
-const { initTriggerScheduler, getEnabledTriggerIds } =
+const { initTriggerScheduler } =
   (await import('../trigger-scheduler.js')) as typeof import('../trigger-scheduler.js') & {
     getEnabledTriggerIds?: () => string[];
   };
@@ -91,7 +91,9 @@ beforeEach(() => {
 describe('the boot scan reaps abandoned proposals', () => {
   it('reaps a pending proposal past the 24h TTL', async () => {
     listTriggers.mockResolvedValue([trigger({ id: 'trg-20260801-0900-stale' })]);
-    await initTriggerScheduler();
+    await initTriggerScheduler(async () => {
+      throw new Error('Unexpected trigger fire');
+    });
     expect(deleteTrigger).toHaveBeenCalledWith('trg-20260801-0900-stale');
   });
 
@@ -105,7 +107,9 @@ describe('the boot scan reaps abandoned proposals', () => {
         updated_at: new Date(now() - 60_000).toISOString(),
       }),
     ]);
-    await initTriggerScheduler();
+    await initTriggerScheduler(async () => {
+      throw new Error('Unexpected trigger fire');
+    });
     expect(deleteTrigger).not.toHaveBeenCalled();
   });
 
@@ -116,7 +120,9 @@ describe('the boot scan reaps abandoned proposals', () => {
         created_at: new Date(now() - 60_000).toISOString(),
       }),
     ]);
-    await initTriggerScheduler();
+    await initTriggerScheduler(async () => {
+      throw new Error('Unexpected trigger fire');
+    });
     expect(deleteTrigger).not.toHaveBeenCalled();
   });
 
@@ -130,7 +136,9 @@ describe('the boot scan reaps abandoned proposals', () => {
         created_at: new Date(now() - 400 * DAY).toISOString(),
       }),
     ]);
-    await initTriggerScheduler();
+    await initTriggerScheduler(async () => {
+      throw new Error('Unexpected trigger fire');
+    });
     expect(deleteTrigger).not.toHaveBeenCalled();
   });
 
@@ -142,7 +150,9 @@ describe('the boot scan reaps abandoned proposals', () => {
         created_at: new Date(now() - 400 * DAY).toISOString(),
       }),
     ]);
-    await initTriggerScheduler();
+    await initTriggerScheduler(async () => {
+      throw new Error('Unexpected trigger fire');
+    });
     expect(deleteTrigger).not.toHaveBeenCalled();
   });
 });

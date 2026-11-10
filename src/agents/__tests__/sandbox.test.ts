@@ -161,9 +161,22 @@ describe('createPmOnlyToolGuardHooks', () => {
   // The SDK's HookJSONOutput union has no `hookSpecificOutput` on its async
   // arm, so narrow to the deny shape the filesystem guard already returns.
   const call = (tool_name: string, agent_id?: string) =>
-    hook({ tool_name, tool_input: {}, ...(agent_id ? { agent_id } : {}) } as never, undefined, {
-      signal: new AbortController().signal,
-    }) as Promise<{
+    hook(
+      {
+        hook_event_name: 'PreToolUse',
+        session_id: 'test',
+        transcript_path: '/tmp/test.jsonl',
+        cwd: '/tmp',
+        tool_use_id: 'call-1',
+        tool_name,
+        tool_input: {},
+        ...(agent_id ? { agent_id } : {}),
+      },
+      undefined,
+      {
+        signal: new AbortController().signal,
+      },
+    ) as Promise<{
       continue?: boolean;
       hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
     }>;

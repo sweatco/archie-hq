@@ -10,6 +10,7 @@
 import { describe, it, expect } from 'vitest';
 import type { SandboxOptions } from '../sandbox.js';
 import { grantTriggerDataAccess, buildTriggerDataPromptSection } from '../trigger-data.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const TRIGGER_ID = 'trg-20260817-1200-abc123';
 const TRIGGER_DATA = `/workdir/triggers-data/${TRIGGER_ID}`;
@@ -48,7 +49,7 @@ describe('grantTriggerDataAccess', () => {
     const input: SandboxOptions = {
       ...base,
       allowReadPaths: [...base.allowReadPaths],
-      allowWritePaths: [...base.allowWritePaths!],
+      allowWritePaths: [...expectDefined(base.allowWritePaths)],
     };
     grantTriggerDataAccess(input, TRIGGER_DATA);
     expect(input.allowWritePaths).not.toContain(TRIGGER_DATA);

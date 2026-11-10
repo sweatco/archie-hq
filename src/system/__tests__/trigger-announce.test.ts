@@ -31,6 +31,7 @@ vi.mock('../logger.js', () => ({
 }));
 
 import { announceTriggerChange } from '../trigger-scheduler.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const CHANNEL = 'C0OPS';
 const DM_CHANNEL = 'D0DANA';
@@ -81,7 +82,10 @@ describe('a channel-bound trigger is still announced in its channel', () => {
     await announceTriggerChange(channelTrigger(), 'enabled');
 
     expect(postSlackMessageMock).toHaveBeenCalledTimes(1);
-    const call = postSlackMessageMock.mock.calls[0]![0] as { channel: string; text: string };
+    const call = expectDefined(postSlackMessageMock.mock.calls[0])[0] as {
+      channel: string;
+      text: string;
+    };
     expect(call.channel).toBe(CHANNEL);
     expect(call.text).toContain('Morning digest');
   });

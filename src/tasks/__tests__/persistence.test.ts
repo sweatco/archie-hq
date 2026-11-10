@@ -61,6 +61,7 @@ import {
 import { renderMessageBody } from '../../connectors/slack/message-body.js';
 import type { SlackFile } from '../../types/index.js';
 import type { TaskMetadata } from '../../types/task.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 afterAll(async () => {
   await rm(SESSIONS_ROOT, { recursive: true, force: true });
@@ -154,7 +155,7 @@ describe('metadata round-trip — pending_merge_approval', () => {
 
     const loaded = await loadMetadata(taskId);
     expect(loaded).not.toBeNull();
-    expect(loaded!.pending_merge_approval).toEqual(slot);
+    expect(expectDefined(loaded).pending_merge_approval).toEqual(slot);
   });
 
   it('is absent after a reload when never set', async () => {
@@ -175,7 +176,7 @@ describe('metadata round-trip — pending_merge_approval', () => {
     await writeFile(path, JSON.stringify(metadata, null, 2));
 
     const loaded = await loadMetadata(taskId);
-    expect(loaded!.pending_merge_approval).toBeUndefined();
+    expect(expectDefined(loaded).pending_merge_approval).toBeUndefined();
   });
 });
 

@@ -219,7 +219,7 @@ export class PublicSlack implements ProposalSlack {
                   text: { type: 'plain_text', text: action },
                   action_id: `initiative_${action.replaceAll(' ', '_')}`,
                   value: `${delivery.id}:${action}`,
-                  visible_to_user_ids: [delivery.recipient!],
+                  visible_to_user_ids: [delivery.recipient],
                 }))
               : undefined,
     });

@@ -157,7 +157,7 @@ export class MessageQueue {
  */
 export interface SDKUserMessageInput {
   type: 'user';
-  uuid: string;
+  uuid: ReturnType<typeof randomUUID>;
   message: { role: 'user'; content: string };
   parent_tool_use_id: string | null;
   session_id: string;
@@ -196,7 +196,7 @@ export interface RecoverableInputGenerator {
    */
   reset(prefix?: string, replayUuids?: readonly string[]): void;
   /** Create a new generator instance (call for each attempt) */
-  generator(): AsyncGenerator<SDKUserMessageInput>;
+  generator(): AsyncGenerator<SDKUserMessageInput, void, void>;
 }
 
 /**
@@ -236,7 +236,7 @@ export function createRecoverableInputGenerator(
       }
     },
 
-    async *generator(): AsyncGenerator<SDKUserMessageInput> {
+    async *generator(): AsyncGenerator<SDKUserMessageInput, void, void> {
       while (!queue.isStopped()) {
         try {
           const msg = await queue.nextMessage();

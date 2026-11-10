@@ -82,7 +82,22 @@ export async function runInitiativeWorkload() {
         calls.models++;
         const bytes = Buffer.byteLength(JSON.stringify(params));
         contextBytes.push(bytes);
-        const input = JSON.parse(params.messages[0].content);
+        const input = z
+          .object({
+            threads: z
+              .array(
+                z.object({
+                  channel: z.string(),
+                  thread: z.string(),
+                  evidence: z.array(
+                    z.object({ id: z.number(), text: z.string(), author: z.string() }),
+                  ),
+                }),
+              )
+              .optional(),
+            matter: z.object({ nextCheck: z.number(), evidence: z.array(z.number()) }).optional(),
+          })
+          .parse(JSON.parse(params.messages[0].content));
         let answer: unknown;
         if (input.threads) {
           answer = {

@@ -43,11 +43,11 @@ npm run check
 
 ## Code style
 
-Read the [coding guidelines](docs/guides/coding-guidelines.md) for ownership, readable control flow, type boundaries, errors and the review rubric. The same guide explains the native lint baseline and its count-based limitation.
+Read the [coding guidelines](docs/guides/coding-guidelines.md) for ownership, readable control flow, type boundaries, errors and the review rubric. Lint has no suppression baseline; findings must be fixed in the owning code.
 
 - `npm run lint` and `npm run format:check` verify code without rewriting it.
 - `npm run lint:fix` applies safe lint fixes; `npm run format` applies the shared formatting. Review the resulting diff.
-- After fixing existing lint debt, run `npm run lint:prune` and include the reduced baseline. Do not regenerate allowances to hide new findings.
+- Keep lint at zero findings. Do not add suppression allowances or weaken the configured rules.
 
 - **TypeScript** throughout.
 - Use the **unified logger** at `src/system/logger.ts` for all output — never `console.log` / `console.error` / `console.warn` directly. The logger gives consistent, color-coded, semantic output.

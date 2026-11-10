@@ -1,3 +1,5 @@
+import { MessageQueue } from '../message-queue.js';
+import { registeredMcpTools } from '../../test-support/mcp.js';
 /**
  * Handler-level tests for `get_message_reactions`. The tool has to keep three
  * outcomes apart: reactions, genuinely none, and a read that failed. Rendering a
@@ -60,7 +62,7 @@ import type { SlackReactionsResult } from '../../connectors/slack/client.js';
 function makeAgent(): Agent {
   return {
     def: { id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', pluginName: 'pm', isPm: true },
-    queue: {} as any,
+    queue: new MessageQueue(),
     session: { active: false },
   } as unknown as Agent;
 }
@@ -87,11 +89,9 @@ function getHandler(
   task: Task,
 ): (args: Record<string, unknown>) => Promise<{ content: { text: string }[] }> {
   const server = createCommsMcpServer(makeAgent(), task);
-  const raw =
-    (server.instance as any)._registeredTools ??
-    Object.fromEntries((server.instance as any)._tools ?? []);
+  const raw = registeredMcpTools(server);
   const entry = raw['get_message_reactions'];
-  const fn = entry.callback ?? entry.handler ?? entry.cb;
+  const fn = entry.callback;
   return (args) => fn(args, {});
 }
 

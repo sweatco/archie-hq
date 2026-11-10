@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initSlackClient, postSlackMessage } from '../client.js';
+import { expectDefined } from '../../../test-support/assertions.js';
 
 vi.mock('../../../system/logger.js', () => ({
   logger: { slack: vi.fn(), warn: vi.fn(), system: vi.fn() },
@@ -24,11 +25,12 @@ describe('bounded Slack notice delivery with the real WebClient', () => {
   it('aborts a stalled request without retrying', async () => {
     const timeout = AbortSignal.timeout.bind(AbortSignal);
     const deadline = vi.spyOn(AbortSignal, 'timeout').mockImplementation(() => timeout(30));
-    let requestSignal: AbortSignal;
+    const captured: { signal?: AbortSignal } = {};
     fetchMock.mockImplementation(
       (_url, init) =>
         new Promise((_, reject) => {
-          requestSignal = init!.signal!;
+          const requestSignal = expectDefined(expectDefined(init).signal);
+          captured.signal = requestSignal;
           requestSignal.addEventListener('abort', () => reject(requestSignal.reason), {
             once: true,
           });
@@ -36,7 +38,7 @@ describe('bounded Slack notice delivery with the real WebClient', () => {
     );
     await expect(postSlackMessage({ channel: 'C1', text: 'Paused' }, true)).rejects.toThrow();
     expect(deadline).toHaveBeenCalledWith(5000);
-    expect(requestSignal!.aborted).toBe(true);
+    expect(expectDefined(captured.signal).aborted).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -63,6 +65,6 @@ describe('bounded Slack notice delivery with the real WebClient', () => {
     await expect(postSlackMessage({ channel: 'C1', text: 'An ordinary reply' })).resolves.toBe(
       '1.0',
     );
-    expect(fetchMock.mock.calls[0]![1]?.signal).toBeUndefined();
+    expect(expectDefined(fetchMock.mock.calls[0])[1]?.signal).toBeUndefined();
   });
 });

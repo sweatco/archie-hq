@@ -11,6 +11,7 @@
  * this function leaves them untouched.
  */
 
+import type { McpServerConfig } from '@anthropic-ai/claude-agent-sdk';
 import { logger } from '../logger.js';
 import { hasOAuthRecord } from './storage.js';
 import { ensureFreshToken } from './refresh.js';
@@ -31,18 +32,18 @@ export interface OAuthBindingResult {
  * can log or alert. The injected list contains server names, not token values.
  */
 export async function applyOAuthBindings(
-  mcpServers: Record<string, any>,
+  mcpServers: Record<string, McpServerConfig>,
 ): Promise<OAuthBindingResult> {
   const injected: string[] = [];
   const dropped: OAuthBindingFailure[] = [];
 
   for (const [name, config] of Object.entries(mcpServers)) {
-    if (!isHttpLike(config)) continue;
+    if (config.type !== 'http' && config.type !== 'sse') continue;
     if (!(await hasOAuthRecord(name))) continue;
 
     try {
       const token = await ensureFreshToken(name);
-      const existingHeaders = (config.headers ?? {}) as Record<string, string>;
+      const existingHeaders = config.headers ?? {};
       // Only set if the .mcp.json author hasn't already supplied a token.
       // (Hand-managed creds win — operator intent is explicit.)
       if (!('Authorization' in existingHeaders) && !('authorization' in existingHeaders)) {
@@ -63,12 +64,4 @@ export async function applyOAuthBindings(
   }
 
   return { injected, dropped };
-}
-
-function isHttpLike(
-  config: unknown,
-): config is { type?: string; headers?: Record<string, string> } {
-  if (!config || typeof config !== 'object') return false;
-  const type = (config as { type?: unknown }).type;
-  return type === 'http' || type === 'sse';
 }

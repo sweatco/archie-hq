@@ -126,7 +126,7 @@ describe('handleTriggerApproval — cap reached', () => {
 
     expect(logger.warn).toHaveBeenCalled();
     expect(appendAgentFinding).toHaveBeenCalledOnce();
-    const [, , text] = (appendAgentFinding as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    const [, , text] = vi.mocked(appendAgentFinding).mock.calls[0];
     expect(String(text)).toMatch(/cap reached/i);
     expect(String(text)).toMatch(/awaiting approval/i);
   });

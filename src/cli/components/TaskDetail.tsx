@@ -3,6 +3,7 @@ import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import Spinner from 'ink-spinner';
 import { ScrollView, type ScrollViewRef } from 'ink-scroll-view';
 import { fetchTaskDetail, fetchTaskEvents, sendMessage, sendApproval } from '../api.js';
+import type { CliSystemEvent as SystemEvent } from '../api-contract.js';
 import { MessageInput } from './MessageInput.js';
 import type { PrCardData } from '../../types/task.js';
 import { prCardSubtitle, CLI_PR_CARD_EMOJI } from '../../system/pr-card-format.js';
@@ -65,14 +66,6 @@ function formatDateTime(iso: string): string {
     minute: '2-digit',
     hour12: false,
   });
-}
-
-interface SystemEvent {
-  type: string;
-  taskId: string;
-  timestamp: string;
-  agentName?: string;
-  data: Record<string, unknown>;
 }
 
 interface TaskDetailProps {
@@ -328,13 +321,15 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
       setError(null);
       // Scroll to bottom after initial load
       setTimeout(() => scrollRef.current?.scrollToBottom(), 50);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
     }
   }, [taskId]);
 
   useEffect(() => {
-    loadInitial();
+    loadInitial().catch((error: unknown) =>
+      setError(error instanceof Error ? error.message : String(error)),
+    );
   }, [loadInitial]);
 
   // Handle live SSE events from parent. `liveEvents` is an append-only queue, so
@@ -448,7 +443,7 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
           true,
           mergeIdentity(focusedApproval),
           focusedApproval.ref,
-        ).catch((err: any) => setError(err.message));
+        ).catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
         setFocusedApprovalLine(null);
         setInputActive(true);
       } else if (focusedApproval && (input === 'n' || input === 'N')) {
@@ -458,7 +453,7 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
           false,
           mergeIdentity(focusedApproval),
           focusedApproval.ref,
-        ).catch((err: any) => setError(err.message));
+        ).catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
         setFocusedApprovalLine(null);
         setInputActive(true);
       }
@@ -495,8 +490,8 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
   const handleSendMessage = async (message: string) => {
     try {
       await sendMessage(taskId, message);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -584,7 +579,11 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
       {/* Message input */}
       <Box paddingX={1}>
         <MessageInput
-          onSubmit={handleSendMessage}
+          onSubmit={(message) => {
+            handleSendMessage(message).catch((error: unknown) =>
+              setError(error instanceof Error ? error.message : String(error)),
+            );
+          }}
           active={inputActive}
           placeholder={inputActive ? 'Type message to PM...' : 'Press Tab to type...'}
         />

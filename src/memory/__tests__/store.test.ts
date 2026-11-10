@@ -185,7 +185,7 @@ describe('memory store', () => {
       await mkdir(usersDir, { recursive: true });
       await writeFile(join(usersDir, 'gwen.md'), '## Notes\n- Uses TypeScript\n', 'utf-8');
       const before = await readFile(join(usersDir, 'gwen.md'), 'utf-8');
-      await applyUserUpdates('gwen', [{ action: 'update', content: 'orphan content' } as any]);
+      await applyUserUpdates('gwen', [{ action: 'update', content: 'orphan content' }]);
       const after = await readFile(join(usersDir, 'gwen.md'), 'utf-8');
       expect(after).toBe(before);
     });

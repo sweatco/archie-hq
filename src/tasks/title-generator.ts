@@ -22,7 +22,8 @@ const TitleSchema = z.object({
 });
 const rawTitleSchema = toJSONSchema(TitleSchema) as Record<string, unknown>;
 // Strip JSON Schema dialect URL — some SDK validators reject it.
-const { $schema: _drop, ...titleJsonSchema } = rawTitleSchema;
+const titleJsonSchema = rawTitleSchema;
+delete titleJsonSchema.$schema;
 
 const SYSTEM_PROMPT = `You generate a concise title for a task based on the initial conversation that started it.
 
@@ -126,7 +127,7 @@ Respond with JSON only.`;
     })) {
       if (event.type !== 'result') continue;
       if (event.subtype === 'success') {
-        const parsed = TitleSchema.safeParse((event as any).structured_output);
+        const parsed = TitleSchema.safeParse(event.structured_output);
         if (parsed.success) {
           result = parsed.data;
         } else {

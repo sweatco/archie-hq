@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import type { Delivery } from '../types.js';
 
-const f = vi.hoisted(() => ({ update: vi.fn() }));
+const f = vi.hoisted(() => ({
+  update: vi.fn<import('@slack/web-api').WebClient['chat']['update']>(),
+}));
 vi.mock('@slack/web-api', () => ({
   WebClient: vi.fn(function () {
     return { chat: { update: f.update } };
@@ -41,17 +44,26 @@ describe('proposal card replacement', () => {
       'Task started; outcome unverified.',
       'https://slack.test/owner/task',
     );
-    const calls = f.update.mock.calls.map((call) => call[0]);
+    const calls = f.update.mock.calls.map((call) =>
+      z
+        .object({
+          channel: z.string(),
+          ts: z.string(),
+          text: z.string(),
+          blocks: z.array(z.object({ type: z.string(), text: z.string() })),
+        })
+        .parse(call[0]),
+    );
     expect(calls).toHaveLength(2);
     for (const call of calls) {
       expect(call).toMatchObject({
         channel: 'D_OWNER',
         ts: delivery.ts,
-        text: expect.stringContaining(delivery.text),
+        text: expect.stringContaining(delivery.text) as unknown,
       });
       expect(call.blocks).toEqual([{ type: 'markdown', text: call.text }]);
       expect(JSON.stringify(call.blocks)).not.toContain('initiative_start_task');
-      expect(call.blocks.some((block: { type: string }) => block.type === 'actions')).toBe(false);
+      expect(call.blocks.some((block) => block.type === 'actions')).toBe(false);
     }
     expect(calls[1].text).toContain('[Open task](https://slack.test/owner/task)');
     expect(calls[0].text).not.toContain('Task started');

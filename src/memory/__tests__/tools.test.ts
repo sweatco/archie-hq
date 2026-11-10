@@ -1,3 +1,4 @@
+import { registeredMcpTools } from '../../test-support/mcp.js';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
@@ -9,7 +10,7 @@ const state = vi.hoisted(() => ({
   ready: true,
   tools: true,
   metadata: null as TaskMetadata | null,
-  entities: [] as Array<Record<string, any>>,
+  entities: [] as Array<Record<string, unknown>>,
   activity: [] as Array<Record<string, string>>,
   profiles: new Map<string, string>(),
   classify: vi.fn(),
@@ -46,6 +47,7 @@ vi.mock('../../system/logger.js', () => ({
 
 import { createMemoryMcpServer, shouldAttachMemoryTools } from '../tools.js';
 import type { Task } from '../../tasks/task.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 function metadata(channelId = 'G07PRIVATE1'): TaskMetadata {
   return {
@@ -69,20 +71,18 @@ function metadata(channelId = 'G07PRIVATE1'): TaskMetadata {
 function fakeTask(): Task {
   return {
     taskId: 'task-current',
-    metadata: state.metadata!,
+    metadata: expectDefined(state.metadata),
     save: vi.fn().mockResolvedValue(undefined),
   } as unknown as Task;
 }
 
 function handlers(task = fakeTask()) {
   const server = createMemoryMcpServer(task);
-  const raw =
-    (server.instance as any)._registeredTools ??
-    Object.fromEntries((server.instance as any)._tools ?? []);
+  const raw = registeredMcpTools(server);
   return Object.fromEntries(
-    Object.entries(raw).map(([name, entry]: [string, any]) => [
+    Object.entries(raw).map(([name, entry]) => [
       name,
-      (args: Record<string, unknown>) => (entry.callback ?? entry.handler ?? entry.cb)(args, {}),
+      (args: Record<string, unknown>) => entry.callback(args, {}),
     ]),
   ) as Record<
     string,
@@ -91,7 +91,7 @@ function handlers(task = fakeTask()) {
 }
 
 function textOf(result: { content: Array<{ text: string }> }): string {
-  return result.content[0]!.text;
+  return expectDefined(result.content[0]).text;
 }
 
 async function writeTask(
@@ -176,12 +176,12 @@ describe('memory tools', () => {
       'remember_preference',
       'search_memory',
     ]);
-    expect(shouldAttachMemoryTools(state.metadata!)).toBe(true);
+    expect(shouldAttachMemoryTools(expectDefined(state.metadata))).toBe(true);
     state.tools = false;
-    expect(shouldAttachMemoryTools(state.metadata!)).toBe(false);
+    expect(shouldAttachMemoryTools(expectDefined(state.metadata))).toBe(false);
     state.tools = true;
-    delete state.metadata!.memory_destination;
-    expect(shouldAttachMemoryTools(state.metadata!)).toBe(false);
+    delete expectDefined(state.metadata).memory_destination;
+    expect(shouldAttachMemoryTools(expectDefined(state.metadata))).toBe(false);
   });
 
   it('searches complete public and exact-private task files with entity, activity, and authorized profiles', async () => {
@@ -189,7 +189,9 @@ describe('memory tools', () => {
     await writeTask('private', 'G07FOREIGN1', 'task-foreign', 'Foreign payments secret');
     await writeTask('public', 'C07PUBLIC1', 'task-public', 'Public payments decision');
 
-    const output = textOf(await handlers().search_memory!({ query: 'payments', limit: 20 }));
+    const output = textOf(
+      await expectDefined(handlers().search_memory)({ query: 'payments', limit: 20 }),
+    );
 
     expect(output).toContain('Private payments decision');
     expect(output).toContain('Public payments decision');
@@ -216,7 +218,9 @@ describe('memory tools', () => {
     state.activity = [];
     state.profiles.clear();
 
-    const output = textOf(await handlers().search_memory!({ query: 'deepneedle', limit: 10 }));
+    const output = textOf(
+      await expectDefined(handlers().search_memory)({ query: 'deepneedle', limit: 10 }),
+    );
 
     expect(output).toContain('"kind": "task"');
     expect(output).toContain('deepneedle answer-value');
@@ -226,7 +230,9 @@ describe('memory tools', () => {
     await writeTask('private', 'G07PRIVATE1', 'task-shared', 'Private version');
     await writeTask('public', 'C07PUBLIC1', 'task-shared', 'Public version');
 
-    const output = textOf(await handlers().read_task_summary!({ task_id: 'task-shared' }));
+    const output = textOf(
+      await expectDefined(handlers().read_task_summary)({ task_id: 'task-shared' }),
+    );
 
     expect(output).toContain('Private version');
     expect(output).not.toContain('Public version');
@@ -237,7 +243,9 @@ describe('memory tools', () => {
     await writeTask('private', 'G07PRIVATE1', 'task-private', 'Private-only needle');
     await writeTask('public', 'C07PUBLIC1', 'task-public', 'Public-only needle');
 
-    const search = textOf(await handlers().search_memory!({ query: 'needle', limit: 10 }));
+    const search = textOf(
+      await expectDefined(handlers().search_memory)({ query: 'needle', limit: 10 }),
+    );
     expect(search).toContain('Public-only needle');
     expect(search).not.toContain('Private-only needle');
   });
@@ -246,14 +254,14 @@ describe('memory tools', () => {
     state.metadata = metadata('D07PERSON01');
     state.classify.mockResolvedValue({ kind: 'user', user_id: 'U07AUTHOR1' });
     await writeTask('private', 'D07PERSON01', 'task-dm', 'DM-only value');
-    expect(textOf(await handlers().read_task_summary!({ task_id: 'task-dm' }))).toContain(
-      'DM-only value',
-    );
+    expect(
+      textOf(await expectDefined(handlers().read_task_summary)({ task_id: 'task-dm' })),
+    ).toContain('DM-only value');
 
     state.classify.mockResolvedValue({ kind: 'none' });
-    expect(textOf(await handlers().read_task_summary!({ task_id: 'task-dm' }))).toContain(
-      'Memory unavailable',
-    );
+    expect(
+      textOf(await expectDefined(handlers().read_task_summary)({ task_id: 'task-dm' })),
+    ).toContain('Memory unavailable');
   });
 
   it('keeps archived and catalogue-omitted entities readable and searchable', async () => {
@@ -277,16 +285,18 @@ describe('memory tools', () => {
     ];
 
     expect(
-      textOf(await handlers().search_memory!({ query: 'omittedneedle', limit: 10 })),
+      textOf(await expectDefined(handlers().search_memory)({ query: 'omittedneedle', limit: 10 })),
     ).toContain('omitted');
-    expect(textOf(await handlers().read_entity!({ identifier: 'old-system' }))).toContain(
-      'archivedneedle',
-    );
+    expect(
+      textOf(await expectDefined(handlers().read_entity)({ identifier: 'old-system' })),
+    ).toContain('archivedneedle');
   });
 
   it('allows public entities and activity without recorded authors but reads no profiles', async () => {
-    state.metadata!.memory_authors = {};
-    const output = textOf(await handlers().search_memory!({ query: 'payments', limit: 10 }));
+    expectDefined(state.metadata).memory_authors = {};
+    const output = textOf(
+      await expectDefined(handlers().search_memory)({ query: 'payments', limit: 10 }),
+    );
 
     expect(output).toContain('Payments service');
     expect(output).toContain('Payments rollout');
@@ -294,12 +304,12 @@ describe('memory tools', () => {
   });
 
   it('rejects invalid identifiers and bounds escaped tool output', async () => {
-    expect(textOf(await handlers().read_task_summary!({ task_id: '../task' }))).toContain(
-      'Invalid task ID',
-    );
-    expect(textOf(await handlers().read_entity!({ identifier: '../../private' }))).toContain(
-      'Invalid entity identifier',
-    );
+    expect(
+      textOf(await expectDefined(handlers().read_task_summary)({ task_id: '../task' })),
+    ).toContain('Invalid task ID');
+    expect(
+      textOf(await expectDefined(handlers().read_entity)({ identifier: '../../private' })),
+    ).toContain('Invalid entity identifier');
     state.entities = [
       {
         entity: 'payments',
@@ -310,7 +320,7 @@ describe('memory tools', () => {
         relations: [],
       },
     ];
-    const output = textOf(await handlers().read_entity!({ identifier: 'billing' }));
+    const output = textOf(await expectDefined(handlers().read_entity)({ identifier: 'billing' }));
     expect(output).toContain('&lt;script&gt;');
     expect(output).toContain('[truncated]');
     expect(output.length).toBeLessThanOrEqual(8_000);
@@ -321,7 +331,7 @@ describe('memory tools', () => {
       { entity: 'zeta', aliases: [], summary: 'payments', observations: [], relations: [] },
       { entity: 'alpha', aliases: [], summary: 'payments', observations: [], relations: [] },
     ];
-    const search = handlers().search_memory!;
+    const search = expectDefined(handlers().search_memory);
     const first = textOf(await search({ query: 'payments', limit: 2 }));
     const second = textOf(await search({ query: 'payments', limit: 2 }));
 
@@ -334,7 +344,9 @@ describe('memory tools', () => {
   it('denies memory without mutating fixed scope when live classification fails', async () => {
     state.classify.mockResolvedValue({ kind: 'none' });
     const task = fakeTask();
-    const output = textOf(await handlers(task).search_memory!({ query: 'payments', limit: 10 }));
+    const output = textOf(
+      await expectDefined(handlers(task).search_memory)({ query: 'payments', limit: 10 }),
+    );
 
     expect(output).toContain('Memory unavailable');
     expect(task.metadata.memory_destination).toEqual({ channel_id: 'G07PRIVATE1' });

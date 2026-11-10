@@ -71,7 +71,7 @@ vi.mock('../paths.js', () => ({
 // ============================================================================
 
 vi.mock('../../tasks/persistence.js', () => ({
-  loadMetadata: async (taskId: string) => {
+  loadMetadata: async (taskId: string): Promise<unknown> => {
     const metaPath = join(sessionsDir, taskId, 'shared', 'metadata.json');
     if (!existsSync(metaPath)) return null;
     const content = await readFile(metaPath, 'utf-8');
@@ -138,6 +138,7 @@ import { enqueuePending, readPending } from '../pending-queue.js';
 import { runExtraction } from '../extractor.js';
 import { classifySlackMemoryScope, postSlackMessage } from '../../connectors/slack/client.js';
 import { logger } from '../../system/logger.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 // ============================================================================
 // Test data
@@ -720,7 +721,7 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     handleTaskCompleted(TASK_ID);
     await drain();
 
-    const input = vi.mocked(runExtraction).mock.calls[0]![0];
+    const input = expectDefined(vi.mocked(runExtraction).mock.calls[0])[0];
     expect(input.entityIndex).toContain(
       'Existing observations on entities touched by this task (do not add equivalent observations',
     );

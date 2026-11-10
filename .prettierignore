@@ -19,7 +19,6 @@ tmp/
 temp/
 .env*
 package-lock.json
-oxlint-suppressions.json
 CHANGELOG.md
 prompts/
 core-plugin/

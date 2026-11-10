@@ -50,10 +50,10 @@ export async function gitExec(cwd: string, args: string): Promise<string> {
   try {
     const { stdout } = await execAsync(`git ${args}`, { cwd });
     return stdout.trim();
-  } catch (error: any) {
-    if (error.stderr) {
+  } catch (error: unknown) {
+    if (error && typeof error === 'object' && 'stderr' in error && error.stderr) {
       logger.error('repo-clone', `git command failed: git ${args}`);
-      logger.error('repo-clone', `stderr: ${error.stderr}`);
+      logger.error('repo-clone', `stderr: ${String(error.stderr)}`);
     }
     throw error;
   }

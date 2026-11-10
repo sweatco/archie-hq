@@ -10,7 +10,7 @@ import type { InitiativeRuntime } from '../index.js';
 
 const f = vi.hoisted(() => ({
   root: `/tmp/archie-runtime-${process.pid}`,
-  post: vi.fn(),
+  post: vi.fn<typeof import('../../connectors/slack/client.js').postSlackMessage>(),
   slack: {
     inspect: vi.fn(),
     channels: vi.fn(),
@@ -46,6 +46,7 @@ vi.mock('../slack.js', () => ({
 import { startInitiative } from '../runtime.js';
 import { ordinaryTasks } from '../task-adapter.js';
 import { proposalVersion } from '../proposals.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const NOW = Date.parse('2026-10-20T10:00:00Z');
 const OWNER = 'U000001';
@@ -90,17 +91,19 @@ describe('initiative runtime integration', () => {
     try {
       const ts = `${NOW / 1000}.000001`;
       store.channel('C1', true, false);
-      const evidence = store.record(
-        {
-          channel: 'C1',
-          thread: ts,
-          ts,
-          version: ts,
-          author: employee,
-          text: 'Separate commitments in the same discussion.',
-        },
-        NOW,
-      )!;
+      const evidence = expectDefined(
+        store.record(
+          {
+            channel: 'C1',
+            thread: ts,
+            ts,
+            version: ts,
+            author: employee,
+            text: 'Separate commitments in the same discussion.',
+          },
+          NOW,
+        ),
+      );
       const base = {
         channel: 'C1',
         thread: ts,
@@ -114,7 +117,7 @@ describe('initiative runtime integration', () => {
         valid: true,
       };
       store.apply(
-        [store.snapshot('C1', ts)!],
+        [expectDefined(store.snapshot('C1', ts))],
         [],
         [
           { ...base, id: 'employee', owner: employee },
@@ -163,7 +166,7 @@ describe('initiative runtime integration', () => {
         evidence: [evidence],
         matter: 'admin',
       });
-      expect(store.proposalCurrent(store.proposal(proposal)!, NOW)).toBe(true);
+      expect(store.proposalCurrent(expectDefined(store.proposal(proposal)), NOW)).toBe(true);
       await runtime.capture({
         channel: 'D_EMPLOYEE',
         user: employee,
@@ -201,15 +204,17 @@ describe('initiative runtime integration', () => {
       try {
         const ts = `${NOW / 1000}.000001`;
         store.channel('C1', true, false);
-        const evidence = store.record(
-          { channel: 'C1', thread: ts, ts, version: ts, author: OWNER, text: 'Read-only test' },
-          NOW,
-        )!;
+        const evidence = expectDefined(
+          store.record(
+            { channel: 'C1', thread: ts, ts, version: ts, author: OWNER, text: 'Read-only test' },
+            NOW,
+          ),
+        );
         f.slack.page.mockImplementation(async () => ({
           messages: store.snapshot('C1', ts)?.evidence ?? [],
         }));
         store.apply(
-          [store.snapshot('C1', ts)!],
+          [expectDefined(store.snapshot('C1', ts))],
           [],
           [
             {
@@ -234,7 +239,7 @@ describe('initiative runtime integration', () => {
           evidence: [evidence],
           matter: 'test',
         });
-        const version = proposalVersion(store.proposal(proposal)!);
+        const version = proposalVersion(expectDefined(store.proposal(proposal)));
         store.enqueueDelivery({
           id: 'card',
           recipient: OWNER,
@@ -250,12 +255,22 @@ describe('initiative runtime integration', () => {
           proposal: { id: proposal, version },
         });
         store.attention.finishDelivery('sent', '1792490401.000001', 'card');
-        let metadata: any;
+        let metadata: Awaited<ReturnType<typeof ordinaryTasks.read>>;
         vi.spyOn(ordinaryTasks, 'prepare').mockImplementation(async (input) => {
-          metadata = { approved_start: { ...input, phase: 'prepared' } };
+          metadata = {
+            task_id: input.taskId,
+            channels: {},
+            default_channel: null,
+            agent_sessions: {},
+            repositories: [],
+            status: 'preparing',
+            created_at: new Date(NOW).toISOString(),
+            updated_at: new Date(NOW).toISOString(),
+            approved_start: { ...input, budget: 'task', phase: 'prepared' },
+          };
         });
         const start = vi.spyOn(ordinaryTasks, 'start').mockImplementation(async () => {
-          metadata.approved_start.phase = 'ready';
+          expectDefined(expectDefined(metadata).approved_start).phase = 'ready';
         });
         vi.spyOn(ordinaryTasks, 'read').mockImplementation(async () => metadata ?? null);
         if (recovery) {
@@ -467,7 +482,7 @@ describe('initiative runtime integration', () => {
     expect(f.post).toHaveBeenCalledWith(
       expect.objectContaining({
         channel: 'D_OWNER',
-        text: expect.stringContaining('ARCHIE_PROACTIVITY_MODE'),
+        text: expect.stringContaining('ARCHIE_PROACTIVITY_MODE') as unknown,
       }),
     );
   });

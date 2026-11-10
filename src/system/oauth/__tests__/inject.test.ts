@@ -1,3 +1,4 @@
+import { createSdkMcpServer, type McpServerConfig } from '@anthropic-ai/claude-agent-sdk';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, rm } from 'fs/promises';
 import { join } from 'path';
@@ -46,28 +47,28 @@ describe('applyOAuthBindings', () => {
     );
 
     const mcp = {
-      notion: { type: 'http', url: 'https://mcp.notion.com/mcp' },
-      builtin: { type: 'sdk', tools: [] },
+      notion: { type: 'http' as const, url: 'https://mcp.notion.com/mcp' },
+      builtin: createSdkMcpServer({ name: 'test', tools: [] }),
     };
     const result = await inject.applyOAuthBindings(mcp);
     expect(result.injected).toEqual(['notion']);
     expect(mcp.notion).toMatchObject({
-      type: 'http',
+      type: 'http' as const,
       url: 'https://mcp.notion.com/mcp',
       headers: { Authorization: 'Bearer AT' },
     });
     // Built-in (non-http) servers are untouched.
-    expect(mcp.builtin).toEqual({ type: 'sdk', tools: [] });
+    expect(mcp.builtin.type).toBe('sdk');
   });
 
   it('skips http servers without a vault record', async () => {
     const { inject } = await load();
     const mcp = {
-      no_creds: { type: 'http', url: 'https://example.com' },
+      no_creds: { type: 'http' as const, url: 'https://example.com' },
     };
     const result = await inject.applyOAuthBindings(mcp);
     expect(result.injected).toEqual([]);
-    expect((mcp.no_creds as any).headers).toBeUndefined();
+    expect(mcp.no_creds).not.toHaveProperty('headers');
   });
 
   it('does not overwrite operator-supplied Authorization headers', async () => {
@@ -87,13 +88,13 @@ describe('applyOAuthBindings', () => {
     );
     const mcp = {
       manual: {
-        type: 'http',
+        type: 'http' as const,
         url: 'https://example.com',
         headers: { Authorization: 'Bearer manual-token' },
       },
     };
     await inject.applyOAuthBindings(mcp);
-    expect((mcp.manual as any).headers.Authorization).toBe('Bearer manual-token');
+    expect(mcp.manual.headers.Authorization).toBe('Bearer manual-token');
   });
 
   it('drops servers whose refresh fails', async () => {
@@ -111,17 +112,17 @@ describe('applyOAuthBindings', () => {
       },
       { access_token: 'AT', refresh_token: 'BAD', client_id: 'cli', token_type: 'Bearer' },
     );
-    globalThis.fetch = vi.fn(
+    globalThis.fetch = vi.fn<typeof fetch>(
       async () =>
         new Response(JSON.stringify({ error: 'invalid_grant' }), {
           status: 400,
           headers: { 'Content-Type': 'application/json' },
         }),
-    ) as any;
+    );
 
-    const mcp: Record<string, any> = {
-      broken: { type: 'http', url: 'https://example.com' },
-      keep: { type: 'sdk', tools: [] },
+    const mcp: Record<string, McpServerConfig> = {
+      broken: { type: 'http' as const, url: 'https://example.com' },
+      keep: createSdkMcpServer({ name: 'test', tools: [] }),
     };
     const result = await inject.applyOAuthBindings(mcp);
     expect(result.dropped.map((d) => d.serverName)).toEqual(['broken']);

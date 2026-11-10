@@ -22,6 +22,7 @@
  * directly) with zero other changes. This is a temporary debugging aid; it
  * should be OFF in steady-state production.
  */
+import { z } from 'zod';
 import http from 'node:http';
 import https from 'node:https';
 import { appendFile } from 'node:fs/promises';
@@ -73,10 +74,20 @@ function attribute(systemText: string): { taskId: string; agentId: string } {
 /** Parse a captured /v1/messages body into a token breakdown. Never throws. */
 function breakdown(body: string): Record<string, unknown> | null {
   try {
-    const j = JSON.parse(body);
+    const raw: unknown = JSON.parse(body);
+    const j = z
+      .object({
+        system: z
+          .union([z.string(), z.array(z.object({ text: z.string().optional() }).passthrough())])
+          .optional(),
+        messages: z.array(z.unknown()).optional(),
+        tools: z.array(z.object({ name: z.string().optional() }).passthrough()).optional(),
+        model: z.string().optional(),
+      })
+      .parse(raw);
     if (!j || (!j.system && !j.messages)) return null;
     const systemText = Array.isArray(j.system)
-      ? j.system.map((s: any) => s?.text ?? '').join('')
+      ? j.system.map((s) => s?.text ?? '').join('')
       : typeof j.system === 'string'
         ? j.system
         : '';
@@ -84,7 +95,7 @@ function breakdown(body: string): Record<string, unknown> | null {
     const toolsStr = JSON.stringify(tools);
     const messagesStr = JSON.stringify(j.messages ?? []);
     const { taskId, agentId } = attribute(systemText);
-    const withTok = tools.map((t: any) => ({
+    const withTok = tools.map((t) => ({
       name: t?.name ?? '?',
       tok: estTokens(JSON.stringify(t)),
     }));
@@ -145,7 +156,7 @@ export function startContextProbe(): void {
 
   const server = http.createServer((clientReq, clientRes) => {
     const chunks: Buffer[] = [];
-    clientReq.on('data', (c) => chunks.push(c));
+    clientReq.on('data', (c: Buffer) => chunks.push(c));
     clientReq.on('end', () => {
       const body = Buffer.concat(chunks);
 

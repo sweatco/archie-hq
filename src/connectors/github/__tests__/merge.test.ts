@@ -47,6 +47,7 @@ import { appendAgentFinding } from '../../../tasks/persistence.js';
 import { isAutoMergeRepo } from '../../../agents/registry.js';
 import { AGENT_PROMPTS } from '../../../agents/prompts.js';
 import type { TaskMetadata, BranchState } from '../../../types/task.js';
+import { expectDefined } from '../../../test-support/assertions.js';
 
 const mockGitHubClient = {
   getPRStatus: vi.fn(),
@@ -114,7 +115,11 @@ function singlePRRepositories(github: string, prNumber: number): TaskMetadata['r
 }
 
 function branchState(task: FakeTask, github: string, branch: string): BranchState {
-  return task.metadata.repositories.find((r) => r.github === github)!.branch_states![branch]!;
+  return expectDefined(
+    expectDefined(
+      expectDefined(task.metadata.repositories.find((r) => r.github === github)).branch_states,
+    )[branch],
+  );
 }
 
 /** Findings that are the ready notification (decision finding naming the held PR). */
@@ -146,15 +151,15 @@ describe('checkAndMergeLinkedPRs — non-auto policy (AC1)', () => {
     expect(mockGitHubClient.mergePullRequest).not.toHaveBeenCalled();
     const notifications = readyNotifications();
     expect(notifications).toHaveLength(1);
-    expect(String(notifications[0]![2])).toContain('org/backend#42');
+    expect(String(expectDefined(notifications[0])[2])).toContain('org/backend#42');
 
     const notifiers = world.instances.filter((i) => i.sendMessage.mock.calls.length > 0);
     expect(notifiers).toHaveLength(1);
-    const notifier = notifiers[0]!;
+    const notifier = expectDefined(notifiers[0]);
     expect(notifier.sendMessage).toHaveBeenCalledTimes(1);
     // The wake carries the notice itself, not a pointer at knowledge.log.
-    const woken = String(notifier.sendMessage.mock.calls[0]![0]);
-    expect(woken).toBe(AGENT_PROMPTS.systemNotice(String(notifications[0]![2])));
+    const woken = String(expectDefined(notifier.sendMessage.mock.calls[0])[0]);
+    expect(woken).toBe(AGENT_PROMPTS.systemNotice(String(expectDefined(notifications[0])[2])));
     expect(woken).toContain('org/backend#42');
 
     // The marker was set on the same instance that activated, and flushed
@@ -162,8 +167,8 @@ describe('checkAndMergeLinkedPRs — non-auto policy (AC1)', () => {
     // debounced write would be invisible to any instance loaded meanwhile.
     expect(branchState(notifier, 'org/backend', 'feat/x').merge_ready_notified).toBe(true);
     expect(notifier.save).toHaveBeenCalledWith(true);
-    expect(notifier.save.mock.invocationCallOrder[0]!).toBeLessThan(
-      notifier.sendMessage.mock.invocationCallOrder[0]!,
+    expect(expectDefined(notifier.save.mock.invocationCallOrder[0])).toBeLessThan(
+      expectDefined(notifier.sendMessage.mock.invocationCallOrder[0]),
     );
   });
 
@@ -229,7 +234,7 @@ describe('checkAndMergeLinkedPRs — non-auto policy (AC1)', () => {
 
     const notifications = readyNotifications();
     expect(notifications).toHaveLength(2);
-    expect(String(notifications[1]![2])).toContain('org/backend#43');
+    expect(String(expectDefined(notifications[1])[2])).toContain('org/backend#43');
   });
 
   it('does not re-notify after a task reload — the marker reaches the persisted metadata', async () => {
@@ -241,7 +246,9 @@ describe('checkAndMergeLinkedPRs — non-auto policy (AC1)', () => {
 
     // The marker must be in the persisted JSON — that is what any instance
     // loaded after a restart (or any later webhook) is built from.
-    const persistedState = world.persisted().repositories[0]!.branch_states!['feat/x']!;
+    const persistedState = expectDefined(
+      expectDefined(expectDefined(world.persisted().repositories[0]).branch_states)['feat/x'],
+    );
     expect(persistedState.merge_ready_notified).toBe(true);
 
     // Restart: the harness already builds every instance from the persisted
@@ -249,7 +256,7 @@ describe('checkAndMergeLinkedPRs — non-auto policy (AC1)', () => {
     await checkAndMergeLinkedPRs('task-123');
 
     expect(readyNotifications()).toHaveLength(1);
-    expect(world.instances.at(-1)!.sendMessage).not.toHaveBeenCalled();
+    expect(expectDefined(world.instances.at(-1)).sendMessage).not.toHaveBeenCalled();
   });
 });
 
@@ -400,7 +407,7 @@ describe('checkAndMergeLinkedPRs — armed bucket (AC5)', () => {
     expect(mockGitHubClient.mergePullRequest).not.toHaveBeenCalled();
     // It surfaces as a ready-for-approval notification instead — the human gate.
     expect(readyNotifications()).toHaveLength(1);
-    expect(String(readyNotifications()[0]![2])).toContain('org/backend#2');
+    expect(String(expectDefined(readyNotifications()[0])[2])).toContain('org/backend#2');
   });
 });
 
@@ -421,8 +428,8 @@ describe('checkAndMergeLinkedPRs — mixed-policy task', () => {
     expect(mockGitHubClient.mergePullRequest).toHaveBeenCalledWith('org/auto', 1);
     const notifications = readyNotifications();
     expect(notifications).toHaveLength(1);
-    expect(String(notifications[0]![2])).toContain('org/manual#2');
-    expect(String(notifications[0]![2])).not.toContain('org/auto#1');
+    expect(String(expectDefined(notifications[0])[2])).toContain('org/manual#2');
+    expect(String(expectDefined(notifications[0])[2])).not.toContain('org/auto#1');
     expect(branchState(task, 'org/manual', 'feat/b').merge_ready_notified).toBe(true);
     expect(branchState(task, 'org/auto', 'feat/a').merge_ready_notified).toBeUndefined();
   });

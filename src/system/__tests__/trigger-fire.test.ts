@@ -109,6 +109,7 @@ vi.mock('../logger.js', () => ({
 
 import { fireTrigger } from '../trigger-scheduler.js';
 import { Task } from '../../tasks/task.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 // The constructor is private, and the real `Task.create` touches disk — the redaction case needs a real
 // instance without either, so it is built through the same cast `append-render-ordering.test.ts` uses.
@@ -214,18 +215,22 @@ describe('a message fire ingests its thread', () => {
   it('appends the fetched thread and never links it a second time', async () => {
     const thread = messageThread();
 
-    await fireTrigger(makeTrigger(), {
-      kind: 'message',
-      thread,
-      body: BODY,
-      authorId: 'U_DEV',
-      channelName: CHANNEL_NAME,
-    });
+    await fireTrigger(
+      makeTrigger(),
+      {
+        kind: 'message',
+        thread,
+        body: BODY,
+        authorId: 'U_DEV',
+        channelName: CHANNEL_NAME,
+      },
+      () => Task.create(),
+    );
 
-    const task = createdTasks[0]!;
+    const task = expectDefined(createdTasks[0]);
     expect(task.append).toHaveBeenCalledTimes(1);
     // The exact object dispatch fetched, not a reconstruction of it.
-    expect(task.append.mock.calls[0]![0]).toBe(thread);
+    expect(expectDefined(task.append.mock.calls[0])[0]).toBe(thread);
     // `append` links `slack:<channel>:<threadId>` and promotes it to `default_channel` itself, so a
     // `linkSlackThread` alongside it would write the same record twice.
     expect(task.linkSlackThread).not.toHaveBeenCalled();
@@ -234,17 +239,21 @@ describe('a message fire ingests its thread', () => {
   });
 
   it('seeds the agent with where to reply and with the message that fired it', async () => {
-    await fireTrigger(makeTrigger(), {
-      kind: 'message',
-      thread: messageThread(),
-      body: BODY,
-      authorId: 'U_DEV',
-      channelName: CHANNEL_NAME,
-    });
+    await fireTrigger(
+      makeTrigger(),
+      {
+        kind: 'message',
+        thread: messageThread(),
+        body: BODY,
+        authorId: 'U_DEV',
+        channelName: CHANNEL_NAME,
+      },
+      () => Task.create(),
+    );
 
-    const task = createdTasks[0]!;
+    const task = expectDefined(createdTasks[0]);
     expect(task.sendMessage).toHaveBeenCalledTimes(1);
-    const seed = task.sendMessage.mock.calls[0]![0] as string;
+    const seed = expectDefined(task.sendMessage.mock.calls[0])[0] as string;
     expect(seed).toContain('default channel');
     // The entries `append` returned ride along inline. There is one agent on the task now, so
     // pointing it at knowledge.log — a file its prompt no longer mentions — bought nothing.
@@ -254,13 +263,17 @@ describe('a message fire ingests its thread', () => {
   });
 
   it('posts no preamble to Slack', async () => {
-    await fireTrigger(makeTrigger(), {
-      kind: 'message',
-      thread: messageThread(),
-      body: BODY,
-      authorId: 'U_DEV',
-      channelName: CHANNEL_NAME,
-    });
+    await fireTrigger(
+      makeTrigger(),
+      {
+        kind: 'message',
+        thread: messageThread(),
+        body: BODY,
+        authorId: 'U_DEV',
+        channelName: CHANNEL_NAME,
+      },
+      () => Task.create(),
+    );
 
     // The first thing the channel sees is the agent's actual answer, in the thread it already owns.
     expect(postSlackMessageMock).not.toHaveBeenCalled();
@@ -275,22 +288,26 @@ describe('a message fire ingests its thread', () => {
       channelName: CHANNEL_NAME,
     };
 
-    await fireTrigger(trigger, { ...ctx, thread: messageThread() });
-    await fireTrigger(trigger, {
-      ...ctx,
-      thread: messageThread({
-        threadId: '1700000000.000200',
-        currentMessageTs: '1700000000.000200',
-        messages: [],
-      }),
-    });
+    await fireTrigger(trigger, { ...ctx, thread: messageThread() }, () => Task.create());
+    await fireTrigger(
+      trigger,
+      {
+        ...ctx,
+        thread: messageThread({
+          threadId: '1700000000.000200',
+          currentMessageTs: '1700000000.000200',
+          messages: [],
+        }),
+      },
+      () => Task.create(),
+    );
 
     expect(taskCreateMock).toHaveBeenCalledTimes(2);
     expect(createdTasks).toHaveLength(2);
     expect(createdTasks[0]).not.toBe(createdTasks[1]);
     // Each task got its own single wake — no fire ever reused another's task.
-    expect(createdTasks[0]!.sendMessage).toHaveBeenCalledTimes(1);
-    expect(createdTasks[1]!.sendMessage).toHaveBeenCalledTimes(1);
+    expect(expectDefined(createdTasks[0]).sendMessage).toHaveBeenCalledTimes(1);
+    expect(expectDefined(createdTasks[1]).sendMessage).toHaveBeenCalledTimes(1);
   });
 
   // The recurring shape of the same rule, and the one that matters for a schedule: a trigger that fires every
@@ -301,22 +318,22 @@ describe('a message fire ingests its thread', () => {
   it('spawns an independent task per fire — a recurring schedule firing twice', async () => {
     const trigger = makeTrigger();
 
-    await fireTrigger(trigger, { kind: 'schedule' });
-    await fireTrigger(trigger, { kind: 'schedule' });
+    await fireTrigger(trigger, { kind: 'schedule' }, () => Task.create());
+    await fireTrigger(trigger, { kind: 'schedule' }, () => Task.create());
 
     expect(taskCreateMock).toHaveBeenCalledTimes(2);
     expect(createdTasks).toHaveLength(2);
     expect(createdTasks[0]).not.toBe(createdTasks[1]);
     for (const task of createdTasks) {
-      expect(task!.metadata.home_channel).toEqual({
+      expect(expectDefined(task).metadata.home_channel).toEqual({
         channel_id: CHANNEL,
         channel_name: CHANNEL_NAME,
       });
       // Nothing carried over from the other fire: no linked thread, no default channel, one wake each.
-      expect(task!.metadata.channels).toEqual({});
-      expect(task!.metadata.default_channel).toBeNull();
-      expect(task!.sendMessage).toHaveBeenCalledTimes(1);
-      expect(task!.linkSlackThread).not.toHaveBeenCalled();
+      expect(expectDefined(task).metadata.channels).toEqual({});
+      expect(expectDefined(task).metadata.default_channel).toBeNull();
+      expect(expectDefined(task).sendMessage).toHaveBeenCalledTimes(1);
+      expect(expectDefined(task).linkSlackThread).not.toHaveBeenCalled();
     }
   });
 
@@ -327,21 +344,25 @@ describe('a message fire ingests its thread', () => {
     // there — which is precisely what the floor keys on, so it must be absent here too.
     const thread = messageThread({ messages: [] });
 
-    await fireTrigger(makeTrigger(), {
-      kind: 'message',
-      thread,
-      body: BODY,
-      channelName: CHANNEL_NAME,
-    });
+    await fireTrigger(
+      makeTrigger(),
+      {
+        kind: 'message',
+        thread,
+        body: BODY,
+        channelName: CHANNEL_NAME,
+      },
+      () => Task.create(),
+    );
 
-    const task = createdTasks[0]!;
+    const task = expectDefined(createdTasks[0]);
     // `append` still runs — it is what registers the channel and promotes `default_channel`; only its
     // per-message loop had nothing to walk.
     expect(task.append).toHaveBeenCalledTimes(1);
     expect(task.linkSlackThread).not.toHaveBeenCalled();
 
     expect(appendSlackMessageMock).toHaveBeenCalledTimes(1);
-    const call = appendSlackMessageMock.mock.calls[0]!;
+    const call = expectDefined(appendSlackMessageMock.mock.calls[0]);
     expect(call[0]).toBe('task-1');
     expect(call[1]).toEqual({ id: CHANNEL, name: CHANNEL_NAME });
     expect(call[2]).toBe(TRIGGER_TS);
@@ -365,15 +386,17 @@ describe('the ingestion floor fires only for the shape the fetch filter drops', 
   const emptyThread = () => messageThread({ messages: [] });
 
   it('writes the body when there is no author, a body, a ts, and the thread lacks the message', async () => {
-    await fireTrigger(makeTrigger(), { ...floorCtx, thread: emptyThread() });
+    await fireTrigger(makeTrigger(), { ...floorCtx, thread: emptyThread() }, () => Task.create());
 
     expect(appendSlackMessageMock).toHaveBeenCalledTimes(1);
-    const call = appendSlackMessageMock.mock.calls[0]!;
+    const call = expectDefined(appendSlackMessageMock.mock.calls[0]);
     expect(call[4]).toBe(BODY);
     expect(call[5]).toEqual({ ts: TRIGGER_TS });
     // The floor's line joins the inline batch too — otherwise the one message the
     // fetch dropped would be the one message the PM's wake does not carry.
-    const seed = createdTasks[0]!.sendMessage.mock.calls[0]![0] as string;
+    const seed = expectDefined(
+      expectDefined(createdTasks[0]).sendMessage.mock.calls[0],
+    )[0] as string;
     expect(seed).toContain(`[unknown in #${CHANNEL_NAME}] ${BODY}`);
   });
 
@@ -381,17 +404,23 @@ describe('the ingestion floor fires only for the shape the fetch filter drops', 
   // a foreign-workspace bot post is the known one — and that content must go through the redaction policy
   // or not be written at all. Writing it here would make the floor a hole in that policy.
   it('writes nothing when the message HAD an author id', async () => {
-    await fireTrigger(makeTrigger(), {
-      ...floorCtx,
-      thread: emptyThread(),
-      authorId: 'B_FOREIGN_BOT',
-    });
+    await fireTrigger(
+      makeTrigger(),
+      {
+        ...floorCtx,
+        thread: emptyThread(),
+        authorId: 'B_FOREIGN_BOT',
+      },
+      () => Task.create(),
+    );
 
     expect(appendSlackMessageMock).not.toHaveBeenCalled();
   });
 
   it('writes nothing when the rendered body is empty', async () => {
-    await fireTrigger(makeTrigger(), { ...floorCtx, thread: emptyThread(), body: '' });
+    await fireTrigger(makeTrigger(), { ...floorCtx, thread: emptyThread(), body: '' }, () =>
+      Task.create(),
+    );
 
     expect(appendSlackMessageMock).not.toHaveBeenCalled();
   });
@@ -399,7 +428,7 @@ describe('the ingestion floor fires only for the shape the fetch filter drops', 
   // `append` already wrote this message through the real renderer, with its redaction verdict and its
   // `msg:<ts>` id. A second write would duplicate it in the log the delegated agents read.
   it('writes nothing when the fetched thread does contain the triggering message', async () => {
-    await fireTrigger(makeTrigger(), { ...floorCtx, thread: messageThread() });
+    await fireTrigger(makeTrigger(), { ...floorCtx, thread: messageThread() }, () => Task.create());
 
     expect(appendSlackMessageMock).not.toHaveBeenCalled();
   });
@@ -407,29 +436,37 @@ describe('the ingestion floor fires only for the shape the fetch filter drops', 
 
 describe('a schedule fire homes its task in the bound channel', () => {
   it('records the bound channel as the task home', async () => {
-    await fireTrigger(makeTrigger(), { kind: 'schedule' });
+    await fireTrigger(makeTrigger(), { kind: 'schedule' }, () => Task.create());
 
-    expect(createdTasks[0]!.metadata.home_channel).toEqual({
+    expect(expectDefined(createdTasks[0]).metadata.home_channel).toEqual({
       channel_id: CHANNEL,
       channel_name: CHANNEL_NAME,
     });
-    expect(createdTasks[0]!.metadata.memory_destination).toEqual({ channel_id: CHANNEL });
+    expect(expectDefined(createdTasks[0]).metadata.memory_destination).toEqual({
+      channel_id: CHANNEL,
+    });
   });
 
   it('fixes the destination before the first agent turn', async () => {
-    await fireTrigger(makeTrigger(), { kind: 'schedule' });
+    await fireTrigger(makeTrigger(), { kind: 'schedule' }, () => Task.create());
 
-    expect(createdTasks[0]!.setMemoryDestination.mock.invocationCallOrder[0]!).toBeLessThan(
-      createdTasks[0]!.sendMessage.mock.invocationCallOrder[0]!,
+    expect(
+      expectDefined(
+        expectDefined(createdTasks[0]).setMemoryDestination.mock.invocationCallOrder[0],
+      ),
+    ).toBeLessThan(
+      expectDefined(expectDefined(createdTasks[0]).sendMessage.mock.invocationCallOrder[0]),
     );
-    expect(createdTasks[0]!.save).toHaveBeenCalledWith(true);
-    expect(createdTasks[0]!.save.mock.invocationCallOrder[0]!).toBeLessThan(
-      createdTasks[0]!.sendMessage.mock.invocationCallOrder[0]!,
+    expect(expectDefined(createdTasks[0]).save).toHaveBeenCalledWith(true);
+    expect(
+      expectDefined(expectDefined(createdTasks[0]).save.mock.invocationCallOrder[0]),
+    ).toBeLessThan(
+      expectDefined(expectDefined(createdTasks[0]).sendMessage.mock.invocationCallOrder[0]),
     );
   });
 
   it("refreshes that channel's canvas and pin index before the first agent spawns", async () => {
-    await fireTrigger(makeTrigger(), { kind: 'schedule' });
+    await fireTrigger(makeTrigger(), { kind: 'schedule' }, () => Task.create());
 
     // The scan is called exactly as any other caller calls it, announcements included. A canvas adoption notice
     // reports a real change to what Archie reads in this channel and carries no task footer, so it cannot be
@@ -440,23 +477,29 @@ describe('a schedule fire homes its task in the bound channel', () => {
     // Ordering is the point, not the calls: `sendMessage` assembles the first agent's system prompt inside
     // its own await (deliver → ensureAgentSpawned → agent.spawn), so a scan that lands afterwards reaches
     // nothing the agent doing the work can read.
-    const sendMessage = createdTasks[0]!.sendMessage;
+    const sendMessage = expectDefined(createdTasks[0]).sendMessage;
     expect(sendMessage).toHaveBeenCalledTimes(1);
-    const sendOrder = sendMessage.mock.invocationCallOrder[0]!;
-    expect(ensureChannelCanvasMock.mock.invocationCallOrder[0]!).toBeLessThan(sendOrder);
-    expect(ensureChannelPinsMock.mock.invocationCallOrder[0]!).toBeLessThan(sendOrder);
+    const sendOrder = expectDefined(sendMessage.mock.invocationCallOrder[0]);
+    expect(expectDefined(ensureChannelCanvasMock.mock.invocationCallOrder[0])).toBeLessThan(
+      sendOrder,
+    );
+    expect(expectDefined(ensureChannelPinsMock.mock.invocationCallOrder[0])).toBeLessThan(
+      sendOrder,
+    );
   });
 
   it('posts no preamble — the thread root is the result itself', async () => {
-    await fireTrigger(makeTrigger(), { kind: 'schedule' });
+    await fireTrigger(makeTrigger(), { kind: 'schedule' }, () => Task.create());
 
     expect(postSlackMessageMock).not.toHaveBeenCalled();
   });
 
   it('seeds the agent with the thread-opening rule rather than a channel to post at', async () => {
-    await fireTrigger(makeTrigger(), { kind: 'schedule' });
+    await fireTrigger(makeTrigger(), { kind: 'schedule' }, () => Task.create());
 
-    const seed = createdTasks[0]!.sendMessage.mock.calls[0]![0] as string;
+    const seed = expectDefined(
+      expectDefined(createdTasks[0]).sendMessage.mock.calls[0],
+    )[0] as string;
     expect(seed).toContain('post_to_user');
     expect(seed).toContain(`#${CHANNEL_NAME}`);
     // The old seed handed the agent a detached "post it to this channel id" instruction, which is exactly
@@ -466,17 +509,21 @@ describe('a schedule fire homes its task in the bound channel', () => {
   });
 
   it('leaves a message fire unhomed and costs it no scan', async () => {
-    await fireTrigger(makeTrigger(), {
-      kind: 'message',
-      thread: messageThread(),
-      body: BODY,
-      authorId: 'U_DEV',
-      channelName: CHANNEL_NAME,
-    });
+    await fireTrigger(
+      makeTrigger(),
+      {
+        kind: 'message',
+        thread: messageThread(),
+        body: BODY,
+        authorId: 'U_DEV',
+        channelName: CHANNEL_NAME,
+      },
+      () => Task.create(),
+    );
 
     // A message fire already owns a thread, and the event path that dispatched it already scanned the
     // channel on the way in.
-    expect(createdTasks[0]!.metadata.home_channel).toBeUndefined();
+    expect(expectDefined(createdTasks[0]).metadata.home_channel).toBeUndefined();
     expect(ensureChannelCanvasMock).not.toHaveBeenCalled();
     expect(ensureChannelPinsMock).not.toHaveBeenCalled();
   });
@@ -484,7 +531,7 @@ describe('a schedule fire homes its task in the bound channel', () => {
   it('homes nothing and scans nothing when the bound channel is gone', async () => {
     isChannelReachableMock.mockResolvedValue(false);
 
-    await fireTrigger(makeTrigger(), { kind: 'schedule' });
+    await fireTrigger(makeTrigger(), { kind: 'schedule' }, () => Task.create());
 
     // The pre-flight pauses the trigger and returns before a task exists at all, so there is nothing to
     // home and no channel worth scanning.
@@ -508,9 +555,9 @@ describe('a schedule fire on a DM-bound trigger homes its task in the DM', () =>
     });
 
   it('records the bound DM as the task home', async () => {
-    await fireTrigger(dmTrigger(), { kind: 'schedule' });
+    await fireTrigger(dmTrigger(), { kind: 'schedule' }, () => Task.create());
 
-    expect(createdTasks[0]!.metadata.home_channel).toEqual({
+    expect(expectDefined(createdTasks[0]).metadata.home_channel).toEqual({
       channel_id: DM_CHANNEL,
       channel_name: DM_NAME,
     });
@@ -519,33 +566,35 @@ describe('a schedule fire on a DM-bound trigger homes its task in the DM', () =>
   it('never probes a DM for reachability, so a probe failure cannot pause it', async () => {
     isChannelReachableMock.mockResolvedValue(false);
 
-    await fireTrigger(dmTrigger(), { kind: 'schedule' });
+    await fireTrigger(dmTrigger(), { kind: 'schedule' }, () => Task.create());
 
     expect(isChannelReachableMock).not.toHaveBeenCalled();
-    expect(createdTasks[0]!.metadata.home_channel).toEqual({
+    expect(expectDefined(createdTasks[0]).metadata.home_channel).toEqual({
       channel_id: DM_CHANNEL,
       channel_name: DM_NAME,
     });
   });
 
   it('names the DM in the seed without a leading #', async () => {
-    await fireTrigger(dmTrigger(), { kind: 'schedule' });
+    await fireTrigger(dmTrigger(), { kind: 'schedule' }, () => Task.create());
 
-    const seed = createdTasks[0]!.sendMessage.mock.calls[0]![0] as string;
+    const seed = expectDefined(
+      expectDefined(createdTasks[0]).sendMessage.mock.calls[0],
+    )[0] as string;
     expect(seed).toContain('post_to_user');
     expect(seed).toContain(DM_NAME);
     expect(seed).not.toContain(`#${DM_NAME}`);
   });
 
   it('scans no canvas and no pin index', async () => {
-    await fireTrigger(dmTrigger(), { kind: 'schedule' });
+    await fireTrigger(dmTrigger(), { kind: 'schedule' }, () => Task.create());
 
     expect(ensureChannelCanvasMock).not.toHaveBeenCalled();
     expect(ensureChannelPinsMock).not.toHaveBeenCalled();
   });
 
   it('posts no preamble', async () => {
-    await fireTrigger(dmTrigger(), { kind: 'schedule' });
+    await fireTrigger(dmTrigger(), { kind: 'schedule' }, () => Task.create());
 
     expect(postSlackMessageMock).not.toHaveBeenCalled();
   });
@@ -598,16 +647,20 @@ describe('a message fire ingests through the real Task.append', () => {
       ],
     });
 
-    await fireTrigger(makeTrigger(), {
-      kind: 'message',
-      thread,
-      body: BODY,
-      authorId: 'U_EXT',
-      channelName: CHANNEL_NAME,
-    });
+    await fireTrigger(
+      makeTrigger(),
+      {
+        kind: 'message',
+        thread,
+        body: BODY,
+        authorId: 'U_EXT',
+        channelName: CHANNEL_NAME,
+      },
+      () => Task.create(),
+    );
 
     expect(appendSlackMessageMock).toHaveBeenCalledTimes(1);
-    expect(appendSlackMessageMock.mock.calls[0]![4]).toBe(
+    expect(expectDefined(appendSlackMessageMock.mock.calls[0])[4]).toBe(
       '[redacted: external participant in shared channel]',
     );
     // A redacted message's files must never reach the task's attachments folder — the body that would

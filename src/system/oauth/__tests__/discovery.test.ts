@@ -41,7 +41,7 @@ describe('fetchProtectedResourceMetadata', () => {
   });
 
   it('parses a well-formed RFC 9728 document', async () => {
-    globalThis.fetch = vi.fn(
+    globalThis.fetch = vi.fn<typeof fetch>(
       async () =>
         new Response(
           JSON.stringify({
@@ -51,7 +51,7 @@ describe('fetchProtectedResourceMetadata', () => {
           }),
           { status: 200, headers: { 'Content-Type': 'application/json' } },
         ),
-    ) as any;
+    );
 
     const result = await fetchProtectedResourceMetadata(
       'https://example.com/.well-known/oauth-protected-resource',
@@ -63,14 +63,14 @@ describe('fetchProtectedResourceMetadata', () => {
   });
 
   it('throws on a non-2xx response', async () => {
-    globalThis.fetch = vi.fn(async () => new Response('not found', { status: 404 })) as any;
+    globalThis.fetch = vi.fn<typeof fetch>(async () => new Response('not found', { status: 404 }));
     await expect(
       fetchProtectedResourceMetadata('https://example.com/nope', 'https://api.example.com/mcp'),
     ).rejects.toThrow(/HTTP 404/);
   });
 
   it('rejects when the metadata advertises a different resource than expected', async () => {
-    globalThis.fetch = vi.fn(
+    globalThis.fetch = vi.fn<typeof fetch>(
       async () =>
         new Response(
           JSON.stringify({
@@ -79,7 +79,7 @@ describe('fetchProtectedResourceMetadata', () => {
           }),
           { status: 200, headers: { 'Content-Type': 'application/json' } },
         ),
-    ) as any;
+    );
     await expect(
       fetchProtectedResourceMetadata(
         'https://example.com/.well-known/oauth-protected-resource',
@@ -102,7 +102,7 @@ describe('fetchAuthServerMetadata', () => {
 
   it('uses RFC 8414 path first', async () => {
     const calls: string[] = [];
-    globalThis.fetch = vi.fn(async (url: any) => {
+    globalThis.fetch = vi.fn<typeof fetch>(async (url) => {
       calls.push(String(url));
       return new Response(
         JSON.stringify({
@@ -115,7 +115,7 @@ describe('fetchAuthServerMetadata', () => {
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       );
-    }) as any;
+    });
 
     const m = await fetchAuthServerMetadata('https://auth.example.com');
     expect(calls[0]).toBe('https://auth.example.com/.well-known/oauth-authorization-server');
@@ -140,16 +140,16 @@ describe('fetchAuthServerMetadata', () => {
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       ),
     };
-    globalThis.fetch = vi.fn(
-      async (url: any) => responses[String(url)] ?? new Response('', { status: 500 }),
-    ) as any;
+    globalThis.fetch = vi.fn<typeof fetch>(
+      async (url) => responses[String(url)] ?? new Response('', { status: 500 }),
+    );
 
     const m = await fetchAuthServerMetadata('https://auth.example.com');
     expect(m.token_endpoint).toBe('https://auth.example.com/token');
   });
 
   it('throws when both well-known endpoints fail', async () => {
-    globalThis.fetch = vi.fn(async () => new Response('nope', { status: 404 })) as any;
+    globalThis.fetch = vi.fn<typeof fetch>(async () => new Response('nope', { status: 404 }));
     await expect(fetchAuthServerMetadata('https://auth.example.com')).rejects.toThrow(
       /Could not fetch/,
     );

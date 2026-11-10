@@ -241,7 +241,8 @@ export async function rememberFact(task: Task, input: Fact): Promise<Result> {
     const applied = await applyEntityUpdate(
       {
         slug: input.entity,
-        ...(!existing && { type: input.create!.type, summary: input.create!.summary }),
+        ...(!existing &&
+          input.create && { type: input.create.type, summary: input.create.summary }),
         observations: [{ category: 'fact', text: clean.text }],
       },
       task.taskId,

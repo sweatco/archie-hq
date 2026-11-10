@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rm, mkdir, readFile, writeFile } from 'node:fs/promises';
 
@@ -11,7 +9,7 @@ const fixture = await vi.hoisted(async () => {
   const { join } = await import('node:path');
   return {
     root: mkdtempSync(join(tmpdir(), 'archie-prepared-')),
-    spawn: vi.fn(),
+    spawn: vi.fn<typeof import('../../agents/spawn.js').spawnAgent>(),
     post: vi.fn(async (): Promise<string | undefined> => '1792490401.000001'),
   };
 });
@@ -48,12 +46,14 @@ import {
 import { recoverActiveTasks } from '../recovery.js';
 import { MessageQueue } from '../../agents/message-queue.js';
 import { createCommsMcpServer, createOrchestrationMcpServer } from '../../agents/tools.js';
+import { registeredMcpTools, type TestToolHandler } from '../../test-support/mcp.js';
 import type { TaskMetadata } from '../../types/task.js';
 import { InitiativeStore } from '../../proactivity/store.js';
 import { InitiativeService } from '../../proactivity/service.js';
 import { ProposalHandoff } from '../../proactivity/handoff.js';
 import type { BackgroundModel } from '../../proactivity/model.js';
 import type { ProposalSlack } from '../../proactivity/slack.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const input = {
   taskId: 'task-20261021-1000-prepared',
@@ -87,14 +87,19 @@ afterEach(async () => {
   await rm(fixture.root, { recursive: true, force: true });
 });
 
+function expectSlackChannel(metadata: TaskMetadata) {
+  const channel = expectDefined(metadata.channels[expectDefined(metadata.default_channel)]);
+  if (channel.type !== 'slack') throw new Error('Expected a Slack task channel');
+  return channel;
+}
+
 describe('durable prepared task starts', () => {
   const comms = (task: Task) =>
-    (createCommsMcpServer({ def: { id: 'pm-agent' } } as never, task).instance as any)
-      ._registeredTools;
-  const call = (entry: any, args: unknown) => (entry.callback ?? entry.handler)(args, {});
+    registeredMcpTools(createCommsMcpServer({ def: { id: 'pm-agent' } } as never, task));
+  const call = (entry: { callback: TestToolHandler }, args: unknown) => entry.callback(args);
   const completion = (task: Task) =>
-    (createOrchestrationMcpServer({ def: { id: 'pm-agent' } } as never, task).instance as any)
-      ._registeredTools.report_completion;
+    registeredMcpTools(createOrchestrationMcpServer({ def: { id: 'pm-agent' } } as never, task))
+      .report_completion;
 
   it.each([
     ['normal', 'U_OWNER'],
@@ -129,8 +134,8 @@ describe('durable prepared task starts', () => {
         updateProposal: vi.fn(async () => {}),
       };
       const model: BackgroundModel = {
-        complete: vi.fn(async (request) => {
-          const evidence = store.snapshot('C_PUBLIC', ts)!.evidence.map((e) => e.id);
+        complete: vi.fn(async (request: Parameters<BackgroundModel['complete']>[0]) => {
+          const evidence = expectDefined(store.snapshot('C_PUBLIC', ts)).evidence.map((e) => e.id);
           return 'threads' in (request.input as object)
             ? {
                 threads: [
@@ -199,8 +204,8 @@ describe('durable prepared task starts', () => {
           vi.mocked(slack.inspect).mockRejectedValueOnce(new Error('temporary metadata outage'));
           await service.deliver(Date.now());
           expect(store.deliveries('cancelled')).toHaveLength(1);
-          const suggestion = store.proposal(store.pendingProposalIds()[0])!;
-          expect(store.matter(suggestion.matter!)?.valid).toBe(false);
+          const suggestion = expectDefined(store.proposal(store.pendingProposalIds()[0]));
+          expect(store.matter(expectDefined(suggestion.matter))?.valid).toBe(false);
           await service.capture(source, Date.now());
           vi.setSystemTime(now + 2 * 3_600_000);
           await service.tick(Date.now(), true);
@@ -209,8 +214,8 @@ describe('durable prepared task starts', () => {
         await service.deliver(Date.now());
         const card = store.deliveries('sent')[0];
         expect(card.proposal).toBeDefined();
-        const first = await handoff.approve(actor, card.id, card.proposal!.version);
-        const replay = await handoff.approve(actor, card.id, card.proposal!.version);
+        const first = await handoff.approve(actor, card.id, expectDefined(card.proposal).version);
+        const replay = await handoff.approve(actor, card.id, expectDefined(card.proposal).version);
         await handoff.drainCards();
         expect(replay.task).toBe(first.task);
         expect(fixture.spawn).toHaveBeenCalledTimes(1);
@@ -241,7 +246,7 @@ describe('durable prepared task starts', () => {
         expect(slack.updateProposal).toHaveBeenLastCalledWith(
           expect.objectContaining({ id: card.id }),
           expect.stringContaining('Task started'),
-          slack.link(`D_${actor}`, card.ts!),
+          slack.link(`D_${actor}`, expectDefined(card.ts)),
         );
       } finally {
         service.stop();
@@ -305,7 +310,7 @@ describe('durable prepared task starts', () => {
     expect(ordinary.completionIntent).toBe(true);
     const muted = await Task.prepare(input);
     await muted.startPrepared();
-    (muted.metadata.channels[muted.metadata.default_channel!] as any).muted = true;
+    expectSlackChannel(muted.metadata).muted = true;
     await call(completion(muted), {});
     expect(muted.completionIntent).toBe(true);
     activeTasks.clear();
@@ -335,7 +340,9 @@ describe('durable prepared task starts', () => {
       const task = await Task.prepare(input);
       await task.startPrepared();
       const post = vi.fn(async (): Promise<string | undefined> => '1792490401.000001');
-      const target = explicit ? { channel: task.metadata.default_channel! } : undefined;
+      const target = explicit
+        ? { channel: expectDefined(task.metadata.default_channel) }
+        : undefined;
       await expect(
         task.postToUser('forged', 'pm-agent', { channel: 'slack:C_PUBLIC:10.0' }, post),
       ).rejects.toThrow('bound');
@@ -359,7 +366,7 @@ describe('durable prepared task starts', () => {
     const reloaded = await Task.get(input.taskId);
     const tools = comms(reloaded);
     expect(tools.post_to_channel).toBeUndefined();
-    expect(Object.keys(tools.post_to_user.inputSchema.shape)).toEqual(['message']);
+    expect(tools.post_to_user.inputKeys).toEqual(['message']);
     await call(tools.post_to_user, { message: 'ACK; source: https://slack.test/C_PUBLIC/10.0' });
     expect(fixture.post).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ channel: 'D_OWNER', threadTs: input.destination.thread }),
@@ -402,21 +409,21 @@ describe('durable prepared task starts', () => {
     [
       'inconsistent thread key',
       (m: TaskMetadata) => {
-        (m.channels[m.default_channel!] as any).thread_id = '999.0';
+        expectSlackChannel(m).thread_id = '999.0';
       },
     ],
     [
       'extra conversation',
       (m: TaskMetadata) => {
         m.channels['slack:D_OWNER:999.0'] = {
-          ...(m.channels[m.default_channel!] as any),
+          ...expectSlackChannel(m),
           thread_id: '999.0',
         };
       },
     ],
   ])('fails closed on rehydration with %s', async (_name, corrupt) => {
     await Task.prepare(input);
-    const metadata = (await loadMetadata(input.taskId))!;
+    const metadata = expectDefined(await loadMetadata(input.taskId));
     corrupt(metadata);
     await writeFile(getMetadataPath(input.taskId), JSON.stringify(metadata));
     const reloaded = await Task.get(input.taskId);
@@ -471,7 +478,7 @@ describe('durable prepared task starts', () => {
 
   it('persists a complete non-runnable identity in the first metadata write', async () => {
     await Task.prepare(input);
-    const metadata = JSON.parse(await readFile(getMetadataPath(input.taskId), 'utf8'));
+    const metadata = expectDefined(await loadMetadata(input.taskId));
     expect(metadata).toMatchObject({
       status: 'preparing',
       memory_destination: { channel_id: 'D_OWNER' },
@@ -483,7 +490,7 @@ describe('durable prepared task starts', () => {
         budget: 'task',
       },
     });
-    expect(metadata.channels[metadata.default_channel]).toMatchObject({
+    expect(metadata.channels[expectDefined(metadata.default_channel)]).toMatchObject({
       channel_id: 'D_OWNER',
       thread_id: input.destination.thread,
     });
@@ -501,7 +508,9 @@ describe('durable prepared task starts', () => {
     const path = join(getSharedPath(input.taskId), 'proposal-evidence.md');
     await Task.prepare({ ...input, evidence });
     expect(await readFile(path, 'utf8')).toBe(evidence);
-    const brief = (await loadMetadata(input.taskId))!.approved_start!.brief;
+    const brief = expectDefined(
+      expectDefined(await loadMetadata(input.taskId)).approved_start,
+    ).brief;
     expect(brief).toContain(path);
     expect(brief).toContain('untrusted evidence');
     expect(brief).toContain(input.brief);

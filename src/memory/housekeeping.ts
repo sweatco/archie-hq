@@ -16,7 +16,6 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { readFile, writeFile, rm } from 'fs/promises';
 import { existsSync } from 'fs';
-import { join } from 'path';
 import {
   isHousekeepingEnabled,
   isMemoryReady,
@@ -289,7 +288,7 @@ async function runHousekeeperAgent(fileContent: string): Promise<string> {
   const agent = query({
     prompt,
     options: {
-      model: 'sonnet' as any,
+      model: 'sonnet',
       maxTurns: 1,
       tools: [],
       executable: 'node',
@@ -315,7 +314,7 @@ async function runHousekeeperAgent(fileContent: string): Promise<string> {
   let responseText = '';
   for await (const event of agent) {
     if (event.type === 'assistant') {
-      const content = (event as any).message?.content;
+      const content = event.message?.content;
       if (Array.isArray(content)) {
         for (const block of content) {
           if (block.type === 'text' && typeof block.text === 'string') {
@@ -325,7 +324,7 @@ async function runHousekeeperAgent(fileContent: string): Promise<string> {
       }
     }
     if (event.type === 'result' && event.subtype === 'success') {
-      const r = (event as any).result;
+      const r = event.result;
       if (typeof r === 'string' && r.trim()) responseText = r;
     }
   }
@@ -371,11 +370,13 @@ function rebuildFile(originalContent: string, accepted: BulletInfo[]): string {
   const bySection = new Map<string, BulletInfo[]>();
   for (const b of accepted) {
     const key = b.section ?? '';
-    if (!bySection.has(key)) {
-      bySection.set(key, []);
+    let bullets = bySection.get(key);
+    if (!bullets) {
+      bullets = [];
+      bySection.set(key, bullets);
       if (b.section) sectionOrder.push(b.section);
     }
-    bySection.get(key)!.push(b);
+    bullets.push(b);
   }
 
   // Sort each section's bullets by touched date desc (untouched go last).
@@ -390,7 +391,7 @@ function rebuildFile(originalContent: string, accepted: BulletInfo[]): string {
 
   const out: string[] = [];
   let inSection = false;
-  let sectionEmitted = new Set<string>();
+  const sectionEmitted = new Set<string>();
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const sectionMatch = /^##\s+(.+?)\s*$/.exec(line);
@@ -482,8 +483,8 @@ function levenshtein(a: string, b: string): number {
   if (a === b) return 0;
   if (a.length === 0) return b.length;
   if (b.length === 0) return a.length;
-  const prev = new Array(b.length + 1);
-  const curr = new Array(b.length + 1);
+  const prev = new Array<number>(b.length + 1);
+  const curr = new Array<number>(b.length + 1);
   for (let j = 0; j <= b.length; j++) prev[j] = j;
   for (let i = 1; i <= a.length; i++) {
     curr[0] = i;

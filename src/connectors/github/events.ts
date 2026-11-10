@@ -7,6 +7,8 @@
 
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
+const express = require('express') as typeof import('express');
+import { z } from 'zod';
 
 import type { Application, Request, Response } from 'express';
 
@@ -42,7 +44,7 @@ export function mountGitHubWebhook(app: Application, secret: string): void {
   logger.plain('GitHub webhook: POST /webhooks/github');
   app.post(
     '/webhooks/github',
-    require('express').raw({ type: 'application/json' }),
+    express.raw({ type: 'application/json' }),
     async (req: Request, res: Response) => {
       if (getIsShuttingDown()) {
         res.status(503).json({ error: 'Server is shutting down' });
@@ -57,7 +59,12 @@ export function mountGitHubWebhook(app: Application, secret: string): void {
         return;
       }
 
-      const payload = req.body.toString();
+      const body: unknown = req.body;
+      if (!Buffer.isBuffer(body)) {
+        res.status(400).json({ error: 'Expected a raw webhook body' });
+        return;
+      }
+      const payload = body.toString();
       if (!verifyWebhookSignature(payload, signature, secret)) {
         logger.warn('Server', 'Invalid GitHub webhook signature');
         res.status(401).json({ error: 'Invalid signature' });
@@ -69,7 +76,7 @@ export function mountGitHubWebhook(app: Application, secret: string): void {
 
       // Process inline (fire-and-forget)
       try {
-        const parsedPayload = JSON.parse(payload);
+        const parsedPayload = z.record(z.string(), z.unknown()).parse(JSON.parse(payload));
         await maybeDumpRawPayload(eventType, parsedPayload);
         await handleGitHubWebhook(eventType, parsedPayload);
       } catch (error) {
@@ -264,7 +271,9 @@ async function maybeRefreshPrCards(
         } catch (error) {
           logger.warn('Server', `PR card CI refresh failed (${key})`, error);
         }
-      })();
+      })().catch((error: unknown) =>
+        logger.error('Server', `PR card refresh failed (${key})`, error),
+      );
     }, CARD_REFRESH_DEBOUNCE_MS),
   );
 }

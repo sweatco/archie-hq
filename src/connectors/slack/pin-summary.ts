@@ -17,7 +17,8 @@ const SummarySchema = z.object({
 });
 const rawSummarySchema = toJSONSchema(SummarySchema) as Record<string, unknown>;
 // Strip JSON Schema dialect URL — some SDK validators reject it.
-const { $schema: _drop, ...summaryJsonSchema } = rawSummarySchema;
+const summaryJsonSchema = rawSummarySchema;
+delete summaryJsonSchema.$schema;
 
 const SYSTEM_PROMPT = `You write a one-line index entry for a message someone pinned in a Slack channel.
 
@@ -66,7 +67,7 @@ export function unwrapJsonSummary(text: string): string {
   const t = text.trim();
   if (!t.startsWith('{') && !t.startsWith('[')) return text;
   try {
-    const parsed = JSON.parse(t);
+    const parsed: unknown = JSON.parse(t);
     if (parsed && typeof parsed === 'object') {
       const strings = Object.values(parsed).filter(
         (v): v is string => typeof v === 'string' && v.trim() !== '',

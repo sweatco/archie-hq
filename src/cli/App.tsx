@@ -1,5 +1,7 @@
+import { logger } from '../system/logger.js';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Box, Text, useInput, useApp, useStdout } from 'ink';
+import type { CliSystemEvent } from './api-contract.js';
 import { connectSSE, createTask } from './api.js';
 import { TaskList } from './components/TaskList.js';
 import { TaskDetail } from './components/TaskDetail.js';
@@ -17,7 +19,7 @@ export function App() {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
-  const [liveEvents, setLiveEvents] = useState<any[]>([]);
+  const [liveEvents, setLiveEvents] = useState<CliSystemEvent[]>([]);
   const disconnectRef = useRef<(() => void) | null>(null);
 
   const refresh = useCallback(() => {
@@ -29,7 +31,7 @@ export function App() {
     const disconnect = connectSSE({
       taskId: view === 'detail' && selectedTaskId ? selectedTaskId : undefined,
       onEvent: (event) => {
-        if (event.type === 'connected') return;
+        if (!('taskId' in event)) return;
 
         // For detail view: queue the event for TaskDetail. Accumulate via a
         // functional update — plain replace (setLastEvent(event)) collapses bursts
@@ -144,7 +146,14 @@ export function App() {
           />
         )}
         {view === 'create' && (
-          <CreateTaskPrompt onSubmit={handleCreateTask} onCancel={handleCancelCreate} />
+          <CreateTaskPrompt
+            onSubmit={(message) => {
+              handleCreateTask(message).catch((error: unknown) =>
+                logger.error('cli', 'Could not create task', error),
+              );
+            }}
+            onCancel={handleCancelCreate}
+          />
         )}
         {view === 'triggers' && (
           <TriggerList

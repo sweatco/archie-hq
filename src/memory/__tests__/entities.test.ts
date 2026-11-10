@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm, readFile } from 'fs/promises';
+import { mkdtemp, rm } from 'fs/promises';
 import { existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -37,6 +37,7 @@ import {
   applyEntityUpdate,
 } from '../entities.js';
 import type { EntityRecord } from '../types.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const REC: EntityRecord = {
   entity: 'payment-service',
@@ -105,7 +106,7 @@ describe('entity store', () => {
         '## Relations',
         '',
       ].join('\n');
-      const parsed = parseEntity(md)!;
+      const parsed = expectDefined(parseEntity(md));
       expect(parsed.type).toBe('concept');
       expect(parsed.scope).toBe('org');
     });
@@ -126,7 +127,7 @@ describe('entity store', () => {
           text: `fact ${i}`,
         })),
       });
-      const observations = (await readEntity('payment-service'))!.observations;
+      const observations = expectDefined(await readEntity('payment-service')).observations;
       expect(observations).toHaveLength(30);
       expect(observations[0].text).toBe('fact 5');
       expect(observations.at(-1)?.text).toBe('fact 34');
@@ -166,7 +167,7 @@ describe('entity store', () => {
         '2026-06-01',
       );
       expect(applied).toMatchObject({ slug: 'payment-service', created: true });
-      const rec = (await readEntity('payment-service'))!;
+      const rec = expectDefined(await readEntity('payment-service'));
       expect(rec.observations[0]).toEqual({
         category: 'decision',
         text: 'chose idempotency keys',
@@ -185,7 +186,7 @@ describe('entity store', () => {
       );
       expect(applied).toMatchObject({ slug: 'payment-service', created: false });
       expect(existsSync(join(entitiesDir, 'payments-api.md'))).toBe(false);
-      const rec = (await readEntity('payment-service'))!;
+      const rec = expectDefined(await readEntity('payment-service'));
       expect(rec.observations.map((o) => o.text)).toContain('handles refunds');
     });
 
@@ -206,7 +207,7 @@ describe('entity store', () => {
         'task-3',
         '2026-06-03',
       );
-      const rec = (await readEntity('auth'))!;
+      const rec = expectDefined(await readEntity('auth'));
       expect(rec.observations.map((o) => o.text)).toEqual(['kept fact']);
       expect(rec.relations.filter((r) => r.type === 'depends_on')).toHaveLength(1);
       expect(rec.relations.some((r) => (r.type as string) === 'pwns')).toBe(false);

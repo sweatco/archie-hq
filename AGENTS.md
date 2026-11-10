@@ -16,7 +16,7 @@ Slack / CLI / GitHub → Task → PM agent → subagents it spawns
 
 ## Runtime state
 
-All runtime state (plugins, base clones, sessions, caches and triggers) lives under `ARCHIE_WORKDIR`, defaulting to `./workdir`. Startup clones plugins from the `ARCHIE_PLUGINS` Git URL and warms the repositories marked `warm: true` in the plugins repository's `archie.json`. Other repositories mount on demand. See `src/system/workdir.ts` for bootstrap behavior.
+All runtime state (plugins, base clones, sessions, caches and triggers) lives under `ARCHIE_WORKDIR`, defaulting to `./workdir`. Startup clones plugins from the `ARCHIE_PLUGINS` Git URL and warms the repositories marked `warm: true` in the plugins repository's `archie.json`. Other repositories mount on demand. See `src/system/workdir.ts` for paths and `src/system/bootstrap-workdir.ts` for bootstrap behavior.
 
 ## Development and verification
 
@@ -28,7 +28,7 @@ npm run build       # TypeScript compilation
 npm run check       # Format, lint, typecheck, build and tests
 ```
 
-Run `npm run check` before handing off code changes. Use focused checks during iteration. See the coding guide for lint debt, formatting and runtime verification, and [local development](docs/guides/local-development.md) for setup.
+Run `npm run check` before handing off code changes. Use focused checks during iteration. See the coding guide for the zero-debt lint policy, formatting and runtime verification, and [local development](docs/guides/local-development.md) for setup.
 
 When changing memory, also read [its scoped instructions](src/memory/CLAUDE.md) and [architecture](docs/architecture/memory.md); the scoped invariants still apply.
 

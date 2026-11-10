@@ -1,3 +1,5 @@
+import { MessageQueue } from '../message-queue.js';
+import { registeredMcpTools } from '../../test-support/mcp.js';
 /**
  * The read side of trigger management, and the one validation that keeps an author filter honest.
  *
@@ -70,7 +72,7 @@ import type { Task } from '../../tasks/task.js';
 function makeAgent(): Agent {
   return {
     def: { id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', pluginName: 'pm', isPm: true },
-    queue: {} as any,
+    queue: new MessageQueue(),
     session: { active: false },
   } as unknown as Agent;
 }
@@ -98,11 +100,9 @@ function getHandler(
   task: Task,
 ): (args: Record<string, unknown>) => Promise<{ content: { text: string }[] }> {
   const server = createOrchestrationMcpServer(makeAgent(), task);
-  const raw =
-    (server.instance as any)._registeredTools ??
-    Object.fromEntries((server.instance as any)._tools ?? []);
+  const raw = registeredMcpTools(server);
   const entry = raw[name];
-  const fn = entry.callback ?? entry.handler ?? entry.cb;
+  const fn = entry.callback;
   return (args) => fn(args, {});
 }
 

@@ -61,7 +61,7 @@ describe('formatAgentSpawnLine', () => {
       subagent_type: 'engineering:coder',
       model: 'sonnet',
       description: 'short summary',
-      ...({ prompt: 'a very long prompt body that must never reach the log' } as any),
+      ...{ prompt: 'a very long prompt body that must never reach the log' },
     });
     expect(line).not.toContain('very long prompt body');
   });

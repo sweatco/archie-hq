@@ -1,3 +1,4 @@
+import { registeredMcpTools } from '../../test-support/mcp.js';
 /**
  * Unit tests for GitHub PR tool handlers.
  *
@@ -5,6 +6,8 @@
  * success paths) by calling handlers directly — no LLM, no MCP transport.
  */
 
+import { z } from 'zod';
+import { GitHubClient } from '../../connectors/github/client.js';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   createRepoToolsMcpServer,
@@ -14,7 +17,7 @@ import {
   hydrateBranchState,
   findBranchStateByPR,
 } from '../tools.js';
-import type { Agent } from '../agent.js';
+import { Agent } from '../agent.js';
 import type { Task } from '../../tasks/task.js';
 import type { AgentDef } from '../../types/agent.js';
 import type { AttachedRepo } from '../../types/task.js';
@@ -26,6 +29,7 @@ vi.mock('../../connectors/github/client.js', async (importOriginal) => {
   return {
     // Keep the real parseCheckRef (pure helper) so get_check_run parses for real.
     parseCheckRef: actual.parseCheckRef,
+    GitHubClient: actual.GitHubClient,
     getGitHubClient: vi.fn(),
     fetchOrigin: vi.fn().mockResolvedValue(undefined),
     getArchieAttributionIdentity: vi.fn(),
@@ -73,16 +77,17 @@ vi.mock('../registry.js', () => ({
 
 import { getGitHubClient, getArchieAttributionIdentity } from '../../connectors/github/client.js';
 import { isAutoMergeRepo } from '../registry.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const mockGitHubClient = {
   getPRStatus: vi.fn(),
   mergePullRequest: vi.fn(),
   closePullRequest: vi.fn(),
-  createPullRequest: vi.fn(),
+  createPullRequest: vi.fn<GitHubClient['createPullRequest']>(),
   getPRReviews: vi.fn(),
   getPRComments: vi.fn(),
   getReviewThreads: vi.fn(),
-  updatePR: vi.fn(),
+  updatePR: vi.fn<GitHubClient['updatePR']>(),
   addPRComment: vi.fn(),
   addReviewComment: vi.fn(),
   replyToReviewComment: vi.fn(),
@@ -98,20 +103,16 @@ const mockGitHubClient = {
  * has mounted lives in `metadata.repositories` (see `makeTask`).
  */
 function makeAgent(overrides: Partial<AgentDef> = {}): Agent {
-  return {
-    def: {
-      id: 'pm-agent',
-      key: 'pm',
-      role: 'PM',
-      expertise: '',
-      isPm: true,
-      pluginName: 'pm',
-      visibility: 'global',
-      ...overrides,
-    },
-    queue: {} as any,
-    session: { active: false },
-  } as Agent;
+  return new Agent({
+    id: 'pm-agent',
+    key: 'pm',
+    role: 'PM',
+    expertise: '',
+    isPm: true,
+    pluginName: 'pm',
+    visibility: 'global',
+    ...overrides,
+  });
 }
 
 function makeTask(overrides: Partial<Task['metadata']> = {}): Task {
@@ -153,12 +154,10 @@ function makeTask(overrides: Partial<Task['metadata']> = {}): Task {
 }
 
 /** Extract a tool handler from an MCP server by name */
-function getToolFromServer(server: any, toolName: string) {
-  const tools: Record<string, any> =
-    (server.instance as any)._registeredTools ??
-    Object.fromEntries((server.instance as any)._tools ?? []);
+function getToolFromServer(server: Parameters<typeof registeredMcpTools>[0], toolName: string) {
+  const tools = registeredMcpTools(server);
   if (!tools[toolName]) throw new Error(`Tool '${toolName}' not found in server`);
-  return tools[toolName].callback ?? tools[toolName].handler;
+  return tools[toolName].callback;
 }
 
 function getRepoTool(agent: Agent, task: Task, toolName: string) {
@@ -167,11 +166,41 @@ function getRepoTool(agent: Agent, task: Task, toolName: string) {
 
 // ---- Tests ----
 
+describe('branch tools preserve the mounted attachment', () => {
+  it('records a switched branch on the task metadata', async () => {
+    const task = makeTask();
+    const attached = task.metadata.repositories[0];
+    await getRepoTool(makeAgent(), task, 'switch_branch')({ branch: 'feature/readable' });
+    expect(attached.current_branch).toBe('feature/readable');
+    expect(attached.branch_states).toHaveProperty('feature/readable');
+    expect(task.metadata.repositories[0]).toBe(attached);
+  });
+
+  it('records a created branch on the task metadata', async () => {
+    const task = makeTask();
+    const attached = task.metadata.repositories[0];
+    await getRepoTool(makeAgent(), task, 'create_branch')({});
+    expect(attached.current_branch).not.toBe('feature/task-123');
+    expect(attached.branch_states).toHaveProperty(expectDefined(attached.current_branch));
+    expect(task.metadata.repositories[0]).toBe(attached);
+  });
+});
+
 describe('merge_pull_request', () => {
   beforeEach(() => {
-    vi.mocked(getGitHubClient).mockReturnValue(mockGitHubClient as any);
+    vi.mocked(getGitHubClient).mockReturnValue(
+      Object.assign(
+        new GitHubClient({ appId: '1', privateKey: 'unused', installationId: 1 }),
+        mockGitHubClient,
+      ),
+    );
     vi.clearAllMocks();
-    vi.mocked(getGitHubClient).mockReturnValue(mockGitHubClient as any);
+    vi.mocked(getGitHubClient).mockReturnValue(
+      Object.assign(
+        new GitHubClient({ appId: '1', privateKey: 'unused', installationId: 1 }),
+        mockGitHubClient,
+      ),
+    );
     vi.mocked(isAutoMergeRepo).mockReturnValue(true);
   });
 
@@ -299,7 +328,7 @@ describe('merge_pull_request', () => {
   });
 
   it('throws when GitHub client is not configured', async () => {
-    vi.mocked(getGitHubClient).mockReturnValue(null as any);
+    vi.mocked(getGitHubClient).mockReturnValue(null);
 
     const tool = getRepoTool(makeAgent(), makeTask(), 'merge_pull_request');
     await expect(tool({ pr_number: 42 }, {})).rejects.toThrow('GitHub client not configured');
@@ -310,9 +339,7 @@ describe('merge_pull_request — policy gating', () => {
   /** Agent whose deferTeardown arms pendingTeardown, like the real Agent class. */
   function makeMergeAgent(): Agent {
     const agent = makeAgent();
-    (agent as any).deferTeardown = vi.fn(() => {
-      (agent as any).pendingTeardown = () => Promise.resolve();
-    });
+    vi.spyOn(agent, 'deferTeardown');
     return agent;
   }
 
@@ -328,7 +355,12 @@ describe('merge_pull_request — policy gating', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(getGitHubClient).mockReturnValue(mockGitHubClient as any);
+    vi.mocked(getGitHubClient).mockReturnValue(
+      Object.assign(
+        new GitHubClient({ appId: '1', privateKey: 'unused', installationId: 1 }),
+        mockGitHubClient,
+      ),
+    );
     vi.mocked(isAutoMergeRepo).mockReturnValue(false);
   });
 
@@ -349,7 +381,7 @@ describe('merge_pull_request — policy gating', () => {
     expect(result.content[0].text).toContain('merged successfully');
     expect(task.postInteractiveToUser).not.toHaveBeenCalled();
     expect(task.suspendStatus).not.toHaveBeenCalled();
-    expect((agent as any).deferTeardown).not.toHaveBeenCalled();
+    expect(agent.deferTeardown).not.toHaveBeenCalled();
     expect(task.metadata.pending_merge_approval).toBeUndefined();
   });
 
@@ -368,19 +400,28 @@ describe('merge_pull_request — policy gating', () => {
     const [text, blocks, approvalType] = vi.mocked(task.postInteractiveToUser).mock.calls[0];
     expect(approvalType).toBe('merge');
     expect(text).toContain('org/backend');
-    const buttons = (blocks as any[]).find((b) => b.type === 'actions').elements;
-    expect(buttons.map((b: any) => b.action_id)).toEqual(['approve_merge', 'deny_merge']);
+    const actionBlocks = z
+      .array(
+        z.object({
+          type: z.string(),
+          elements: z
+            .array(z.object({ action_id: z.string(), value: z.string().optional() }))
+            .optional(),
+        }),
+      )
+      .parse(blocks);
+    const buttons = expectDefined(actionBlocks.find((b) => b.type === 'actions')?.elements);
+    expect(buttons.map((b) => b.action_id)).toEqual(['approve_merge', 'deny_merge']);
     expect(buttons[0].value).toBe('task-123|org/backend#42');
 
-    expect(task.metadata.pending_merge_approval).toEqual({
+    expect(task.metadata.pending_merge_approval).toMatchObject({
       github: 'org/backend',
       pr_number: 42,
       requested_by: 'pm-agent',
-      requested_at: expect.any(String),
     });
     expect(task.debouncedSave).toHaveBeenCalled();
     expect(task.suspendStatus).toHaveBeenCalledTimes(1);
-    expect((agent as any).deferTeardown).toHaveBeenCalledTimes(1);
+    expect(agent.deferTeardown).toHaveBeenCalledTimes(1);
   });
 
   it('non-auto blocked PR: still prompts + sets the slot, no refusal (KEY R2 regression)', async () => {
@@ -400,14 +441,13 @@ describe('merge_pull_request — policy gating', () => {
     expect(result.content[0].text).toContain('Merge approval requested');
     expect(result.content[0].text).not.toContain('not ready');
     expect(task.postInteractiveToUser).toHaveBeenCalledTimes(1);
-    expect(task.metadata.pending_merge_approval).toEqual({
+    expect(task.metadata.pending_merge_approval).toMatchObject({
       github: 'org/backend',
       pr_number: 42,
       requested_by: 'pm-agent',
-      requested_at: expect.any(String),
     });
     expect(task.suspendStatus).toHaveBeenCalledTimes(1);
-    expect((agent as any).deferTeardown).toHaveBeenCalledTimes(1);
+    expect(agent.deferTeardown).toHaveBeenCalledTimes(1);
     expect(mockGitHubClient.mergePullRequest).not.toHaveBeenCalled();
   });
 
@@ -422,7 +462,7 @@ describe('merge_pull_request — policy gating', () => {
     expect(result.content[0].text).toContain('closed');
     expect(task.postInteractiveToUser).not.toHaveBeenCalled();
     expect(task.metadata.pending_merge_approval).toBeUndefined();
-    expect((agent as any).deferTeardown).not.toHaveBeenCalled();
+    expect(agent.deferTeardown).not.toHaveBeenCalled();
     expect(mockGitHubClient.mergePullRequest).not.toHaveBeenCalled();
   });
 
@@ -439,7 +479,7 @@ describe('merge_pull_request — policy gating', () => {
 
     expect(second.content[0].text).toContain('already pending');
     expect(task.postInteractiveToUser).toHaveBeenCalledTimes(1);
-    expect((agent as any).deferTeardown).toHaveBeenCalledTimes(1);
+    expect(agent.deferTeardown).toHaveBeenCalledTimes(1);
   });
 
   it('a live pending teardown blocks supersede of a fresh request', async () => {
@@ -460,7 +500,7 @@ describe('merge_pull_request — policy gating', () => {
     expect(result.content[0].text).toContain('already pending');
     expect(result.content[0].text).toContain('org/backend#1');
     expect(task.postInteractiveToUser).not.toHaveBeenCalled();
-    expect(task.metadata.pending_merge_approval!.pr_number).toBe(1);
+    expect(expectDefined(task.metadata.pending_merge_approval).pr_number).toBe(1);
     expect(mockGitHubClient.getPRStatus).not.toHaveBeenCalled();
   });
 
@@ -482,8 +522,10 @@ describe('merge_pull_request — policy gating', () => {
 
     expect(result.content[0].text).toContain('Merge approval requested');
     expect(task.postInteractiveToUser).toHaveBeenCalledTimes(1);
-    expect(task.metadata.pending_merge_approval!.pr_number).toBe(42);
-    expect(task.metadata.pending_merge_approval!.requested_at).not.toBe('2026-07-06T00:00:00.000Z');
+    expect(expectDefined(task.metadata.pending_merge_approval).pr_number).toBe(42);
+    expect(expectDefined(task.metadata.pending_merge_approval).requested_at).not.toBe(
+      '2026-07-06T00:00:00.000Z',
+    );
   });
 
   it('stale slot with nobody parked is superseded for a different PR', async () => {
@@ -504,7 +546,7 @@ describe('merge_pull_request — policy gating', () => {
 
     expect(result.content[0].text).toContain('Merge approval requested');
     expect(task.postInteractiveToUser).toHaveBeenCalledTimes(1);
-    expect(task.metadata.pending_merge_approval!.pr_number).toBe(2);
+    expect(expectDefined(task.metadata.pending_merge_approval).pr_number).toBe(2);
   });
 
   it('zero review approvals but clean: approval is requested, not refused (AC5)', async () => {
@@ -524,7 +566,12 @@ describe('merge_pull_request — policy gating', () => {
 describe('close_pull_request', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(getGitHubClient).mockReturnValue(mockGitHubClient as any);
+    vi.mocked(getGitHubClient).mockReturnValue(
+      Object.assign(
+        new GitHubClient({ appId: '1', privateKey: 'unused', installationId: 1 }),
+        mockGitHubClient,
+      ),
+    );
   });
 
   it('closes the PR', async () => {
@@ -541,7 +588,12 @@ describe('close_pull_request', () => {
 describe('get_pr_status (read-only server)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(getGitHubClient).mockReturnValue(mockGitHubClient as any);
+    vi.mocked(getGitHubClient).mockReturnValue(
+      Object.assign(
+        new GitHubClient({ appId: '1', privateKey: 'unused', installationId: 1 }),
+        mockGitHubClient,
+      ),
+    );
   });
 
   it('returns formatted status', async () => {
@@ -564,7 +616,12 @@ describe('get_pr_status (read-only server)', () => {
 describe('get_check_run', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(getGitHubClient).mockReturnValue(mockGitHubClient as any);
+    vi.mocked(getGitHubClient).mockReturnValue(
+      Object.assign(
+        new GitHubClient({ appId: '1', privateKey: 'unused', installationId: 1 }),
+        mockGitHubClient,
+      ),
+    );
   });
 
   it('resolves a legacy /runs/<id> check-run permalink and shows output + log', async () => {
@@ -690,12 +747,7 @@ describe('PM agent tools', () => {
       createSchedulingMcpServer(agent, task),
     ];
 
-    const registeredTools = servers.flatMap((server) =>
-      Object.keys(
-        (server.instance as any)._registeredTools ??
-          Object.fromEntries((server.instance as any)._tools ?? []),
-      ),
-    );
+    const registeredTools = servers.flatMap((server) => Object.keys(registeredMcpTools(server)));
 
     const prToolNames = [
       'push_branch',
@@ -739,8 +791,8 @@ describe('request_edit_mode', () => {
 
   it('posts an approval prompt when edit mode is not yet approved', async () => {
     const agent = makeAgent();
-    (agent as any).pendingTeardown = false;
-    (agent as any).deferTeardown = vi.fn();
+    agent.clearPendingTeardown();
+    agent.deferTeardown = vi.fn();
     const task = makeTask({ edit_allowed: false });
     const handler = getToolFromServer(
       createOrchestrationMcpServer(agent, task),
@@ -763,7 +815,7 @@ describe('hydrateBranchState', () => {
 
     expect(attached.current_branch).toBe('feature/task-1');
     expect(attached.branch_states).toBeDefined();
-    expect(attached.branch_states!['feature/task-1']).toEqual({
+    expect(expectDefined(attached.branch_states)['feature/task-1']).toEqual({
       base_branch: 'main',
     });
   });
@@ -775,8 +827,8 @@ describe('hydrateBranchState', () => {
     };
     hydrateBranchState(attached, 'feature/task-2', 'main');
 
-    expect(attached.branch_states!['existing']).toBeDefined();
-    expect(attached.branch_states!['feature/task-2']).toBeDefined();
+    expect(expectDefined(attached.branch_states)['existing']).toBeDefined();
+    expect(expectDefined(attached.branch_states)['feature/task-2']).toBeDefined();
   });
 });
 
@@ -791,8 +843,8 @@ describe('findBranchStateByPR', () => {
     };
     const result = findBranchStateByPR(attached, 99);
     expect(result).toBeDefined();
-    expect(result!.branch).toBe('feat/b');
-    expect(result!.state.pr_number).toBe(99);
+    expect(expectDefined(result).branch).toBe('feat/b');
+    expect(expectDefined(result).state.pr_number).toBe(99);
   });
 
   it('returns undefined when no match', () => {
@@ -822,8 +874,13 @@ describe('PR attribution', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(getGitHubClient).mockReturnValue(mockGitHubClient as any);
-    vi.mocked(getArchieAttributionIdentity).mockReturnValue(ARCHIE as any);
+    vi.mocked(getGitHubClient).mockReturnValue(
+      Object.assign(
+        new GitHubClient({ appId: '1', privateKey: 'unused', installationId: 1 }),
+        mockGitHubClient,
+      ),
+    );
+    vi.mocked(getArchieAttributionIdentity).mockReturnValue(ARCHIE);
     vi.mocked(isAutoMergeRepo).mockReturnValue(true);
     mockGitHubClient.createPullRequest.mockResolvedValue({
       pr_number: 42,

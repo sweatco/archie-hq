@@ -93,19 +93,19 @@ Use a self-review for routine changes and ordinary maintainer review for PRs. Se
 
 ## Automated checks
 
-Run `npm run check` before handing off a code change. It checks formatting, lint, types, the build and tests without rewriting source or the lint baseline. During iteration, use `npm run lint`, `npm run format:check` and focused tests. `npm run lint:fix` applies the linter's safe fixes; `npm run format` rewrites formatting. Review both diffs before keeping them.
+Run `npm run check` before handing off a code change. It checks formatting, lint, types, the build and tests without rewriting source. During iteration, use `npm run lint`, `npm run format:check` and focused tests. `npm run lint:fix` applies the linter's safe fixes; `npm run format` rewrites formatting. Review both diffs before keeping them.
 
 The committed `.oxlintrc.json` owns the exact rule allowlist and scopes. Syntax checks cover owned source, tools, scripts, examples and root code configuration. Typed rules cover TypeScript in `src/`, `tools/` and `scripts/`, using their nearest TypeScript projects. React rules apply to the CLI; test rules apply to test/spec files. Application source uses the unified logger, whose implementation owns direct console access. Standalone tools and scripts retain their intentional stdout/stderr interfaces. The existing compiler and Docker helper build remain authoritative; lint does not replace type checking.
 
-Prettier owns mechanical presentation: two spaces, single quotes, semicolons, trailing commas, 100-column code formatting and LF endings. Markdown prose stays on single lines. Import order is preserved and embedded-language formatting is disabled. The ignore file excludes runtime data, secrets, generated output and changelog, the lockfile, the native lint baseline, prompts, skills and historical documentation/evidence. Oxlint owns the baseline's generated formatting. Only active contributor/agent guidance is included in Markdown formatting.
+Prettier owns mechanical presentation: two spaces, single quotes, semicolons, trailing commas, 100-column code formatting and LF endings. Markdown prose stays on single lines. Import order is preserved and embedded-language formatting is disabled. The ignore file excludes runtime data, secrets, generated output and changelog, the lockfile, prompts, skills and historical documentation/evidence. Only active contributor/agent guidance is included in Markdown formatting.
 
-### Existing lint debt
+### Keeping lint clean
 
-`oxlint-suppressions.json` records existing violations by file and rule. Normal lint fails when counts exceed the committed allowance or when removed findings leave stale allowances. After fixing existing debt, run `npm run lint:prune` over the full project and include the reduced baseline in the same change. `lint:fix` can also prune fixed findings. Never run baseline generation as a routine fix, in CI or to make a failing PR green.
+The repository has no lint baseline or suppressed findings. Fix violations in the owning code and run `npm run lint` across the full project. Do not introduce a suppression file, lower rule severity or replace uncertain types with broad casts to make checks pass. The CLI integration tests fail if the native suppression file returns.
 
-The native baseline cannot distinguish replacing an old finding with a different finding of the same rule while keeping the same count. Review changed code even when lint passes. Review baseline edits and rule/config changes as code; increasing allowances requires explaining the concrete exception. New narrow `oxlint-disable-next-line` exceptions must name the rule and explain the constraint. Unused disable directives fail lint. Do not use blanket disables or leave obsolete ESLint directives behind.
+Narrow `unknown` data at its external boundary and use the SDK's actual types. Tests should use typed mocks, checked lookups and assertions about returned data. The shared MCP test helper isolates the pinned SDK's private registration table, checks its shape and validates handler results; application code does not depend on that private API.
 
-The initial baseline is a record of debt, not an endorsement of existing patterns. Do not replace meaningful types with casts, wrap unhandled work in a bare `void`, or fragment code to satisfy a metric. Naming quality, ownership, necessary abstraction and useful rationale remain review judgements.
+An unavoidable library constraint may justify a narrow, explained exception after review. Unused disable directives fail lint. Naming quality, ownership, necessary abstraction and useful rationale remain review judgements.
 
 ## Checking the guidelines' usefulness
 

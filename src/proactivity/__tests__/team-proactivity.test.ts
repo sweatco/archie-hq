@@ -7,6 +7,7 @@ import type { BackgroundModel } from '../model.js';
 import type { ObservationSlack } from '../slack.js';
 import type { Matter } from '../types.js';
 import type { TaskMetadata } from '../../types/task.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const NOW = Date.parse('2026-11-04T10:00:00Z');
 const DAY = 86_400_000;
@@ -18,17 +19,19 @@ let service: InitiativeService;
 function matter(id: string, owner: string | null, age = 0, channel = 'C1'): Matter {
   store.channel(channel, true, false);
   const thread = `${(NOW - age) / 1000}.${id.charCodeAt(0).toString().padStart(6, '0')}`;
-  const evidence = store.record(
-    {
-      channel,
-      thread,
-      ts: thread,
-      version: thread,
-      author: owner ?? 'U_AUTHOR',
-      text: `${id}: I will prepare the release checklist.`,
-    },
-    NOW - age,
-  )!;
+  const evidence = expectDefined(
+    store.record(
+      {
+        channel,
+        thread,
+        ts: thread,
+        version: thread,
+        author: owner ?? 'U_AUTHOR',
+        text: `${id}: I will prepare the release checklist.`,
+      },
+      NOW - age,
+    ),
+  );
   const value: Matter = {
     id,
     channel,
@@ -44,7 +47,7 @@ function matter(id: string, owner: string | null, age = 0, channel = 'C1'): Matt
     nextCheck: NOW,
   };
   store.apply(
-    [store.snapshot(channel, thread)!],
+    [expectDefined(store.snapshot(channel, thread))],
     [{ id, channel, thread, text: `Release ${id}`, evidence: [evidence], kind: 'commitment' }],
     [value],
   );
@@ -54,24 +57,28 @@ function matter(id: string, owner: string | null, age = 0, channel = 'C1'): Matt
 beforeEach(() => {
   store = new InitiativeStore(':memory:', 'T1', NOW - 10 * DAY);
   slack = {
-    inspect: vi.fn(async (_channel, recipient) => ({
+    inspect: vi.fn<ObservationSlack['inspect']>(async (_channel, recipient) => ({
       shared: false,
       recipientCanRead: recipient !== 'U_BLOCKED',
     })),
     channels: async () => ['C1'],
-    page: vi.fn(async (channel, _oldest, _latest, _cursor, thread) => ({
-      messages: store.snapshot(channel, thread!)?.evidence ?? [],
+    page: vi.fn<ObservationSlack['page']>(async (channel, _oldest, _latest, _cursor, thread) => ({
+      messages: store.snapshot(channel, expectDefined(thread))?.evidence ?? [],
     })),
-    dm: vi.fn(async (user) => `D_${user}`),
-    recipient: vi.fn(async (channel) => (channel.startsWith('D_') ? channel.slice(2) : null)),
-    verifyDm: vi.fn(async (channel, user) => channel === `D_${user}`),
-    send: vi.fn(async (delivery) => `${NOW / 1000}.${delivery.id.length}`),
+    dm: vi.fn<ObservationSlack['dm']>(async (user) => `D_${user}`),
+    recipient: vi.fn<ObservationSlack['recipient']>(async (channel) =>
+      channel.startsWith('D_') ? channel.slice(2) : null,
+    ),
+    verifyDm: vi.fn<ObservationSlack['verifyDm']>(async (channel, user) => channel === `D_${user}`),
+    send: vi.fn<ObservationSlack['send']>(
+      async (delivery) => `${NOW / 1000}.${delivery.id.length}`,
+    ),
     find: async () => undefined,
     active: () => false,
     link: (channel, thread) => `https://slack.test/${channel}/${thread}`,
   };
   model = {
-    complete: vi.fn(async (request) => {
+    complete: vi.fn(async (request: Parameters<BackgroundModel['complete']>[0]) => {
       const current = (request.input as { matter: Matter }).matter;
       return {
         resolved: false,
@@ -303,7 +310,7 @@ it.each([false, true])(
     });
     store.schedule('investigate', current.id, NOW);
     await service.tick(NOW, true);
-    store.attention.saveMatter({ ...store.matter(current.id)!, owner: 'U_BOB' });
+    store.attention.saveMatter({ ...expectDefined(store.matter(current.id)), owner: 'U_BOB' });
     store.attention.setNextCheck(NOW, current.id);
     store.schedule('investigate', current.id, NOW);
     await service.tick(NOW, true);
@@ -318,17 +325,19 @@ it.each(['U_ADMIN', 'Alice'])(
   async (owner) => {
     store.channel('C1', true, false);
     const thread = `${NOW / 1000}.000001`;
-    const evidence = store.record(
-      {
-        channel: 'C1',
-        thread,
-        ts: thread,
-        version: thread,
-        author: 'U_ALICE',
-        text: 'I will prepare the checklist.',
-      },
-      NOW,
-    )!;
+    const evidence = expectDefined(
+      store.record(
+        {
+          channel: 'C1',
+          thread,
+          ts: thread,
+          version: thread,
+          author: 'U_ALICE',
+          text: 'I will prepare the checklist.',
+        },
+        NOW,
+      ),
+    );
     vi.mocked(model.complete).mockResolvedValueOnce({
       threads: [
         {

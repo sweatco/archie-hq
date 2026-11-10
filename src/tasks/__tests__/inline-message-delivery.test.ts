@@ -1,3 +1,4 @@
+import type { MockInstance } from 'vitest';
 /**
  * Inline delivery regression test.
  *
@@ -46,7 +47,9 @@ vi.mock('../../system/logger.js', () => ({
 
 // No SDK subprocess — just enough of a handle that the per-Agent isRunning
 // guard behaves as in production.
-const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
+const { spawnMock } = vi.hoisted(() => ({
+  spawnMock: vi.fn<typeof import('../../agents/spawn.js').spawnAgent>(),
+}));
 vi.mock('../../agents/spawn.js', () => ({ spawnAgent: spawnMock }));
 
 import { Task, activeTasks } from '../task.js';
@@ -55,6 +58,7 @@ import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { getKnowledgeLogPath, getSharedPath } from '../persistence.js';
 import type { TaskMetadata, SlackThread } from '../../types/task.js';
 import type { AgentDef } from '../../types/agent.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const TaskCtor = Task as unknown as new (
   taskId: string,
@@ -108,7 +112,7 @@ afterAll(async () => {
 });
 
 describe('a Slack message appended to a task reaches the PM inline', () => {
-  let addSpy: ReturnType<typeof vi.spyOn>;
+  let addSpy: MockInstance<MessageQueue['addMessage']>;
 
   beforeEach(async () => {
     vi.useFakeTimers();
@@ -137,7 +141,7 @@ describe('a Slack message appended to a task reaches the PM inline', () => {
 
     const queued = addSpy.mock.calls.map((c: unknown[]) => String(c[0]));
     expect(queued).toHaveLength(1);
-    const wake = queued[0]!;
+    const wake = expectDefined(queued[0]);
 
     // The content itself, both messages of the batch.
     expect(wake).toContain('can you ship the release notes today');
@@ -163,7 +167,7 @@ describe('a Slack message appended to a task reaches the PM inline', () => {
       .filter((l) => l.trim().length > 0);
 
     expect(entries).toEqual(logged);
-    const wake = String(addSpy.mock.calls[0]![0]);
+    const wake = String(expectDefined(addSpy.mock.calls[0])[0]);
     for (const line of logged) expect(wake).toContain(line);
   });
 

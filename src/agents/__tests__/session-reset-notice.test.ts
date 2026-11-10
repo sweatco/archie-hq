@@ -1,3 +1,4 @@
+import { expectNext } from '../../test-support/assertions.js';
 /**
  * The notice a fresh session gets when resuming the previous one failed.
  *
@@ -171,7 +172,7 @@ describe('the replayed wake on a fresh-session retry', () => {
 
     queue.addMessage('RECOVERY: nudge');
 
-    expect((await waiting).value?.message.content).toBe('RECOVERY: nudge');
+    expect((await expectNext({ next: () => waiting })).message.content).toBe('RECOVERY: nudge');
     // The abandoned generator never wakes — nothing yields into the dead query.
     expect(await Promise.race([parked, Promise.resolve('still parked')])).toBe('still parked');
   });

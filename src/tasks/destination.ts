@@ -41,5 +41,5 @@ export function deriveTaskDestination(
   for (const channel of Object.values(channels)) {
     if (channel.type === 'slack' && channel.channel_id) ids.add(channel.channel_id);
   }
-  return ids.size === 1 ? { channel_id: [...ids][0]! } : undefined;
+  return ids.size === 1 ? { channel_id: [...ids][0] } : undefined;
 }

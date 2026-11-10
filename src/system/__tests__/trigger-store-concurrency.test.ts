@@ -27,6 +27,7 @@ import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import type { Trigger } from '../../types/trigger.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const WORK = mkdtempSync(join(tmpdir(), 'archie-trigger-race-'));
 process.env.ARCHIE_WORKDIR = WORK;
@@ -103,14 +104,16 @@ describe('a pending edit racing the user’s Approve', () => {
       ).not.toBeNull();
 
       // The whole point: the approval enabled what the edit wrote.
-      expect(onDisk!.status).toBe('enabled');
-      expect(onDisk!.action.prompt, `iteration ${i}: the edit was lost`).toBe(LONG_PROMPT);
-      expect(onDisk!.summary).toBe('the revised digest');
+      expect(expectDefined(onDisk).status).toBe('enabled');
+      expect(expectDefined(onDisk).action.prompt, `iteration ${i}: the edit was lost`).toBe(
+        LONG_PROMPT,
+      );
+      expect(expectDefined(onDisk).summary).toBe('the revised digest');
       expect(
-        approved!.action.prompt,
+        expectDefined(approved).action.prompt,
         `iteration ${i}: the scheduler indexed pre-edit content`,
       ).toBe(LONG_PROMPT);
-      expect(onDisk!.updated_at, 'an edit must renew the GC clock').toBeTruthy();
+      expect(expectDefined(onDisk).updated_at, 'an edit must renew the GC clock').toBeTruthy();
     }
   });
 
@@ -132,12 +135,13 @@ describe('a pending edit racing the user’s Approve', () => {
       expect(editResult.outcome, `iteration ${i}`).toBe('resolved');
       if (editResult.outcome === 'resolved') expect(editResult.status).toBe('enabled');
       expect(
-        onDisk!.status,
+        expectDefined(onDisk).status,
         `iteration ${i}: ghost — disk says pending, scheduler holds it enabled`,
       ).toBe('enabled');
-      expect(onDisk!.action.prompt, `iteration ${i}: a refused edit must change nothing`).toBe(
-        'post the digest',
-      );
+      expect(
+        expectDefined(onDisk).action.prompt,
+        `iteration ${i}: a refused edit must change nothing`,
+      ).toBe('post the digest');
     }
   });
 
@@ -239,7 +243,7 @@ describe('a withdrawal racing the user’s Approve', () => {
         onDisk,
         `iteration ${i}: an approved trigger was deleted by a racing withdrawal`,
       ).not.toBeNull();
-      expect(onDisk!.status).toBe('enabled');
+      expect(expectDefined(onDisk).status).toBe('enabled');
     }
   });
 
@@ -276,7 +280,7 @@ describe('saveTrigger is atomic', () => {
       await Promise.all([saveTrigger(big), saveTrigger(small)]);
 
       const raw = await readFile(getTriggerPath(ID), 'utf-8');
-      expect(() => JSON.parse(raw), `iteration ${i}: torn record on disk`).not.toThrow();
+      expect((): unknown => JSON.parse(raw), `iteration ${i}: torn record on disk`).not.toThrow();
       expect(await loadTrigger(ID), `iteration ${i}: record read as missing`).not.toBeNull();
     }
   });

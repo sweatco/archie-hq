@@ -30,9 +30,9 @@ import type {
   SlackAuthor,
 } from '../types/index.js';
 import type { SystemEvent } from '../system/event-bus.js';
-import { activeTasks } from './task.js';
+import { activeTasks } from './active-tasks.js';
 import { SESSIONS_DIR } from '../system/workdir.js';
-import { emitEvent, onEvent } from '../system/event-bus.js';
+import { emitEvent, onEvent, systemEventSchema } from '../system/event-bus.js';
 import { logger } from '../system/logger.js';
 import { formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
 import { createKeyedLock } from '../system/keyed-lock.js';
@@ -943,7 +943,7 @@ export async function readEvents(
     if (!line.trim()) continue;
     if (lineNum++ < start) continue;
     try {
-      events.push(JSON.parse(line));
+      events.push(systemEventSchema.parse(JSON.parse(line)));
     } catch {
       /* skip malformed */
     }
@@ -958,6 +958,8 @@ export async function readEvents(
  */
 export function initEventPersistence(): void {
   onEvent((event: SystemEvent) => {
-    void appendEvent(event);
+    appendEvent(event).catch((error: unknown) =>
+      logger.error('persistence', 'Could not persist system event', error),
+    );
   });
 }

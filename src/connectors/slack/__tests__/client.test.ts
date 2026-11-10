@@ -12,6 +12,7 @@
  * user info) never leak across cases.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { expectDefined } from '../../../test-support/assertions.js';
 
 // One shared fake WebClient; methods are reconfigured per test.
 const slackApi = {
@@ -423,7 +424,10 @@ describe('fetchSlackThread — rootAuthorWasBot', () => {
     expect(texts).toContain('human starts the thread');
     expect(texts).toContain('another human');
     expect(texts).not.toContain('archie chimed in'); // bot non-root message filtered out
-    expect(thread.messages[0]!.user).toMatchObject({ isBot: false, isAppUser: false });
+    expect(expectDefined(thread.messages[0]).user).toMatchObject({
+      isBot: false,
+      isAppUser: false,
+    });
   });
 });
 
@@ -721,7 +725,7 @@ describe('fetchSlackThread — attachment cards', () => {
     });
 
     const thread = await client.fetchSlackThread('C_att', '500.0', '500.0');
-    const att = thread.messages[0].attachments![0].text;
+    const att = expectDefined(thread.messages[0].attachments)[0].text;
 
     expect(att).toContain('<!subteam^S123>');
     expect(att).toContain('[FIRING:10] StepsConversionTotalSteps');
@@ -751,7 +755,7 @@ describe('fetchSlackThread — attachment cards', () => {
 
     const thread = await client.fetchSlackThread('C_att', '501.0', '501.0');
 
-    expect(thread.messages[0].attachments![0].text).toBe(
+    expect(expectDefined(thread.messages[0].attachments)[0].text).toBe(
       'Handled error: Error: API error 423: Locked',
     );
   });
@@ -1441,8 +1445,8 @@ describe('listChannelPins', () => {
     const pins = await client.listChannelPins('C1');
 
     expect(pins).toHaveLength(1);
-    expect(pins![0].ownText).toContain('quarterly planning doc');
-    expect(pins![0].attachments?.map((a) => a.text)).toContain('link preview body');
+    expect(expectDefined(pins)[0].ownText).toContain('quarterly planning doc');
+    expect(expectDefined(pins)[0].attachments?.map((a) => a.text)).toContain('link preview body');
   });
 
   // The parts are handed out structured, never pre-joined here: rendering a message into
@@ -1466,10 +1470,12 @@ describe('listChannelPins', () => {
 
     const pins = await client.listChannelPins('C1');
 
-    expect(pins![0].ownText).toBe('see the card');
-    expect(pins![0].attachments).toHaveLength(1);
-    expect(pins![0].attachments![0].text).toBe('incident postmortem body');
-    expect(pins![0].ownText).not.toContain(' — ');
+    expect(expectDefined(pins)[0].ownText).toBe('see the card');
+    expect(expectDefined(pins)[0].attachments).toHaveLength(1);
+    expect(expectDefined(expectDefined(pins)[0].attachments)[0].text).toBe(
+      'incident postmortem body',
+    );
+    expect(expectDefined(pins)[0].ownText).not.toContain(' — ');
   });
 
   // `reactions` and `files` are carried out for the same reason as `attachments`: the pin path renders
@@ -1504,8 +1510,8 @@ describe('listChannelPins', () => {
 
     const pins = await client.listChannelPins('C1');
 
-    expect(pins![0].reactions?.map((r) => r.name)).toEqual(['eyes']);
-    expect(pins![0].files?.map((f) => f.name)).toEqual(['runbook.pdf']);
+    expect(expectDefined(pins)[0].reactions?.map((r) => r.name)).toEqual(['eyes']);
+    expect(expectDefined(pins)[0].files?.map((f) => f.name)).toEqual(['runbook.pdf']);
   });
 
   // An app/bot post has no human author, and `resolveRawMessages` reports that as an
@@ -1525,7 +1531,7 @@ describe('listChannelPins', () => {
 
     const pins = await client.listChannelPins('C1');
 
-    expect(pins![0].author).toBe('');
+    expect(expectDefined(pins)[0].author).toBe('');
   });
 
   it('maps message and file pins and skips items with no identifier', async () => {

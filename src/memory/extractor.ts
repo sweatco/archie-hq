@@ -241,7 +241,7 @@ export async function runExtraction(
     const agentQuery = query({
       prompt,
       options: {
-        model: 'sonnet' as any,
+        model: 'sonnet',
         maxTurns: 1,
         tools: [],
         executable: 'node',
@@ -268,7 +268,7 @@ export async function runExtraction(
 
     for await (const event of agentQuery) {
       if (event.type === 'assistant') {
-        const content = (event as any).message?.content;
+        const content = event.message?.content;
         if (Array.isArray(content)) {
           for (const block of content) {
             if (block.type === 'text' && typeof block.text === 'string') {
@@ -279,12 +279,12 @@ export async function runExtraction(
       }
       if (event.type === 'result') {
         if (event.subtype === 'success') {
-          const resultText = (event as any).result;
+          const resultText = event.result;
           if (typeof resultText === 'string' && resultText.trim()) {
             responseText = resultText;
           }
         } else {
-          const errs = ((event as any).errors as string[] | undefined)?.join('; ') ?? '';
+          const errs = (event.errors as string[] | undefined)?.join('; ') ?? '';
           logger.warn(
             'memory',
             `Extraction agent for task ${input.taskId} ended with subtype=${event.subtype}${errs ? `: ${errs}` : ''}`,

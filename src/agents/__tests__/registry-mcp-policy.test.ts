@@ -23,6 +23,7 @@ vi.mock('../../system/logger.js', () => ({
 
 import { getRootMcpConfig, getArchieConfig } from '../../system/plugin-loader.js';
 import { scanPmDef, isAutoMergeRepo } from '../registry.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const ROOT_MCP: LoadedMcpConfig = {
   servers: {
@@ -56,7 +57,7 @@ describe('scanPmDef — MCP surface', () => {
   });
 
   it('attaches every server in the root config', () => {
-    expect(Object.keys(scanPmDef().mcpServers!)).toEqual([
+    expect(Object.keys(expectDefined(scanPmDef().mcpServers))).toEqual([
       'tramline',
       'clickhouse',
       'sweatco-admin',
@@ -64,7 +65,7 @@ describe('scanPmDef — MCP surface', () => {
   });
 
   it('unions the per-server policies into one session policy', () => {
-    const policy = scanPmDef().mcpPolicy!;
+    const policy = expectDefined(scanPmDef().mcpPolicy);
     expect(Object.keys(policy).sort()).toEqual(['sweatco-admin', 'tramline']);
     expect(policy.tramline.default).toBe('ask');
     expect(policy.tramline.tiers.get_release).toBe('allow');
