@@ -8,7 +8,7 @@
  *   { plaintext meta..., envelope: { ... } }
  */
 
-import { join } from 'path';
+import { join, resolve, sep } from 'path';
 import { readdir } from 'fs/promises';
 import { OAUTH_DIR, OAUTH_PENDING_DIR } from '../workdir.js';
 import {
@@ -42,11 +42,17 @@ export function vaultPathFor(serverName: string): string {
 }
 
 export function pendingPathFor(state: string): string {
-  // Keep the base64url guard beside path construction so static analysis can follow it.
+  // State must match the base64url tokens generated for OAuth attempts.
   if (!/^[A-Za-z0-9_-]+$/.test(state)) {
     throw new Error(`Invalid OAuth state token "${state}"`);
   }
-  return join(OAUTH_PENDING_DIR, `${state}.json`);
+  // Keep normalized containment explicit for static path analysis.
+  const root = resolve(OAUTH_PENDING_DIR);
+  const path = resolve(root, `${state}.json`);
+  if (!path.startsWith(root + sep)) {
+    throw new Error('OAuth state path escapes pending directory');
+  }
+  return path;
 }
 
 export async function writeOAuthRecord(meta: OAuthRecordMeta, sealed: OAuthSealed): Promise<void> {

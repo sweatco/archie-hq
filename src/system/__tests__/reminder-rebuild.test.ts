@@ -12,23 +12,20 @@ const paths = await vi.hoisted(async () => {
   return { root, marker, sessions: join(root, 'sessions $(touch ' + marker + ')') };
 });
 
-vi.mock('../workdir.js', () => ({ SESSIONS_DIR: paths.sessions }));
+vi.mock('../workdir.js', () => ({ SESSIONS_DIR: paths.sessions, WORKDIR: paths.root }));
 vi.mock('../logger.js', () => ({
   logger: { system: vi.fn(), error: vi.fn(), warn: vi.fn() },
 }));
-vi.mock('../event-bus.js', () => ({ emitEvent: vi.fn() }));
+vi.mock('../event-bus.js', () => ({ emitEvent: vi.fn(), onEvent: vi.fn() }));
 vi.mock('../trigger-scheduler.js', () => ({
   computeNextRun: vi.fn(),
   describeSchedule: vi.fn(),
 }));
-vi.mock('../../tasks/task.js', () => ({ Task: { get: vi.fn() } }));
+vi.mock('../../tasks/task.js', () => ({ Task: { get: vi.fn() }, activeTasks: new Map() }));
 vi.mock('../../agents/prompts.js', () => ({ AGENT_PROMPTS: {} }));
-vi.mock('../../tasks/persistence.js', () => ({
-  loadMetadata: async () => ({
-    task_id: 'task-20261110-0215-abc123',
-    reminder: { trigger_at: '2100-01-01T00:00:00Z', reason: 'restart' },
-  }),
-  taskExistsOnDisk: () => true,
+vi.mock('../../connectors/slack/client.js', () => ({
+  formatSlackChannelRef: vi.fn(),
+  formatSlackChannelDisplay: vi.fn(),
 }));
 
 import { getReminder, initReminderScheduler } from '../reminder-scheduler.js';
@@ -45,7 +42,10 @@ it('rebuilds reminders from a path containing shell syntax without executing it'
   await mkdir(shared, { recursive: true });
   await writeFile(
     join(shared, 'metadata.json'),
-    JSON.stringify({ reminder: { trigger_at: '2100-01-01T00:00:00Z' } }),
+    JSON.stringify({
+      task_id: 'task-20261110-0215-abc123',
+      reminder: { trigger_at: '2100-01-01T00:00:00Z', reason: 'restart' },
+    }),
   );
   await initReminderScheduler();
   expect(existsSync(paths.marker)).toBe(false);

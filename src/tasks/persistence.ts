@@ -115,7 +115,13 @@ export function getTaskPath(taskId: string): string {
   if (!/^[A-Za-z0-9_-]+$/.test(taskId)) {
     throw new Error('Invalid task ID');
   }
-  return join(SESSIONS_DIR, taskId);
+  // Keep normalized containment explicit for static path analysis.
+  const root = resolve(SESSIONS_DIR);
+  const path = resolve(root, taskId);
+  if (!path.startsWith(root + sep)) {
+    throw new Error('Task path escapes sessions directory');
+  }
+  return path;
 }
 
 /**

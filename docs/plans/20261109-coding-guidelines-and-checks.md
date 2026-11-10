@@ -100,16 +100,18 @@ The follow-up is a separate security repair, preserving the formatting/tooling s
 
 | Reported locations | Repair |
 |---|---|
-| 12 task-persistence path alerts | Validate a single task-ID path segment in the owning directory constructor before any derived read/write path. Preserve canonical and existing short IDs. |
-| Seven OAuth pending-file path alerts | Move the existing base64url state guard into its path constructor so the analyzer can follow it; accepted states and rejection behavior are unchanged. |
+| 12 task-persistence path alerts | Validate a single task-ID segment and check normalized directory containment in its owning path constructor. Preserve canonical and existing short IDs. |
+| Seven OAuth pending-file path alerts | Keep the existing base64url guard beside path construction and check normalized pending-directory containment. Accepted states and rejection behavior are unchanged. |
 | Two memory escaping alerts | Serialize display names as JSON-quoted YAML values and decode entity strings accordingly, retaining the older reader for non-JSON legacy values. |
 | One debug format-string alert | Use a literal format string before the caller's message and attached data. |
 | One OAuth summary logging alert | Name the returned metadata `bindingSummary`. The SARIF source was the `oauthBindings` identifier, while inspection and existing injection tests confirm the injected list contains only server names. Token values are neither added to the summary nor newly logged. |
-| One reminder shell-path alert | Pass the sessions directory as a quoted positional argument to a fixed shell script rather than interpolating it into executable text. |
+| One reminder shell-path alert | Reuse the existing task-metadata reader, removing the shell from reminder reconstruction. |
 
 Regression tests reproduced 11 failures before the repair, including actual shell execution of a controlled marker in a temporary directory. The final `npm run check` passed under Node 24.22.2/npm 11.16.0: formatting, lint, typecheck, build and **2,329 tests across 164 files**. The 20 added cases cover unsafe and ordinary IDs, OAuth state paths, encoded and legacy display names, literal debug output and reminder reconstruction from a path containing shell syntax. An existing traversal test still creates an outside-root fixture directly, since the guarded helper now rejects that setup. The lint baseline is unchanged; no CodeQL query settings, gate settings or alert states were changed.
 
-Hosted CodeQL verification of this repair is pending publication; no local CodeQL CLI is installed. The existing E2E skill's boot command was checked with preparation disabled and stopped at `.env not found at the repo root — copy .env.example and set ANTHROPIC_API_KEY`. No live instance or paid provider scenario ran. Valid task IDs and ordinary output retain their existing behavior; the security repair intentionally rejects path-shaped task IDs and correctly encodes special characters.
+The first hosted follow-up at `ae9ab55` passed normal CI and cleared the four memory/logging annotations, leaving 19 path annotations and the reminder shell annotation. Its positive identifier checks and quoted shell arguments were safe under the regressions but were not accepted by those query models. Explicit normalized containment checks and removal of the shell address those remaining analyzer boundaries. The reminder regression now uses the real task-metadata reader and filesystem. Hosted verification of this final adjustment is pending publication; no local CodeQL CLI is installed.
+
+The existing E2E skill's boot command was checked with preparation disabled and stopped at `.env not found at the repo root — copy .env.example and set ANTHROPIC_API_KEY`. No live instance or paid provider scenario ran. Valid task IDs and ordinary output retain their existing behavior; the security repair intentionally rejects path-shaped task IDs and correctly encodes special characters.
 
 ### Remaining debt and limits
 

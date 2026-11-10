@@ -49,9 +49,9 @@ Slack and GitHub events are authenticated at the receiver layer before they reac
 
 ## Host input and persistence
 
-The task-directory constructor accepts a single identifier containing letters, digits, underscores or hyphens before joining it to the sessions root. This preserves generated IDs and existing short task IDs while rejecting traversal, path separators, empty identifiers and dot segments. OAuth pending-file paths validate their state token against the generated base64url alphabet at the path-construction boundary.
+The task-directory constructor accepts a single identifier containing letters, digits, underscores or hyphens before resolving it under the sessions root. This preserves generated IDs and existing short task IDs while rejecting traversal, path separators, empty identifiers and dot segments. OAuth pending-file paths validate their state token against the generated base64url alphabet. Both constructors also check normalized directory containment explicitly so static path analysis can follow the boundary.
 
-Reminder discovery passes the sessions root as a positional argument to a fixed shell command, so directory names cannot become executable shell syntax. Debug logging uses a fixed format string when appending data. The OAuth binding summary's injected list contains MCP server names; access tokens remain in the configured authorization headers and are not returned in that list.
+Reminder discovery uses the existing task-metadata reader without invoking a shell. Debug logging uses a fixed format string when appending data. The OAuth binding summary's injected list contains MCP server names; access tokens remain in the configured authorization headers and are not returned in that list.
 
 ## Defense Layer 1: The task sandbox
 

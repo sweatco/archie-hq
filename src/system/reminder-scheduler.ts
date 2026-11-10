@@ -5,10 +5,8 @@
  * A 5-minute interval checks for due reminders and reactivates tasks.
  */
 
-import { execFileSync } from 'child_process';
 import { Task } from '../tasks/task.js';
-import { SESSIONS_DIR } from './workdir.js';
-import { loadMetadata, taskExistsOnDisk } from '../tasks/persistence.js';
+import { findAllTasks, taskExistsOnDisk } from '../tasks/persistence.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { emitEvent } from './event-bus.js';
 import { computeNextRun, describeSchedule } from './trigger-scheduler.js';
@@ -154,25 +152,7 @@ export function getReminder(taskId: string): PendingReminder | undefined {
  */
 async function rebuildFromDisk(): Promise<void> {
   try {
-    const grepResult = execFileSync(
-      'sh',
-      [
-        '-c',
-        'grep -l \'"trigger_at"\' "$1"/task-*/shared/metadata.json 2>/dev/null || true',
-        'sh',
-        SESSIONS_DIR,
-      ],
-      { encoding: 'utf-8' },
-    ).trim();
-
-    if (!grepResult) return;
-
-    for (const filePath of grepResult.split('\n')) {
-      const taskIdMatch = filePath.match(/task-[a-z0-9-]+/i);
-      if (!taskIdMatch) continue;
-      const taskId = taskIdMatch[0];
-
-      const metadata = await loadMetadata(taskId);
+    for (const metadata of await findAllTasks()) {
       if (metadata?.reminder?.trigger_at) {
         pendingReminders.set(metadata.task_id, {
           trigger_at: new Date(metadata.reminder.trigger_at),
