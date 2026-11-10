@@ -13,7 +13,7 @@ Confirmed decisions: baseline existing debt through the native per-file/rule-cou
 ## Guidance and documentation
 
 - Move the ten guidelines and five-question rubric into the canonical guide. Preserve research, repair references and remove the superseded proposal.
-- Add a concise root `AGENTS.md` pointer and have Claude's entry point reference it. Preserve existing project instructions and scoped memory invariants.
+- Consolidate root agent instructions in `AGENTS.md`, linking to the canonical coding guide. Remove root `CLAUDE.md` after carrying over useful project guidance; preserve the scoped memory instructions.
 - Update contributor/local-development guidance, documentation indexes and the PR template with commands, baseline maintenance and review expectations.
 - Keep ownership, meaningful names, abstraction quality and sufficient rationale as review judgements. Use existing PR feedback for the next five substantive changes to assess useful findings, rejected stylistic suggestions, rework and review overhead; do not add telemetry state.
 
@@ -109,14 +109,22 @@ The follow-up is a separate security repair, preserving the formatting/tooling s
 
 Regression tests reproduced 11 failures before the repair, including actual shell execution of a controlled marker in a temporary directory. The final `npm run check` passed under Node 24.22.2/npm 11.16.0: formatting, lint, typecheck, build and **2,329 tests across 164 files**. The 20 added cases cover unsafe and ordinary IDs, OAuth state paths, encoded and legacy display names, literal debug output and reminder reconstruction from a path containing shell syntax. An existing traversal test still creates an outside-root fixture directly, since the guarded helper now rejects that setup. The lint baseline is unchanged; no CodeQL query settings, gate settings or alert states were changed.
 
-The first hosted follow-up at `ae9ab55` passed normal CI and cleared the four memory/logging annotations, leaving 19 path annotations and the reminder shell annotation. Its positive identifier checks and quoted shell arguments were safe under the regressions but were not accepted by those query models. Explicit normalized containment checks and removal of the shell address those remaining analyzer boundaries. The reminder regression now uses the real task-metadata reader and filesystem. Hosted verification of this final adjustment is pending publication; no local CodeQL CLI is installed.
+The first hosted follow-up at `ae9ab55` passed normal CI and cleared the four memory/logging annotations, leaving 19 path annotations and the reminder shell annotation. Its positive identifier checks and quoted shell arguments were safe under the regressions but were not accepted by those query models. Explicit normalized containment checks and removal of the shell address those remaining analyzer boundaries. The reminder regression now uses the real task-metadata reader and filesystem. Hosted verification at `f990cc0` passed all four checks, including the CodeQL results gate with no new alerts. No local CodeQL CLI is installed.
 
 The existing E2E skill's boot command was checked with preparation disabled and stopped at `.env not found at the repo root — copy .env.example and set ANTHROPIC_API_KEY`. No live instance or paid provider scenario ran. Valid task IDs and ordinary output retain their existing behavior; the security repair intentionally rejects path-shaped task IDs and correctly encodes special characters.
+
+### Root instructions review, 2026-11-10
+
+`AGENTS.md` is now the single root instruction file. It retains the project architecture, runtime bootstrap, development commands, E2E preparation, logging, prose, generated-changelog and Git guidance previously split across two entry points, and links to the canonical coding guide. Root `CLAUDE.md` and its obsolete formatter exception were removed. The scoped `src/memory/CLAUDE.md` remains byte-identical and is linked from the root instructions.
+
+CI reads the npm package specifier from `package.json`'s `packageManager` field, using the existing Node/npm tools. The version is declared once rather than repeated in the workflow. Executing that exact install command with a temporary global prefix and the offline package cache installed npm 11.16.0 successfully.
+
+`npm run check` passed under Node 24.22.2/npm 11.16.0: formatting, lint, typecheck, build and all 2,329 tests across 164 files. All 577 tracked-file hashes in the gate snapshot remained unchanged. Root guidance links resolve, and the scoped memory instructions, manifest, lockfile and lint baseline remain byte-identical. This review update changes instructions and CI version selection, with no runtime code change.
 
 ### Remaining debt and limits
 
 The native baseline records **2,449 findings across 167 files**, measured after the rebase, clean install, directive cleanup, final formatting and the Vitest compatibility adjustment. The original pre-rebase snapshot had 2,405 findings across 164 files. It includes existing unsafe types/operations, non-null assertions, promise handling, runtime cycles and cleanup findings. The new check tests have no baseline entry. Baseline generation is not part of CI; routine pruning only reduces resolved allowances.
 
-The baseline counts findings per file/rule and can miss an equal-count substitution. Config/baseline changes and code readability still require review. Hosted Linux format/lint/typecheck/build/test and gitleaks passed at `7cc67d6`; hosted checks for the security follow-up remain pending. A Docker image build, provider-backed live E2E and production behavior were not exercised. The original guideline adoption preserved runtime behavior; the subsequent security edge-case changes are recorded above.
+The baseline counts findings per file/rule and can miss an equal-count substitution. Config/baseline changes and code readability still require review. Hosted Linux format/lint/typecheck/build/test, gitleaks and CodeQL passed at `f990cc0`; hosted checks for the root-instructions review update remain pending. A Docker image build, provider-backed live E2E and production behavior were not exercised. The original guideline adoption preserved runtime behavior; the subsequent security edge-case changes are recorded above.
 
 No readability or productivity benefit has been measured. The five-change evaluation follows adoption through existing PR feedback and remains pending.
