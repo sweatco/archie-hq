@@ -77,7 +77,7 @@ Keep each change coherent: a reviewer should be able to connect the problem, imp
 
 Test observable behavior and meaningful boundaries. For a bug, use a regression that reproduces the failure when practical. For a refactor, preserve behavior and check affected callers. Avoid tests that reproduce the implementation, mock away the relevant boundary or assert private organization solely to reach a coverage target. Do not add tests for prose, mechanical formatting or other changes with no behavioral contract.
 
-Use focused checks during iteration and the existing required checks before a code PR: typecheck, build and tests, plus the relevant running path when behavior warrants it. Use the repository's E2E skill for live verification. Report actual results and gaps. Passing tests establish only the behavior exercised; they do not establish human readability.
+Use focused checks during iteration and run `npm run check` before a code PR: formatting verification, lint, typecheck, build and tests, plus the relevant running path when behavior warrants it. Use the repository's E2E skill for live verification. Report actual results and gaps. Passing tests establish only the behavior exercised; they do not establish human readability.
 
 ## A short review rubric
 
@@ -98,6 +98,14 @@ Run `npm run check` before handing off a code change. It checks formatting, lint
 The committed `.oxlintrc.json` owns the exact rule allowlist and scopes. Syntax checks cover owned source, tools, scripts, examples and root code configuration. Typed rules cover TypeScript in `src/`, `tools/` and `scripts/`, using their nearest TypeScript projects. React rules apply to the CLI; test rules apply to test/spec files. Application source uses the unified logger, whose implementation owns direct console access. Standalone tools and scripts retain their intentional stdout/stderr interfaces. The existing compiler and Docker helper build remain authoritative; lint does not replace type checking.
 
 Prettier owns mechanical presentation: two spaces, single quotes, semicolons, trailing commas, 100-column code formatting and LF endings. Markdown prose stays on single lines. Import order is preserved and embedded-language formatting is disabled. The ignore file excludes runtime data, secrets, generated output and changelog, the lockfile, prompts, skills and historical documentation/evidence. Only active contributor/agent guidance is included in Markdown formatting.
+
+### Agent completion hooks
+
+Claude Code's `.claude/settings.json` and Codex's `.codex/hooks.json` call the same `tools/quality/agent-stop.mjs` script at `Stop`. After `npm ci`, every applicable Stop runs `npm run lint` and `npm run format:check` across the whole checkout, including unchanged work. The existing commands own file selection. There is no change detection, cache or hook-owned state. Plan-mode turns and ignored working directories such as Archie's runtime workdir are skipped.
+
+Both commands run even if the first fails. The hook returns diagnostics and requests one correction pass. If `stop_hook_active` is already true, it reruns both checks but reports remaining failures as a warning and lets the agent stop. The checks do not rewrite source. Preserve unrelated work and report failures outside the task's scope. Missing dependencies and command timeouts are reported as check failures; malformed hook input produces a warning without continuing the agent. Each command has a 30-second limit and diagnostic output is bounded.
+
+These hooks provide local feedback. Run the full `npm run check` before handoff; CI remains the authoritative PR check. Readability still requires the review rubric above. See [local development](local-development.md#agent-completion-hooks) for activation and the native trust requirements.
 
 ### Keeping lint clean
 

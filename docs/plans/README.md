@@ -32,6 +32,7 @@ Historical record of Archie's incremental development. Each plan represents a mi
 | [20260926](20260926-prompt-only-concise-pilot.md) | PM prompt and skill concise reply pilot | Draft; 26-reply comparison passed length target, failed factuality gate |
 | [20261109](20261109-coding-guidelines-and-checks.md) | Coding guidelines, formatting and zero-debt lint checks | Implemented |
 | [20261110](20261110-coding-guidelines-review.md) | Guidelines review of PR #370 and targeted repairs | Implemented and verified locally |
+| [20261111](20261111-agent-completion-hooks.md) | Shared agent completion lint/format hooks | Simplified and verified live; Codex worktrees load primary-checkout configuration |
 
 ## Evolution Arc
 

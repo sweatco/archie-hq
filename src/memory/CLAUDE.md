@@ -42,6 +42,8 @@
 ## Verify
 
 ```bash
+npm run format:check
+npm run lint
 npx vitest run src/memory/__tests__/ --testTimeout=10000
 npm run typecheck
 npm run build
