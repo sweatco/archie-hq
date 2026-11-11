@@ -247,6 +247,17 @@ The server starts on `http://localhost:3000` with:
 - `POST /webhooks/github` — GitHub webhooks (if configured)
 - `GET /health` — Health check
 
+### Agent completion hooks
+
+The repository includes project-level `Stop` hooks for Claude Code and Codex. Install dependencies with `npm ci`, then start the agent in this repository or a subdirectory. Both configurations resolve the shared script from the Git root. The commands have been qualified on macOS/POSIX shells; Windows invocation is not qualified.
+
+- **Claude Code:** accept the workspace trust prompt if shown, and use `/hooks` to inspect the project `Stop` hook from `.claude/settings.json`.
+- **Codex:** trust the project, then open `/hooks` and review/trust the `Stop` command from `.codex/hooks.json`. New or changed hook definitions require native trust review before they run. Do not bypass that review.
+
+Verify that the native hook manager lists the project entry before relying on automatic execution. In a controlled test, Codex CLI 0.167.0 loaded linked-worktree hooks from the primary checkout, even when the linked worktree contained a different definition. The primary checkout therefore needs this configuration through the normal Git workflow; until then, run checks manually. The implementation was verified live with the exact command supplied as a temporary session override and reviewed through the native hook UI. See the [verification record](../plans/20261111-agent-completion-hooks.md) for evidence and limits.
+
+The [coding guide](coding-guidelines.md#agent-completion-hooks) owns the check and retry behavior. Hooks are convenience checks that can be disabled in the native hook UI; required CI checks still apply. The native configuration and trust behavior are documented by [Claude Code](https://code.claude.com/docs/en/hooks) and [OpenAI](https://learn.chatgpt.com/docs/hooks).
+
 ## Debugging
 
 Server console output shows all activity with color-coded, semantic logging:

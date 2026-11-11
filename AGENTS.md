@@ -21,14 +21,16 @@ All runtime state (plugins, base clones, sessions, caches and triggers) lives un
 ## Development and verification
 
 ```bash
-npm ci              # Install locked dependencies
-npm run dev         # Development server with hot reload
-npm run typecheck   # Type checking only
-npm run build       # TypeScript compilation
-npm run check       # Format, lint, typecheck, build and tests
+npm ci                # Install locked dependencies
+npm run dev           # Development server with hot reload
+npm run lint          # Check lint rules without rewriting source
+npm run format:check  # Check formatting without rewriting source
+npm run typecheck     # Type checking only
+npm run build         # TypeScript compilation
+npm run check         # Format, lint, typecheck, build and tests
 ```
 
-Run `npm run check` before handing off code changes. Use focused checks during iteration. See the coding guide for the zero-debt lint policy, formatting and runtime verification, and [local development](docs/guides/local-development.md) for setup.
+Run `npm run lint` and focused tests during iteration. Run `npm run check` before handing off code changes. See the coding guide for the completion hooks, zero-debt lint policy, formatting and runtime verification, and [local development](docs/guides/local-development.md) for setup.
 
 When changing memory, also read [its scoped instructions](src/memory/CLAUDE.md) and [architecture](docs/architecture/memory.md); the scoped invariants still apply.
 
