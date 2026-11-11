@@ -48,4 +48,6 @@ In a fresh worktree, `.env`, `workdir`, `claude-data` and a real `secrets/` dire
 
 ## Git workflow
 
-Create commits only when explicitly requested. Keep each commit focused on one logical change, group related files and use a descriptive message. Do not commit draft documentation or proposals unless specifically requested.
+- Never merge `main` into feature branches. When an update is needed, rebase onto freshly fetched `origin/main`. Get collaborators' agreement before rewriting commits they depend on.
+- Preserve unrelated working-tree changes. Stage only changes for the current task and inspect the staged diff before committing.
+- Create commits only when explicitly requested. Keep each commit focused on one logical change, group related files and use a descriptive message. Do not commit draft documentation or proposals unless specifically requested.
