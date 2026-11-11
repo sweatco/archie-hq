@@ -10,7 +10,11 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { execFileSync, spawnSync } from 'node:child_process';
+import {
+  execFileSync,
+  spawnSync,
+  type SpawnSyncOptionsWithStringEncoding,
+} from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,22 +52,22 @@ function writeFixture(path: string, content: string) {
 }
 
 function runHook(input: Record<string, unknown> = {}, env = process.env, command?: string) {
-  const result = spawnSync(
-    command ? '/bin/sh' : process.execPath,
-    command ? ['-c', command] : [join(workspace, 'tools/quality/agent-stop.mjs')],
-    {
-      cwd: join(workspace, 'src'),
-      input: JSON.stringify({
-        hook_event_name: 'Stop',
-        cwd: workspace,
-        stop_hook_active: false,
-        ...input,
-      }),
-      env,
-      encoding: 'utf8',
-      timeout: 20_000,
-    },
-  );
+  const options: SpawnSyncOptionsWithStringEncoding = {
+    cwd: join(workspace, 'src'),
+    input: JSON.stringify({
+      hook_event_name: 'Stop',
+      cwd: workspace,
+      stop_hook_active: false,
+      ...input,
+    }),
+    env,
+    encoding: 'utf8',
+    timeout: 20_000,
+  };
+  // Separate calls keep the temporary script path out of shell-command analysis.
+  const result = command
+    ? spawnSync('/bin/sh', ['-c', command], options)
+    : spawnSync(process.execPath, [join(workspace, 'tools/quality/agent-stop.mjs')], options);
   expect(result.status, result.stderr).toBe(0);
   return decisionSchema.parse(JSON.parse(result.stdout));
 }
