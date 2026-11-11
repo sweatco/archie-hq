@@ -11,12 +11,7 @@
  * reason.
  */
 
-import type {
-  MemoryUpdate,
-  ActivityEntry,
-  EntityObservation,
-  EntityRelation,
-} from './types.js';
+import type { MemoryUpdate, ActivityEntry, EntityObservation, EntityRelation } from './types.js';
 import { isValidEntitySlug } from './paths.js';
 
 // ---- Limits & enums ----
@@ -112,7 +107,8 @@ export function looksLikeInstruction(content: string): boolean {
 export function looksLikeSecret(content: string): boolean {
   if (/\b(Bearer\s+[A-Za-z0-9_\-.=]{16,})/i.test(content)) return true;
   // Common secret prefixes followed by long token bodies
-  if (/\b(sk-|xoxb-|xoxp-|ghp_|gho_|ghu_|ghs_|github_pat_)[A-Za-z0-9_\-]{16,}/.test(content)) return true;
+  if (/\b(sk-|xoxb-|xoxp-|ghp_|gho_|ghu_|ghs_|github_pat_)[A-Za-z0-9_\-]{16,}/.test(content))
+    return true;
   if (/\b(AKIA|ASIA)[A-Z0-9]{12,}\b/.test(content)) return true;
   // KEY=long-alphanumeric-blob pattern
   if (/[A-Z_]{3,}=[A-Za-z0-9+/=_\-]{24,}/.test(content)) return true;
@@ -148,7 +144,12 @@ export function sanitizeUpdate(update: MemoryUpdate): MemoryUpdate | null {
     old = o;
   }
 
-  return { action: update.action, content, ...(section !== undefined && { section }), ...(old !== undefined && { old }) };
+  return {
+    action: update.action,
+    content,
+    ...(section !== undefined && { section }),
+    ...(old !== undefined && { old }),
+  };
 }
 
 /**
@@ -260,7 +261,10 @@ export function sanitizeEntitySummary(raw: unknown): string | null {
  * the category is outside the closed vocabulary, the text is multi-line / too
  * long, or the text looks like an instruction or a secret.
  */
-export function sanitizeEntityObservation(obs: { category: string; text: string }): EntityObservation | null {
+export function sanitizeEntityObservation(obs: {
+  category: string;
+  text: string;
+}): EntityObservation | null {
   if (!obs || typeof obs.category !== 'string' || typeof obs.text !== 'string') return null;
   const category = obs.category.toLowerCase().trim();
   if (!isAllowedObservationCategory(category)) return null;
@@ -275,7 +279,10 @@ export function sanitizeEntityObservation(obs: { category: string; text: string 
  * relation type is outside the closed vocabulary or the target is not a clean
  * wikilink target (entity slug, user id, or task id; no spaces/brackets/pipes).
  */
-export function sanitizeEntityRelation(rel: { type: string; target: string }): EntityRelation | null {
+export function sanitizeEntityRelation(rel: {
+  type: string;
+  target: string;
+}): EntityRelation | null {
   if (!rel || typeof rel.type !== 'string' || typeof rel.target !== 'string') return null;
   const type = rel.type.toLowerCase().trim();
   if (!isAllowedRelationType(type)) return null;

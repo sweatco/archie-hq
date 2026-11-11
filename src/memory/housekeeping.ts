@@ -16,7 +16,6 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { readFile, writeFile, rm } from 'fs/promises';
 import { existsSync } from 'fs';
-import { join } from 'path';
 import {
   isHousekeepingEnabled,
   isMemoryReady,
@@ -31,7 +30,11 @@ import { rebuildIndex } from './entity-index.js';
 import { loadPrompt } from '../utils/prompt-loader.js';
 import { logger } from '../system/logger.js';
 import { recordHousekeepingNote } from './lifecycle.js';
-import { parseLastTouched as parseLastTouchedFromAnnotations, stripLastTouched as stripLastTouchedFromAnnotations, appendLastTouched as appendLastTouchedFromAnnotations } from './annotations.js';
+import {
+  parseLastTouched as parseLastTouchedFromAnnotations,
+  stripLastTouched as stripLastTouchedFromAnnotations,
+  appendLastTouched as appendLastTouchedFromAnnotations,
+} from './annotations.js';
 import type { EntityRecord } from './types.js';
 
 const TOUCHED_RE = /<!--\s*touched:\s*(\d{4}-\d{2}-\d{2})\s*-->/;
@@ -123,7 +126,9 @@ export function planEntityMerges(records: EntityRecord[]): Map<string, string> {
  */
 export function isFullyStale(record: EntityRecord, stalenessDays: number, today: string): boolean {
   if (record.observations.length === 0) return false;
-  return record.observations.every((o) => !!o.touched && daysBetween(o.touched, today) > stalenessDays);
+  return record.observations.every(
+    (o) => !!o.touched && daysBetween(o.touched, today) > stalenessDays,
+  );
 }
 
 function daysBetween(from: string, to: string): number {
@@ -136,18 +141,27 @@ function daysBetween(from: string, to: string): number {
 function mergeInto(canonical: EntityRecord, dup: EntityRecord): void {
   for (const o of dup.observations) {
     const norm = o.text.toLowerCase().replace(/\s+/g, ' ').trim();
-    if (!canonical.observations.some((x) => x.category === o.category && x.text.toLowerCase().replace(/\s+/g, ' ').trim() === norm)) {
+    if (
+      !canonical.observations.some(
+        (x) =>
+          x.category === o.category && x.text.toLowerCase().replace(/\s+/g, ' ').trim() === norm,
+      )
+    ) {
       canonical.observations.push(o);
     }
   }
   for (const rel of dup.relations) addRelation(canonical.relations, rel);
   for (const a of [...dup.aliases, dup.entity]) {
-    if (a.toLowerCase() !== canonical.entity && !canonical.aliases.some((x) => x.toLowerCase() === a.toLowerCase())) {
+    if (
+      a.toLowerCase() !== canonical.entity &&
+      !canonical.aliases.some((x) => x.toLowerCase() === a.toLowerCase())
+    ) {
       canonical.aliases.push(a);
     }
   }
   for (const repo of dup.repos) {
-    if (!canonical.repos.some((x) => x.toLowerCase() === repo.toLowerCase())) canonical.repos.push(repo);
+    if (!canonical.repos.some((x) => x.toLowerCase() === repo.toLowerCase()))
+      canonical.repos.push(repo);
   }
   if (!canonical.domain && dup.domain) canonical.domain = dup.domain;
   if (!canonical.summary && dup.summary) canonical.summary = dup.summary;
@@ -177,7 +191,11 @@ async function runEntityHousekeeping(today?: string): Promise<void> {
     const repointed: EntityRecord['relations'] = [];
     for (const rel of r.relations) {
       const target = mergedAway.get(rel.target) ?? rel.target;
-      if (!repointed.some((x) => x.type === rel.type && x.target.toLowerCase() === target.toLowerCase())) {
+      if (
+        !repointed.some(
+          (x) => x.type === rel.type && x.target.toLowerCase() === target.toLowerCase(),
+        )
+      ) {
         repointed.push({ ...rel, target });
       }
     }
@@ -225,7 +243,10 @@ async function consolidateFile(label: string, path: string): Promise<void> {
   const { accepted, rejected } = validateTraceBack(inputBullets, outputBullets);
 
   if (rejected.length > 0) {
-    logger.warn('memory', `housekeeping: ${label} — dropped ${rejected.length} non-traceable bullet(s) from agent output`);
+    logger.warn(
+      'memory',
+      `housekeeping: ${label} — dropped ${rejected.length} non-traceable bullet(s) from agent output`,
+    );
   }
 
   // Rebuild the file using only accepted bullets, grouped under their original sections.
@@ -238,9 +259,11 @@ async function consolidateFile(label: string, path: string): Promise<void> {
   const merged = countMerges(inputBullets, accepted);
   recordHousekeepingNote(
     label,
-    `${label}: dropped ${dropped} entr${dropped === 1 ? 'y' : 'ies'}, merged ${merged} duplicate(s)`
+    `${label}: dropped ${dropped} entr${dropped === 1 ? 'y' : 'ies'}, merged ${merged} duplicate(s)`,
   );
-  logger.system(`[memory] housekeeping consolidated ${label}: ${inputBullets.length} → ${accepted.length} bullet(s)`);
+  logger.system(
+    `[memory] housekeeping consolidated ${label}: ${inputBullets.length} → ${accepted.length} bullet(s)`,
+  );
 }
 
 // ============================================================================
@@ -265,7 +288,7 @@ async function runHousekeeperAgent(fileContent: string): Promise<string> {
   const agent = query({
     prompt,
     options: {
-      model: 'sonnet' as any,
+      model: 'sonnet',
       maxTurns: 1,
       tools: [],
       executable: 'node',
@@ -274,8 +297,12 @@ async function runHousekeeperAgent(fileContent: string): Promise<string> {
         ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
         // Forward CA-trust to the spawned CLI (TLS-intercepting proxy); no-op when unset.
         // Adds TLS trust only — not tools/permissions — so the minimal-env invariant holds.
-        ...(process.env.NODE_USE_SYSTEM_CA ? { NODE_USE_SYSTEM_CA: process.env.NODE_USE_SYSTEM_CA } : {}),
-        ...(process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS } : {}),
+        ...(process.env.NODE_USE_SYSTEM_CA
+          ? { NODE_USE_SYSTEM_CA: process.env.NODE_USE_SYSTEM_CA }
+          : {}),
+        ...(process.env.NODE_EXTRA_CA_CERTS
+          ? { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS }
+          : {}),
         PATH: process.env.PATH,
       },
       stderr: (data: string) => {
@@ -287,7 +314,7 @@ async function runHousekeeperAgent(fileContent: string): Promise<string> {
   let responseText = '';
   for await (const event of agent) {
     if (event.type === 'assistant') {
-      const content = (event as any).message?.content;
+      const content = event.message?.content;
       if (Array.isArray(content)) {
         for (const block of content) {
           if (block.type === 'text' && typeof block.text === 'string') {
@@ -297,7 +324,7 @@ async function runHousekeeperAgent(fileContent: string): Promise<string> {
       }
     }
     if (event.type === 'result' && event.subtype === 'success') {
-      const r = (event as any).result;
+      const r = event.result;
       if (typeof r === 'string' && r.trim()) responseText = r;
     }
   }
@@ -343,11 +370,13 @@ function rebuildFile(originalContent: string, accepted: BulletInfo[]): string {
   const bySection = new Map<string, BulletInfo[]>();
   for (const b of accepted) {
     const key = b.section ?? '';
-    if (!bySection.has(key)) {
-      bySection.set(key, []);
+    let bullets = bySection.get(key);
+    if (!bullets) {
+      bullets = [];
+      bySection.set(key, bullets);
       if (b.section) sectionOrder.push(b.section);
     }
-    bySection.get(key)!.push(b);
+    bullets.push(b);
   }
 
   // Sort each section's bullets by touched date desc (untouched go last).
@@ -362,7 +391,7 @@ function rebuildFile(originalContent: string, accepted: BulletInfo[]): string {
 
   const out: string[] = [];
   let inSection = false;
-  let sectionEmitted = new Set<string>();
+  const sectionEmitted = new Set<string>();
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const sectionMatch = /^##\s+(.+?)\s*$/.exec(line);
@@ -387,7 +416,12 @@ function rebuildFile(originalContent: string, accepted: BulletInfo[]): string {
     if (!inSection) out.push(line);
   }
 
-  return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
+  return (
+    out
+      .join('\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trimEnd() + '\n'
+  );
 }
 
 function renderBullet(b: BulletInfo): string {
@@ -407,7 +441,7 @@ function renderBullet(b: BulletInfo): string {
  */
 export function validateTraceBack(
   inputs: BulletInfo[],
-  outputs: BulletInfo[]
+  outputs: BulletInfo[],
 ): { accepted: BulletInfo[]; rejected: BulletInfo[] } {
   const accepted: BulletInfo[] = [];
   const rejected: BulletInfo[] = [];
@@ -432,7 +466,11 @@ export function traceBackOutput(inputs: BulletInfo[], out: BulletInfo): boolean 
 }
 
 function normalise(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function normalisedEditDistance(a: string, b: string): number {
@@ -445,8 +483,8 @@ function levenshtein(a: string, b: string): number {
   if (a === b) return 0;
   if (a.length === 0) return b.length;
   if (b.length === 0) return a.length;
-  const prev = new Array(b.length + 1);
-  const curr = new Array(b.length + 1);
+  const prev = new Array<number>(b.length + 1);
+  const curr = new Array<number>(b.length + 1);
   for (let j = 0; j <= b.length; j++) prev[j] = j;
   for (let i = 1; i <= a.length; i++) {
     curr[0] = i;

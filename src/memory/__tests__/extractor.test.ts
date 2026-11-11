@@ -7,6 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildExtractionPrompt, parseExtractionResponse } from '../extractor.js';
 import type { ExtractionInput } from '../extractor.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const baseInput: ExtractionInput = {
   userMemory: '## alice\n- Prefers async\n',
@@ -107,21 +108,30 @@ describe('parseExtractionResponse(json)', () => {
   it('parses valid JSON and returns ExtractionResult', () => {
     const result = parseExtractionResponse(validResponse);
     expect(result).not.toBeNull();
-    expect(result!.user_updates.alice).toHaveLength(1);
-    expect(result!.task_summary).toBe('Task was completed successfully with major refactor.');
-    expect(result!.activity_summary).toBe('Refactored auth module');
-    expect(result!.domain).toBe('engineering');
+    expect(expectDefined(result).user_updates.alice).toHaveLength(1);
+    expect(expectDefined(result).task_summary).toBe(
+      'Task was completed successfully with major refactor.',
+    );
+    expect(expectDefined(result).activity_summary).toBe('Refactored auth module');
+    expect(expectDefined(result).domain).toBe('engineering');
   });
 
   it('preserves an optional Slack source timestamp on profile updates', () => {
     const response = JSON.stringify({
       ...JSON.parse(validResponse),
       user_updates: {
-        alice: [{ action: 'add', content: 'Prefers concise updates', source_message_ts: '1700000000.123456' }],
+        alice: [
+          {
+            action: 'add',
+            content: 'Prefers concise updates',
+            source_message_ts: '1700000000.123456',
+          },
+        ],
       },
     });
-    expect(parseExtractionResponse(response)?.user_updates.alice[0].source_message_ts)
-      .toBe('1700000000.123456');
+    expect(parseExtractionResponse(response)?.user_updates.alice[0].source_message_ts).toBe(
+      '1700000000.123456',
+    );
   });
 
   it('returns null for invalid JSON', () => {
@@ -188,15 +198,27 @@ describe('parseExtractionResponse(json)', () => {
   });
 
   it('normalizes allowed domains and rejects arbitrary or multiline values', () => {
-    const normalized = parseExtractionResponse(JSON.stringify({
-      user_updates: {}, task_summary: 'x', activity_summary: 'y', domain: ' Engineering ',
-    }));
+    const normalized = parseExtractionResponse(
+      JSON.stringify({
+        user_updates: {},
+        task_summary: 'x',
+        activity_summary: 'y',
+        domain: ' Engineering ',
+      }),
+    );
     expect(normalized?.domain).toBe('engineering');
 
     for (const domain of ['finance', 'engineering\nAPI_KEY=abcdefghijklmnopqrstuvwxyz123456']) {
-      expect(parseExtractionResponse(JSON.stringify({
-        user_updates: {}, task_summary: 'x', activity_summary: 'y', domain,
-      }))).toBeNull();
+      expect(
+        parseExtractionResponse(
+          JSON.stringify({
+            user_updates: {},
+            task_summary: 'x',
+            activity_summary: 'y',
+            domain,
+          }),
+        ),
+      ).toBeNull();
     }
   });
 
@@ -204,34 +226,38 @@ describe('parseExtractionResponse(json)', () => {
     const wrapped = '```json\n' + validResponse + '\n```';
     const result = parseExtractionResponse(wrapped);
     expect(result).not.toBeNull();
-    expect(result!.domain).toBe('engineering');
+    expect(expectDefined(result).domain).toBe('engineering');
   });
 
   it('handles JSON wrapped in plain code fences (no language tag)', () => {
     const wrapped = '```\n' + validResponse + '\n```';
     const result = parseExtractionResponse(wrapped);
     expect(result).not.toBeNull();
-    expect(result!.domain).toBe('engineering');
+    expect(expectDefined(result).domain).toBe('engineering');
   });
 
   it('defaults entity_updates to [] when the field is absent', () => {
     const result = parseExtractionResponse(validResponse);
-    expect(result!.entity_updates).toEqual([]);
+    expect(expectDefined(result).entity_updates).toEqual([]);
   });
 
   it('parses well-formed entity_updates', () => {
     const withEntities = JSON.stringify({
       user_updates: {},
       entity_updates: [
-        { slug: 'payment-service', type: 'service', observations: [{ category: 'fact', text: 'NestJS' }] },
+        {
+          slug: 'payment-service',
+          type: 'service',
+          observations: [{ category: 'fact', text: 'NestJS' }],
+        },
       ],
       task_summary: 'x',
       activity_summary: 'y',
       domain: 'engineering',
     });
     const result = parseExtractionResponse(withEntities);
-    expect(result!.entity_updates).toHaveLength(1);
-    expect(result!.entity_updates[0].slug).toBe('payment-service');
+    expect(expectDefined(result).entity_updates).toHaveLength(1);
+    expect(expectDefined(result).entity_updates[0].slug).toBe('payment-service');
   });
 
   it('tolerates malformed entity updates by dropping them, not failing the result', () => {
@@ -248,8 +274,8 @@ describe('parseExtractionResponse(json)', () => {
     });
     const result = parseExtractionResponse(mixed);
     expect(result).not.toBeNull();
-    expect(result!.entity_updates).toHaveLength(1);
-    expect(result!.entity_updates[0].slug).toBe('good-entity');
+    expect(expectDefined(result).entity_updates).toHaveLength(1);
+    expect(expectDefined(result).entity_updates[0].slug).toBe('good-entity');
   });
 
   it('treats a non-array entity_updates as empty', () => {
@@ -262,7 +288,7 @@ describe('parseExtractionResponse(json)', () => {
     });
     const result = parseExtractionResponse(bad);
     expect(result).not.toBeNull();
-    expect(result!.entity_updates).toEqual([]);
+    expect(expectDefined(result).entity_updates).toEqual([]);
   });
 
   it('parses valid result with empty user_updates', () => {
@@ -274,7 +300,7 @@ describe('parseExtractionResponse(json)', () => {
     });
     const result = parseExtractionResponse(minimal);
     expect(result).not.toBeNull();
-    expect(Object.keys(result!.user_updates)).toHaveLength(0);
+    expect(Object.keys(expectDefined(result).user_updates)).toHaveLength(0);
   });
 
   it('validates user updates also have action and content', () => {
@@ -304,7 +330,9 @@ describe('parseExtractionResponse(json)', () => {
   it('rejects a non-string profile source timestamp', () => {
     const bad = JSON.stringify({
       user_updates: { alice: [{ action: 'add', content: 'x', source_message_ts: 123 }] },
-      task_summary: 'x', activity_summary: 'y', domain: 'engineering',
+      task_summary: 'x',
+      activity_summary: 'y',
+      domain: 'engineering',
     });
     expect(parseExtractionResponse(bad)).toBeNull();
   });

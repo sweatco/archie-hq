@@ -27,14 +27,32 @@ vi.mock('../persistence.js', async (importOriginal) => ({
   appendAgentFinding: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('../../system/logger.js', () => ({
-  logger: { warn: vi.fn(), system: vi.fn(), error: vi.fn(), debug: vi.fn(), agent: vi.fn(), slack: vi.fn() },
+  logger: {
+    warn: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    agent: vi.fn(),
+    slack: vi.fn(),
+  },
 }));
 
 import { Task } from '../task.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
-const TaskCtor = Task as unknown as new (taskId: string, metadata: TaskMetadata, pmDef: AgentDef) => Task;
+const TaskCtor = Task as unknown as new (
+  taskId: string,
+  metadata: TaskMetadata,
+  pmDef: AgentDef,
+) => Task;
 const PM_DEF = {
-  id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', pluginName: 'core', visibility: 'global', isPm: true,
+  id: 'pm-agent',
+  key: 'pm',
+  role: 'PM',
+  expertise: '',
+  pluginName: 'core',
+  visibility: 'global',
+  isPm: true,
 } as AgentDef;
 
 function pendingTrigger(): Trigger {
@@ -50,13 +68,22 @@ function pendingTrigger(): Trigger {
 }
 
 function task(): Task {
-  const value = new TaskCtor('task-20260831-0000-approve1', {
-    task_id: 'task-20260831-0000-approve1',
-    channels: {}, default_channel: null, memory_destination: { channel_id: 'C07PRIVATE1' },
-    agent_sessions: {}, repositories: [], status: 'in_progress',
-    pending_trigger_id: 'trg-20260831-0000-abc123',
-    created_at: '2026-08-31T00:00:00.000Z', updated_at: '2026-08-31T00:00:00.000Z',
-  }, PM_DEF);
+  const value = new TaskCtor(
+    'task-20260831-0000-approve1',
+    {
+      task_id: 'task-20260831-0000-approve1',
+      channels: {},
+      default_channel: null,
+      memory_destination: { channel_id: 'C07PRIVATE1' },
+      agent_sessions: {},
+      repositories: [],
+      status: 'in_progress',
+      pending_trigger_id: 'trg-20260831-0000-abc123',
+      created_at: '2026-08-31T00:00:00.000Z',
+      updated_at: '2026-08-31T00:00:00.000Z',
+    },
+    PM_DEF,
+  );
   vi.spyOn(value, 'prepareTriggerDelivery');
   return value;
 }
@@ -74,8 +101,8 @@ describe('trigger approval destination check', () => {
 
     await expect(value.handleTriggerApproval('U07APPROVER')).resolves.toBeNull();
 
-    expect(value.prepareTriggerDelivery).toHaveBeenCalledWith(state.trigger!.binding);
+    expect(value.prepareTriggerDelivery).toHaveBeenCalledWith(expectDefined(state.trigger).binding);
     expect(state.enable).not.toHaveBeenCalled();
-    expect(value.metadata.pending_trigger_id).toBe(state.trigger!.id);
+    expect(value.metadata.pending_trigger_id).toBe(expectDefined(state.trigger).id);
   });
 });

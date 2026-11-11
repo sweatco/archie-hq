@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { mainCheckoutFrom, planPreparation, rewritePort, renderPlan, parseArgs, PORT_SCAN_RANGE, type TreeState } from './prepare-worktree.js';
+import {
+  mainCheckoutFrom,
+  planPreparation,
+  rewritePort,
+  renderPlan,
+  parseArgs,
+  PORT_SCAN_RANGE,
+  type TreeState,
+} from './prepare-worktree.js';
 
 const MAIN = '/repos/archie-hq';
 
@@ -61,13 +69,22 @@ describe('planPreparation — a cold worktree', () => {
     expect(plan.actions).toEqual([
       { kind: 'link', path: 'workdir', from: `${MAIN}/workdir` },
       { kind: 'link', path: 'claude-data', from: `${MAIN}/claude-data` },
-      { kind: 'copy-secrets', from: `${MAIN}/secrets`, entries: ['github-private-key.pem', 'oauth'], replacesSymlink: false },
+      {
+        kind: 'copy-secrets',
+        from: `${MAIN}/secrets`,
+        entries: ['github-private-key.pem', 'oauth'],
+        replacesSymlink: false,
+      },
       { kind: 'write-env', from: `${MAIN}/.env`, port: '3117' },
     ]);
   });
 
   it('links over an empty directory a previous boot left behind', () => {
-    const plan = planPreparation(state({ workdir: 'empty-dir', claudeData: 'empty-dir' }), MAIN, '3117');
+    const plan = planPreparation(
+      state({ workdir: 'empty-dir', claudeData: 'empty-dir' }),
+      MAIN,
+      '3117',
+    );
     expect(plan.actions.filter((a) => a.kind === 'link')).toHaveLength(2);
   });
 });
@@ -75,7 +92,13 @@ describe('planPreparation — a cold worktree', () => {
 describe('planPreparation — idempotence and non-destruction', () => {
   it('is a no-op on an already-prepared worktree', () => {
     const plan = planPreparation(
-      state({ workdir: 'symlink', claudeData: 'symlink', secrets: 'dir', secretsMissing: [], dotenv: 'file' }),
+      state({
+        workdir: 'symlink',
+        claudeData: 'symlink',
+        secrets: 'dir',
+        secretsMissing: [],
+        dotenv: 'file',
+      }),
       MAIN,
       '3117',
     );
@@ -97,7 +120,11 @@ describe('planPreparation — idempotence and non-destruction', () => {
   });
 
   it('tops up a partially-populated secrets/ with only the missing entries', () => {
-    const plan = planPreparation(state({ secrets: 'dir', secretsMissing: ['oauth'] }), MAIN, '3117');
+    const plan = planPreparation(
+      state({ secrets: 'dir', secretsMissing: ['oauth'] }),
+      MAIN,
+      '3117',
+    );
     expect(plan.actions).toContainEqual({
       kind: 'copy-secrets',
       from: `${MAIN}/secrets`,
@@ -109,14 +136,22 @@ describe('planPreparation — idempotence and non-destruction', () => {
 
 describe('planPreparation — the Docker build-context asymmetry', () => {
   it('replaces a symlinked secrets/ with a real copy of every entry', () => {
-    const plan = planPreparation(state({ secrets: 'symlink', secretsMissing: ['github-private-key.pem'] }), MAIN, '3117');
+    const plan = planPreparation(
+      state({ secrets: 'symlink', secretsMissing: ['github-private-key.pem'] }),
+      MAIN,
+      '3117',
+    );
     const copy = plan.actions.find((a) => a.kind === 'copy-secrets');
     expect(copy).toMatchObject({ replacesSymlink: true, entries: ['github-private-key.pem'] });
     expect(renderPlan(plan).join('\n')).toMatch(/replacing a symlink/);
   });
 
   it('leaves symlinked workdir/claude-data as they are — bind mounts do follow them', () => {
-    const plan = planPreparation(state({ workdir: 'symlink', claudeData: 'symlink' }), MAIN, '3117');
+    const plan = planPreparation(
+      state({ workdir: 'symlink', claudeData: 'symlink' }),
+      MAIN,
+      '3117',
+    );
     expect(plan.actions.some((a) => a.kind === 'link')).toBe(false);
   });
 });

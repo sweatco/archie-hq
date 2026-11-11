@@ -19,6 +19,7 @@ import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render } from 'ink-testing-library';
 import { TaskDetail } from './TaskDetail.js';
+import type { CliSystemEvent as Ev } from '../api-contract.js';
 
 const { fetchTaskDetail, fetchTaskEvents, sendMessage, sendApproval } = vi.hoisted(() => ({
   fetchTaskDetail: vi.fn(),
@@ -32,12 +33,20 @@ const TASK_ID = 'task-20260729-1200-abc123';
 const NEXT_WAKE = '2026-08-01T17:00:00.000Z';
 const CLOCK = '⏰';
 
-type Ev = { type: string; taskId: string; data: Record<string, unknown>; timestamp: string };
 let seq = 0;
-const ev = (type: string, data: Record<string, unknown> = {}): Ev => ({
-  type, taskId: TASK_ID, data, timestamp: `2026-08-01T05:00:0${seq++}.000Z`,
+const ev = (type: Ev['type'], data: Record<string, unknown> = {}): Ev => ({
+  type,
+  taskId: TASK_ID,
+  data,
+  timestamp: `2026-08-01T05:00:0${seq++}.000Z`,
 });
-const armed = () => ev('reminder:set', { trigger_at: NEXT_WAKE, reason: 'offer-code check', cron: '0 5,17 * * *', tz: 'UTC' });
+const armed = () =>
+  ev('reminder:set', {
+    trigger_at: NEXT_WAKE,
+    reason: 'offer-code check',
+    cron: '0 5,17 * * *',
+    tz: 'UTC',
+  });
 const fired = () => ev('reminder:fired', { reason: 'offer-code check' });
 
 /**
@@ -46,7 +55,9 @@ const fired = () => ev('reminder:fired', { reason: 'offer-code check' });
  * nothing about the indicator this AC is actually about.
  */
 async function headerFor(events: Ev[]): Promise<string> {
-  const { lastFrame } = render(<TaskDetail taskId={TASK_ID} onBack={() => {}} liveEvents={events} />);
+  const { lastFrame } = render(
+    <TaskDetail taskId={TASK_ID} onBack={() => {}} liveEvents={events} />,
+  );
   await new Promise((r) => setTimeout(r, 30));
   const header = (lastFrame() ?? '').split('\n').find((l) => l.includes('Task:'));
   if (header === undefined) throw new Error('header line not rendered');

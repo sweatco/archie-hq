@@ -1,4 +1,4 @@
-# Archie HQ — CI workflow (typecheck, build, test, gitleaks secret scan).
+# Archie HQ — CI workflow (format, lint, typecheck, build, test, gitleaks secret scan).
 
 name: CI
 
@@ -20,7 +20,10 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - run: corepack enable npm
       - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
       - run: npm run typecheck
       - run: npm run build
       - run: npm test

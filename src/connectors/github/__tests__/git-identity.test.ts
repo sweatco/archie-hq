@@ -24,7 +24,14 @@ const BOT_EMAIL = `${APP_ID}+${APP_SLUG}[bot]@users.noreply.github.com`;
 
 let tmpDir: string;
 let repoPath: string;
-let savedEnv: { id?: string; slug?: string; workdir?: string; login?: string; userId?: string; name?: string };
+let savedEnv: {
+  id?: string;
+  slug?: string;
+  workdir?: string;
+  login?: string;
+  userId?: string;
+  name?: string;
+};
 
 /**
  * Read a key from the repo's own config, or null when unset. Scoped to
@@ -96,7 +103,9 @@ describe('configureGitIdentity', () => {
 
     expect(name).toBe('Archie HQ');
     expect(await readConfig(repoPath, 'user.name')).toBe('Archie HQ');
-    expect(await readConfig(repoPath, 'user.email')).toBe('302249786+archie-hq@users.noreply.github.com');
+    expect(await readConfig(repoPath, 'user.email')).toBe(
+      '302249786+archie-hq@users.noreply.github.com',
+    );
   });
 
   it('falls back to the bot identity when no account is configured', async () => {
@@ -148,7 +157,7 @@ describe('configureGitIdentity', () => {
 describe('getArchieAttributionIdentity', () => {
   const USER_ID = '302249786';
 
-  it('builds a noreply address from the account\'s user ID', () => {
+  it("builds a noreply address from the account's user ID", () => {
     process.env.ARCHIE_GITHUB_LOGIN = 'archie-hq';
     process.env.ARCHIE_GITHUB_USER_ID = USER_ID;
     process.env.ARCHIE_GITHUB_NAME = 'Archie HQ';

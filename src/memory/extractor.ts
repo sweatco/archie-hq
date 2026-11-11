@@ -113,7 +113,8 @@ function isValidUpdate(u: unknown): u is MemoryUpdate {
   const obj = u as Record<string, unknown>;
   if (obj.action !== 'add' && obj.action !== 'update') return false;
   if (typeof obj.content !== 'string') return false;
-  if (obj.source_message_ts !== undefined && typeof obj.source_message_ts !== 'string') return false;
+  if (obj.source_message_ts !== undefined && typeof obj.source_message_ts !== 'string')
+    return false;
   return true;
 }
 
@@ -151,7 +152,7 @@ function parseEntityUpdates(raw: unknown): EntityUpdate[] {
  */
 export function parseExtractionResponse(
   response: string,
-  allowedUserIds?: Set<string>
+  allowedUserIds?: Set<string>,
 ): ExtractionResult | null {
   // Strip markdown code fences (```json ... ``` or ``` ... ```)
   const stripped = response
@@ -178,7 +179,12 @@ export function parseExtractionResponse(
   if (!isAllowedDomain(domain)) return null;
 
   // Validate user_updates is a plain object (not array, not null)
-  if (typeof obj.user_updates !== 'object' || obj.user_updates === null || Array.isArray(obj.user_updates)) return null;
+  if (
+    typeof obj.user_updates !== 'object' ||
+    obj.user_updates === null ||
+    Array.isArray(obj.user_updates)
+  )
+    return null;
   const userUpdates = obj.user_updates as Record<string, unknown>;
   const filteredUserUpdates: Record<string, MemoryUpdate[]> = {};
   for (const username of Object.keys(userUpdates)) {
@@ -188,7 +194,10 @@ export function parseExtractionResponse(
       if (!isValidUpdate(u)) return null;
     }
     if (allowedUserIds && !allowedUserIds.has(username)) {
-      logger.warn('memory', `parseExtractionResponse: dropping ${updates.length} update(s) for unknown user "${username}"`);
+      logger.warn(
+        'memory',
+        `parseExtractionResponse: dropping ${updates.length} update(s) for unknown user "${username}"`,
+      );
       continue;
     }
     filteredUserUpdates[username] = updates as MemoryUpdate[];
@@ -218,7 +227,7 @@ export function parseExtractionResponse(
  */
 export async function runExtraction(
   input: ExtractionInput,
-  allowedUserIds?: Set<string>
+  allowedUserIds?: Set<string>,
 ): Promise<ExtractionResult | null> {
   let prompt: string;
   try {
@@ -232,7 +241,7 @@ export async function runExtraction(
     const agentQuery = query({
       prompt,
       options: {
-        model: 'sonnet' as any,
+        model: 'sonnet',
         maxTurns: 1,
         tools: [],
         executable: 'node',
@@ -241,8 +250,12 @@ export async function runExtraction(
           ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
           // Forward CA-trust to the spawned CLI (TLS-intercepting proxy); no-op when unset.
           // Adds TLS trust only — not tools/permissions — so the minimal-env invariant holds.
-          ...(process.env.NODE_USE_SYSTEM_CA ? { NODE_USE_SYSTEM_CA: process.env.NODE_USE_SYSTEM_CA } : {}),
-          ...(process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS } : {}),
+          ...(process.env.NODE_USE_SYSTEM_CA
+            ? { NODE_USE_SYSTEM_CA: process.env.NODE_USE_SYSTEM_CA }
+            : {}),
+          ...(process.env.NODE_EXTRA_CA_CERTS
+            ? { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS }
+            : {}),
           PATH: process.env.PATH,
         },
         stderr: (data: string) => {
@@ -255,7 +268,7 @@ export async function runExtraction(
 
     for await (const event of agentQuery) {
       if (event.type === 'assistant') {
-        const content = (event as any).message?.content;
+        const content = event.message?.content;
         if (Array.isArray(content)) {
           for (const block of content) {
             if (block.type === 'text' && typeof block.text === 'string') {
@@ -266,13 +279,16 @@ export async function runExtraction(
       }
       if (event.type === 'result') {
         if (event.subtype === 'success') {
-          const resultText = (event as any).result;
+          const resultText = event.result;
           if (typeof resultText === 'string' && resultText.trim()) {
             responseText = resultText;
           }
         } else {
-          const errs = ((event as any).errors as string[] | undefined)?.join('; ') ?? '';
-          logger.warn('memory', `Extraction agent for task ${input.taskId} ended with subtype=${event.subtype}${errs ? `: ${errs}` : ''}`);
+          const errs = (event.errors as string[] | undefined)?.join('; ') ?? '';
+          logger.warn(
+            'memory',
+            `Extraction agent for task ${input.taskId} ended with subtype=${event.subtype}${errs ? `: ${errs}` : ''}`,
+          );
         }
       }
     }
@@ -284,7 +300,10 @@ export async function runExtraction(
 
     const result = parseExtractionResponse(responseText, allowedUserIds);
     if (!result) {
-      logger.warn('memory', `Extraction agent for task ${input.taskId} returned unparseable response`);
+      logger.warn(
+        'memory',
+        `Extraction agent for task ${input.taskId} returned unparseable response`,
+      );
     }
     return result;
   } catch (err) {

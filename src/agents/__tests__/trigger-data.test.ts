@@ -10,6 +10,7 @@
 import { describe, it, expect } from 'vitest';
 import type { SandboxOptions } from '../sandbox.js';
 import { grantTriggerDataAccess, buildTriggerDataPromptSection } from '../trigger-data.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const TRIGGER_ID = 'trg-20260817-1200-abc123';
 const TRIGGER_DATA = `/workdir/triggers-data/${TRIGGER_ID}`;
@@ -48,7 +49,7 @@ describe('grantTriggerDataAccess', () => {
     const input: SandboxOptions = {
       ...base,
       allowReadPaths: [...base.allowReadPaths],
-      allowWritePaths: [...base.allowWritePaths!],
+      allowWritePaths: [...expectDefined(base.allowWritePaths)],
     };
     grantTriggerDataAccess(input, TRIGGER_DATA);
     expect(input.allowWritePaths).not.toContain(TRIGGER_DATA);
@@ -72,7 +73,9 @@ describe('buildTriggerDataPromptSection', () => {
   // Here rather than in the seed message, which reaches the PM alone while a delegated
   // agent holds the same directory.
   it('tells the agent to load the trigger-task skill', () => {
-    expect(buildTriggerDataPromptSection(TRIGGER_ID, TRIGGER_DATA)).toContain('`trigger-task` skill');
+    expect(buildTriggerDataPromptSection(TRIGGER_ID, TRIGGER_DATA)).toContain(
+      '`trigger-task` skill',
+    );
   });
 
   // A named tool dates the prompt to one runtime's tool set.
@@ -109,7 +112,9 @@ describe('buildTriggerDataPromptSection listing', () => {
   });
 
   it('uses the singular for one entry', () => {
-    expect(buildTriggerDataPromptSection(TRIGGER_ID, P, ['only.md'])).toContain('Contents (1 entry)');
+    expect(buildTriggerDataPromptSection(TRIGGER_ID, P, ['only.md'])).toContain(
+      'Contents (1 entry)',
+    );
   });
 
   it('caps the listing so a runaway directory cannot grow every later prompt without bound', () => {
@@ -122,7 +127,7 @@ describe('buildTriggerDataPromptSection listing', () => {
     expect(out.split('\n').filter((l) => l.startsWith('- ')).length).toBe(51); // 50 names + the truncation line
   });
 
-  it('does not mutate the caller\'s array while sorting', () => {
+  it("does not mutate the caller's array while sorting", () => {
     const entries = ['z.md', 'a.md'];
     buildTriggerDataPromptSection(TRIGGER_ID, P, entries);
     expect(entries).toEqual(['z.md', 'a.md']);

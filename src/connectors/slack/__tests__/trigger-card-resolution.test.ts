@@ -25,18 +25,45 @@ import type { Trigger } from '../../../types/trigger.js';
 // registry — so `module` is mocked and its `createRequire` hands back a fake Bolt.
 // Unlike the sweep's fake, this one KEEPS the action handlers: they are the subject.
 const bolt = vi.hoisted(() => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const actions = new Map<string, (arg: any) => Promise<unknown>>();
+  const actions = new Map<
+    string,
+    (arg: {
+      ack: () => Promise<void>;
+      action: { value: string };
+      body: {
+        user: { id: string };
+        channel: { id: string };
+        message: { ts: string; thread_ts?: string };
+      };
+    }) => Promise<unknown>
+  >();
   class FakeApp {
     constructor(_opts: unknown) {}
     event(_name: string, _handler: unknown) {}
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    action(name: string, handler: (arg: any) => Promise<unknown>) { actions.set(name, handler); }
+    action(
+      name: string,
+      handler: (arg: {
+        ack: () => Promise<void>;
+        action: { value: string };
+        body: {
+          user: { id: string };
+          channel: { id: string };
+          message: { ts: string; thread_ts?: string };
+        };
+      }) => Promise<unknown>,
+    ) {
+      actions.set(name, handler);
+    }
     async start() {}
     async stop() {}
   }
-  class FakeReceiver { constructor(_opts: unknown) {} }
-  return { actions, exports: { App: FakeApp, ExpressReceiver: FakeReceiver, SocketModeReceiver: FakeReceiver } };
+  class FakeReceiver {
+    constructor(_opts: unknown) {}
+  }
+  return {
+    actions,
+    exports: { App: FakeApp, ExpressReceiver: FakeReceiver, SocketModeReceiver: FakeReceiver },
+  };
 });
 
 vi.mock('module', async (importOriginal) => {
@@ -45,20 +72,22 @@ vi.mock('module', async (importOriginal) => {
     ...actual,
     createRequire: (url: string | URL) => {
       const real = actual.createRequire(url);
-      const patched = (id: string) => (id === '@slack/bolt' ? bolt.exports : real(id));
+      const patched = (id: string): unknown => (id === '@slack/bolt' ? bolt.exports : real(id));
       return Object.assign(patched, real);
     },
   };
 });
 
-const { updateMessage } = vi.hoisted(() => ({ updateMessage: vi.fn().mockResolvedValue(undefined) }));
+const { updateMessage } = vi.hoisted(() => ({
+  updateMessage: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock('../client.js', () => ({
   initSlackClient: vi.fn(),
   updateMessage,
   getBotUserId: vi.fn().mockReturnValue('U_BOT'),
   fetchSlackThread: vi.fn(),
   getBotId: vi.fn().mockReturnValue('B_OURS'),
-  addReaction: vi.fn(),
+  addReaction: vi.fn().mockResolvedValue(undefined),
   setSlackDryRun: vi.fn(),
   getUserInfo: vi.fn(),
   isExternalUser: vi.fn().mockReturnValue(false),
@@ -69,24 +98,31 @@ vi.mock('../client.js', () => ({
   extractMessageContent: vi.fn(async () => ({ text: '' })),
 }));
 
-const { loadTrigger, deleteTrigger, enableProposedTrigger, withdrawPendingTrigger } = vi.hoisted(() => {
-  const loadTrigger = vi.fn();
-  const deleteTrigger = vi.fn().mockResolvedValue(undefined);
-  const enableProposedTrigger = vi.fn().mockResolvedValue(null);
-  // Faithful stand-in: the real one does the pending check and the removal
-  // together under the trigger's lock, which only a real filesystem can show
-  // (src/system/__tests__/trigger-store-concurrency.test.ts). Here it exists so
-  // the handler's own branches — which outcome renders which card — stay testable.
-  const withdrawPendingTrigger = vi.fn(async (id: string) => {
-    const t = await loadTrigger(id);
-    if (!t) return { outcome: 'gone' };
-    if (t.status !== 'pending') return { outcome: 'resolved', status: t.status };
-    await deleteTrigger(id);
-    return { outcome: 'withdrawn' };
-  });
-  return { loadTrigger, deleteTrigger, enableProposedTrigger, withdrawPendingTrigger };
-});
-vi.mock('../../../system/trigger-store.js', () => ({ loadTrigger, deleteTrigger, enableProposedTrigger, withdrawPendingTrigger }));
+const { loadTrigger, deleteTrigger, enableProposedTrigger, withdrawPendingTrigger } = vi.hoisted(
+  () => {
+    const loadTrigger = vi.fn<typeof import('../../../system/trigger-store.js').loadTrigger>();
+    const deleteTrigger = vi.fn().mockResolvedValue(undefined);
+    const enableProposedTrigger = vi.fn().mockResolvedValue(null);
+    // Faithful stand-in: the real one does the pending check and the removal
+    // together under the trigger's lock, which only a real filesystem can show
+    // (src/system/__tests__/trigger-store-concurrency.test.ts). Here it exists so
+    // the handler's own branches — which outcome renders which card — stay testable.
+    const withdrawPendingTrigger = vi.fn(async (id: string) => {
+      const t = await loadTrigger(id);
+      if (!t) return { outcome: 'gone' };
+      if (t.status !== 'pending') return { outcome: 'resolved', status: t.status };
+      await deleteTrigger(id);
+      return { outcome: 'withdrawn' };
+    });
+    return { loadTrigger, deleteTrigger, enableProposedTrigger, withdrawPendingTrigger };
+  },
+);
+vi.mock('../../../system/trigger-store.js', () => ({
+  loadTrigger,
+  deleteTrigger,
+  enableProposedTrigger,
+  withdrawPendingTrigger,
+}));
 
 vi.mock('../../../system/trigger-scheduler.js', () => ({
   getChannelMessageTriggers: vi.fn().mockReturnValue([]),
@@ -97,12 +133,16 @@ vi.mock('../../../system/trigger-scheduler.js', () => ({
   // is pinned in src/system/__tests__/trigger-approval-blocks.test.ts; what these
   // tests check is the WIRING — which branch passes blocks through, which clears them.
   triggerCapExceeded: vi.fn().mockResolvedValue(false),
-  buildTriggerApprovalBlocks: vi.fn((t: Trigger, notice?: string) => [{ type: 'actions', triggerId: t.id, notice }]),
+  buildTriggerApprovalBlocks: vi.fn((t: Trigger, notice?: string) => [
+    { type: 'actions', triggerId: t.id, notice },
+  ]),
   indexTrigger: vi.fn(),
   announceTriggerChange: vi.fn().mockResolvedValue(undefined),
 }));
 
-const { findTaskByThread } = vi.hoisted(() => ({ findTaskByThread: vi.fn().mockResolvedValue(undefined) }));
+const { findTaskByThread } = vi.hoisted(() => ({
+  findTaskByThread: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock('../../../tasks/persistence.js', () => ({
   findTaskByThread,
   readKnowledgeLog: vi.fn(),
@@ -115,23 +155,42 @@ const { taskGet, updateSlackMessageSafely } = vi.hoisted(() => ({
   taskGet: vi.fn(),
   updateSlackMessageSafely: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock('../../../tasks/task.js', () => ({ Task: { get: taskGet, create: vi.fn() }, activeTasks: new Map() }));
+vi.mock('../../../tasks/task.js', () => ({
+  Task: { get: taskGet, create: vi.fn() },
+  activeTasks: new Map(),
+}));
 
 vi.mock('../channel-canvas.js', () => ({ ensureChannelCanvas: vi.fn() }));
 vi.mock('../channel-pins.js', () => ({ ensureChannelPins: vi.fn() }));
 vi.mock('../title.js', () => ({ setAssistantThreadTitle: vi.fn() }));
 vi.mock('../../../tasks/title-generator.js', () => ({ generateTaskTitle: vi.fn() }));
-vi.mock('../../../system/shutdown.js', () => ({ getIsShuttingDown: vi.fn().mockReturnValue(false) }));
-vi.mock('../../../system/event-bus.js', () => ({ onEvent: vi.fn(), offEvent: vi.fn(), emitEvent: vi.fn() }));
-vi.mock('../../../system/workdir.js', () => ({ SESSIONS_DIR: '/tmp/sessions', WORKDIR: '/tmp/workdir' }));
+vi.mock('../../../system/shutdown.js', () => ({
+  getIsShuttingDown: vi.fn().mockReturnValue(false),
+}));
+vi.mock('../../../system/event-bus.js', () => ({
+  onEvent: vi.fn(),
+  offEvent: vi.fn(),
+  emitEvent: vi.fn(),
+}));
+vi.mock('../../../system/workdir.js', () => ({
+  SESSIONS_DIR: '/tmp/sessions',
+  WORKDIR: '/tmp/workdir',
+}));
 vi.mock('../../../system/logger.js', () => ({
   logger: {
-    system: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), info: vi.fn(),
-    plain: vi.fn(), server: vi.fn(), slack: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    warn: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    plain: vi.fn(),
+    server: vi.fn(),
+    slack: vi.fn(),
   },
 }));
 
 import { mountSlackApp } from '../events.js';
+import { expectDefined } from '../../../test-support/assertions.js';
 
 const TRIGGER_ID = 'trg-20260729-1056-6nd69p';
 
@@ -143,7 +202,14 @@ function makeTrigger(status: Trigger['status']): Trigger {
     created_by: 'U_REQ',
     created_at: '2026-07-29T10:56:00.000Z',
     binding: { type: 'channel', channel_id: 'C_STANDUP', channel_name: 'standup' },
-    conditions: [{ type: 'schedule', cron: '0 9 * * 1-5', tz: 'Europe/London', next_run_at: '2026-07-30T08:00:00.000Z' }],
+    conditions: [
+      {
+        type: 'schedule',
+        cron: '0 9 * * 1-5',
+        tz: 'Europe/London',
+        next_run_at: '2026-07-30T08:00:00.000Z',
+      },
+    ],
     action: { prompt: 'post the digest' },
   } as Trigger;
 }
@@ -154,24 +220,26 @@ const clickBody = {
   channel: { id: 'C_THREAD' },
   message: { ts: '1722250000.000100', thread_ts: '1722249000.000100' },
 };
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function click(actionId: 'approve_trigger' | 'deny_trigger'): Promise<void> {
   const handler = bolt.actions.get(actionId);
   expect(handler, `${actionId} handler was never registered`).toBeDefined();
-  await handler!({ action: { value: TRIGGER_ID }, ack: vi.fn().mockResolvedValue(undefined), body: clickBody });
+  await expectDefined(handler)({
+    action: { value: TRIGGER_ID },
+    ack: vi.fn().mockResolvedValue(undefined),
+    body: clickBody,
+  });
 }
 
 /** The text the card was rewritten to. */
 function cardText(): string {
   expect(updateSlackMessageSafely).toHaveBeenCalledTimes(1);
-  return updateSlackMessageSafely.mock.calls[0]![2] as string;
+  return expectDefined(updateSlackMessageSafely.mock.calls[0])[2] as string;
 }
 
 /** The blocks the card was rewritten to. Empty means the buttons were retired. */
 function cardBlocks(): unknown[] {
   expect(updateSlackMessageSafely).toHaveBeenCalledTimes(1);
-  return updateSlackMessageSafely.mock.calls[0]![3] as unknown[];
+  return expectDefined(updateSlackMessageSafely.mock.calls[0])[3] as unknown[];
 }
 
 beforeEach(async () => {
@@ -180,7 +248,10 @@ beforeEach(async () => {
   enableProposedTrigger.mockResolvedValue(null);
   deleteTrigger.mockResolvedValue(undefined);
   findTaskByThread.mockResolvedValue(undefined);
-  await mountSlackApp({} as Application, { slackBotToken: 'xoxb-test', slackAppToken: 'xapp-test' });
+  await mountSlackApp({} as Application, {
+    slackBotToken: 'xoxb-test',
+    slackAppToken: 'xapp-test',
+  });
 });
 
 describe('deny_trigger — with no task, the status gate still holds', () => {
@@ -209,10 +280,13 @@ describe('deny_trigger — with no task, the status gate still holds', () => {
   });
 });
 
-describe('deny_trigger — the card reports the task handler\'s real outcome', () => {
+describe("deny_trigger — the card reports the task handler's real outcome", () => {
   function withTask(result: unknown) {
     findTaskByThread.mockResolvedValue('task-20260729-1054-e0dc5w');
-    taskGet.mockResolvedValue({ handleTriggerDenial: vi.fn().mockResolvedValue(result), updateSlackMessageSafely });
+    taskGet.mockResolvedValue({
+      handleTriggerDenial: vi.fn().mockResolvedValue(result),
+      updateSlackMessageSafely,
+    });
   }
 
   it('says declined only when something was really withdrawn', async () => {
@@ -256,7 +330,10 @@ describe('approve_trigger — the card reads the real state instead of guessing'
   // speculative causes. Each branch below is a distinct real state.
   function withTask(returned: Trigger | null) {
     findTaskByThread.mockResolvedValue('task-20260729-1054-e0dc5w');
-    taskGet.mockResolvedValue({ handleTriggerApproval: vi.fn().mockResolvedValue(returned), updateSlackMessageSafely });
+    taskGet.mockResolvedValue({
+      handleTriggerApproval: vi.fn().mockResolvedValue(returned),
+      updateSlackMessageSafely,
+    });
   }
 
   it('confirms the automation when the approval really enabled it', async () => {
@@ -309,7 +386,9 @@ describe('approve_trigger — the card reads the real state instead of guessing'
     await click('approve_trigger');
 
     const blocks = cardBlocks();
-    expect(blocks.length, 'a cap refusal must re-render the card, not retire it').toBeGreaterThan(0);
+    expect(blocks.length, 'a cap refusal must re-render the card, not retire it').toBeGreaterThan(
+      0,
+    );
     expect(blocks).toMatchObject([{ type: 'actions', triggerId: TRIGGER_ID }]);
     // The notice is carried into the card, not only into the fallback text.
     expect((blocks[0] as { notice?: string }).notice).toContain('active-trigger limit was reached');

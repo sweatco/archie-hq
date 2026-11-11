@@ -18,7 +18,7 @@ on:
     branches: [main]
   schedule:
     # Weekly, Mondays 03:27 UTC (catches newly-published advisories on a cadence).
-    - cron: "27 3 * * 1"
+    - cron: '27 3 * * 1'
 
 permissions:
   contents: read
@@ -48,4 +48,4 @@ jobs:
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
         with:
-          category: "/language:javascript-typescript"
+          category: '/language:javascript-typescript'

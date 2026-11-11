@@ -43,13 +43,23 @@ const err = (text: string) => ({ content: [{ type: 'text' as const, text: `Error
 const HARD_MAX_BYTES = 10 * 1024 * 1024; // 10 MB raw (~13.4 MB base64)
 
 function extractResultText(result: unknown): { text: string; isError: boolean } {
-  const r = result as { content?: Array<{ type?: string; text?: string }>; isError?: boolean } | null;
+  const r = result as {
+    content?: Array<{ type?: string; text?: string }>;
+    isError?: boolean;
+  } | null;
   const isError = r?.isError === true;
   const parts = Array.isArray(r?.content)
-    ? r!.content.filter((c) => c?.type === 'text' && typeof c.text === 'string').map((c) => c.text as string)
+    ? r.content
+        .filter((c) => c?.type === 'text' && typeof c.text === 'string')
+        .map((c) => c.text as string)
     : [];
   const text = parts.join('\n').trim();
-  return { text: text || (isError ? '(tool reported an error with no message)' : '(tool returned no text content)'), isError };
+  return {
+    text:
+      text ||
+      (isError ? '(tool reported an error with no message)' : '(tool returned no text content)'),
+    isError,
+  };
 }
 
 /** Shape of an entry in the live server map that the bridge can forward to. */
@@ -60,7 +70,7 @@ export function createSendFileToMcpTool(agent: Agent, liveServers: Record<string
     'send_file_to_mcp_tool',
     "Call a tool on one of your connected MCP servers, injecting local files' raw bytes (base64-encoded) as named arguments of the tool. " +
       'Use this whenever an MCP tool needs the CONTENTS of a binary/large file you have on disk (e.g. an image to upload) — you cannot paste file bytes into a normal tool call yourself, so hand this tool the file PATH(s) and it reads and forwards the bytes for you. ' +
-      'Files must be inside your readable sandbox (e.g. the shared attachments folder), and the server must be one you are already connected to. Returns the target tool\'s response verbatim.',
+      "Files must be inside your readable sandbox (e.g. the shared attachments folder), and the server must be one you are already connected to. Returns the target tool's response verbatim.",
     {
       server: z
         .string()
@@ -73,18 +83,26 @@ export function createSendFileToMcpTool(agent: Agent, liveServers: Record<string
           z.object({
             path: z
               .string()
-              .describe('Absolute path to the local file whose bytes to send. Must be inside your readable sandbox.'),
+              .describe(
+                'Absolute path to the local file whose bytes to send. Must be inside your readable sandbox.',
+              ),
             argument: z
               .string()
-              .describe('Name of the target tool\'s argument that should receive this file\'s base64-encoded contents, e.g. "image_base64".'),
+              .describe(
+                'Name of the target tool\'s argument that should receive this file\'s base64-encoded contents, e.g. "image_base64".',
+              ),
           }),
         )
         .min(1)
-        .describe('Files to inject into the tool call — usually one; each goes to a distinct target argument.'),
+        .describe(
+          'Files to inject into the tool call — usually one; each goes to a distinct target argument.',
+        ),
       arguments: z
         .record(z.string(), z.any())
         .optional()
-        .describe('Other arguments to pass to the target tool as a JSON object, e.g. { "offer_id": 123, "dry_run": true }.'),
+        .describe(
+          'Other arguments to pass to the target tool as a JSON object, e.g. { "offer_id": 123, "dry_run": true }.',
+        ),
     },
     async (args) => {
       // 1. Resolve the target server off the LIVE server map — the same one the
@@ -100,7 +118,9 @@ export function createSendFileToMcpTool(agent: Agent, liveServers: Record<string
             .filter(([, c]) => (c?.type ?? 'http') === 'http' && typeof c?.url === 'string')
             .map(([name]) => name)
             .join(', ') || '(none)';
-        return err(`You are not connected to an MCP server named "${args.server}". Your forwardable servers: ${avail}.`);
+        return err(
+          `You are not connected to an MCP server named "${args.server}". Your forwardable servers: ${avail}.`,
+        );
       }
       const type = cfg.type ?? 'http';
       if (type !== 'http' || !cfg.url) {
@@ -121,10 +141,17 @@ export function createSendFileToMcpTool(agent: Agent, liveServers: Record<string
       const serverWideName = `mcp__${args.server}`;
       const denied = agent.def.disallowedTools ?? [];
       if (denied.includes(qualifiedName) || denied.includes(serverWideName)) {
-        return err(`Tool "${args.tool_name}" on "${args.server}" is disallowed for you and cannot be called through this bridge.`);
+        return err(
+          `Tool "${args.tool_name}" on "${args.server}" is disallowed for you and cannot be called through this bridge.`,
+        );
       }
       const allowed = agent.def.tools;
-      if (allowed && allowed.length > 0 && !allowed.includes(qualifiedName) && !allowed.includes(serverWideName)) {
+      if (
+        allowed &&
+        allowed.length > 0 &&
+        !allowed.includes(qualifiedName) &&
+        !allowed.includes(serverWideName)
+      ) {
         return err(
           `Tool "${args.tool_name}" on "${args.server}" is not in your allowed tools list and cannot be called through this bridge.`,
         );
@@ -134,7 +161,9 @@ export function createSendFileToMcpTool(agent: Agent, liveServers: Record<string
       const argNames = args.files.map((f) => f.argument);
       const dupe = argNames.find((name, i) => argNames.indexOf(name) !== i);
       if (dupe) {
-        return err(`Two files target the same argument "${dupe}" — each file must go to a distinct argument.`);
+        return err(
+          `Two files target the same argument "${dupe}" — each file must go to a distinct argument.`,
+        );
       }
 
       // 4. Validate every path is inside the agent's readable sandbox before
@@ -145,7 +174,10 @@ export function createSendFileToMcpTool(agent: Agent, liveServers: Record<string
       const resolved: Array<{ path: string; argument: string }> = [];
       for (const f of args.files) {
         try {
-          resolved.push({ path: await assertReadable(f.path, agent.sandbox), argument: f.argument });
+          resolved.push({
+            path: await assertReadable(f.path, agent.sandbox),
+            argument: f.argument,
+          });
         } catch (e) {
           return err(e instanceof Error ? e.message : String(e));
         }
@@ -204,7 +236,10 @@ export function createSendFileToMcpTool(agent: Agent, liveServers: Record<string
           : ok(text);
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);
-        logger.error('mcp-file-bridge', `send_file_to_mcp_tool failed (${args.server}/${args.tool_name}): ${reason}`);
+        logger.error(
+          'mcp-file-bridge',
+          `send_file_to_mcp_tool failed (${args.server}/${args.tool_name}): ${reason}`,
+        );
         return err(`Failed to call "${args.tool_name}" on "${args.server}": ${reason}`);
       } finally {
         try {

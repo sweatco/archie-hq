@@ -87,7 +87,7 @@ export function decideEgress(v: ProbeVerdicts): EgressDecision {
   }
   if (v.yarnProxy !== 'mapped') {
     reasons.push(
-      'the sandbox proxy did not reach Yarn Berry\'s config keys (YARN_HTTPS_PROXY unset) — check BASH_ENV and scripts/sandbox-shell-env.sh; yarn 2+ ignores HTTPS_PROXY and will fail DNS resolution',
+      "the sandbox proxy did not reach Yarn Berry's config keys (YARN_HTTPS_PROXY unset) — check BASH_ENV and scripts/sandbox-shell-env.sh; yarn 2+ ignores HTTPS_PROXY and will fail DNS resolution",
     );
   }
   if (v.packageInstall !== 'ok') {
@@ -117,7 +117,9 @@ async function resolveContainer(exec: ExecFn): Promise<{ name: string } | { erro
   if (!parsed.ok) return { error: `could not read compose ps output: ${parsed.error}` };
   const container = parsed.containers.find((c) => c.service === SERVICE);
   if (!container) {
-    return { error: `no running "${SERVICE}" container — boot an instance first (npx tsx tools/e2e/boot.ts)` };
+    return {
+      error: `no running "${SERVICE}" container — boot an instance first (npx tsx tools/e2e/boot.ts)`,
+    };
   }
   return { name: container.name };
 }
@@ -138,8 +140,15 @@ export async function runEgressCheck(exec: ExecFn, io: EgressCheckIo): Promise<n
 
   io.log(`Running egress probe in ${container.name} (spawns one throwaway sandboxed agent) ...`);
   const run = await exec('docker', [
-    'exec', '-u', 'archie', '-w', '/app', container.name,
-    'bash', '-lc', `mkdir -p /tmp/egress-check-ws && npx tsx ${PROBE_REMOTE}`,
+    'exec',
+    '-u',
+    'archie',
+    '-w',
+    '/app',
+    container.name,
+    'bash',
+    '-lc',
+    `mkdir -p /tmp/egress-check-ws && npx tsx ${PROBE_REMOTE}`,
   ]);
   const output = `${run.stdout}\n${run.stderr}`;
 

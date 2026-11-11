@@ -3,10 +3,7 @@ import { portFromDotenv, resolveBaseUrl, resolveTimeoutSeconds } from './config.
 
 describe('resolveBaseUrl — precedence', () => {
   it('ARCHIE_URL wins over everything', () => {
-    const url = resolveBaseUrl(
-      { ARCHIE_URL: 'http://remote:8080', PORT: '4000' },
-      'PORT=5000\n',
-    );
+    const url = resolveBaseUrl({ ARCHIE_URL: 'http://remote:8080', PORT: '4000' }, 'PORT=5000\n');
     expect(url).toBe('http://remote:8080');
   });
 

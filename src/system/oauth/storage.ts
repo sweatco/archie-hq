@@ -8,7 +8,7 @@
  *   { plaintext meta..., envelope: { ... } }
  */
 
-import { join } from 'path';
+import { join, resolve, sep } from 'path';
 import { readdir } from 'fs/promises';
 import { OAUTH_DIR, OAUTH_PENDING_DIR } from '../workdir.js';
 import {
@@ -36,27 +36,26 @@ function assertSafeServerName(name: string): void {
   }
 }
 
-function assertSafeState(state: string): void {
-  // Match what generateState() produces (base64url) to keep paths safe.
-  if (!/^[A-Za-z0-9_-]+$/.test(state)) {
-    throw new Error(`Invalid OAuth state token "${state}"`);
-  }
-}
-
 export function vaultPathFor(serverName: string): string {
   assertSafeServerName(serverName);
   return join(OAUTH_DIR, `${serverName}.json`);
 }
 
 export function pendingPathFor(state: string): string {
-  assertSafeState(state);
-  return join(OAUTH_PENDING_DIR, `${state}.json`);
+  // State must match the base64url tokens generated for OAuth attempts.
+  if (!/^[A-Za-z0-9_-]+$/.test(state)) {
+    throw new Error(`Invalid OAuth state token "${state}"`);
+  }
+  // Keep normalized containment explicit for static path analysis.
+  const root = resolve(OAUTH_PENDING_DIR);
+  const path = resolve(root, `${state}.json`);
+  if (!path.startsWith(root + sep)) {
+    throw new Error('OAuth state path escapes pending directory');
+  }
+  return path;
 }
 
-export async function writeOAuthRecord(
-  meta: OAuthRecordMeta,
-  sealed: OAuthSealed,
-): Promise<void> {
+export async function writeOAuthRecord(meta: OAuthRecordMeta, sealed: OAuthSealed): Promise<void> {
   const record: OAuthRecord = { ...meta, envelope: encryptJson(sealed) };
   await writeJsonAtomic(vaultPathFor(meta.server_name), record, 0o600);
 }
@@ -77,8 +76,8 @@ export async function listOAuthServers(): Promise<string[]> {
   let entries: string[];
   try {
     entries = await readdir(OAUTH_DIR);
-  } catch (err: any) {
-    if (err.code === 'ENOENT') return [];
+  } catch (err: unknown) {
+    if (err instanceof Error && 'code' in err && err.code === 'ENOENT') return [];
     throw err;
   }
   return entries
@@ -130,8 +129,8 @@ export async function reapStalePending(maxAgeMs: number): Promise<number> {
   let entries: string[];
   try {
     entries = await readdir(OAUTH_PENDING_DIR);
-  } catch (err: any) {
-    if (err.code === 'ENOENT') return 0;
+  } catch (err: unknown) {
+    if (err instanceof Error && 'code' in err && err.code === 'ENOENT') return 0;
     throw err;
   }
   const cutoffSec = Math.floor((Date.now() - maxAgeMs) / 1000);

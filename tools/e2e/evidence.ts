@@ -32,7 +32,13 @@ import { fileURLToPath, pathToFileURL } from 'url';
 
 export const EVIDENCE_SCHEMA = 'archie-e2e-evidence/v2' as const;
 
-export const TERMINAL_STATES = ['completed', 'stopped', 'approval_requested', 'pending', 'not_found'] as const;
+export const TERMINAL_STATES = [
+  'completed',
+  'stopped',
+  'approval_requested',
+  'pending',
+  'not_found',
+] as const;
 export type TerminalState = (typeof TERMINAL_STATES)[number];
 
 export interface EvidenceAssertion {
@@ -96,7 +102,8 @@ export function validateEvidence(payload: unknown): ValidationResult {
 
   const requireString = (field: string): void => {
     const v = payload[field];
-    if (typeof v !== 'string' || v.trim() === '') errors.push(`${field} must be a non-empty string`);
+    if (typeof v !== 'string' || v.trim() === '')
+      errors.push(`${field} must be a non-empty string`);
   };
   requireString('scenario');
   requireString('started_at');
@@ -104,8 +111,14 @@ export function validateEvidence(payload: unknown): ValidationResult {
   requireString('nonce');
   requireString('task_id');
 
-  if (typeof payload['scenario'] === 'string' && payload['scenario'] !== '' && !SCENARIO_PATTERN.test(payload['scenario'])) {
-    errors.push(`scenario must be kebab-case ([a-z0-9-], it names the output files); got "${payload['scenario']}"`);
+  if (
+    typeof payload['scenario'] === 'string' &&
+    payload['scenario'] !== '' &&
+    !SCENARIO_PATTERN.test(payload['scenario'])
+  ) {
+    errors.push(
+      `scenario must be kebab-case ([a-z0-9-], it names the output files); got "${payload['scenario']}"`,
+    );
   }
 
   if (!isStringArray(payload['ac_ids']) || payload['ac_ids'].length === 0) {
@@ -125,7 +138,9 @@ export function validateEvidence(payload: unknown): ValidationResult {
 
   const terminal = payload['terminal_state'];
   if (typeof terminal !== 'string' || !(TERMINAL_STATES as readonly string[]).includes(terminal)) {
-    errors.push(`terminal_state must be one of ${TERMINAL_STATES.join('|')} (got ${JSON.stringify(terminal)})`);
+    errors.push(
+      `terminal_state must be one of ${TERMINAL_STATES.join('|')} (got ${JSON.stringify(terminal)})`,
+    );
   }
 
   const assertions = payload['assertions'];
@@ -152,7 +167,8 @@ export function validateEvidence(payload: unknown): ValidationResult {
   if (!isRecord(excerpts)) {
     errors.push('excerpts must be an object with transcript and events arrays');
   } else {
-    if (!isStringArray(excerpts['transcript'])) errors.push('excerpts.transcript must be an array of strings');
+    if (!isStringArray(excerpts['transcript']))
+      errors.push('excerpts.transcript must be an array of strings');
     if (!Array.isArray(excerpts['events'])) errors.push('excerpts.events must be an array');
   }
 
@@ -163,7 +179,9 @@ export function validateEvidence(payload: unknown): ValidationResult {
     const allPass = assertions.every((a) => (a as Record<string, unknown>)['pass'] === true);
     const expected = allPass ? 'pass' : 'fail';
     if (result !== expected) {
-      errors.push(`result "${result}" is inconsistent with assertion outcomes (expected "${expected}" — result must equal the AND of assertion passes)`);
+      errors.push(
+        `result "${result}" is inconsistent with assertion outcomes (expected "${expected}" — result must equal the AND of assertion passes)`,
+      );
     }
   }
 
@@ -189,7 +207,9 @@ export function renderEvidenceMarkdown(e: Evidence): string {
   lines.push(`- **ACs covered:** ${e.ac_ids.join(', ')}`);
   lines.push(`- **Terminal state:** \`${e.terminal_state}\``);
   lines.push(`- **Started:** ${e.started_at} · **Finished:** ${e.finished_at}`);
-  lines.push(`- **Environment:** ${e.environment.base_url} · branch \`${e.environment.git_branch}\` · commit \`${e.environment.git_commit}\``);
+  lines.push(
+    `- **Environment:** ${e.environment.base_url} · branch \`${e.environment.git_branch}\` · commit \`${e.environment.git_commit}\``,
+  );
   lines.push(`- **Nonce:** \`${e.nonce}\` · **Task:** \`${e.task_id}\``);
   lines.push('');
   lines.push('## Assertions');
@@ -197,7 +217,9 @@ export function renderEvidenceMarkdown(e: Evidence): string {
   lines.push('| id | description | expected | observed | pass |');
   lines.push('|----|-------------|----------|----------|------|');
   for (const a of e.assertions) {
-    lines.push(`| ${cell(a.id)} | ${cell(a.description)} | ${cell(a.expected)} | ${cell(a.observed)} | ${a.pass ? 'PASS' : 'FAIL'} |`);
+    lines.push(
+      `| ${cell(a.id)} | ${cell(a.description)} | ${cell(a.expected)} | ${cell(a.observed)} | ${a.pass ? 'PASS' : 'FAIL'} |`,
+    );
   }
   lines.push('');
   lines.push('## Excerpts');
@@ -211,12 +233,18 @@ export function renderEvidenceMarkdown(e: Evidence): string {
   lines.push('### Events');
   lines.push('');
   lines.push('```json');
-  lines.push(e.excerpts.events.length > 0 ? e.excerpts.events.map((ev) => JSON.stringify(ev)).join('\n') : '(none)');
+  lines.push(
+    e.excerpts.events.length > 0
+      ? e.excerpts.events.map((ev) => JSON.stringify(ev)).join('\n')
+      : '(none)',
+  );
   lines.push('```');
   lines.push('');
   lines.push('## Verdict');
   lines.push('');
-  lines.push(`**${e.result.toUpperCase()}** — ${passCount}/${e.assertions.length} assertions passed.`);
+  lines.push(
+    `**${e.result.toUpperCase()}** — ${passCount}/${e.assertions.length} assertions passed.`,
+  );
   lines.push('');
   return lines.join('\n');
 }
@@ -235,17 +263,25 @@ export function parseEvidenceJson(input: string, source = 'stdin'): ParseResult 
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     // V8 phrases EOF-mid-document differently depending on where the input cuts off.
-    let truncated = /unexpected end of (json )?input|unterminated (string|fractional number) in json|end of data/i.test(msg);
+    let truncated =
+      /unexpected end of (json )?input|unterminated (string|fractional number) in json|end of data/i.test(
+        msg,
+      );
     // Truncation right after a complete value reports as a missing ',' or closer — but only
     // class it as truncation when the complaint is at the very end of the input; the same
     // message mid-input is genuine malformation.
     if (!truncated) {
-      const positional = /expected ',' or '[}\]]' after (?:property value|array element) in json at position (\d+)/i.exec(msg);
+      const positional =
+        /expected ',' or '[}\]]' after (?:property value|array element) in json at position (\d+)/i.exec(
+          msg,
+        );
       if (positional) truncated = Number(positional[1]) >= input.trimEnd().length;
     }
     return {
       ok: false,
-      error: truncated ? `truncated JSON input from ${source}: ${msg}` : `invalid JSON from ${source}: ${msg}`,
+      error: truncated
+        ? `truncated JSON input from ${source}: ${msg}`
+        : `invalid JSON from ${source}: ${msg}`,
     };
   }
 }
@@ -346,7 +382,9 @@ export async function runEvidenceWriter(
     io.log(`Evidence written: ${mdPath}`);
     return 0;
   } catch (err) {
-    io.error(`failed to write evidence pair: ${err instanceof Error ? err.message : String(err)} (no partial files left behind)`);
+    io.error(
+      `failed to write evidence pair: ${err instanceof Error ? err.message : String(err)} (no partial files left behind)`,
+    );
     return 1;
   }
 }
@@ -364,7 +402,7 @@ export function parseArgs(argv: string[]): { inFile?: string; outDir?: string } 
     return value;
   };
   for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i]!;
+    const arg = argv[i];
     if (arg === '--in') result.inFile = takeValue('--in', ++i);
     else if (arg.startsWith('--in=')) result.inFile = arg.slice('--in='.length);
     else if (arg === '--out-dir') result.outDir = takeValue('--out-dir', ++i);
@@ -378,7 +416,11 @@ export function parseArgs(argv: string[]): { inFile?: string; outDir?: string } 
  * Destination precedence: --out-dir flag → E2E_EVIDENCE_DIR env → default.
  * Set-but-empty values count as unset (consistent with config.ts port resolution).
  */
-export function resolveOutDir(flag: string | undefined, env: string | undefined, defaultDir: string): string {
+export function resolveOutDir(
+  flag: string | undefined,
+  env: string | undefined,
+  defaultDir: string,
+): string {
   if (flag) return flag;
   if (env) return env;
   return defaultDir;
@@ -424,7 +466,11 @@ async function main(): Promise<void> {
     source = 'stdin';
   }
 
-  const outDir = resolveOutDir(args.outDir, process.env.E2E_EVIDENCE_DIR, join(repoRoot, 'e2e-evidence'));
+  const outDir = resolveOutDir(
+    args.outDir,
+    process.env.E2E_EVIDENCE_DIR,
+    join(repoRoot, 'e2e-evidence'),
+  );
 
   const realFs: EvidenceFs = {
     mkdir: async (dir) => void (await fsp.mkdir(dir, { recursive: true })),

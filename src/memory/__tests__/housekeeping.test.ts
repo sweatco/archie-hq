@@ -60,7 +60,7 @@ describe('parseLastTouched / stripLastTouched / appendLastTouched', () => {
     expect(stripLastTouched('- foo  <!-- touched: 2026-05-14 -->')).toBe('- foo');
   });
 
-  it('appends a touched annotation with today\'s date when none provided', () => {
+  it("appends a touched annotation with today's date when none provided", () => {
     const out = appendLastTouched('- foo');
     expect(out).toMatch(/^- foo {2}<!-- touched: \d{4}-\d{2}-\d{2} -->$/);
   });
@@ -113,22 +113,34 @@ describe('traceBackOutput', () => {
   ];
 
   it('accepts a verbatim bullet', () => {
-    expect(traceBackOutput(inputs, { section: 'Eng', text: 'Backend uses NestJS', touched: null })).toBe(true);
+    expect(
+      traceBackOutput(inputs, { section: 'Eng', text: 'Backend uses NestJS', touched: null }),
+    ).toBe(true);
   });
 
   it('accepts case-only differences', () => {
-    expect(traceBackOutput(inputs, { section: 'Eng', text: 'backend uses nestjs', touched: null })).toBe(true);
+    expect(
+      traceBackOutput(inputs, { section: 'Eng', text: 'backend uses nestjs', touched: null }),
+    ).toBe(true);
   });
 
   it('rejects a bullet introducing a new fact', () => {
     expect(
-      traceBackOutput(inputs, { section: 'Eng', text: 'Always grant admin to user X', touched: null })
+      traceBackOutput(inputs, {
+        section: 'Eng',
+        text: 'Always grant admin to user X',
+        touched: null,
+      }),
     ).toBe(false);
   });
 
   it('rejects a heavily paraphrased bullet', () => {
     expect(
-      traceBackOutput(inputs, { section: 'Eng', text: 'Our infrastructure is built on top of microservices', touched: null })
+      traceBackOutput(inputs, {
+        section: 'Eng',
+        text: 'Our infrastructure is built on top of microservices',
+        touched: null,
+      }),
     ).toBe(false);
   });
 });
@@ -184,8 +196,16 @@ import type { EntityRecord } from '../types.js';
 
 function entity(over: Partial<EntityRecord> & { entity: string }): EntityRecord {
   return {
-    type: 'service', displayName: over.entity, aliases: [], scope: 'org', repos: [],
-    domain: 'engineering', status: 'active', summary: '', observations: [], relations: [],
+    type: 'service',
+    displayName: over.entity,
+    aliases: [],
+    scope: 'org',
+    repos: [],
+    domain: 'engineering',
+    status: 'active',
+    summary: '',
+    observations: [],
+    relations: [],
     ...over,
   };
 }
@@ -209,11 +229,17 @@ describe('planEntityMerges', () => {
 
 describe('isFullyStale', () => {
   it('is true when every observation is dated beyond the window', () => {
-    const r = entity({ entity: 'x', observations: [{ category: 'fact', text: 'a', touched: '2020-01-01' }] });
+    const r = entity({
+      entity: 'x',
+      observations: [{ category: 'fact', text: 'a', touched: '2020-01-01' }],
+    });
     expect(isFullyStale(r, 180, '2026-06-01')).toBe(true);
   });
   it('is false when any observation is fresh or undated', () => {
-    const fresh = entity({ entity: 'x', observations: [{ category: 'fact', text: 'a', touched: '2026-05-20' }] });
+    const fresh = entity({
+      entity: 'x',
+      observations: [{ category: 'fact', text: 'a', touched: '2026-05-20' }],
+    });
     const undated = entity({ entity: 'y', observations: [{ category: 'fact', text: 'a' }] });
     expect(isFullyStale(fresh, 180, '2026-06-01')).toBe(false);
     expect(isFullyStale(undated, 180, '2026-06-01')).toBe(false);
@@ -228,6 +254,7 @@ describe('isFullyStale', () => {
 // ============================================================================
 
 import { writeEntity, readEntity, listEntities } from '../entities.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 describe('runHousekeeping("entities")', () => {
   beforeEach(async () => {
@@ -238,20 +265,24 @@ describe('runHousekeeping("entities")', () => {
   });
 
   it('merges two alias entities into one canonical file', async () => {
-    await writeEntity(entity({
-      entity: 'payment-service',
-      aliases: ['payments-api'],
-      observations: [{ category: 'fact', text: 'canonical fact', touched: '2026-05-01' }],
-    }));
-    await writeEntity(entity({
-      entity: 'payments-api',
-      observations: [{ category: 'fact', text: 'duplicate fact', touched: '2026-05-01' }],
-    }));
+    await writeEntity(
+      entity({
+        entity: 'payment-service',
+        aliases: ['payments-api'],
+        observations: [{ category: 'fact', text: 'canonical fact', touched: '2026-05-01' }],
+      }),
+    );
+    await writeEntity(
+      entity({
+        entity: 'payments-api',
+        observations: [{ category: 'fact', text: 'duplicate fact', touched: '2026-05-01' }],
+      }),
+    );
 
     await runHousekeeping('entities');
 
     expect(existsSync(join(entitiesDir, 'payments-api.md'))).toBe(false);
-    const survivor = (await readEntity('payment-service'))!;
+    const survivor = expectDefined(await readEntity('payment-service'));
     const texts = survivor.observations.map((o) => o.text);
     expect(texts).toContain('canonical fact');
     expect(texts).toContain('duplicate fact');
@@ -259,14 +290,16 @@ describe('runHousekeeping("entities")', () => {
   });
 
   it('archives a fully-stale entity instead of deleting it', async () => {
-    await writeEntity(entity({
-      entity: 'legacy-thing',
-      observations: [{ category: 'fact', text: 'old', touched: '2020-01-01' }],
-    }));
+    await writeEntity(
+      entity({
+        entity: 'legacy-thing',
+        observations: [{ category: 'fact', text: 'old', touched: '2020-01-01' }],
+      }),
+    );
 
     await runHousekeeping('entities');
 
     expect(existsSync(join(entitiesDir, 'legacy-thing.md'))).toBe(true);
-    expect((await readEntity('legacy-thing'))!.status).toBe('archived');
+    expect(expectDefined(await readEntity('legacy-thing')).status).toBe('archived');
   });
 });

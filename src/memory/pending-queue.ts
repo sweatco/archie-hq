@@ -53,8 +53,8 @@ export async function readPending(): Promise<string[]> {
   let content: string;
   try {
     content = await readFile(path, 'utf-8');
-  } catch (err: any) {
-    if (err.code === 'ENOENT') return [];
+  } catch (err: unknown) {
+    if (err instanceof Error && 'code' in err && err.code === 'ENOENT') return [];
     throw err;
   }
   const ids: string[] = [];

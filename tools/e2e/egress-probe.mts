@@ -18,13 +18,16 @@
  */
 
 import { dirname } from 'node:path';
-import { query } from '/app/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs';
-import {
+// Absolute runtime imports resolve inside the container; local types describe the same mounted code.
+const sdkPath = '/app/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs';
+const { query } = (await import(sdkPath)) as typeof import('@anthropic-ai/claude-agent-sdk');
+const sandboxPath = '/app/src/agents/sandbox.ts';
+const {
   buildSandboxConfig,
   buildManagedNetworkPolicy,
   buildPackageManagerCacheEnv,
   TRUSTED_PACKAGE_REGISTRY_DOMAINS,
-} from '/app/src/agents/sandbox.ts';
+} = (await import(sandboxPath)) as typeof import('../../src/agents/sandbox.js');
 
 /** Not on any allowlist. Chosen because it is stable, unrelated to our stack, and safe to hit. */
 const DENIED_HOST = 'https://example.com';
@@ -77,8 +80,12 @@ const it = query({
       ...cacheEnv,
       // Same as spawn.ts: maps the sandbox proxy onto Yarn Berry's own config keys.
       ...(process.env.BASH_ENV ? { BASH_ENV: process.env.BASH_ENV } : {}),
-      ...(process.env.NODE_USE_SYSTEM_CA ? { NODE_USE_SYSTEM_CA: process.env.NODE_USE_SYSTEM_CA } : {}),
-      ...(process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS } : {}),
+      ...(process.env.NODE_USE_SYSTEM_CA
+        ? { NODE_USE_SYSTEM_CA: process.env.NODE_USE_SYSTEM_CA }
+        : {}),
+      ...(process.env.NODE_EXTRA_CA_CERTS
+        ? { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS }
+        : {}),
     },
     maxTurns: 8,
     permissionMode: 'bypassPermissions' as const,
@@ -106,16 +113,17 @@ function classify(transcript: string, label: string): 'blocked' | 'reachable' | 
 let transcript = '';
 let cliVersion = 'unknown';
 
-for await (const m of it as AsyncIterable<Record<string, any>>) {
+for await (const m of it) {
   if (m.type === 'system' && m.subtype === 'init') {
     cliVersion = String(m.claude_code_version ?? 'unknown');
   } else if (m.type === 'user' && Array.isArray(m.message?.content)) {
     for (const b of m.message.content) {
       if (b.type === 'tool_result') {
-        transcript += (typeof b.content === 'string' ? b.content : JSON.stringify(b.content)) + '\n';
+        transcript +=
+          (typeof b.content === 'string' ? b.content : JSON.stringify(b.content)) + '\n';
       }
     }
-  } else if (m.type === 'result') {
+  } else if (m.type === 'result' && m.subtype === 'success') {
     transcript += String(m.result ?? '') + '\n';
   }
 }

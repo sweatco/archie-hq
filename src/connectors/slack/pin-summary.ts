@@ -15,9 +15,9 @@ export const VERBATIM_MAX = 200;
 const SummarySchema = z.object({
   summary: z.string(),
 });
-const rawSummarySchema = toJSONSchema(SummarySchema) as Record<string, unknown>;
+const summaryJsonSchema = toJSONSchema(SummarySchema) as Record<string, unknown>;
 // Strip JSON Schema dialect URL — some SDK validators reject it.
-const { $schema: _drop, ...summaryJsonSchema } = rawSummarySchema;
+delete summaryJsonSchema.$schema;
 
 const SYSTEM_PROMPT = `You write a one-line index entry for a message someone pinned in a Slack channel.
 
@@ -40,7 +40,10 @@ Respond with JSON only.`;
  */
 export function normalisePinText(raw: string): string {
   return raw
-    .replace(/[\u0000-\u0008\u000e-\u001f\u007f\u00ad\u034f\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufe00-\ufe0f\ufeff\ufff9-\ufffb]|[\u{e0000}-\u{e007f}]/gu, '')
+    .replace(
+      /[\u0000-\u0008\u000e-\u001f\u007f\u00ad\u034f\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufe00-\ufe0f\ufeff\ufff9-\ufffb]|[\u{e0000}-\u{e007f}]/gu,
+      '',
+    )
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -63,9 +66,11 @@ export function unwrapJsonSummary(text: string): string {
   const t = text.trim();
   if (!t.startsWith('{') && !t.startsWith('[')) return text;
   try {
-    const parsed = JSON.parse(t);
+    const parsed: unknown = JSON.parse(t);
     if (parsed && typeof parsed === 'object') {
-      const strings = Object.values(parsed).filter((v): v is string => typeof v === 'string' && v.trim() !== '');
+      const strings = Object.values(parsed).filter(
+        (v): v is string => typeof v === 'string' && v.trim() !== '',
+      );
       if (strings.length === 1) return strings[0];
     }
   } catch {
@@ -89,7 +94,9 @@ export function truncateTo(text: string, max = VERBATIM_MAX): string {
  * Produce the one-line index entry for a pin's text, and say where it came from.
  * Never throws and never returns nothing for non-empty input.
  */
-export async function summarisePinText(raw: string): Promise<{ summary: string; source: 'verbatim' | 'model' }> {
+export async function summarisePinText(
+  raw: string,
+): Promise<{ summary: string; source: 'verbatim' | 'model' }> {
   const text = normalisePinText(raw);
   if (!text) return { summary: '', source: 'verbatim' };
   if (text.length <= VERBATIM_MAX) return { summary: text, source: 'verbatim' };
@@ -114,8 +121,12 @@ Respond with JSON only.`;
           NODE_ENV: process.env.NODE_ENV || 'development',
           ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
           // Forward CA-trust to the spawned CLI (TLS-intercepting proxy); no-op when unset.
-          ...(process.env.NODE_USE_SYSTEM_CA ? { NODE_USE_SYSTEM_CA: process.env.NODE_USE_SYSTEM_CA } : {}),
-          ...(process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS } : {}),
+          ...(process.env.NODE_USE_SYSTEM_CA
+            ? { NODE_USE_SYSTEM_CA: process.env.NODE_USE_SYSTEM_CA }
+            : {}),
+          ...(process.env.NODE_EXTRA_CA_CERTS
+            ? { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS }
+            : {}),
           PATH: process.env.PATH,
         },
         tools: [],
@@ -150,11 +161,14 @@ Respond with JSON only.`;
       // Three distinct reasons land here and they are worth telling apart: the model
       // answered with nothing, it answered in a shape the schema rejected (already warned
       // above), or the stream ended without a result event at all.
-      logger.warn('pin-summary', result
-        ? 'model returned an empty summary'
-        : sawResult
-          ? 'no usable summary in the result event'
-          : 'no result event from the haiku call');
+      logger.warn(
+        'pin-summary',
+        result
+          ? 'model returned an empty summary'
+          : sawResult
+            ? 'no usable summary in the result event'
+            : 'no result event from the haiku call',
+      );
       return { summary: truncateTo(text), source: 'verbatim' };
     }
     return { summary, source: 'model' };

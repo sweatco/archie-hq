@@ -50,7 +50,12 @@ export function prCardSubtitle(card: PrCardData, emoji: PrCardEmoji): string {
   if (card.state === 'merged') return `${repo} · ${emoji.merged} Merged`;
   if (card.state === 'closed') return `${repo} · ${emoji.closed} Closed`;
   if (card.ciTotal > 0) {
-    const icon = card.ci === 'passed' ? emoji.ciPassed : card.ci === 'failed' ? emoji.ciFailed : emoji.ciPending;
+    const icon =
+      card.ci === 'passed'
+        ? emoji.ciPassed
+        : card.ci === 'failed'
+          ? emoji.ciFailed
+          : emoji.ciPending;
     return `${repo} · ${icon} CI checks (${card.ciPassed}/${card.ciTotal})`;
   }
   return repo;
@@ -77,7 +82,8 @@ export function summarizeCi(
 ): { state: PrCardData['ci']; passed: number; total: number } {
   const total = entries.length;
   if (total === 0) return { state: 'none', passed: 0, total: 0 };
-  const isFailure = (c: string | null) => c === 'failure' || c === 'timed_out' || c === 'action_required';
+  const isFailure = (c: string | null) =>
+    c === 'failure' || c === 'timed_out' || c === 'action_required';
   let failed = 0;
   let pending = 0;
   let passed = 0;

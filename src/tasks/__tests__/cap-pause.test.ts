@@ -1,13 +1,18 @@
+import type { MockInstance } from 'vitest';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../../system/logger.js', () => ({
   logger: { warn: vi.fn(), system: vi.fn(), error: vi.fn(), debug: vi.fn(), agent: vi.fn() },
 }));
 
-const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
+const { spawnMock } = vi.hoisted(() => ({
+  spawnMock: vi.fn<typeof import('../../agents/spawn.js').spawnAgent>(),
+}));
 vi.mock('../../agents/spawn.js', () => ({ spawnAgent: spawnMock }));
 
-const { writeFileMock } = vi.hoisted(() => ({ writeFileMock: vi.fn().mockResolvedValue(undefined) }));
+const { writeFileMock } = vi.hoisted(() => ({
+  writeFileMock: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock('fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs/promises')>();
   return {
@@ -24,6 +29,7 @@ import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { MessageQueue } from '../../agents/message-queue.js';
 import type { TaskMetadata } from '../../types/task.js';
 import type { AgentDef } from '../../types/agent.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const TASK_ID = 'task-20260101-0000-cappause';
 
@@ -43,13 +49,25 @@ function metadata(over: Partial<TaskMetadata> = {}): TaskMetadata {
 }
 
 function pmDef(): AgentDef {
-  return { id: 'pm-agent', key: 'pm', visibility: 'global', role: 'PM', expertise: '', isPm: true, pluginName: 'pm' } as AgentDef;
+  return {
+    id: 'pm-agent',
+    key: 'pm',
+    visibility: 'global',
+    role: 'PM',
+    expertise: '',
+    isPm: true,
+    pluginName: 'pm',
+  } as AgentDef;
 }
 
-const TaskCtor = Task as unknown as new (taskId: string, metadata: TaskMetadata, pmDef: AgentDef) => Task;
+const TaskCtor = Task as unknown as new (
+  taskId: string,
+  metadata: TaskMetadata,
+  pmDef: AgentDef,
+) => Task;
 
 let aborts: ReturnType<typeof vi.fn>[];
-let addSpy: ReturnType<typeof vi.spyOn>;
+let addSpy: MockInstance<MessageQueue['addMessage']>;
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -76,8 +94,8 @@ async function parkByCap(meta: TaskMetadata): Promise<Task> {
   const task = new TaskCtor(TASK_ID, meta, pmDef());
   vi.spyOn(task, 'postToUser').mockResolvedValue(null);
   await task.sendMessage('Roll out the new copy.');
-  task.agent!.updateSession(false);
-  task.agent!.backgroundTasks.add('worker-1');
+  expectDefined(task.agent).updateSession(false);
+  expectDefined(task.agent).backgroundTasks.add('worker-1');
   task.budgets.taskStartTime = new Date(Date.now() - task.budgets.taskTimeoutMs);
   await vi.advanceTimersByTimeAsync(60_000);
   return task;
@@ -97,8 +115,10 @@ describe('wall-clock cap park', () => {
     await vi.waitFor(() => expect(aborts[0]).toHaveBeenCalled());
 
     // A reply reopens the task from disk as a fresh instance.
-    const written = writeFileMock.mock.calls.filter((c: unknown[]) => String(c[0]).includes('/metadata.json.'));
-    const meta = JSON.parse(String(written.at(-1)![1])) as TaskMetadata;
+    const written = writeFileMock.mock.calls.filter((c: unknown[]) =>
+      String(c[0]).includes('/metadata.json.'),
+    );
+    const meta = JSON.parse(String(expectDefined(written.at(-1))[1])) as TaskMetadata;
     const reopened = new TaskCtor(TASK_ID, meta, pmDef());
     await reopened.sendMessage('please continue');
     await reopened.sendMessage('any update?');

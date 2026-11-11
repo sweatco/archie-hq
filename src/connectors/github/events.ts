@@ -7,6 +7,8 @@
 
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
+const express = require('express') as typeof import('express');
+import { z } from 'zod';
 
 import type { Application, Request, Response } from 'express';
 
@@ -23,7 +25,11 @@ import {
   extractBranchFromPayload,
 } from './webhooks.js';
 import { Task } from '../../tasks/task.js';
-import { appendGitHubEvent, findTaskByPRNumber, findTaskByBranch } from '../../tasks/persistence.js';
+import {
+  appendGitHubEvent,
+  findTaskByPRNumber,
+  findTaskByBranch,
+} from '../../tasks/persistence.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { findBranchStateByPR } from './branch-state.js';
 import { extractTaskIdFromBranch } from './branch-naming.js';
@@ -38,7 +44,7 @@ export function mountGitHubWebhook(app: Application, secret: string): void {
   logger.plain('GitHub webhook: POST /webhooks/github');
   app.post(
     '/webhooks/github',
-    require('express').raw({ type: 'application/json' }),
+    express.raw({ type: 'application/json' }),
     async (req: Request, res: Response) => {
       if (getIsShuttingDown()) {
         res.status(503).json({ error: 'Server is shutting down' });
@@ -53,7 +59,12 @@ export function mountGitHubWebhook(app: Application, secret: string): void {
         return;
       }
 
-      const payload = req.body.toString();
+      const body: unknown = req.body;
+      if (!Buffer.isBuffer(body)) {
+        res.status(400).json({ error: 'Expected a raw webhook body' });
+        return;
+      }
+      const payload = body.toString();
       if (!verifyWebhookSignature(payload, signature, secret)) {
         logger.warn('Server', 'Invalid GitHub webhook signature');
         res.status(401).json({ error: 'Invalid signature' });
@@ -65,13 +76,13 @@ export function mountGitHubWebhook(app: Application, secret: string): void {
 
       // Process inline (fire-and-forget)
       try {
-        const parsedPayload = JSON.parse(payload);
+        const parsedPayload = z.record(z.string(), z.unknown()).parse(JSON.parse(payload));
         await maybeDumpRawPayload(eventType, parsedPayload);
         await handleGitHubWebhook(eventType, parsedPayload);
       } catch (error) {
         logger.error('Server', 'Error processing GitHub webhook', error);
       }
-    }
+    },
   );
 }
 
@@ -83,7 +94,7 @@ export function mountGitHubWebhook(app: Application, secret: string): void {
  */
 async function maybeDumpRawPayload(
   eventType: string,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
 ): Promise<void> {
   if (process.env.ARCHIE_DEBUG_GITHUB_WEBHOOKS !== '1') return;
   try {
@@ -95,7 +106,10 @@ async function maybeDumpRawPayload(
     await writeFile(join(dir, fname), JSON.stringify(payload, null, 2));
     logger.system(`GitHub webhook: dumped raw payload to ${fname}`);
   } catch (error) {
-    logger.warn('Server', `Failed to dump webhook payload: ${error instanceof Error ? error.message : error}`);
+    logger.warn(
+      'Server',
+      `Failed to dump webhook payload: ${error instanceof Error ? error.message : error}`,
+    );
   }
 }
 
@@ -104,7 +118,7 @@ async function maybeDumpRawPayload(
  */
 async function handleGitHubWebhook(
   eventType: string,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
 ): Promise<void> {
   const context = formatGitHubContext(eventType, payload);
 
@@ -114,7 +128,7 @@ async function handleGitHubWebhook(
       (context.prNumber ? ` pr=#${context.prNumber}` : '') +
       (context.branch ? ` branch=${context.branch}` : '') +
       ` user=${context.user}` +
-      (context.state ? ` state=${context.state}` : '')
+      (context.state ? ` state=${context.state}` : ''),
   );
 
   // Keep PR cards fresh on CI completion and PR close, independent of the
@@ -159,7 +173,7 @@ const CARD_REFRESH_DEBOUNCE_MS = 2500;
 async function resolveCardTask(
   eventType: string,
   payload: Record<string, unknown>,
-  context: ReturnType<typeof formatGitHubContext>
+  context: ReturnType<typeof formatGitHubContext>,
 ): Promise<Task | null> {
   // Resolve the task *id* from the event: the `archie/{id}` branch pattern is a
   // pure regex (no disk); the branch / PR-number lookups are disk greps used
@@ -172,7 +186,9 @@ async function resolveCardTask(
     taskId = (await findTaskByPRNumber(context.githubRepo, context.prNumber)) ?? undefined;
   }
   if (!taskId) {
-    logger.system(`PR card: ${eventType}/${context.action} on ${context.githubRepo} (branch=${branch ?? '?'}, pr=${context.prNumber ?? '?'}) — no task resolved`);
+    logger.system(
+      `PR card: ${eventType}/${context.action} on ${context.githubRepo} (branch=${branch ?? '?'}, pr=${context.prNumber ?? '?'}) — no task resolved`,
+    );
     return null;
   }
 
@@ -196,7 +212,7 @@ async function resolveCardTask(
 async function maybeRefreshPrCards(
   eventType: string,
   payload: Record<string, unknown>,
-  context: ReturnType<typeof formatGitHubContext>
+  context: ReturnType<typeof formatGitHubContext>,
 ): Promise<void> {
   // Re-sync the card from a broad set of received PR events, not just CI
   // completions. Two reasons: (1) a check *appearing* (check_run.created, a
@@ -222,7 +238,9 @@ async function maybeRefreshPrCards(
     eventType === 'pull_request_review' ||
     eventType === 'pull_request_review_comment' ||
     (eventType === 'pull_request' &&
-      (context.action === 'synchronize' || context.action === 'opened' || context.action === 'reopened'));
+      (context.action === 'synchronize' ||
+        context.action === 'opened' ||
+        context.action === 'reopened'));
   if (!isCardRelevant) return;
 
   if (isPrClosed) {
@@ -242,17 +260,22 @@ async function maybeRefreshPrCards(
   const key = `${context.githubRepo}:${branch ?? context.prNumber ?? '?'}`;
   const existing = cardRefreshTimers.get(key);
   if (existing) clearTimeout(existing);
-  cardRefreshTimers.set(key, setTimeout(() => {
-    cardRefreshTimers.delete(key);
-    void (async () => {
-      try {
-        const task = await resolveCardTask(eventType, payload, context);
-        if (task) await task.refreshAllPrCards();
-      } catch (error) {
-        logger.warn('Server', `PR card CI refresh failed (${key})`, error);
-      }
-    })();
-  }, CARD_REFRESH_DEBOUNCE_MS));
+  cardRefreshTimers.set(
+    key,
+    setTimeout(() => {
+      cardRefreshTimers.delete(key);
+      void (async () => {
+        try {
+          const task = await resolveCardTask(eventType, payload, context);
+          if (task) await task.refreshAllPrCards();
+        } catch (error) {
+          logger.warn('Server', `PR card CI refresh failed (${key})`, error);
+        }
+      })().catch((error: unknown) =>
+        logger.error('Server', `PR card refresh failed (${key})`, error),
+      );
+    }, CARD_REFRESH_DEBOUNCE_MS),
+  );
 }
 
 /**
@@ -266,7 +289,7 @@ async function maybeRefreshPrCards(
  */
 async function handleExistingTaskDirect(
   taskId: string,
-  context: ReturnType<typeof formatGitHubContext>
+  context: ReturnType<typeof formatGitHubContext>,
 ): Promise<void> {
   const task = await Task.get(taskId);
 
@@ -285,7 +308,9 @@ async function handleExistingTaskDirect(
     }
 
     if (context.commentId <= lastProcessedId) {
-      logger.system(`GitHub: Skipping already-processed comment ${context.commentId} on PR #${context.prNumber}`);
+      logger.system(
+        `GitHub: Skipping already-processed comment ${context.commentId} on PR #${context.prNumber}`,
+      );
       return;
     }
 

@@ -5,13 +5,21 @@
  */
 import { describe, it, expect } from 'vitest';
 import type { Trigger } from '../../types/trigger.js';
-import { authorFilterMatches, isSlackAuthorId, isAppAuthorId, messageMatchesTrigger } from '../trigger-match.js';
+import {
+  authorFilterMatches,
+  isSlackAuthorId,
+  isAppAuthorId,
+  messageMatchesTrigger,
+} from '../trigger-match.js';
 
 const CHANNEL = 'C0WATCHED';
 
 function watcher(match?: { contains?: string; from_user?: string }): Trigger {
   return {
-    id: 'trg-1', status: 'enabled', created_by: 'U_DEV', created_at: '2026-08-20T00:00:00.000Z',
+    id: 'trg-1',
+    status: 'enabled',
+    created_by: 'U_DEV',
+    created_at: '2026-08-20T00:00:00.000Z',
     binding: { type: 'channel', channel_id: CHANNEL, channel_name: 'watched' },
     conditions: [{ type: 'channel_message', channel_id: CHANNEL, ...(match ? { match } : {}) }],
     action: { prompt: 'look into it' },
@@ -60,7 +68,11 @@ describe('isSlackAuthorId', () => {
 });
 
 describe('messageMatchesTrigger', () => {
-  const base = { channelId: CHANNEL, body: 'Expired Feature Flags Report — 200 flags', author: { botId: 'B_APP' } };
+  const base = {
+    channelId: CHANNEL,
+    body: 'Expired Feature Flags Report — 200 flags',
+    author: { botId: 'B_APP' },
+  };
 
   it('matches `contains` case-insensitively', () => {
     expect(messageMatchesTrigger(watcher({ contains: 'expired feature flags' }), base)).toBe(true);
@@ -80,7 +92,9 @@ describe('messageMatchesTrigger', () => {
   it('ignores a schedule condition entirely', () => {
     const t: Trigger = {
       ...watcher(),
-      conditions: [{ type: 'schedule', tz: 'UTC', cron: '0 9 * * *', next_run_at: '2026-09-03T09:00:00.000Z' }],
+      conditions: [
+        { type: 'schedule', tz: 'UTC', cron: '0 9 * * *', next_run_at: '2026-09-03T09:00:00.000Z' },
+      ],
     };
     expect(messageMatchesTrigger(t, base)).toBe(false);
   });

@@ -32,7 +32,7 @@ const PROMPTS_DIR = join(__dirname, '..', '..', 'prompts');
  */
 export async function loadPrompt(
   templateName: string,
-  variables: Record<string, string>
+  variables: Record<string, string>,
 ): Promise<string> {
   const templatePath = join(PROMPTS_DIR, `${templateName}.md`);
   let template = await readFile(templatePath, 'utf-8');
@@ -55,7 +55,7 @@ export async function loadPrompt(
  */
 export async function loadPromptFromPath(
   absolutePath: string,
-  variables: Record<string, string> = {}
+  variables: Record<string, string> = {},
 ): Promise<string> {
   let template = await readFile(absolutePath, 'utf-8');
 

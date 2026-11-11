@@ -1,3 +1,5 @@
+import { MessageQueue } from '../message-queue.js';
+import { mcpToolHandler } from '../../test-support/mcp.js';
 /**
  * Handler-level tests for `get_message_reactions`. The tool has to keep three
  * outcomes apart: reactions, genuinely none, and a read that failed. Rendering a
@@ -16,7 +18,9 @@ vi.mock('../../connectors/github/client.js', () => ({
 }));
 vi.mock('../../connectors/github/repo-clone.js', () => ({
   gitExec: vi.fn().mockResolvedValue(''),
-  setupSharedClone: vi.fn().mockResolvedValue({ clone_path: '/wt', branch: 'feat/x', base_branch: 'main' }),
+  setupSharedClone: vi
+    .fn()
+    .mockResolvedValue({ clone_path: '/wt', branch: 'feat/x', base_branch: 'main' }),
   cloneExists: vi.fn().mockResolvedValue(false),
   isWorktree: vi.fn().mockResolvedValue(false),
   fetchOrigin: vi.fn().mockResolvedValue(undefined),
@@ -27,7 +31,14 @@ vi.mock('../../tasks/persistence.js', () => ({
   isThreadMuted: vi.fn().mockResolvedValue(false),
 }));
 vi.mock('../../system/logger.js', () => ({
-  logger: { agentAction: vi.fn(), agentFinding: vi.fn(), agentToSlack: vi.fn(), system: vi.fn(), error: vi.fn(), warn: vi.fn() },
+  logger: {
+    agentAction: vi.fn(),
+    agentFinding: vi.fn(),
+    agentToSlack: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    warn: vi.fn(),
+  },
 }));
 vi.mock('../registry.js', () => ({
   getAgentIds: vi.fn().mockReturnValue([]),
@@ -49,7 +60,11 @@ import type { Task } from '../../tasks/task.js';
 import type { SlackReactionsResult } from '../../connectors/slack/client.js';
 
 function makeAgent(): Agent {
-  return { def: { id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', pluginName: 'pm', isPm: true }, queue: {} as any, session: { active: false } } as unknown as Agent;
+  return {
+    def: { id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', pluginName: 'pm', isPm: true },
+    queue: new MessageQueue(),
+    session: { active: false },
+  } as unknown as Agent;
 }
 
 /** A task whose reactions read returns exactly `outcome` (null = no channel resolved). */
@@ -58,20 +73,23 @@ function makeTask(outcome: SlackReactionsResult | null): Task {
   return {
     taskId: 'task-1',
     metadata: {
-      channels: { [key]: { type: 'slack', channel_id: 'C1', thread_id: '1.0', channel_name: 'origin' } },
+      channels: {
+        [key]: { type: 'slack', channel_id: 'C1', thread_id: '1.0', channel_name: 'origin' },
+      },
       default_channel: key,
     },
-    touch: vi.fn(), debouncedSave: vi.fn(), save: vi.fn().mockResolvedValue(undefined),
+    touch: vi.fn(),
+    debouncedSave: vi.fn(),
+    save: vi.fn().mockResolvedValue(undefined),
     readMessageReactions: vi.fn().mockResolvedValue(outcome),
   } as unknown as Task;
 }
 
-function getHandler(task: Task): (args: Record<string, unknown>) => Promise<{ content: { text: string }[] }> {
+function getHandler(
+  task: Task,
+): (args: Record<string, unknown>) => Promise<{ content: { text: string }[] }> {
   const server = createCommsMcpServer(makeAgent(), task);
-  const raw = (server.instance as any)._registeredTools ?? Object.fromEntries((server.instance as any)._tools ?? []);
-  const entry = raw['get_message_reactions'];
-  const fn = entry.callback ?? entry.handler ?? entry.cb;
-  return (args) => fn(args, {});
+  return mcpToolHandler(server, 'get_message_reactions');
 }
 
 async function textOf(result: { content: { text: string }[] }): Promise<string> {
@@ -104,14 +122,21 @@ describe('get_message_reactions renders failure, emptiness and reactions differe
   it('says "no reactions" only for a successful empty read', async () => {
     const read = getHandler(makeTask({ ok: true, reactions: [] }));
 
-    expect(await textOf(await read({ message_id: '100.0' }))).toBe('Message 100.0 has no reactions.');
+    expect(await textOf(await read({ message_id: '100.0' }))).toBe(
+      'Message 100.0 has no reactions.',
+    );
   });
 
   it('renders a non-empty read unchanged — emoji, count and who reacted', async () => {
-    const read = getHandler(makeTask({ ok: true, reactions: [
-      { name: 'eyes', count: 2, users: ['Sergei P', 'Egor K'] },
-      { name: 'thumbsup', count: 1 },
-    ] }));
+    const read = getHandler(
+      makeTask({
+        ok: true,
+        reactions: [
+          { name: 'eyes', count: 2, users: ['Sergei P', 'Egor K'] },
+          { name: 'thumbsup', count: 1 },
+        ],
+      }),
+    );
 
     const out = await textOf(await read({ message_id: '100.0' }));
 

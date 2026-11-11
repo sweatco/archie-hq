@@ -17,10 +17,18 @@ import type { AttachedRepo, SlackThreadMessage } from '../types/task.js';
 import type { Task } from '../tasks/task.js';
 import type { Agent } from './agent.js';
 import { isAutoMergeRepo } from './registry.js';
-import { getGitHubClient, parseCheckRef, getArchieAttributionIdentity } from '../connectors/github/client.js';
+import {
+  getGitHubClient,
+  parseCheckRef,
+  getArchieAttributionIdentity,
+} from '../connectors/github/client.js';
 import { buildAttributedBody } from '../connectors/github/pr-attribution.js';
 import { gitExec, ensureTaskClone, recordedBaseBranch } from '../connectors/github/repo-clone.js';
-import { hydrateBranchState, findBranchStateByPR, assignPrNumber } from '../connectors/github/branch-state.js';
+import {
+  hydrateBranchState,
+  findBranchStateByPR,
+  assignPrNumber,
+} from '../connectors/github/branch-state.js';
 import { taskBranchName } from '../connectors/github/branch-naming.js';
 import { appendAgentFinding, isThreadMuted, getTaskClonePath } from '../tasks/persistence.js';
 import { getBaseCachePath } from '../system/workdir.js';
@@ -50,7 +58,13 @@ import {
   buildOtherChannelContextSection,
 } from '../connectors/slack/channel-canvas.js';
 import { collectPinnedFileAllowlist } from '../connectors/slack/channel-pins.js';
-import { isDmOrUserId, findMutedTarget, taskSlackChannelIds, taskSlackChannelLabels, formatConversationLabel } from '../connectors/slack/channel-ids.js';
+import {
+  isDmOrUserId,
+  findMutedTarget,
+  taskSlackChannelIds,
+  taskSlackChannelLabels,
+  formatConversationLabel,
+} from '../connectors/slack/channel-ids.js';
 import {
   formatSlackSendError,
   formatSlackPostError,
@@ -87,7 +101,10 @@ function taskChannelIds(task: Task): Set<string> {
 /** Slack returns no name for a 1:1 DM, so its explore label comes from the task's own channel map. */
 function exploreChannelLabel(task: Task, channelId: string, apiName: string): string {
   if (apiName && apiName !== channelId) return formatConversationLabel(apiName);
-  return taskSlackChannelLabels(task.metadata).get(channelId) ?? formatConversationLabel(apiName || channelId);
+  return (
+    taskSlackChannelLabels(task.metadata).get(channelId) ??
+    formatConversationLabel(apiName || channelId)
+  );
 }
 
 /** Render explore messages in the same `@<id:name> | msg:ts` shape the PM sees elsewhere. */
@@ -101,7 +118,11 @@ export function formatExploreMessages(messages: SlackThreadMessage[]): string {
     })
     .join('\n\n');
 }
-import { scheduleReminder, cancelReminder, announceRecurrence } from '../system/reminder-scheduler.js';
+import {
+  scheduleReminder,
+  cancelReminder,
+  announceRecurrence,
+} from '../system/reminder-scheduler.js';
 import * as chrono from 'chrono-node';
 import { writeFile } from 'fs/promises';
 import { join } from 'path';
@@ -183,7 +204,10 @@ function getAttached(task: Task, github?: string): AttachedRepo | undefined {
  * task's single mounted repo is the default; with several mounted, the
  * argument is required.
  */
-function resolveGithub(task: Task, requested?: string): { ok: true; github: string } | { ok: false; error: string } {
+function resolveGithub(
+  task: Task,
+  requested?: string,
+): { ok: true; github: string } | { ok: false; error: string } {
   const mounted = task.metadata.repositories;
   if (requested) {
     // Answer with the identifier as this task recorded it, so casing typed by
@@ -201,24 +225,41 @@ function resolveGithub(task: Task, requested?: string): { ok: true; github: stri
   };
 }
 
+function hasLocalClone(
+  attached: AttachedRepo | undefined,
+): attached is AttachedRepo & { clone_path: string } {
+  return !!attached?.clone_path;
+}
+
 /**
  * Resolve and require that the github has a local clone available.
  *
  * The error tells the agent to mount rather than retry blindly.
  */
-function requireAttached(task: Task, requested?: string): { ok: true; github: string; attached: AttachedRepo } | { ok: false; error: string } {
+function requireAttached(
+  task: Task,
+  requested?: string,
+):
+  | { ok: true; github: string; attached: AttachedRepo & { clone_path: string } }
+  | { ok: false; error: string } {
   const resolved = resolveGithub(task, requested);
   if (!resolved.ok) return resolved;
   const attached = getAttached(task, resolved.github);
-  if (!attached?.clone_path) {
-    return { ok: false, error: `Repo "${resolved.github}" has no local clone. Call mount_repo("${resolved.github}") first.` };
+  if (!hasLocalClone(attached)) {
+    return {
+      ok: false,
+      error: `Repo "${resolved.github}" has no local clone. Call mount_repo("${resolved.github}") first.`,
+    };
   }
   return { ok: true, github: resolved.github, attached };
 }
 
-const githubArgSchema = z.string().optional().describe(
-  'Github identifier (e.g. "org/repo") of a repo mounted in this task. Optional when exactly one repo is mounted.',
-);
+const githubArgSchema = z
+  .string()
+  .optional()
+  .describe(
+    'Github identifier (e.g. "org/repo") of a repo mounted in this task. Optional when exactly one repo is mounted.',
+  );
 
 const execAsync = promisify(exec);
 
@@ -331,43 +372,59 @@ export interface PRChecksReport {
 // ---- PM tools ----
 
 function createPostToUserTool(agent: Agent, task: Task) {
-  if (task.metadata.approved_start) return tool(
-    'post_to_user',
-    'Reply in this task\'s approved owner conversation. The destination is fixed by the task; only supply the message.',
-    { message: z.string().describe('The message to send') },
-    async (args) => {
-      if (Object.keys(args).some(key => key !== 'message')) return err('Approved task replies do not accept a target.');
-      const muted = task.metadata.default_channel ? findMutedTarget(task.metadata.channels, task.metadata.default_channel) : null;
-      if (muted) return ok(formatMutedTargetRefusal(muted.channel_name));
-      task.touch();
-      try {
-        await task.postToUser(args.message, agent.def.id);
-        return ok('Message posted.');
-      } catch (e) { return ok(formatSlackSendError(e)); }
-    },
-  );
+  if (task.metadata.approved_start)
+    return tool(
+      'post_to_user',
+      "Reply in this task's approved owner conversation. The destination is fixed by the task; only supply the message.",
+      { message: z.string().describe('The message to send') },
+      async (args) => {
+        if (Object.keys(args).some((key) => key !== 'message'))
+          return err('Approved task replies do not accept a target.');
+        const muted = task.metadata.default_channel
+          ? findMutedTarget(task.metadata.channels, task.metadata.default_channel)
+          : null;
+        if (muted) return ok(formatMutedTargetRefusal(muted.channel_name));
+        task.touch();
+        try {
+          await task.postToUser(args.message, agent.def.id);
+          return ok('Message posted.');
+        } catch (e) {
+          return ok(formatSlackSendError(e));
+        }
+      },
+    );
   return tool(
     'post_to_user',
     'Send a message to the user in this task. Without target, posts to the default channel — wherever this task already lives (use that almost always). ' +
-    'Use target.channel only to reach another thread ALREADY linked to this task. ' +
-    'If this task lives in a channel thread, bring someone in by @mentioning them in that thread. ' +
-    'To say something in a channel that is NOT part of this task (exploration/outreach), use `post_to_channel` — it deliberately does not link to this task. ' +
-    'A muted channel is refused. ' +
-    'To attach files, send the message first, then call `post_files_to_user` with the same target.',
+      'Use target.channel only to reach another thread ALREADY linked to this task. ' +
+      'If this task lives in a channel thread, bring someone in by @mentioning them in that thread. ' +
+      'To say something in a channel that is NOT part of this task (exploration/outreach), use `post_to_channel` — it deliberately does not link to this task. ' +
+      'A muted channel is refused. ' +
+      'To attach files, send the message first, then call `post_files_to_user` with the same target.',
     {
       message: z.string().describe('The message to send'),
-      target: z.object({
-        channel: z.string().optional().describe('Channel key of an existing linked thread (e.g., "slack:C123:456.789")'),
-      }).optional().describe('Where to post. Omit to post to the default channel.'),
+      target: z
+        .object({
+          channel: z
+            .string()
+            .optional()
+            .describe('Channel key of an existing linked thread (e.g., "slack:C123:456.789")'),
+        })
+        .optional()
+        .describe('Where to post. Omit to post to the default channel.'),
     },
     async (args) => {
       const agentName = agent.def.id;
       const hasTarget = !!args.target?.channel;
       // A trigger-fired task has no thread yet but does have a home channel, and this call is exactly what opens that thread — so "no channels" is only "nowhere to post" when there is no home channel either.
-      if (!hasTarget && Object.keys(task.metadata.channels).length === 0 && !task.metadata.home_channel) {
+      if (
+        !hasTarget &&
+        Object.keys(task.metadata.channels).length === 0 &&
+        !task.metadata.home_channel
+      ) {
         return ok(
           'No channel is linked to this task, so there is nowhere to post. ' +
-          'Call report_completion() without a message to finish silently.'
+            'Call report_completion() without a message to finish silently.',
         );
       }
       const mutedKey = args.target?.channel ?? task.metadata.default_channel;
@@ -381,7 +438,9 @@ function createPostToUserTool(agent: Agent, task: Task) {
         return ok(formatSlackSendError(e));
       }
       if (newChannelKey) {
-        return ok(`Message posted. New channel linked: ${newChannelKey} (saved in task metadata for future use)`);
+        return ok(
+          `Message posted. New channel linked: ${newChannelKey} (saved in task metadata for future use)`,
+        );
       }
       return ok('Message posted.');
     },
@@ -392,19 +451,25 @@ function createPostFilesToUserTool(agent: Agent, task: Task) {
   return tool(
     'post_files_to_user',
     'Upload one or more files as Slack file attachments to the user. Files must point to absolute paths inside your readable sandbox (e.g. shared/artifacts/...). ' +
-    'Without `channel`, attaches to the default channel. With `channel`, attaches to an already-linked thread. ' +
-    'This tool only attaches files to threads already linked to this task (the default channel, or a linked `channel` key). It does not open new threads or DMs. ' +
-    'Files are sent without accompanying text — call `post_to_user` separately for any message you want next to the files.',
+      'Without `channel`, attaches to the default channel. With `channel`, attaches to an already-linked thread. ' +
+      'This tool only attaches files to threads already linked to this task (the default channel, or a linked `channel` key). It does not open new threads or DMs. ' +
+      'Files are sent without accompanying text — call `post_to_user` separately for any message you want next to the files.',
     {
-      paths: z.array(z.string()).min(1).describe('Absolute file paths to upload as Slack attachments'),
-      channel: z.string().optional().describe('Channel key of an existing linked thread (e.g., "slack:C123:456.789"). Omit to post to the default channel.'),
+      paths: z
+        .array(z.string())
+        .min(1)
+        .describe('Absolute file paths to upload as Slack attachments'),
+      channel: z
+        .string()
+        .optional()
+        .describe(
+          'Channel key of an existing linked thread (e.g., "slack:C123:456.789"). Omit to post to the default channel.',
+        ),
     },
     async (args) => {
       const agentName = agent.def.id;
       if (!args.channel && Object.keys(task.metadata.channels).length === 0) {
-        return ok(
-          'No channel is linked to this task, so there is nowhere to attach files.'
-        );
+        return ok('No channel is linked to this task, so there is nowhere to attach files.');
       }
       const mutedKey = args.channel ?? task.metadata.default_channel;
       const muted = mutedKey ? findMutedTarget(task.metadata.channels, mutedKey) : null;
@@ -437,14 +502,18 @@ function createFindSlackUserTool() {
     async (args) => {
       const matches = await findSlackUsers(args.query);
       if (matches.length === 0) return ok('No users found matching that query.');
-      const list = matches.slice(0, 10).map(u => {
-        const parts = [`${u.realName} (@${u.name}) — ID: ${u.id}`];
-        if (u.title) parts.push(`  Title: ${u.title}`);
-        if (u.tz) parts.push(`  Timezone (IANA): ${u.tz}`);
-        if (u.timezone) parts.push(`  Timezone (label): ${u.timezone}`);
-        if (u.displayName && u.displayName !== u.realName) parts.push(`  Display name: ${u.displayName}`);
-        return `- ${parts.join('\n')}`;
-      }).join('\n');
+      const list = matches
+        .slice(0, 10)
+        .map((u) => {
+          const parts = [`${u.realName} (@${u.name}) — ID: ${u.id}`];
+          if (u.title) parts.push(`  Title: ${u.title}`);
+          if (u.tz) parts.push(`  Timezone (IANA): ${u.tz}`);
+          if (u.timezone) parts.push(`  Timezone (label): ${u.timezone}`);
+          if (u.displayName && u.displayName !== u.realName)
+            parts.push(`  Display name: ${u.displayName}`);
+          return `- ${parts.join('\n')}`;
+        })
+        .join('\n');
       return ok(`Found ${matches.length} user(s):\n${list}`);
     },
   );
@@ -455,18 +524,25 @@ function createFindSlackChannelTool() {
     'find_slack_channel',
     'Find a Slack channel by name or ID. Returns matching channels with their details. Use this to find channel IDs before posting to new threads.',
     {
-      query: z.string().describe('Channel ID (e.g., "C1234567"), or channel name/part of name to search for (with or without #)'),
+      query: z
+        .string()
+        .describe(
+          'Channel ID (e.g., "C1234567"), or channel name/part of name to search for (with or without #)',
+        ),
     },
     async (args) => {
       const matches = await findSlackChannels(args.query);
       if (matches.length === 0) return ok('No channels found matching that query.');
-      const list = matches.slice(0, 10).map(ch => {
-        const parts = [`#${ch.name} — ID: ${ch.id} (${ch.memberCount} members)`];
-        if (ch.topic) parts.push(`  Topic: ${ch.topic}`);
-        if (ch.purpose) parts.push(`  Purpose: ${ch.purpose}`);
-        if (ch.isPrivate) parts.push(`  Private channel`);
-        return `- ${parts.join('\n')}`;
-      }).join('\n');
+      const list = matches
+        .slice(0, 10)
+        .map((ch) => {
+          const parts = [`#${ch.name} — ID: ${ch.id} (${ch.memberCount} members)`];
+          if (ch.topic) parts.push(`  Topic: ${ch.topic}`);
+          if (ch.purpose) parts.push(`  Purpose: ${ch.purpose}`);
+          if (ch.isPrivate) parts.push(`  Private channel`);
+          return `- ${parts.join('\n')}`;
+        })
+        .join('\n');
       return ok(`Found ${matches.length} channel(s):\n${list}`);
     },
   );
@@ -476,8 +552,8 @@ function createListChannelsTool(task: Task) {
   return tool(
     'list_channels',
     "List the channels you can read for THIS task — every PUBLIC channel Archie has been added to, plus this task's own channel if it happens to be a private channel or DM. " +
-    'Use this to discover where you can explore instead of guessing channel names. It never lists other private channels or DMs. ' +
-    '(Posting is broader — see post_to_channel — but reading is limited to this list.)',
+      'Use this to discover where you can explore instead of guessing channel names. It never lists other private channels or DMs. ' +
+      '(Posting is broader — see post_to_channel — but reading is limited to this list.)',
     {},
     async () => {
       try {
@@ -490,7 +566,10 @@ function createListChannelsTool(task: Task) {
         for (const ch of Object.values(task.metadata.channels)) {
           if (ch.type === 'slack' && !seen.has(ch.channel_id)) {
             seen.add(ch.channel_id);
-            own.push({ label: formatConversationLabel(ch.channel_name || ch.channel_id), id: ch.channel_id });
+            own.push({
+              label: formatConversationLabel(ch.channel_name || ch.channel_id),
+              id: ch.channel_id,
+            });
           }
         }
         // A trigger-fired task's home channel counts as its own before it has a thread there, and it must be
@@ -508,13 +587,19 @@ function createListChannelsTool(task: Task) {
           own.push({ label, id: channelId });
         }
         if (publicChannels.length === 0 && own.length === 0) {
-          return ok("Archie isn't a member of any channels you can use yet. Invite it to a channel (`/invite @Archie`) to explore there.");
+          return ok(
+            "Archie isn't a member of any channels you can use yet. Invite it to a channel (`/invite @Archie`) to explore there.",
+          );
         }
         const lines = [
-          ...publicChannels.map((ch) => `- #${ch.name} — ID: ${ch.id}${ch.topic ? ` — ${ch.topic}` : ''}`),
+          ...publicChannels.map(
+            (ch) => `- #${ch.name} — ID: ${ch.id}${ch.topic ? ` — ${ch.topic}` : ''}`,
+          ),
           ...own.map((ch) => `- ${ch.label} — ID: ${ch.id} (this task's own channel)`),
         ];
-        return ok(`Channels you can read${own.length ? " (public channels Archie's in, plus this task's own channel)" : ''}:\n${lines.join('\n')}`);
+        return ok(
+          `Channels you can read${own.length ? " (public channels Archie's in, plus this task's own channel)" : ''}:\n${lines.join('\n')}`,
+        );
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);
         return ok(`Couldn't list channels: ${reason}`);
@@ -527,11 +612,16 @@ function createRequestEditModeTool(agent: Agent, task: Task) {
   return tool(
     'request_edit_mode',
     'Request permission to make code changes. Call this AFTER explaining to the user what changes are needed and why. Task will pause until user approves or denies. ' +
-    'Edit mode is a task-LIFETIME grant: once approved it stays in effect for the rest of the task, so you only ever need to request it once. If it is already approved this call is a no-op — it will not prompt the user again, it just confirms the grant. ' +
-    'Without `channel`, the request posts to the task\'s default channel. Pass `channel` (a channel key like "slack:C123:456.789") to post it to a specific linked thread — useful when the task has no default channel yet or you opened a new thread to talk to the user.',
+      'Edit mode is a task-LIFETIME grant: once approved it stays in effect for the rest of the task, so you only ever need to request it once. If it is already approved this call is a no-op — it will not prompt the user again, it just confirms the grant. ' +
+      'Without `channel`, the request posts to the task\'s default channel. Pass `channel` (a channel key like "slack:C123:456.789") to post it to a specific linked thread — useful when the task has no default channel yet or you opened a new thread to talk to the user.',
     {
       reason: z.string().describe('Brief summary of what changes need to be made'),
-      channel: z.string().optional().describe('Channel key of an existing linked thread to post the request to (e.g., "slack:C123:456.789"). Omit to use the task\'s default channel.'),
+      channel: z
+        .string()
+        .optional()
+        .describe(
+          'Channel key of an existing linked thread to post the request to (e.g., "slack:C123:456.789"). Omit to use the task\'s default channel.',
+        ),
     },
     async (args) => {
       const agentName = agent.def.id;
@@ -541,7 +631,9 @@ function createRequestEditModeTool(agent: Agent, task: Task) {
       // caller it's already granted so it proceeds instead of waiting on a user
       // who has nothing to approve.
       if (task.metadata.edit_allowed === true) {
-        return ok('Edit mode is already approved for this task and persists for its lifetime — no need to request it again. Go ahead and make the changes.');
+        return ok(
+          'Edit mode is already approved for this task and persists for its lifetime — no need to request it again. Go ahead and make the changes.',
+        );
       }
 
       // Already pausing this turn — the spawn loop tears the task down at turn
@@ -556,7 +648,9 @@ function createRequestEditModeTool(agent: Agent, task: Task) {
       if (args.channel) {
         const ch = task.metadata.channels[args.channel];
         if (!ch) {
-          return ok(`Channel ${args.channel} is not linked to this task. Omit channel to use the default.`);
+          return ok(
+            `Channel ${args.channel} is not linked to this task. Omit channel to use the default.`,
+          );
         }
         if (ch.type !== 'slack') {
           return ok(`Channel ${args.channel} is not a Slack channel (type: ${ch.type}).`);
@@ -566,7 +660,12 @@ function createRequestEditModeTool(agent: Agent, task: Task) {
       logger.agentAction(agentName, 'Requesting edit mode', args.reason);
       task.touch();
 
-      await appendAgentFinding(task.taskId, 'system', `Edit mode requested: ${args.reason}`, 'decision');
+      await appendAgentFinding(
+        task.taskId,
+        'system',
+        `Edit mode requested: ${args.reason}`,
+        'decision',
+      );
 
       const blocks = [
         {
@@ -593,7 +692,12 @@ function createRequestEditModeTool(agent: Agent, task: Task) {
           ],
         },
       ];
-      await task.postInteractiveToUser(`Edit mode request: ${args.reason}`, blocks, 'edit_mode', args.channel);
+      await task.postInteractiveToUser(
+        `Edit mode request: ${args.reason}`,
+        blocks,
+        'edit_mode',
+        args.channel,
+      );
 
       // Task is now paused pending approval — freeze the status so the wind-down
       // doesn't resurface a "working…" indicator.
@@ -601,7 +705,14 @@ function createRequestEditModeTool(agent: Agent, task: Task) {
       // Defer the pause to turn-end (see report_completion) so stopping the queue
       // doesn't close the input stream under an in-flight hook ("stream closed").
       agent.deferTeardown(() => task.stop());
-      return { content: [{ type: 'text' as const, text: 'Edit mode request sent. Task paused pending user approval.' }] };
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Edit mode request sent. Task paused pending user approval.',
+          },
+        ],
+      };
     },
   );
 }
@@ -610,11 +721,16 @@ function createRequestMaxModeTool(agent: Agent, task: Task) {
   return tool(
     'request_max_mode',
     'Request permission to switch this task into "max mode" — an upgrade that raises YOUR OWN model and reasoning effort for the rest of the task. The workers you spawn are not affected: you keep naming their models yourself, exactly as you do outside max mode. Call this AFTER explaining to the user why the extra cost is worth it (max mode is more expensive). Task will pause until the user approves or denies. ' +
-    'Max mode is a task-LIFETIME grant: once approved it stays in effect for the rest of the task, so you only ever need to request it once. If it is already approved this call is a no-op — it will not prompt the user again, it just confirms the grant. ' +
-    'Without `channel`, the request posts to the task\'s default channel. Pass `channel` (a channel key like "slack:C123:456.789") to post it to a specific linked thread — useful when the task has no default channel yet or you opened a new thread to talk to the user.',
+      'Max mode is a task-LIFETIME grant: once approved it stays in effect for the rest of the task, so you only ever need to request it once. If it is already approved this call is a no-op — it will not prompt the user again, it just confirms the grant. ' +
+      'Without `channel`, the request posts to the task\'s default channel. Pass `channel` (a channel key like "slack:C123:456.789") to post it to a specific linked thread — useful when the task has no default channel yet or you opened a new thread to talk to the user.',
     {
       reason: z.string().describe('Brief explanation of why max mode is warranted for this task'),
-      channel: z.string().optional().describe('Channel key of an existing linked thread to post the request to (e.g., "slack:C123:456.789"). Omit to use the task\'s default channel.'),
+      channel: z
+        .string()
+        .optional()
+        .describe(
+          'Channel key of an existing linked thread to post the request to (e.g., "slack:C123:456.789"). Omit to use the task\'s default channel.',
+        ),
     },
     async (args) => {
       const agentName = agent.def.id;
@@ -624,7 +740,9 @@ function createRequestMaxModeTool(agent: Agent, task: Task) {
       // caller it's already granted so it proceeds instead of waiting on a user
       // who has nothing to approve.
       if (task.metadata.max_mode === true) {
-        return ok('Max mode is already approved for this task and persists for its lifetime — no need to request it again. Continue the work.');
+        return ok(
+          'Max mode is already approved for this task and persists for its lifetime — no need to request it again. Continue the work.',
+        );
       }
 
       // Already pausing this turn — the spawn loop tears the task down at turn
@@ -639,7 +757,9 @@ function createRequestMaxModeTool(agent: Agent, task: Task) {
       if (args.channel) {
         const ch = task.metadata.channels[args.channel];
         if (!ch) {
-          return ok(`Channel ${args.channel} is not linked to this task. Open one with post_to_user(target.new_thread/new_dm), or omit channel to use the default.`);
+          return ok(
+            `Channel ${args.channel} is not linked to this task. Open one with post_to_user(target.new_thread/new_dm), or omit channel to use the default.`,
+          );
         }
         if (ch.type !== 'slack') {
           return ok(`Channel ${args.channel} is not a Slack channel (type: ${ch.type}).`);
@@ -649,7 +769,12 @@ function createRequestMaxModeTool(agent: Agent, task: Task) {
       logger.agentAction(agentName, 'Requesting max mode', args.reason);
       task.touch();
 
-      await appendAgentFinding(task.taskId, 'system', `Max mode requested: ${args.reason}`, 'decision');
+      await appendAgentFinding(
+        task.taskId,
+        'system',
+        `Max mode requested: ${args.reason}`,
+        'decision',
+      );
 
       const blocks = [
         {
@@ -676,7 +801,12 @@ function createRequestMaxModeTool(agent: Agent, task: Task) {
           ],
         },
       ];
-      await task.postInteractiveToUser(`Max mode request: ${args.reason}`, blocks, 'max_mode', args.channel);
+      await task.postInteractiveToUser(
+        `Max mode request: ${args.reason}`,
+        blocks,
+        'max_mode',
+        args.channel,
+      );
 
       // Task is now paused pending approval — freeze the status so the wind-down
       // doesn't resurface a "working…" indicator.
@@ -684,7 +814,14 @@ function createRequestMaxModeTool(agent: Agent, task: Task) {
       // Defer the pause to turn-end (see report_completion) so stopping the queue
       // doesn't close the input stream under an in-flight hook ("stream closed").
       agent.deferTeardown(() => task.stop());
-      return { content: [{ type: 'text' as const, text: 'Max mode request sent. Task paused pending user approval.' }] };
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Max mode request sent. Task paused pending user approval.',
+          },
+        ],
+      };
     },
   );
 }
@@ -717,16 +854,21 @@ function createReportCompletionTool(agent: Agent, task: Task) {
       const mutedDefault = task.metadata.default_channel
         ? findMutedTarget(task.metadata.channels, task.metadata.default_channel)
         : null;
-      const needsOwnerReply = !!task.metadata.approved_start && !task.metadata.approved_start.owner_reply_delivered && !mutedDefault;
+      const needsOwnerReply =
+        !!task.metadata.approved_start &&
+        !task.metadata.approved_start.owner_reply_delivered &&
+        !mutedDefault;
       if (needsOwnerReply && !args.message?.trim()) {
-        return err('Cannot finish silently before an owner reply is delivered. Supply a completion message or send a reply first.');
+        return err(
+          'Cannot finish silently before an owner reply is delivered. Supply a completion message or send a reply first.',
+        );
       }
       if (args.message && !mutedDefault) {
         // Same exception as post_to_user: a trigger-fired task's home channel is a place to post, and the completion message is often the first thing it says — posting it is what opens the task's own thread.
         if (Object.keys(task.metadata.channels).length === 0 && !task.metadata.home_channel) {
           return ok(
             'Cannot post a completion message — no channel linked to this task. ' +
-            'Call report_completion() without a message to finish silently.'
+              'Call report_completion() without a message to finish silently.',
           );
         }
         try {
@@ -738,7 +880,8 @@ function createReportCompletionTool(agent: Agent, task: Task) {
           return ok(formatSlackSendError(err));
         }
       }
-      if (needsOwnerReply && !task.metadata.approved_start?.owner_reply_delivered) return err('Owner reply delivery was not confirmed; completion was not recorded.');
+      if (needsOwnerReply && !task.metadata.approved_start?.owner_reply_delivered)
+        return err('Owner reply delivery was not confirmed; completion was not recorded.');
       logger.agentAction(agentName, 'Reporting completion', '');
       task.touch();
       // Post any changed PR card now, right under the final message. Under the
@@ -759,13 +902,13 @@ function createReportCompletionTool(agent: Agent, task: Task) {
       if (args.message && mutedDefault) {
         return ok(
           `${formatMutedTargetRefusal(mutedDefault.channel_name)}\n\n` +
-          'Completion is recorded either way — end your turn now, silently.'
+            'Completion is recorded either way — end your turn now, silently.',
         );
       }
       return ok(
         args.message
           ? 'Message posted. Nothing left to do — end your turn.'
-          : 'Completion recorded. Nothing left to do — end your turn.'
+          : 'Completion recorded. Nothing left to do — end your turn.',
       );
     },
   );
@@ -775,12 +918,17 @@ function createMuteChannelTool(agent: Agent, task: Task) {
   return tool(
     'mute_channel',
     'Step out of a Slack channel/thread, in both directions: messages there stop reaching you, AND your own posts there are refused (post_to_user, post_files_to_user, post_to_channel) — until someone @mentions the bot there again. ' +
-    'Posts a notification to the thread it muted, so add no farewell message of your own. Call it before saying anything else when asked to stop, step back, or go away. ' +
-    'Pass `channel` (a channel key like "slack:C123:456.789") to mute that specific thread. ' +
-    'Omit `channel` to mute the task\'s default channel only (never all linked channels). ' +
-    'DM channels cannot be muted — DMs have no @mention to unmute by, so muting one would lock the user out permanently.',
+      'Posts a notification to the thread it muted, so add no farewell message of your own. Call it before saying anything else when asked to stop, step back, or go away. ' +
+      'Pass `channel` (a channel key like "slack:C123:456.789") to mute that specific thread. ' +
+      "Omit `channel` to mute the task's default channel only (never all linked channels). " +
+      'DM channels cannot be muted — DMs have no @mention to unmute by, so muting one would lock the user out permanently.',
     {
-      channel: z.string().optional().describe('Channel key of the thread to mute (e.g., "slack:C123:456.789"). Omit to mute the task\'s default channel.'),
+      channel: z
+        .string()
+        .optional()
+        .describe(
+          'Channel key of the thread to mute (e.g., "slack:C123:456.789"). Omit to mute the task\'s default channel.',
+        ),
     },
     async (args) => {
       const agentName = agent.def.id;
@@ -800,7 +948,7 @@ function createMuteChannelTool(agent: Agent, task: Task) {
       if (ch.channel_id.startsWith('D')) {
         return ok(
           `Cannot mute DM channel ${channelKey} — DMs have no @mention to unmute by, so muting would lock the user out permanently. ` +
-          `Every DM is implicitly addressed to the bot, so just stop responding to disengage.`
+            `Every DM is implicitly addressed to the bot, so just stop responding to disengage.`,
         );
       }
       if (ch.muted) {
@@ -812,10 +960,19 @@ function createMuteChannelTool(agent: Agent, task: Task) {
 
       ch.muted = true;
       task.debouncedSave();
-      await appendAgentFinding(task.taskId, agentName, `Muted Slack channel ${channelKey} — will not process messages until next @mention`, 'decision');
+      await appendAgentFinding(
+        task.taskId,
+        agentName,
+        `Muted Slack channel ${channelKey} — will not process messages until next @mention`,
+        'decision',
+      );
 
       // Notify only the channel we muted
-      await task.postToUser("I'll step back from this thread. Mention me again when you need me.", agentName, { channel: channelKey });
+      await task.postToUser(
+        "I'll step back from this thread. Mention me again when you need me.",
+        agentName,
+        { channel: channelKey },
+      );
 
       return ok(`Muted ${channelKey}. Will resume on next @mention.`);
     },
@@ -826,22 +983,35 @@ function createReactToMessageTool(agent: Agent, task: Task) {
   return tool(
     'react_to_message',
     'Add an emoji reaction to a message in a Slack thread. Use to acknowledge, ' +
-    'express sentiment, or signal status without sending a text message. ' +
-    'Reacts to ANY message in a linked thread — pass `message_id`, the `msg:<ts>` ' +
-    'value shown next to each message that arrived in your conversation (e.g. "1716998400.123456"). ' +
-    'Omit `channel` to target the task\'s default channel. ' +
-    'The emoji is a Slack shortcode WITHOUT colons (e.g. "thumbsup", "eyes", "tada", "white_check_mark").',
+      'express sentiment, or signal status without sending a text message. ' +
+      'Reacts to ANY message in a linked thread — pass `message_id`, the `msg:<ts>` ' +
+      'value shown next to each message that arrived in your conversation (e.g. "1716998400.123456"). ' +
+      "Omit `channel` to target the task's default channel. " +
+      'The emoji is a Slack shortcode WITHOUT colons (e.g. "thumbsup", "eyes", "tada", "white_check_mark").',
     {
-      message_id: z.string().describe('The target message timestamp — the `msg:<ts>` id shown on the message as it reached you (e.g. "1716998400.123456")'),
-      emoji: z.string().describe('Slack emoji shortcode without colons (e.g. "thumbsup", "heart", "eyes")'),
-      channel: z.string().optional().describe('Channel key of the linked thread (e.g. "slack:C123:456.789"). Omit for the default channel.'),
+      message_id: z
+        .string()
+        .describe(
+          'The target message timestamp — the `msg:<ts>` id shown on the message as it reached you (e.g. "1716998400.123456")',
+        ),
+      emoji: z
+        .string()
+        .describe('Slack emoji shortcode without colons (e.g. "thumbsup", "heart", "eyes")'),
+      channel: z
+        .string()
+        .optional()
+        .describe(
+          'Channel key of the linked thread (e.g. "slack:C123:456.789"). Omit for the default channel.',
+        ),
     },
     async (args) => {
       const agentName = agent.def.id;
       const emoji = args.emoji.replace(/:/g, '').trim();
       const dispatched = await task.reactToMessage(args.message_id, emoji, args.channel);
       if (!dispatched) {
-        return ok(`Could not react: ${args.channel ? `channel ${args.channel} is not a linked Slack thread` : 'task has no default Slack channel'}.`);
+        return ok(
+          `Could not react: ${args.channel ? `channel ${args.channel} is not a linked Slack thread` : 'task has no default Slack channel'}.`,
+        );
       }
       logger.agentAction(agentName, `Reacted :${emoji}:`, args.message_id);
       return ok(`Added :${emoji}: to message ${args.message_id}.`);
@@ -853,19 +1023,28 @@ function createUnreactFromMessageTool(agent: Agent, task: Task) {
   return tool(
     'unreact_from_message',
     'Remove an emoji reaction Archie previously added to a Slack message. ' +
-    'Mirrors `react_to_message`: pass the `message_id` (`msg:<ts>` id) and the emoji shortcode. ' +
-    'Only removes Archie\'s own reaction; other users\' reactions are unaffected.',
+      'Mirrors `react_to_message`: pass the `message_id` (`msg:<ts>` id) and the emoji shortcode. ' +
+      "Only removes Archie's own reaction; other users' reactions are unaffected.",
     {
-      message_id: z.string().describe('The target message timestamp — the `msg:<ts>` id shown on the message as it reached you'),
+      message_id: z
+        .string()
+        .describe(
+          'The target message timestamp — the `msg:<ts>` id shown on the message as it reached you',
+        ),
       emoji: z.string().describe('Slack emoji shortcode without colons (e.g. "eyes")'),
-      channel: z.string().optional().describe('Channel key of the linked thread. Omit for the default channel.'),
+      channel: z
+        .string()
+        .optional()
+        .describe('Channel key of the linked thread. Omit for the default channel.'),
     },
     async (args) => {
       const agentName = agent.def.id;
       const emoji = args.emoji.replace(/:/g, '').trim();
       const dispatched = await task.unreactFromMessage(args.message_id, emoji, args.channel);
       if (!dispatched) {
-        return ok(`Could not remove reaction: ${args.channel ? `channel ${args.channel} is not a linked Slack thread` : 'task has no default Slack channel'}.`);
+        return ok(
+          `Could not remove reaction: ${args.channel ? `channel ${args.channel} is not a linked Slack thread` : 'task has no default Slack channel'}.`,
+        );
       }
       logger.agentAction(agentName, `Removed :${emoji}:`, args.message_id);
       return ok(`Removed :${emoji}: from message ${args.message_id}.`);
@@ -877,22 +1056,34 @@ function createGetMessageReactionsTool(task: Task) {
   return tool(
     'get_message_reactions',
     'Read the CURRENT emoji reactions on a Slack message (live state, fresher than ' +
-    'the snapshot you were given). Pass the `message_id` (`msg:<ts>` id). ' +
-    'Returns each reaction\'s emoji shortcode, how many users reacted, and who they were.',
+      'the snapshot you were given). Pass the `message_id` (`msg:<ts>` id). ' +
+      "Returns each reaction's emoji shortcode, how many users reacted, and who they were.",
     {
-      message_id: z.string().describe('The target message timestamp — the `msg:<ts>` id shown on the message as it reached you'),
-      channel: z.string().optional().describe('Channel key of the linked thread. Omit for the default channel.'),
+      message_id: z
+        .string()
+        .describe(
+          'The target message timestamp — the `msg:<ts>` id shown on the message as it reached you',
+        ),
+      channel: z
+        .string()
+        .optional()
+        .describe('Channel key of the linked thread. Omit for the default channel.'),
     },
     async (args) => {
       const result = await task.readMessageReactions(args.message_id, args.channel);
       if (result === null) {
-        return ok(`Could not read reactions: ${args.channel ? `channel ${args.channel} is not a linked Slack thread` : 'task has no default Slack channel'}.`);
+        return ok(
+          `Could not read reactions: ${args.channel ? `channel ${args.channel} is not a linked Slack thread` : 'task has no default Slack channel'}.`,
+        );
       } else if (!result.ok) {
         // A failed read is NOT an unreacted message — say so, and never guess why.
-        const hint = result.error === 'missing_scope'
-          ? ' Archie\'s Slack app is missing the `reactions:read` scope — it must be reinstalled with that scope before reactions can be read. Do not infer anything about this message\'s reactions.'
-          : ' The reactions on this message are unknown — do not assume there are none.';
-        return ok(`Could not read reactions on ${args.message_id}: Slack returned \`${result.error}\`.${hint}`);
+        const hint =
+          result.error === 'missing_scope'
+            ? " Archie's Slack app is missing the `reactions:read` scope — it must be reinstalled with that scope before reactions can be read. Do not infer anything about this message's reactions."
+            : ' The reactions on this message are unknown — do not assume there are none.';
+        return ok(
+          `Could not read reactions on ${args.message_id}: Slack returned \`${result.error}\`.${hint}`,
+        );
       } else if (result.reactions.length === 0) {
         return ok(`Message ${args.message_id} has no reactions.`);
       } else {
@@ -912,11 +1103,17 @@ function createReadChannelHistoryTool(task: Task) {
   return tool(
     'read_channel_history',
     "Read a channel's recent messages to understand what's happening there — exploration only, NOT linked to this task. " +
-    'Pass a channel ID (use list_channels or find_slack_channel). Returns messages oldest→newest, including Archie\'s own and other bots\' posts. ' +
-    "Reading never creates or joins a task. Allowed for any PUBLIC channel Archie's in, plus this task's own channel if it is private or a DM — other private channels and DMs are off-limits.",
+      "Pass a channel ID (use list_channels or find_slack_channel). Returns messages oldest→newest, including Archie's own and other bots' posts. " +
+      "Reading never creates or joins a task. Allowed for any PUBLIC channel Archie's in, plus this task's own channel if it is private or a DM — other private channels and DMs are off-limits.",
     {
       channel: z.string().describe('Slack channel ID (e.g. "C1234567")'),
-      limit: z.number().int().min(1).max(100).optional().describe('How many recent messages to read (default 30, max 100)'),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(100)
+        .optional()
+        .describe('How many recent messages to read (default 30, max 100)'),
     },
     async (args) => {
       const allowed = taskChannelIds(task);
@@ -925,10 +1122,16 @@ function createReadChannelHistoryTool(task: Task) {
         if (dm) return ok(dm);
       }
       try {
-        const { channel, messages } = await fetchChannelHistory(args.channel, args.limit ?? 30, allowed);
+        const { channel, messages } = await fetchChannelHistory(
+          args.channel,
+          args.limit ?? 30,
+          allowed,
+        );
         const label = exploreChannelLabel(task, args.channel, channel.name);
         if (messages.length === 0) return ok(`${label} has no readable recent messages.`);
-        return ok(`${label} — last ${messages.length} message(s):\n\n${formatExploreMessages(messages)}`);
+        return ok(
+          `${label} — last ${messages.length} message(s):\n\n${formatExploreMessages(messages)}`,
+        );
       } catch (e) {
         return ok(formatSlackReadError(e, args.channel));
       }
@@ -940,8 +1143,8 @@ function createReadThreadTool(task: Task) {
   return tool(
     'read_thread',
     'Read a specific thread (parent message + all replies) — exploration only, NOT linked to this task. ' +
-    'Pass the channel ID and the parent message ts (from read_channel_history). Includes Archie\'s own and other bots\' messages. ' +
-    "Allowed for any PUBLIC channel Archie's in, plus this task's own channel if it is private or a DM — other private channels and DMs are off-limits.",
+      "Pass the channel ID and the parent message ts (from read_channel_history). Includes Archie's own and other bots' messages. " +
+      "Allowed for any PUBLIC channel Archie's in, plus this task's own channel if it is private or a DM — other private channels and DMs are off-limits.",
     {
       channel: z.string().describe('Slack channel ID (e.g. "C1234567")'),
       thread_ts: z.string().describe('Parent message ts of the thread (e.g. "1716998400.123456")'),
@@ -953,9 +1156,15 @@ function createReadThreadTool(task: Task) {
         if (dm) return ok(dm);
       }
       try {
-        const { channel, messages } = await fetchExploreThread(args.channel, args.thread_ts, allowed);
+        const { channel, messages } = await fetchExploreThread(
+          args.channel,
+          args.thread_ts,
+          allowed,
+        );
         if (messages.length === 0) return ok(`No messages found in that thread.`);
-        return ok(`${exploreChannelLabel(task, args.channel, channel.name)} thread ${args.thread_ts} — ${messages.length} message(s):\n\n${formatExploreMessages(messages)}`);
+        return ok(
+          `${exploreChannelLabel(task, args.channel, channel.name)} thread ${args.thread_ts} — ${messages.length} message(s):\n\n${formatExploreMessages(messages)}`,
+        );
       } catch (e) {
         return ok(formatSlackReadError(e, args.channel));
       }
@@ -969,41 +1178,64 @@ function createReadThreadTool(task: Task) {
  * request to quote.
  */
 const NON_MANDATES = new Set([
-  'n/a', 'na', 'none', 'no mandate', 'not applicable', 'nobody', 'no one',
-  'self', 'my own judgement', 'my own judgment', 'implied', 'implicit',
-  'urgent', 'high severity', 'proactive', 'unknown', 'tbd', '-',
+  'n/a',
+  'na',
+  'none',
+  'no mandate',
+  'not applicable',
+  'nobody',
+  'no one',
+  'self',
+  'my own judgement',
+  'my own judgment',
+  'implied',
+  'implicit',
+  'urgent',
+  'high severity',
+  'proactive',
+  'unknown',
+  'tbd',
+  '-',
 ]);
 
 function createPostToChannelTool(agent: Agent, task: Task) {
   return tool(
     'post_to_channel',
-    'Post a message in this task\'s own Slack channel without linking the new message to the task. ' +
-    'The destination must match the task audience; use a separate task to post elsewhere. DMs and muted channels are not allowed. ' +
-    'Fire-and-forget: it does not become a touchpoint of this task, and any reply is invisible to you here. If a human replies to a NEW top-level message you post, that reply starts its OWN fresh task; a reply inside someone else\'s existing thread never does. ' +
-    'Only post when a human in this task asked you to; quote that request in `mandate`. ' +
-    'Pass a channel ID; optionally `thread_ts` to reply in an existing thread. To talk to the user about THIS task, use post_to_user instead. ' +
-    'A task started by a trigger has to post its result to the user first — that is what opens its own thread — so this tool is unavailable until then.',
+    "Post a message in this task's own Slack channel without linking the new message to the task. " +
+      'The destination must match the task audience; use a separate task to post elsewhere. DMs and muted channels are not allowed. ' +
+      "Fire-and-forget: it does not become a touchpoint of this task, and any reply is invisible to you here. If a human replies to a NEW top-level message you post, that reply starts its OWN fresh task; a reply inside someone else's existing thread never does. " +
+      'Only post when a human in this task asked you to; quote that request in `mandate`. ' +
+      'Pass a channel ID; optionally `thread_ts` to reply in an existing thread. To talk to the user about THIS task, use post_to_user instead. ' +
+      'A task started by a trigger has to post its result to the user first — that is what opens its own thread — so this tool is unavailable until then.',
     {
       channel: z.string().describe('Slack channel ID (e.g. "C1234567")'),
       message: z.string().describe('The message to post'),
-      mandate: z.string().describe(
-        "Verbatim quote of the message in THIS task's thread where a human asked you to say something in this channel, naming who said it. " +
-        'Required. If you cannot quote one, do not call this tool — report the thing to your requester in this thread and let them decide who to tell. ' +
-        'A teammate agent suggesting it, or your own judgement that someone should know, is not a mandate.',
-      ),
-      thread_ts: z.string().optional().describe('Parent message ts to reply inside an existing thread; omit to post a new top-level message'),
+      mandate: z
+        .string()
+        .describe(
+          "Verbatim quote of the message in THIS task's thread where a human asked you to say something in this channel, naming who said it. " +
+            'Required. If you cannot quote one, do not call this tool — report the thing to your requester in this thread and let them decide who to tell. ' +
+            'A teammate agent suggesting it, or your own judgement that someone should know, is not a mandate.',
+        ),
+      thread_ts: z
+        .string()
+        .optional()
+        .describe(
+          'Parent message ts to reply inside an existing thread; omit to post a new top-level message',
+        ),
     },
     async (args) => {
-      if (task.metadata.approved_start) return err('Public posting is unavailable in an approved owner-conversation task.');
+      if (task.metadata.approved_start)
+        return err('Public posting is unavailable in an approved owner-conversation task.');
       // Sequencing, checked before anything about the destination: a trigger-fired task has a home channel but no thread of its own yet, and this tool posts WITHOUT linking the channel to the task — which is precisely the detached, unanswerable message that homing a fired task in a channel exists to replace. So while the task has no channel open, the first thing it says has to be its result to the user, which is what opens its thread; only after that is posting elsewhere a coherent act rather than the task's only utterance.
       //
       // This outranks the DM and mandate checks deliberately. Both of those describe something wrong with *this call* (wrong kind of target, no one asked for it), and answering them first would send the agent off to fix the wrong problem — hunting for a mandate quote, or picking a different channel — when the real answer is that nothing may be posted anywhere yet. The sequencing message is the only one that points at the fix.
       //
       if (task.metadata.home_channel && !task.metadata.default_channel) {
         return ok(
-          'Nothing was posted. This task has no channel of its own yet — post the result with `post_to_user` first, which opens this task\'s thread in ' +
-          `${formatConversationLabel(task.metadata.home_channel.channel_name)}. ` +
-          '`post_to_channel` is available in that channel after that.',
+          "Nothing was posted. This task has no channel of its own yet — post the result with `post_to_user` first, which opens this task's thread in " +
+            `${formatConversationLabel(task.metadata.home_channel.channel_name)}. ` +
+            '`post_to_channel` is available in that channel after that.',
         );
       }
       const dm = rejectDmTarget(args.channel);
@@ -1016,8 +1248,8 @@ function createPostToChannelTool(agent: Agent, task: Task) {
       if (mandate.length < 15 || NON_MANDATES.has(mandate.toLowerCase().replace(/[.\s]+$/, ''))) {
         return ok(
           'Blocked: no mandate. Nothing was posted. `mandate` has to be an actual quote of a human in this task asking you to post in that channel — ' +
-          'not a restatement of why it matters, not a teammate\'s suggestion, not your own read that someone should know. ' +
-          "If nobody asked, report it to your requester in this task's thread and let them route it: who else needs to know is their call.",
+            "not a restatement of why it matters, not a teammate's suggestion, not your own read that someone should know. " +
+            "If nobody asked, report it to your requester in this task's thread and let them route it: who else needs to know is their call.",
         );
       }
       // A muted thread in this channel blocks the whole channel — otherwise
@@ -1027,7 +1259,7 @@ function createPostToChannelTool(agent: Agent, task: Task) {
       if (muted) return ok(formatMutedTargetRefusal(muted.channel_name));
       // Same check across OTHER tasks: the task told to go away is usually not
       // the one posting next.
-      if (args.thread_ts && await isThreadMuted(args.channel, args.thread_ts)) {
+      if (args.thread_ts && (await isThreadMuted(args.channel, args.thread_ts))) {
         return ok(formatCrossTaskMuteRefusal(args.channel));
       }
       task.touch();
@@ -1054,7 +1286,9 @@ function createPostToChannelTool(agent: Agent, task: Task) {
         const briefed = (task.metadata.briefed_channels ??= []);
         if (!briefed.includes(args.channel)) {
           await ensureChannelCanvas(args.channel);
-          const name = await getChannelInfo(args.channel).then((c) => c.name).catch(() => undefined);
+          const name = await getChannelInfo(args.channel)
+            .then((c) => c.name)
+            .catch(() => undefined);
           const brief = await buildOtherChannelContextSection(args.channel, name);
           briefed.push(args.channel);
           // Flushed, not debounced: this is the record that stops the same brief
@@ -1064,11 +1298,15 @@ function createPostToChannelTool(agent: Agent, task: Task) {
           if (brief) {
             return ok(
               `Not posted yet — that channel has a standing brief you have not read. It is below; ` +
-              `check your message against it, then call post_to_channel again to send (same mandate).\n\n${brief}`,
+                `check your message against it, then call post_to_channel again to send (same mandate).\n\n${brief}`,
             );
           }
         }
-        const ts = await postSlackMessage({ channel: args.channel, text: args.message, threadTs: args.thread_ts });
+        const ts = await postSlackMessage({
+          channel: args.channel,
+          text: args.message,
+          threadTs: args.thread_ts,
+        });
         // Record the claimed mandate in the knowledge log: outreach lands in
         // front of people outside this task, so the reason it happened has to be
         // auditable after the fact.
@@ -1112,7 +1350,10 @@ function createPushBranchTool(agent: Agent, task: Task) {
     'push_branch',
     'Push commits from the local clone to the remote origin. Set force=true after a rebase to force-push with lease (safe against overwriting concurrent updates). Do not use force=true just because a normal push was rejected — investigate why first.',
     {
-      force: z.boolean().optional().describe('Use --force-with-lease. Required after rebasing a pushed branch.'),
+      force: z
+        .boolean()
+        .optional()
+        .describe('Use --force-with-lease. Required after rebasing a pushed branch.'),
       github: githubArgSchema,
     },
     async (args) => {
@@ -1136,7 +1377,9 @@ function createPushBranchTool(agent: Agent, task: Task) {
 
       try {
         const forceFlag = force ? '--force-with-lease ' : '';
-        await execAsync(`git push ${forceFlag}-u origin HEAD:${branch}`, { cwd: attached.clone_path! });
+        await execAsync(`git push ${forceFlag}-u origin HEAD:${branch}`, {
+          cwd: attached.clone_path,
+        });
 
         task.debouncedSave();
 
@@ -1195,9 +1438,8 @@ function createPullRequestTool(agent: Agent, task: Task) {
       // path) falls back to asking GitHub for the repository default, which is
       // what mount_repo would have recorded. There is no agent-declared base
       // branch any more — an agent definition no longer carries repos.
-      const base = state?.base_branch
-        || (await client.resolveRepo(github))?.default_branch
-        || 'main';
+      const base =
+        state?.base_branch || (await client.resolveRepo(github))?.default_branch || 'main';
 
       const body = attributePrBody(task, args.body);
       const result = await client.createPullRequest(github, head, base, args.title, body);
@@ -1209,7 +1451,12 @@ function createPullRequestTool(agent: Agent, task: Task) {
       }
       task.debouncedSave();
 
-      await appendAgentFinding(task.taskId, agentName, `Created PR #${result.pr_number} on ${github}: ${result.pr_url}`, 'decision');
+      await appendAgentFinding(
+        task.taskId,
+        agentName,
+        `Created PR #${result.pr_number} on ${github}: ${result.pr_url}`,
+        'decision',
+      );
       return ok(`Created PR #${result.pr_number} on ${github}: ${result.pr_url}`);
     },
   );
@@ -1227,10 +1474,12 @@ function createGetPRStatusTool(task: Task) {
       if (!client) throw new Error('GitHub client not configured');
       const status = await client.getPRStatus(resolved.github, args.pr_number);
       return {
-        content: [{
-          type: 'text' as const,
-          text: `PR #${args.pr_number} (${resolved.github}) status:\n- State: ${status.state}\n- Mergeable: ${status.mergeable}\n- Mergeable State: ${status.mergeableState}\n- Approved: ${status.approved}`,
-        }],
+        content: [
+          {
+            type: 'text' as const,
+            text: `PR #${args.pr_number} (${resolved.github}) status:\n- State: ${status.state}\n- Mergeable: ${status.mergeable}\n- Mergeable State: ${status.mergeableState}\n- Approved: ${status.approved}`,
+          },
+        ],
       };
     },
   );
@@ -1248,7 +1497,9 @@ function createGetPRChecksTool(task: Task) {
       if (!client) throw new Error('GitHub client not configured');
       const report = await client.listPRChecks(resolved.github, args.pr_number);
       if (report.entries.length === 0) {
-        return ok(`No checks found for PR #${args.pr_number} (head ${report.headSha.slice(0, 7)}).`);
+        return ok(
+          `No checks found for PR #${args.pr_number} (head ${report.headSha.slice(0, 7)}).`,
+        );
       }
 
       const FAILED_CONCLUSIONS = new Set(['failure', 'cancelled', 'timed_out', 'action_required']);
@@ -1263,7 +1514,7 @@ function createGetPRChecksTool(task: Task) {
       }
 
       const failed = report.entries.filter(
-        (e) => e.conclusion && FAILED_CONCLUSIONS.has(e.conclusion) && e.output
+        (e) => e.conclusion && FAILED_CONCLUSIONS.has(e.conclusion) && e.output,
       );
       for (const entry of failed) {
         const blocks: string[] = ['', `${entry.name} output:`];
@@ -1288,11 +1539,15 @@ function createGetCheckRunTool(task: Task) {
   return tool(
     'get_check_run',
     'Fetch a single CI check/run by its id or a github.com URL — no PR needed. ' +
-    'Use this when someone shares a raw check-run, Actions job, or workflow-run link (e.g. ".../runs/123", ".../actions/runs/123", or ".../actions/runs/123/job/456") or just a run id, and you need the failure details. ' +
-    'Returns the conclusion, check output, annotations, and — for GitHub Actions — the failing slice of the job log (the rspec "Failures:" / "Failed examples:" block). ' +
-    'For checks on a PR you already know, prefer get_pr_checks.',
+      'Use this when someone shares a raw check-run, Actions job, or workflow-run link (e.g. ".../runs/123", ".../actions/runs/123", or ".../actions/runs/123/job/456") or just a run id, and you need the failure details. ' +
+      'Returns the conclusion, check output, annotations, and — for GitHub Actions — the failing slice of the job log (the rspec "Failures:" / "Failed examples:" block). ' +
+      'For checks on a PR you already know, prefer get_pr_checks.',
     {
-      ref: z.string().describe('A numeric check-run/job/workflow-run id, or a full github.com URL pointing at one.'),
+      ref: z
+        .string()
+        .describe(
+          'A numeric check-run/job/workflow-run id, or a full github.com URL pointing at one.',
+        ),
       github: githubArgSchema,
     },
     async (args) => {
@@ -1315,7 +1570,7 @@ function createGetCheckRunTool(task: Task) {
         if (refRepo.toLowerCase() !== githubRepo.toLowerCase()) {
           return err(
             `That link points at ${refRepo}, but you are scoped to ${githubRepo}. ` +
-            `I can only fetch checks for ${githubRepo}.`
+              `I can only fetch checks for ${githubRepo}.`,
           );
         }
       }
@@ -1329,7 +1584,9 @@ function createGetCheckRunTool(task: Task) {
         if (report.url) lines.push(`URL: ${report.url}`);
         lines.push('', `Jobs (${report.jobs.length}):`);
         for (const job of report.jobs) {
-          lines.push(`- [${job.conclusion ?? job.status}] ${job.name} (job ${job.id})${job.url ? ` — ${job.url}` : ''}`);
+          lines.push(
+            `- [${job.conclusion ?? job.status}] ${job.name} (job ${job.id})${job.url ? ` — ${job.url}` : ''}`,
+          );
         }
         for (const job of report.jobs) {
           if (job.logTail) {
@@ -1395,10 +1652,10 @@ function codeScanningErrorHint(e: unknown, githubRepo: string): string {
 function createListCodeScanningAlertsTool(task: Task) {
   return tool(
     'list_code_scanning_alerts',
-    'List code scanning security alerts (e.g. CodeQL) from the repo\'s Security tab. ' +
-    'Returns each alert\'s number, state, severity, rule, file location, and URL. ' +
-    'Use this to review security findings, audit open vulnerabilities, or check a specific branch. ' +
-    'Filter by state (defaults to open), a git ref/branch, or severity. For full detail on one alert, use get_code_scanning_alert.',
+    "List code scanning security alerts (e.g. CodeQL) from the repo's Security tab. " +
+      "Returns each alert's number, state, severity, rule, file location, and URL. " +
+      'Use this to review security findings, audit open vulnerabilities, or check a specific branch. ' +
+      'Filter by state (defaults to open), a git ref/branch, or severity. For full detail on one alert, use get_code_scanning_alert.',
     {
       github: githubArgSchema,
       state: z
@@ -1433,13 +1690,11 @@ function createListCodeScanningAlertsTool(task: Task) {
 
       if (alerts.length === 0) {
         return ok(
-          `No code scanning alerts found for ${resolved.github} (state=${args.state ?? 'open'}).`
+          `No code scanning alerts found for ${resolved.github} (state=${args.state ?? 'open'}).`,
         );
       }
 
-      const lines: string[] = [
-        `Code scanning alerts for ${resolved.github} (${alerts.length}):`,
-      ];
+      const lines: string[] = [`Code scanning alerts for ${resolved.github} (${alerts.length}):`];
       for (const a of alerts) {
         const sev = a.securitySeverity ?? a.severity ?? 'unknown';
         const inst = a.mostRecentInstance;
@@ -1448,7 +1703,7 @@ function createListCodeScanningAlertsTool(task: Task) {
           : '';
         const urlPart = a.url ? ` — ${a.url}` : '';
         lines.push(
-          `- #${a.number} [${a.state}] [${sev}] ${a.ruleName ?? a.ruleId ?? 'unknown rule'} (${a.tool})${loc}${urlPart}`
+          `- #${a.number} [${a.state}] [${sev}] ${a.ruleName ?? a.ruleId ?? 'unknown rule'} (${a.tool})${loc}${urlPart}`,
         );
       }
       return ok(lines.join('\n'));
@@ -1460,8 +1715,8 @@ function createGetCodeScanningAlertTool(task: Task) {
   return tool(
     'get_code_scanning_alert',
     'Fetch full detail for a single code scanning alert (e.g. CodeQL) by its number. ' +
-    'Returns the rule description, severity, state, dismissal info, and the most recent instance ' +
-    '(file path, line range, git ref, and the alert message). Get the alert number from list_code_scanning_alerts.',
+      'Returns the rule description, severity, state, dismissal info, and the most recent instance ' +
+      '(file path, line range, git ref, and the alert message). Get the alert number from list_code_scanning_alerts.',
     {
       alert_number: z.number().describe('The code scanning alert number.'),
       github: githubArgSchema,
@@ -1491,8 +1746,7 @@ function createGetCodeScanningAlertTool(task: Task) {
 
       const inst = alert.mostRecentInstance;
       if (inst) {
-        const endPart =
-          inst.endLine && inst.endLine !== inst.startLine ? `-${inst.endLine}` : '';
+        const endPart = inst.endLine && inst.endLine !== inst.startLine ? `-${inst.endLine}` : '';
         const loc = inst.path
           ? `${inst.path}${inst.startLine ? `:${inst.startLine}${endPart}` : ''}`
           : 'unknown';
@@ -1525,8 +1779,8 @@ function createGetPRReviewsTool(task: Task) {
       if (reviews.length === 0) {
         return ok(`No reviews found for PR #${args.pr_number} (${resolved.github})`);
       }
-      const lines = reviews.map((r) =>
-        `- ${r.user} [${r.state}] @ ${r.submittedAt}: ${r.body || '(no body)'}`
+      const lines = reviews.map(
+        (r) => `- ${r.user} [${r.state}] @ ${r.submittedAt}: ${r.body || '(no body)'}`,
       );
       return ok(`Reviews for PR #${args.pr_number} (${resolved.github}):\n${lines.join('\n')}`);
     },
@@ -1547,8 +1801,8 @@ function createGetPRCommentsTool(task: Task) {
       if (comments.length === 0) {
         return ok(`No conversation comments on PR #${args.pr_number} (${resolved.github})`);
       }
-      const lines = comments.map((c) =>
-        `- [comment_id=${c.id}] ${c.author} @ ${c.createdAt}: ${c.body}`
+      const lines = comments.map(
+        (c) => `- [comment_id=${c.id}] ${c.author} @ ${c.createdAt}: ${c.body}`,
       );
       return ok(`Comments on PR #${args.pr_number} (${resolved.github}):\n${lines.join('\n')}`);
     },
@@ -1558,7 +1812,7 @@ function createGetPRCommentsTool(task: Task) {
 function createGetReviewThreadsTool(task: Task) {
   return tool(
     'get_review_threads',
-    'Get every review thread on a PR with its thread_id (for resolve_review_thread) and each comment\'s comment_id (for reply_to_review_comment).',
+    "Get every review thread on a PR with its thread_id (for resolve_review_thread) and each comment's comment_id (for reply_to_review_comment).",
     { pr_number: z.number().describe('The PR number'), github: githubArgSchema },
     async (args) => {
       const resolved = resolveGithub(task, args.github);
@@ -1570,18 +1824,19 @@ function createGetReviewThreadsTool(task: Task) {
         return ok(`No review threads on PR #${args.pr_number} (${resolved.github})`);
       }
       const chunks = threads.map((t) => {
-        const flags = [
-          t.isResolved ? 'RESOLVED' : 'UNRESOLVED',
-          t.isOutdated ? 'OUTDATED' : null,
-        ].filter(Boolean).join(', ');
+        const flags = [t.isResolved ? 'RESOLVED' : 'UNRESOLVED', t.isOutdated ? 'OUTDATED' : null]
+          .filter(Boolean)
+          .join(', ');
         const location = t.line !== null ? `${t.path}:${t.line}` : `${t.path} (outdated)`;
         const header = `Thread ${t.threadId} — ${location} [${flags}]`;
-        const lines = t.comments.map((c) =>
-          `  [comment_id=${c.commentId}] ${c.author} @ ${c.createdAt}: ${c.body}`
+        const lines = t.comments.map(
+          (c) => `  [comment_id=${c.commentId}] ${c.author} @ ${c.createdAt}: ${c.body}`,
         );
         return [header, ...lines].join('\n');
       });
-      return ok(`Review threads on PR #${args.pr_number} (${resolved.github}):\n${chunks.join('\n\n')}`);
+      return ok(
+        `Review threads on PR #${args.pr_number} (${resolved.github}):\n${chunks.join('\n\n')}`,
+      );
     },
   );
 }
@@ -1591,9 +1846,15 @@ function createListPRsTool(task: Task) {
     'list_prs',
     'List pull requests with optional filters.',
     {
-      state: z.enum(['open', 'closed', 'all']).optional().describe('PR state filter (default: open)'),
+      state: z
+        .enum(['open', 'closed', 'all'])
+        .optional()
+        .describe('PR state filter (default: open)'),
       base: z.string().optional().describe('Filter by base branch (e.g. "main")'),
-      sort: z.enum(['created', 'updated', 'popularity', 'long-running']).optional().describe('Sort field (default: updated)'),
+      sort: z
+        .enum(['created', 'updated', 'popularity', 'long-running'])
+        .optional()
+        .describe('Sort field (default: updated)'),
       limit: z.number().optional().describe('Max results to return (default: 10)'),
       github: githubArgSchema,
     },
@@ -1611,8 +1872,9 @@ function createListPRsTool(task: Task) {
       if (prs.length === 0) {
         return ok(`No PRs found in ${resolved.github} matching the filters.`);
       }
-      const lines = prs.map((pr) =>
-        `#${pr.number} [${pr.state}] ${pr.title} (${pr.head} → ${pr.base}) by ${pr.author} — ${pr.url}`
+      const lines = prs.map(
+        (pr) =>
+          `#${pr.number} [${pr.state}] ${pr.title} (${pr.head} → ${pr.base}) by ${pr.author} — ${pr.url}`,
       );
       return ok(`PRs in ${resolved.github}:\n${lines.join('\n')}`);
     },
@@ -1654,7 +1916,10 @@ function createUpdatePRTool(task: Task) {
       pr_number: z.number().describe('The PR number'),
       title: z.string().optional().describe('New PR title'),
       body: z.string().optional().describe('New PR description body'),
-      base: z.string().optional().describe('New base branch (retarget the PR, e.g. "main" → "release-1.2")'),
+      base: z
+        .string()
+        .optional()
+        .describe('New base branch (retarget the PR, e.g. "main" → "release-1.2")'),
       github: githubArgSchema,
     },
     async (args) => {
@@ -1710,8 +1975,16 @@ function createAddReviewCommentTool(task: Task) {
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
-      await client.addReviewComment(resolved.github, args.pr_number, args.path, args.line, args.comment);
-      return ok(`Added review comment to ${args.path}:${args.line} on PR #${args.pr_number} (${resolved.github})`);
+      await client.addReviewComment(
+        resolved.github,
+        args.pr_number,
+        args.path,
+        args.line,
+        args.comment,
+      );
+      return ok(
+        `Added review comment to ${args.path}:${args.line} on PR #${args.pr_number} (${resolved.github})`,
+      );
     },
   );
 }
@@ -1731,8 +2004,15 @@ function createReplyToReviewCommentTool(task: Task) {
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
-      await client.replyToReviewComment(resolved.github, args.pr_number, args.comment_id, args.comment);
-      return ok(`Replied to review comment ${args.comment_id} on PR #${args.pr_number} (${resolved.github})`);
+      await client.replyToReviewComment(
+        resolved.github,
+        args.pr_number,
+        args.comment_id,
+        args.comment,
+      );
+      return ok(
+        `Replied to review comment ${args.comment_id} on PR #${args.pr_number} (${resolved.github})`,
+      );
     },
   );
 }
@@ -1743,7 +2023,9 @@ function createResolveReviewThreadTool(task: Task) {
     'Mark a review thread as resolved. thread_id must be a GraphQL node id (e.g. PRRT_...) obtained from get_review_threads.',
     {
       pr_number: z.number().describe('The PR number'),
-      thread_id: z.string().describe('GraphQL thread node id from get_review_threads (e.g. PRRT_...)'),
+      thread_id: z
+        .string()
+        .describe('GraphQL thread node id from get_review_threads (e.g. PRRT_...)'),
       github: githubArgSchema,
     },
     async (args) => {
@@ -1752,7 +2034,9 @@ function createResolveReviewThreadTool(task: Task) {
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
       await client.resolveReviewThread(resolved.github, args.pr_number, args.thread_id);
-      return ok(`Resolved review thread ${args.thread_id} on PR #${args.pr_number} (${resolved.github})`);
+      return ok(
+        `Resolved review thread ${args.thread_id} on PR #${args.pr_number} (${resolved.github})`,
+      );
     },
   );
 }
@@ -1773,11 +2057,10 @@ function createRequestReReviewTool(task: Task) {
   );
 }
 
-
 function createMergePRTool(agent: Agent, task: Task) {
   return tool(
     'merge_pull_request',
-    'Merge a pull request, subject to the repo\'s merge policy. On an auto-merge repo it merges directly if the PR is clean (returns the current status otherwise). On any other repo it posts an auto-merge approval request and pauses the task; once the user approves, the PR is armed to merge automatically as soon as all checks and required reviews pass. Works for any open PR — it does not require the PR to be mergeable yet.',
+    "Merge a pull request, subject to the repo's merge policy. On an auto-merge repo it merges directly if the PR is clean (returns the current status otherwise). On any other repo it posts an auto-merge approval request and pauses the task; once the user approves, the PR is armed to merge automatically as soon as all checks and required reviews pass. Works for any open PR — it does not require the PR to be mergeable yet.",
     { pr_number: z.number().describe('The PR number'), github: githubArgSchema },
     async (args) => {
       const resolved = resolveGithub(task, args.github);
@@ -1793,7 +2076,9 @@ function createMergePRTool(agent: Agent, task: Task) {
         // Auto repo direct merge: clean-only (no blocked tolerance). A non-clean
         // PR returns the not-ready message and does not merge.
         if (status.mergeableState !== 'clean') {
-          return ok(`Cannot merge: PR #${args.pr_number} (${resolved.github}) is not ready (mergeable=${status.mergeable}, state=${status.mergeableState})`);
+          return ok(
+            `Cannot merge: PR #${args.pr_number} (${resolved.github}) is not ready (mergeable=${status.mergeable}, state=${status.mergeableState})`,
+          );
         }
 
         const result = await client.mergePullRequest(resolved.github, args.pr_number);
@@ -1811,7 +2096,9 @@ function createMergePRTool(agent: Agent, task: Task) {
         // agent means the request is live and the task is pausing on it.
         const parked = task.agent?.pendingTeardown != null;
         if (parked) {
-          return ok(`Merge approval already pending for ${pending.github}#${pending.pr_number} — task is pausing until the user approves or denies it.`);
+          return ok(
+            `Merge approval already pending for ${pending.github}#${pending.pr_number} — task is pausing until the user approves or denies it.`,
+          );
         }
         // Slot set but nobody parked: the task was reactivated without the
         // prompt being resolved — supersede the stale slot with this request.
@@ -1827,16 +2114,28 @@ function createMergePRTool(agent: Agent, task: Task) {
       }
 
       const agentName = agent.def.id;
-      logger.agentAction(agentName, 'Requesting merge approval', `${resolved.github}#${args.pr_number}`);
+      logger.agentAction(
+        agentName,
+        'Requesting merge approval',
+        `${resolved.github}#${args.pr_number}`,
+      );
       task.touch();
 
-      await appendAgentFinding(task.taskId, 'system', `Merge approval requested for ${resolved.github}#${args.pr_number}`, 'decision');
+      await appendAgentFinding(
+        task.taskId,
+        'system',
+        `Merge approval requested for ${resolved.github}#${args.pr_number}`,
+        'decision',
+      );
 
       const buttonValue = `${task.taskId}|${resolved.github}#${args.pr_number}`;
       const blocks = [
         {
           type: 'section',
-          text: { type: 'mrkdwn', text: `*Merge request:* Approve auto-merge for PR #${args.pr_number} (${resolved.github})? It will merge automatically once all checks and required reviews pass.` },
+          text: {
+            type: 'mrkdwn',
+            text: `*Merge request:* Approve auto-merge for PR #${args.pr_number} (${resolved.github})? It will merge automatically once all checks and required reviews pass.`,
+          },
         },
         {
           type: 'actions',
@@ -1880,7 +2179,14 @@ function createMergePRTool(agent: Agent, task: Task) {
       // the input stream under an in-flight hook ("stream closed").
       task.suspendStatus();
       agent.deferTeardown(() => task.stop());
-      return { content: [{ type: 'text' as const, text: 'Merge approval requested. Task paused pending user approval.' }] };
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Merge approval requested. Task paused pending user approval.',
+          },
+        ],
+      };
     },
   );
 }
@@ -1911,7 +2217,7 @@ function createFetchTool(task: Task) {
     async (args) => {
       const resolved = requireAttached(task, args.github);
       if (!resolved.ok) return err(resolved.error);
-      await gitExec(resolved.attached.clone_path!, 'fetch origin');
+      await gitExec(resolved.attached.clone_path, 'fetch origin');
       return ok(`Fetched latest from origin (${resolved.github})`);
     },
   );
@@ -1929,7 +2235,7 @@ function createSwitchBranchTool(task: Task) {
       const resolved = requireAttached(task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const { attached } = resolved;
-      const clonePath = attached.clone_path!;
+      const clonePath = attached.clone_path;
 
       const branch = args.branch;
       const currentBranch = attached.current_branch;
@@ -1999,7 +2305,7 @@ function createCreateBranchTool(task: Task) {
       const branchName = taskBranchName(task.taskId, existing);
 
       const base = args.base || 'HEAD';
-      await gitExec(attached.clone_path!, `checkout -b ${branchName} ${base}`);
+      await gitExec(attached.clone_path, `checkout -b ${branchName} ${base}`);
 
       attached.branch_states ??= {};
       attached.branch_states[branchName] = {};
@@ -2029,8 +2335,9 @@ function createListBranchesTool(task: Task) {
       const blocks = filtered.map((a) => {
         const current = a.current_branch || '(unknown)';
         const states = a.branch_states || {};
-        const branches = Object.entries(states)
-          .map(([name, s]) => `${name}${s.pr_number ? ` (PR #${s.pr_number})` : ''}`);
+        const branches = Object.entries(states).map(
+          ([name, s]) => `${name}${s.pr_number ? ` (PR #${s.pr_number})` : ''}`,
+        );
         return [
           `[${a.github}]`,
           `  Current: ${current}`,
@@ -2049,15 +2356,28 @@ function createParseDatetimeTool() {
     'parse_datetime',
     'Parse a natural language date/time expression into an ISO 8601 timestamp. Call this before set_reminder to get the correct datetime value. You must provide the timezone of the person the reminder relates to.',
     {
-      expression: z.string().describe('Natural language date/time, e.g. "in 2 hours", "tomorrow at 10am", "next Monday at 9am"'),
-      timezone: z.string().describe('IANA timezone, e.g. "Europe/Moscow", "America/New_York", "UTC"'),
+      expression: z
+        .string()
+        .describe(
+          'Natural language date/time, e.g. "in 2 hours", "tomorrow at 10am", "next Monday at 9am"',
+        ),
+      timezone: z
+        .string()
+        .describe('IANA timezone, e.g. "Europe/Moscow", "America/New_York", "UTC"'),
     },
     async (args) => {
       const tz = args.timezone;
       const refDate = new Date();
       const results = chrono.parse(args.expression, { instant: refDate, timezone: tz });
       if (results.length === 0) {
-        return { content: [{ type: 'text' as const, text: `Could not parse "${args.expression}". Try a different format like "in 2 hours", "tomorrow at 10am", or "next Monday at 9am".` }] };
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Could not parse "${args.expression}". Try a different format like "in 2 hours", "tomorrow at 10am", or "next Monday at 9am".`,
+            },
+          ],
+        };
       }
       const parsed = results[0].start.date();
       return { content: [{ type: 'text' as const, text: parsed.toISOString() }] };
@@ -2070,11 +2390,33 @@ function createSetReminderTool(agent: Agent, task: Task) {
     'set_reminder',
     'Set a reminder for a future time — either once (`datetime`, within 30 days) or on a repeating schedule (`cron` + `tz`, ending at `until`, within 30 days). Wakes this task later, with everything it already knows. It never starts a new task. Use it for follow-ups and repeated checks that belong to this task. Work that should run as its own task each time, on a schedule or when a Slack message arrives, is a trigger; see the triggers skill. For anything repeating, pass `cron` rather than re-arming by hand on each wake: the runtime then owns the cadence, so it cannot drift or be skipped. Recurring reminders fire at most once per hour. Only one reminder can be pending — calling this replaces any existing one; cancel_reminder stops a recurring one. Use parse_datetime first to get a correct ISO 8601 `datetime`.',
     {
-      datetime: z.string().optional().describe('One-shot: ISO 8601 datetime, e.g. "2026-04-15T10:00:00Z". Mutually exclusive with cron.'),
-      cron: z.string().optional().describe('Recurring: 5-field cron, e.g. "0 5,17 * * *" for 05:00 and 17:00 daily. Must not fire more than once per hour. Requires tz.'),
-      tz: z.string().optional().describe('IANA timezone the cron runs in, e.g. "Europe/London". Required with cron.'),
-      until: z.string().optional().describe('Required with cron: ISO 8601 end, at most 30 days ahead. The schedule stops once the next wake would fall past it. To run longer, ask the user again or use a trigger.'),
-      reason: z.string().describe('What to do when woken — this will be shown to you. For a recurring reminder this is shown on every wake, so write it to be re-read.'),
+      datetime: z
+        .string()
+        .optional()
+        .describe(
+          'One-shot: ISO 8601 datetime, e.g. "2026-04-15T10:00:00Z". Mutually exclusive with cron.',
+        ),
+      cron: z
+        .string()
+        .optional()
+        .describe(
+          'Recurring: 5-field cron, e.g. "0 5,17 * * *" for 05:00 and 17:00 daily. Must not fire more than once per hour. Requires tz.',
+        ),
+      tz: z
+        .string()
+        .optional()
+        .describe('IANA timezone the cron runs in, e.g. "Europe/London". Required with cron.'),
+      until: z
+        .string()
+        .optional()
+        .describe(
+          'Required with cron: ISO 8601 end, at most 30 days ahead. The schedule stops once the next wake would fall past it. To run longer, ask the user again or use a trigger.',
+        ),
+      reason: z
+        .string()
+        .describe(
+          'What to do when woken — this will be shown to you. For a recurring reminder this is shown on every wake, so write it to be re-read.',
+        ),
     },
     async (args) => {
       const agentName = agent.def.id;
@@ -2082,78 +2424,204 @@ function createSetReminderTool(agent: Agent, task: Task) {
       const prior = task.metadata.reminder;
       const priorCron = prior?.cron;
       const priorLabel = priorCron ? `${priorCron} ${task.metadata.reminder?.tz ?? 'UTC'}` : '';
-      const endedRecurrence = priorCron ? ` NOTE: this replaced the recurring schedule that was armed (${priorLabel}); it will no longer repeat.` : '';
-      const supersededRecurrence = priorCron ? ` NOTE: this replaced the previous recurring schedule (${priorLabel}) — only the cadence above is now in effect.` : '';
+      const endedRecurrence = priorCron
+        ? ` NOTE: this replaced the recurring schedule that was armed (${priorLabel}); it will no longer repeat.`
+        : '';
+      const supersededRecurrence = priorCron
+        ? ` NOTE: this replaced the previous recurring schedule (${priorLabel}) — only the cadence above is now in effect.`
+        : '';
 
       if (args.cron && args.datetime) {
-        return { content: [{ type: 'text' as const, text: 'Pass either datetime (one-shot) or cron + tz (recurring), not both.' }] };
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: 'Pass either datetime (one-shot) or cron + tz (recurring), not both.',
+            },
+          ],
+        };
       }
       if (args.until && !args.cron) {
-        return { content: [{ type: 'text' as const, text: 'until only applies to a recurring reminder (cron + tz). A one-shot already happens exactly once.' }] };
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: 'until only applies to a recurring reminder (cron + tz). A one-shot already happens exactly once.',
+            },
+          ],
+        };
       }
 
       if (args.cron) {
         if (!args.tz) {
-          return { content: [{ type: 'text' as const, text: 'A recurring reminder needs tz — an IANA timezone like "Europe/London". "9am" is meaningless without one.' }] };
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: 'A recurring reminder needs tz — an IANA timezone like "Europe/London". "9am" is meaningless without one.',
+              },
+            ],
+          };
         }
         // Same once-per-hour floor as triggers: each wake is a full task activation.
         const valid = validateRecurringInterval(args.cron, args.tz);
         if (!valid.ok) {
           const isFloor = /once per hour/i.test(valid.error);
-          return { content: [{ type: 'text' as const, text: isFloor ? `${valid.error} (Reminders use the same once-per-hour floor as triggers.)` : valid.error }] };
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: isFloor
+                  ? `${valid.error} (Reminders use the same once-per-hour floor as triggers.)`
+                  : valid.error,
+              },
+            ],
+          };
         }
         if (task.metadata.home_channel && !task.metadata.default_channel) {
-          return { content: [{ type: 'text' as const, text: 'Post to the user first — a recurring reminder announces itself in this task\'s thread, and this task has no thread until its first post.' }] };
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: "Post to the user first — a recurring reminder announces itself in this task's thread, and this task has no thread until its first post.",
+              },
+            ],
+          };
         }
         if (!args.until) {
-          return { content: [{ type: 'text' as const, text: 'A recurring reminder needs until — every recurring reminder must end, at most 30 days ahead. To run longer, ask the user again or propose a trigger.' }] };
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: 'A recurring reminder needs until — every recurring reminder must end, at most 30 days ahead. To run longer, ask the user again or propose a trigger.',
+              },
+            ],
+          };
         }
         const end = new Date(args.until);
         if (isNaN(end.getTime())) {
-          return { content: [{ type: 'text' as const, text: `Could not read until "${args.until}". Use parse_datetime to get a valid ISO 8601 value.` }] };
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Could not read until "${args.until}". Use parse_datetime to get a valid ISO 8601 value.`,
+              },
+            ],
+          };
         }
         if (end <= new Date()) {
-          return { content: [{ type: 'text' as const, text: 'until must be in the future — otherwise the schedule would end before it ever ran.' }] };
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: 'until must be in the future — otherwise the schedule would end before it ever ran.',
+              },
+            ],
+          };
         }
         if (end > new Date(Date.now() + 30 * 24 * 60 * 60_000)) {
-          return { content: [{ type: 'text' as const, text: 'until must be within 30 days. To run longer, ask the user again when it ends, or propose a trigger.' }] };
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: 'until must be within 30 days. To run longer, ask the user again when it ends, or propose a trigger.',
+              },
+            ],
+          };
         }
         const until = end.toISOString();
         const first = computeNextRun(args.cron, args.tz);
         if (!first) {
-          return { content: [{ type: 'text' as const, text: `Could not compute a next run for cron "${args.cron}" in ${args.tz}.` }] };
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Could not compute a next run for cron "${args.cron}" in ${args.tz}.`,
+              },
+            ],
+          };
         }
         if (first > new Date(until)) {
-          return { content: [{ type: 'text' as const, text: `That schedule never fires before until (${until}) — its first wake would be ${first.toISOString()}. Widen the window or change the cadence.` }] };
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `That schedule never fires before until (${until}) — its first wake would be ${first.toISOString()}. Widen the window or change the cadence.`,
+              },
+            ],
+          };
         }
 
         scheduleReminder(task, first, args.reason, { cron: args.cron, tz: args.tz, until });
         announceRecurrence(task, 'set', { cron: args.cron, tz: args.tz, until });
-        logger.agentAction(agentName, 'Setting recurring reminder', `${args.cron} (${args.tz}) until ${until}, next ${first.toISOString()}: ${args.reason}`);
+        logger.agentAction(
+          agentName,
+          'Setting recurring reminder',
+          `${args.cron} (${args.tz}) until ${until}, next ${first.toISOString()}: ${args.reason}`,
+        );
         const bound = `It re-arms automatically and stops after ${until}; the thread is told when it starts and when it stops.`;
-        return { content: [{ type: 'text' as const, text: `Recurring reminder set: ${args.cron} (${args.tz}). Next wake ${first.toISOString()}. ${bound} Use cancel_reminder to stop it. Reason: ${args.reason}${supersededRecurrence}` }] };
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Recurring reminder set: ${args.cron} (${args.tz}). Next wake ${first.toISOString()}. ${bound} Use cancel_reminder to stop it. Reason: ${args.reason}${supersededRecurrence}`,
+            },
+          ],
+        };
       }
 
       if (!args.datetime) {
-        return { content: [{ type: 'text' as const, text: 'Pass datetime for a one-shot reminder, or cron + tz for a recurring one.' }] };
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: 'Pass datetime for a one-shot reminder, or cron + tz for a recurring one.',
+            },
+          ],
+        };
       }
       const triggerAt = new Date(args.datetime);
       if (isNaN(triggerAt.getTime())) {
-        return { content: [{ type: 'text' as const, text: 'Invalid datetime. Use parse_datetime to get a valid ISO 8601 value.' }] };
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: 'Invalid datetime. Use parse_datetime to get a valid ISO 8601 value.',
+            },
+          ],
+        };
       }
       if (triggerAt <= new Date()) {
         return { content: [{ type: 'text' as const, text: 'Datetime must be in the future.' }] };
       }
       const maxFuture = new Date(Date.now() + 30 * 24 * 60 * 60_000);
       if (triggerAt > maxFuture) {
-        return { content: [{ type: 'text' as const, text: 'Datetime must be within 30 days. Beyond that, propose a trigger.' }] };
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: 'Datetime must be within 30 days. Beyond that, propose a trigger.',
+            },
+          ],
+        };
       }
 
       if (prior?.cron) announceRecurrence(task, 'cancelled', prior);
       scheduleReminder(task, triggerAt, args.reason);
-      logger.agentAction(agentName, 'Setting reminder', `${triggerAt.toISOString()}: ${args.reason}`);
+      logger.agentAction(
+        agentName,
+        'Setting reminder',
+        `${triggerAt.toISOString()}: ${args.reason}`,
+      );
 
-      return { content: [{ type: 'text' as const, text: `Reminder set for ${args.datetime}. Reason: ${args.reason}${endedRecurrence}` }] };
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Reminder set for ${args.datetime}. Reason: ${args.reason}${endedRecurrence}`,
+          },
+        ],
+      };
     },
   );
 }
@@ -2183,7 +2651,7 @@ function createCancelReminderTool(agent: Agent, task: Task) {
 function extractSlackFileId(ref: string): string | null {
   const m =
     ref.match(/\/files\/[^/]+\/(F[0-9A-Z]+)/) || // /files/<U>/<F>/name permalink
-    ref.match(/\b(F[0-9A-Z]{6,})\b/);            // bare F… id
+    ref.match(/\b(F[0-9A-Z]{6,})\b/); // bare F… id
   return m ? m[1] : null;
 }
 
@@ -2205,18 +2673,22 @@ function safeReferenceFileName(name: string, forceExt?: string): string {
 function createFetchSlackReferenceTool(agent: Agent, task: Task) {
   return tool(
     'fetch_slack_reference',
-    'Fetch a file referenced in the channel\'s project-context canvas, or pinned in the channel, and save it into your workspace so you can read it. ' +
-    'Pass the reference exactly as it appears in the canvas or in the pinned-messages index — a Slack file link or a file id. ' +
-    'Documents and images are saved in their original form; a referenced canvas is saved as readable markdown.',
+    "Fetch a file referenced in the channel's project-context canvas, or pinned in the channel, and save it into your workspace so you can read it. " +
+      'Pass the reference exactly as it appears in the canvas or in the pinned-messages index — a Slack file link or a file id. ' +
+      'Documents and images are saved in their original form; a referenced canvas is saved as readable markdown.',
     {
-      reference: z.string().describe(
-        'A Slack file link (e.g. https://….slack.com/files/…/F…/name) or a bare file id (F…) taken from the channel canvas or the pinned-messages index.',
-      ),
+      reference: z
+        .string()
+        .describe(
+          'A Slack file link (e.g. https://….slack.com/files/…/F…/name) or a bare file id (F…) taken from the channel canvas or the pinned-messages index.',
+        ),
     },
     async (args) => {
       const fileId = extractSlackFileId(args.reference);
       if (!fileId) {
-        return err(`No Slack file id found in "${args.reference}". Pass a Slack file link or an F… id.`);
+        return err(
+          `No Slack file id found in "${args.reference}". Pass a Slack file link or an F… id.`,
+        );
       }
       // Scope to canvas-referenced and pinned files only: the bot token can read
       // far more of the workspace than this task should reach, so an unscoped id
@@ -2266,12 +2738,33 @@ function createFetchSlackReferenceTool(agent: Agent, task: Task) {
 /** Zod shape for one tool-supplied trigger condition (shared by propose/update). */
 const triggerConditionObject = z.object({
   type: z.enum(['schedule', 'channel_message']),
-  cron: z.string().optional().describe('5-field cron expression for a RECURRING schedule (e.g. "0 9 * * 1-5"). Must fire at most once per hour. Omit for one-off.'),
-  run_at: z.string().optional().describe('ISO 8601 datetime for a ONE-OFF schedule (use parse_datetime). Omit for recurring.'),
-  tz: z.string().optional().describe('IANA timezone, e.g. "America/New_York". Defaults to the requesting user\'s timezone.'),
+  cron: z
+    .string()
+    .optional()
+    .describe(
+      '5-field cron expression for a RECURRING schedule (e.g. "0 9 * * 1-5"). Must fire at most once per hour. Omit for one-off.',
+    ),
+  run_at: z
+    .string()
+    .optional()
+    .describe('ISO 8601 datetime for a ONE-OFF schedule (use parse_datetime). Omit for recurring.'),
+  tz: z
+    .string()
+    .optional()
+    .describe(
+      'IANA timezone, e.g. "America/New_York". Defaults to the requesting user\'s timezone.',
+    ),
   channel_id: z.string().optional().describe('Channel to watch (required for channel_message).'),
-  contains: z.string().optional().describe('Only fire when the new message contains this substring (channel_message).'),
-  from_user: z.string().optional().describe('Only fire for messages from this author (channel_message). A person\'s user id (`U…`), or — for a report posted by an app, bot or incoming webhook — that app\'s bot id (`B…`), which is the id that appears as the author of its messages. Not a name or @handle.'),
+  contains: z
+    .string()
+    .optional()
+    .describe('Only fire when the new message contains this substring (channel_message).'),
+  from_user: z
+    .string()
+    .optional()
+    .describe(
+      "Only fire for messages from this author (channel_message). A person's user id (`U…`), or — for a report posted by an app, bot or incoming webhook — that app's bot id (`B…`), which is the id that appears as the author of its messages. Not a name or @handle.",
+    ),
 });
 
 type RawCondition = z.infer<typeof triggerConditionObject>;
@@ -2285,11 +2778,18 @@ async function resolveTriggerOrigin(task: Task): Promise<TriggerOrigin> {
   const key = task.metadata.default_channel;
   const ch = key ? task.metadata.channels[key] : null;
   // A fired task has no Slack default channel until its first post; without the home-channel fallback it would get operator (see-everything) visibility.
-  const conversationId = ch?.type === 'slack' ? ch.channel_id : task.metadata.home_channel?.channel_id;
+  const conversationId =
+    ch?.type === 'slack' ? ch.channel_id : task.metadata.home_channel?.channel_id;
   if (!conversationId) return { kind: 'operator' };
   try {
     const info = await getChannelInfo(conversationId);
-    if (info.isIm) return { kind: 'dm', userId: info.imUserId, channelId: conversationId, channelName: info.name };
+    if (info.isIm)
+      return {
+        kind: 'dm',
+        userId: info.imUserId,
+        channelId: conversationId,
+        channelName: info.name,
+      };
     return { kind: 'channel', channelId: conversationId };
   } catch {
     // Fail closed: a Slack lookup failure must not widen visibility. Treat the
@@ -2319,7 +2819,8 @@ function makePrivacyResolver(): (channelId: string) => Promise<boolean> {
     let p = cache.get(channelId);
     if (!p) {
       p = workspaceMap().then((map) => {
-        if (map.has(channelId)) return map.get(channelId)!;
+        const isPrivate = map.get(channelId);
+        if (isPrivate !== undefined) return isPrivate;
         // Miss — a brand-new, just-converted, or (crucially) a private channel
         // the bot was removed from and so dropped out of the workspace cache.
         // Resolve it live via the STRICT lookup that throws on error, and fail
@@ -2341,7 +2842,11 @@ function makePrivacyResolver(): (channelId: string) => Promise<boolean> {
  *
  * A message fire replies in the watched thread, not to the binding, so a DM binding is schedule-only.
  */
-function buildConditions(raw: RawCondition[], defaultTz: string, bindingType: TriggerBinding['type']): { conditions: TriggerCondition[] } | { error: string } {
+function buildConditions(
+  raw: RawCondition[],
+  defaultTz: string,
+  bindingType: TriggerBinding['type'],
+): { conditions: TriggerCondition[] } | { error: string } {
   const conditions: TriggerCondition[] = [];
   for (const c of raw) {
     if (c.type === 'schedule') {
@@ -2354,15 +2859,24 @@ function buildConditions(raw: RawCondition[], defaultTz: string, bindingType: Tr
         conditions.push({ type: 'schedule', tz, cron: c.cron, next_run_at: next.toISOString() });
       } else if (c.run_at) {
         const when = new Date(c.run_at);
-        if (isNaN(when.getTime())) return { error: `Invalid run_at "${c.run_at}" — use parse_datetime for an ISO 8601 value.` };
-        if (when.getTime() <= Date.now()) return { error: 'A one-off schedule must be in the future.' };
+        if (isNaN(when.getTime()))
+          return {
+            error: `Invalid run_at "${c.run_at}" — use parse_datetime for an ISO 8601 value.`,
+          };
+        if (when.getTime() <= Date.now())
+          return { error: 'A one-off schedule must be in the future.' };
         conditions.push({ type: 'schedule', tz, next_run_at: when.toISOString() });
       } else {
-        return { error: 'A schedule condition needs either `cron` (recurring) or `run_at` (one-off).' };
+        return {
+          error: 'A schedule condition needs either `cron` (recurring) or `run_at` (one-off).',
+        };
       }
     } else if (c.type === 'channel_message') {
       if (bindingType === 'user') {
-        return { error: 'A DM trigger can only run on a schedule — it cannot watch a channel for messages. Give it a schedule, or bind it to a channel instead.' };
+        return {
+          error:
+            'A DM trigger can only run on a schedule — it cannot watch a channel for messages. Give it a schedule, or bind it to a channel instead.',
+        };
       }
       if (!c.channel_id) return { error: 'A channel_message condition needs `channel_id`.' };
       const match: { contains?: string; from_user?: string } = {};
@@ -2372,11 +2886,17 @@ function buildConditions(raw: RawCondition[], defaultTz: string, bindingType: Tr
         // check the trigger is accepted, announced, and listed as active — and
         // then never fires, which is indistinguishable from "nobody posted".
         if (!isSlackAuthorId(c.from_user)) {
-          return { error: `"${c.from_user}" is not a Slack author id. Use the person's user id (\`U…\`) or, for a report posted by an app or webhook, the app's bot id (\`B…\`) — that is the id shown in the author of the message you want to watch for. A name or @handle will not match anything.` };
+          return {
+            error: `"${c.from_user}" is not a Slack author id. Use the person's user id (\`U…\`) or, for a report posted by an app or webhook, the app's bot id (\`B…\`) — that is the id shown in the author of the message you want to watch for. A name or @handle will not match anything.`,
+          };
         }
         match.from_user = c.from_user;
       }
-      conditions.push({ type: 'channel_message', channel_id: c.channel_id, ...(Object.keys(match).length ? { match } : {}) });
+      conditions.push({
+        type: 'channel_message',
+        channel_id: c.channel_id,
+        ...(Object.keys(match).length ? { match } : {}),
+      });
     } else {
       return { error: `Unknown condition type "${(c as { type: string }).type}".` };
     }
@@ -2385,7 +2905,10 @@ function buildConditions(raw: RawCondition[], defaultTz: string, bindingType: Tr
   return { conditions };
 }
 
-async function authorizeTriggerBinding(task: Task, binding: TriggerBinding): Promise<string | null> {
+async function authorizeTriggerBinding(
+  task: Task,
+  binding: TriggerBinding,
+): Promise<string | null> {
   try {
     await task.prepareTriggerDelivery(binding);
     return null;
@@ -2417,17 +2940,45 @@ function createProposeTriggerTool(task: Task) {
     'propose_trigger',
     'Propose a persistent trigger ("do Y when X happens") for the user to approve. The trigger is created in a pending state and an Approve/Deny prompt is posted — it will NOT run until the user approves. Use this after you and the user have agreed on the cadence (or channel to watch), what to do, and which channel to deliver to. Results are delivered either to a channel or, when you are being asked in a DM, to that DM (binding type "user") — a DM trigger can only be set up from the DM it will deliver to, and can only run on a schedule. You do not need to pause the task.',
     {
-      binding: z.object({
-        type: z.enum(['channel', 'user']),
-        channel_id: z.string().optional().describe('Slack channel ID where fired results are delivered. Required for type "channel"; ignored for type "user".'),
-        channel_name: z.string().optional().describe('Channel name without the leading #. Required for type "channel"; ignored for type "user".'),
-      }).describe('Where fired results are delivered — a channel, or "user" to deliver to the DM you are being asked from. "user" is only valid when you are being asked in a DM, it always targets that DM, and it takes no id: pass no channel_id and no channel_name.'),
-      conditions: z.array(triggerConditionObject).min(1).describe('One or more conditions; any match fires the trigger.'),
-      action_prompt: z.string().describe('The full internal instruction seeded to the task when the trigger fires — detailed and imperative. NOT shown to the user.'),
-      summary: z.string().describe('A short, friendly one-liner describing what this does, shown to the user in the approval prompt and announcements, e.g. "Daily summary of #bot-test" or "Reply to messages mentioning Archie". Keep it under ~60 chars; do not restate the schedule (that is rendered automatically).'),
+      binding: z
+        .object({
+          type: z.enum(['channel', 'user']),
+          channel_id: z
+            .string()
+            .optional()
+            .describe(
+              'Slack channel ID where fired results are delivered. Required for type "channel"; ignored for type "user".',
+            ),
+          channel_name: z
+            .string()
+            .optional()
+            .describe(
+              'Channel name without the leading #. Required for type "channel"; ignored for type "user".',
+            ),
+        })
+        .describe(
+          'Where fired results are delivered — a channel, or "user" to deliver to the DM you are being asked from. "user" is only valid when you are being asked in a DM, it always targets that DM, and it takes no id: pass no channel_id and no channel_name.',
+        ),
+      conditions: z
+        .array(triggerConditionObject)
+        .min(1)
+        .describe('One or more conditions; any match fires the trigger.'),
+      action_prompt: z
+        .string()
+        .describe(
+          'The full internal instruction seeded to the task when the trigger fires — detailed and imperative. NOT shown to the user.',
+        ),
+      summary: z
+        .string()
+        .describe(
+          'A short, friendly one-liner describing what this does, shown to the user in the approval prompt and announcements, e.g. "Daily summary of #bot-test" or "Reply to messages mentioning Archie". Keep it under ~60 chars; do not restate the schedule (that is rendered automatically).',
+        ),
     },
     async (args) => {
-      if (!triggersEnabled()) return ok('Triggers are currently disabled on this instance (ARCHIE_TRIGGERS_ENABLED=false).');
+      if (!triggersEnabled())
+        return ok(
+          'Triggers are currently disabled on this instance (ARCHIE_TRIGGERS_ENABLED=false).',
+        );
 
       // The approval card has no home-channel fallback, so before the first post it would reach nobody.
       if (task.metadata.home_channel && !task.metadata.default_channel) {
@@ -2442,7 +2993,9 @@ function createProposeTriggerTool(task: Task) {
       if (args.binding.type === 'user') {
         // Never read ids from args here: the DM is always the task's own, so it cannot be aimed at anyone else.
         if (origin.kind !== 'dm' || !origin.userId || !origin.channelId) {
-          return ok('A DM trigger can only be set up from a DM. Ask the person to set it up in their own DM with me, or pick a channel to deliver to instead.');
+          return ok(
+            'A DM trigger can only be set up from a DM. Ask the person to set it up in their own DM with me, or pick a channel to deliver to instead.',
+          );
         }
         binding = {
           type: 'user',
@@ -2452,10 +3005,13 @@ function createProposeTriggerTool(task: Task) {
         };
       } else {
         const b = args.binding;
-        if (!b.channel_id || !b.channel_name) return ok('A trigger needs both channel_id and channel_name for delivery.');
+        if (!b.channel_id || !b.channel_name)
+          return ok('A trigger needs both channel_id and channel_name for delivery.');
         // The bound id also decides what the fired task may read, so a model-supplied DM or user id is refused.
         if (isDmOrUserId(b.channel_id)) {
-          return ok('A trigger has to deliver to a channel, not a DM or a user. Pass a channel ID (e.g. "C…"). To deliver to someone\'s DM, set the trigger up from that DM and use binding type "user".');
+          return ok(
+            'A trigger has to deliver to a channel, not a DM or a user. Pass a channel ID (e.g. "C…"). To deliver to someone\'s DM, set the trigger up from that DM and use binding type "user".',
+          );
         }
         binding = { type: 'channel', channel_id: b.channel_id, channel_name: b.channel_name };
       }
@@ -2465,7 +3021,11 @@ function createProposeTriggerTool(task: Task) {
       const createdBy = origin.kind === 'dm' ? origin.userId : undefined;
       let defaultTz = 'UTC';
       if (createdBy) {
-        try { defaultTz = (await getUserInfo(createdBy)).tz || 'UTC'; } catch { /* keep UTC */ }
+        try {
+          defaultTz = (await getUserInfo(createdBy)).tz || 'UTC';
+        } catch {
+          /* keep UTC */
+        }
       }
 
       const built = buildConditions(args.conditions, defaultTz, binding.type);
@@ -2473,15 +3033,21 @@ function createProposeTriggerTool(task: Task) {
 
       if (binding.type === 'channel') {
         const channelId = binding.channel_id;
-        const perChannel = await countActiveTriggers((t) => t.binding.type === 'channel' && t.binding.channel_id === channelId);
+        const perChannel = await countActiveTriggers(
+          (t) => t.binding.type === 'channel' && t.binding.channel_id === channelId,
+        );
         if (perChannel >= MAX_TRIGGERS_PER_CHANNEL) {
-          return ok(`This channel already has the maximum of ${MAX_TRIGGERS_PER_CHANNEL} active triggers. Remove one first.`);
+          return ok(
+            `This channel already has the maximum of ${MAX_TRIGGERS_PER_CHANNEL} active triggers. Remove one first.`,
+          );
         }
       }
       if (createdBy) {
         const perUser = await countActiveTriggers((t) => t.created_by === createdBy);
         if (perUser >= MAX_TRIGGERS_PER_USER) {
-          return ok(`You already have the maximum of ${MAX_TRIGGERS_PER_USER} active triggers. Remove one first.`);
+          return ok(
+            `You already have the maximum of ${MAX_TRIGGERS_PER_USER} active triggers. Remove one first.`,
+          );
         }
       }
 
@@ -2502,10 +3068,17 @@ function createProposeTriggerTool(task: Task) {
       await saveTrigger(trigger);
       task.metadata.pending_trigger_id = trigger.id;
       task.debouncedSave();
-      await appendAgentFinding(task.taskId, 'system', `Trigger proposed: ${describeTrigger(trigger)}`, 'decision');
+      await appendAgentFinding(
+        task.taskId,
+        'system',
+        `Trigger proposed: ${describeTrigger(trigger)}`,
+        'decision',
+      );
 
       await postTriggerApprovalCard(task, trigger);
-      return ok('Trigger proposed and posted for approval. It will not run until the user approves (or types y in the CLI). No need to pause — continue if there is other work.');
+      return ok(
+        'Trigger proposed and posted for approval. It will not run until the user approves (or types y in the CLI). No need to pause — continue if there is other work.',
+      );
     },
   );
 }
@@ -2528,7 +3101,8 @@ function createListTriggersTool(task: Task) {
         }
         if (await triggerVisibleFrom(t, origin, resolvePrivacy)) visible.push(t);
       }
-      if (visible.length === 0) return ok('There are no triggers set up that are visible from here.');
+      if (visible.length === 0)
+        return ok('There are no triggers set up that are visible from here.');
       const lines = visible.map((t) => {
         const where = triggerWhere(t);
         const last = t.last_fired_at ? `; last fired ${t.last_fired_at}` : '';
@@ -2553,12 +3127,13 @@ function detailCondition(c: TriggerCondition, index: number): string {
     return lines.join('\n');
   }
   const lines = [`${head}a new top-level message in <#${c.channel_id}> (${c.channel_id})`];
-  if (c.match?.contains) lines.push(`       body contains (case-insensitive): "${c.match.contains}"`);
+  if (c.match?.contains)
+    lines.push(`       body contains (case-insensitive): "${c.match.contains}"`);
   else lines.push('       body filter: none — any message in that channel');
   if (c.match?.from_user) {
     const kind = isAppAuthorId(c.match.from_user)
-      ? 'an app/bot id, matched against the message\'s bot_id'
-      : 'a user id, matched against the message\'s author';
+      ? "an app/bot id, matched against the message's bot_id"
+      : "a user id, matched against the message's author";
     lines.push(`       author is: ${c.match.from_user} (${kind})`);
   } else {
     lines.push('       author filter: none — anyone in that channel');
@@ -2589,17 +3164,24 @@ function createGetTriggerTool(task: Task) {
       const trigger = await loadTrigger(args.id);
       if (!trigger) return ok(`No trigger ${args.id} found.`);
       const origin = await resolveTriggerOrigin(task);
-      const visible = trigger.status === 'pending' && !pendingTriggerIsLegacy(trigger)
-        ? pendingTriggerOwnedBy(trigger, task.taskId) || origin.kind === 'operator'
-        : await triggerVisibleFrom(trigger, origin, makePrivacyResolver());
+      const visible =
+        trigger.status === 'pending' && !pendingTriggerIsLegacy(trigger)
+          ? pendingTriggerOwnedBy(trigger, task.taskId) || origin.kind === 'operator'
+          : await triggerVisibleFrom(trigger, origin, makePrivacyResolver());
       if (!visible) {
-        return ok(`Trigger ${args.id} isn't visible from here, so it can't be read from this conversation.`);
+        return ok(
+          `Trigger ${args.id} isn't visible from here, so it can't be read from this conversation.`,
+        );
       }
 
-      const where = trigger.binding.type === 'channel'
-        ? `#${trigger.binding.channel_name} (${trigger.binding.channel_id})`
-        : `a DM with <@${trigger.binding.user_id}>`;
-      const by = trigger.created_by && trigger.created_by !== 'unknown' ? `<@${trigger.created_by}>` : 'unknown';
+      const where =
+        trigger.binding.type === 'channel'
+          ? `#${trigger.binding.channel_name} (${trigger.binding.channel_id})`
+          : `a DM with <@${trigger.binding.user_id}>`;
+      const by =
+        trigger.created_by && trigger.created_by !== 'unknown'
+          ? `<@${trigger.created_by}>`
+          : 'unknown';
 
       const lines = [
         `Trigger ${trigger.id} — ${trigger.status === 'pending' ? 'awaiting approval — not running' : trigger.status}`,
@@ -2626,21 +3208,42 @@ function createGetTriggerTool(task: Task) {
 function createUpdateTriggerTool(task: Task) {
   return tool(
     'update_trigger',
-    'Pause, resume, or edit an existing trigger — including one still awaiting the user\'s approval, which you can edit freely (that re-posts a fresh Approve/Deny card with the new details). Prefer editing an unapproved proposal over proposing a second one. Only the user\'s approval can turn a pending proposal on, so `status` does not apply to one. Read it with `get_trigger` first — `conditions` replaces the whole list, so editing blind silently drops filters. You can only manage triggers visible from this conversation. A channel-bound trigger posts a one-line change notice to its bound channel; a DM trigger and a pending proposal announce nothing.',
+    "Pause, resume, or edit an existing trigger — including one still awaiting the user's approval, which you can edit freely (that re-posts a fresh Approve/Deny card with the new details). Prefer editing an unapproved proposal over proposing a second one. Only the user's approval can turn a pending proposal on, so `status` does not apply to one. Read it with `get_trigger` first — `conditions` replaces the whole list, so editing blind silently drops filters. You can only manage triggers visible from this conversation. A channel-bound trigger posts a one-line change notice to its bound channel; a DM trigger and a pending proposal announce nothing.",
     {
       id: z.string().describe('Trigger ID (from list_triggers).'),
-      status: z.enum(['paused', 'enabled']).optional().describe('"paused" to pause, "enabled" to resume. Not applicable to a proposal awaiting approval.'),
-      action_prompt: z.string().optional().describe('Replace the internal instruction run when the trigger fires (not shown to the user).'),
-      summary: z.string().optional().describe('Replace the short, friendly user-facing name. Update this whenever you change action_prompt so the notices stay accurate.'),
-      conditions: z.array(triggerConditionObject).optional().describe('REPLACES the condition list entirely (same shape as propose_trigger) — anything you leave out is dropped, including a keyword or author filter you never saw. Call `get_trigger` first and restate every condition you want to keep.'),
+      status: z
+        .enum(['paused', 'enabled'])
+        .optional()
+        .describe(
+          '"paused" to pause, "enabled" to resume. Not applicable to a proposal awaiting approval.',
+        ),
+      action_prompt: z
+        .string()
+        .optional()
+        .describe(
+          'Replace the internal instruction run when the trigger fires (not shown to the user).',
+        ),
+      summary: z
+        .string()
+        .optional()
+        .describe(
+          'Replace the short, friendly user-facing name. Update this whenever you change action_prompt so the notices stay accurate.',
+        ),
+      conditions: z
+        .array(triggerConditionObject)
+        .optional()
+        .describe(
+          'REPLACES the condition list entirely (same shape as propose_trigger) — anything you leave out is dropped, including a keyword or author filter you never saw. Call `get_trigger` first and restate every condition you want to keep.',
+        ),
     },
     async (args) => {
       const trigger = await loadTrigger(args.id);
       if (!trigger) return ok(`No trigger ${args.id} found.`);
       const origin = await resolveTriggerOrigin(task);
-      const manageable = trigger.status === 'pending' && !pendingTriggerIsLegacy(trigger)
-        ? pendingTriggerOwnedBy(trigger, task.taskId) || origin.kind === 'operator'
-        : await triggerVisibleFrom(trigger, origin, makePrivacyResolver());
+      const manageable =
+        trigger.status === 'pending' && !pendingTriggerIsLegacy(trigger)
+          ? pendingTriggerOwnedBy(trigger, task.taskId) || origin.kind === 'operator'
+          : await triggerVisibleFrom(trigger, origin, makePrivacyResolver());
       if (!manageable) {
         return ok(
           trigger.status === 'pending'
@@ -2650,26 +3253,38 @@ function createUpdateTriggerTool(task: Task) {
       }
       // A legacy proposal is visible on binding alone, so editing it from elsewhere would let
       // another conversation rewrite a card its requester is still looking at.
-      if (trigger.status === 'pending' && pendingTriggerIsLegacy(trigger)
-        && !pendingTriggerOwnedBy(trigger, task.taskId) && origin.kind !== 'operator'
-        && (args.action_prompt || args.summary || args.conditions)) {
-        return ok(`Trigger ${args.id} is a proposal from before this conversation, so its details can't be edited from here — the user who asked for it is looking at its original card. Withdraw it with delete_trigger and propose a fresh one if they want it changed.`);
+      if (
+        trigger.status === 'pending' &&
+        pendingTriggerIsLegacy(trigger) &&
+        !pendingTriggerOwnedBy(trigger, task.taskId) &&
+        origin.kind !== 'operator' &&
+        (args.action_prompt || args.summary || args.conditions)
+      ) {
+        return ok(
+          `Trigger ${args.id} is a proposal from before this conversation, so its details can't be edited from here — the user who asked for it is looking at its original card. Withdraw it with delete_trigger and propose a fresh one if they want it changed.`,
+        );
       }
       if (trigger.status === 'pending' && args.status) {
-        return ok(`Trigger ${args.id} is still awaiting the user's approval, so it can't be paused or enabled from here — only their Approve turns it on. Nothing was changed, including any other fields in this call. Call update_trigger again with just the details to edit, or delete_trigger to withdraw the proposal.`);
+        return ok(
+          `Trigger ${args.id} is still awaiting the user's approval, so it can't be paused or enabled from here — only their Approve turns it on. Nothing was changed, including any other fields in this call. Call update_trigger again with just the details to edit, or delete_trigger to withdraw the proposal.`,
+        );
       }
 
       const editedContent = Boolean(args.action_prompt || args.conditions || args.summary);
       let nextConditions: TriggerCondition[] | undefined;
       if (args.conditions) {
-        const defaultTz = trigger.conditions.find((c): c is Extract<TriggerCondition, { type: 'schedule' }> => c.type === 'schedule')?.tz || 'UTC';
+        const defaultTz =
+          trigger.conditions.find(
+            (c): c is Extract<TriggerCondition, { type: 'schedule' }> => c.type === 'schedule',
+          )?.tz || 'UTC';
         const built = buildConditions(args.conditions, defaultTz, trigger.binding.type);
         if ('error' in built) return ok(`Could not update the trigger: ${built.error}`);
         nextConditions = built.conditions;
       }
 
       if (trigger.status === 'pending') {
-        if (!editedContent) return ok('Nothing to update — pass action_prompt, summary, or conditions.');
+        if (!editedContent)
+          return ok('Nothing to update — pass action_prompt, summary, or conditions.');
         const deliveryError = await authorizeTriggerChange(task, trigger);
         if (deliveryError) return err(`Proposal not updated: ${deliveryError}`);
 
@@ -2679,16 +3294,24 @@ function createUpdateTriggerTool(task: Task) {
           if (nextConditions) t.conditions = nextConditions;
         });
         if (result.outcome === 'resolved') {
-          return ok(`The user acted on proposal ${args.id} while this edit was in flight — it is now ${result.status}, so the edit was not applied. Re-read it with get_trigger and change the live trigger instead.`);
+          return ok(
+            `The user acted on proposal ${args.id} while this edit was in flight — it is now ${result.status}, so the edit was not applied. Re-read it with get_trigger and change the live trigger instead.`,
+          );
         }
         if (result.outcome === 'gone') {
-          return ok(`Proposal ${args.id} was withdrawn while this edit was in flight, so the edit was not applied.`);
+          return ok(
+            `Proposal ${args.id} was withdrawn while this edit was in flight, so the edit was not applied.`,
+          );
         }
         const posted = await postTriggerApprovalCard(task, result.trigger);
         if (!posted) {
-          return ok(`Proposal ${result.trigger.id} was updated, but NO new approval card could be posted from this conversation — the user is still looking at the old card, which now shows superseded details. Do not tell them it was re-posted. Say the proposal changed and ask them to re-request it where they raised it, or withdraw it with delete_trigger.`);
+          return ok(
+            `Proposal ${result.trigger.id} was updated, but NO new approval card could be posted from this conversation — the user is still looking at the old card, which now shows superseded details. Do not tell them it was re-posted. Say the proposal changed and ask them to re-request it where they raised it, or withdraw it with delete_trigger.`,
+          );
         }
-        return ok(`Proposal ${result.trigger.id} updated and re-posted for approval — it now reads "${triggerWhat(result.trigger)}" · ${triggerWhen(result.trigger)}. Still not running until the user approves.`);
+        return ok(
+          `Proposal ${result.trigger.id} updated and re-posted for approval — it now reads "${triggerWhat(result.trigger)}" · ${triggerWhen(result.trigger)}. Still not running until the user approves.`,
+        );
       }
 
       // Decide the target state (auto-resume a rescheduled paused trigger, etc.)
@@ -2704,16 +3327,25 @@ function createUpdateTriggerTool(task: Task) {
         // then resuming can't exceed it. (Counts exclude this paused trigger.)
         if (trigger.binding.type === 'channel') {
           const channelId = trigger.binding.channel_id;
-          const perChannel = await countActiveTriggers((t) => t.binding.type === 'channel' && t.binding.channel_id === channelId);
-          if (perChannel >= MAX_TRIGGERS_PER_CHANNEL) return ok(`Can't enable — this channel is already at the maximum of ${MAX_TRIGGERS_PER_CHANNEL} active triggers.`);
+          const perChannel = await countActiveTriggers(
+            (t) => t.binding.type === 'channel' && t.binding.channel_id === channelId,
+          );
+          if (perChannel >= MAX_TRIGGERS_PER_CHANNEL)
+            return ok(
+              `Can't enable — this channel is already at the maximum of ${MAX_TRIGGERS_PER_CHANNEL} active triggers.`,
+            );
         }
         if (trigger.created_by && trigger.created_by !== 'unknown') {
           const perUser = await countActiveTriggers((t) => t.created_by === trigger.created_by);
-          if (perUser >= MAX_TRIGGERS_PER_USER) return ok(`Can't enable — you're already at the maximum of ${MAX_TRIGGERS_PER_USER} active triggers.`);
+          if (perUser >= MAX_TRIGGERS_PER_USER)
+            return ok(
+              `Can't enable — you're already at the maximum of ${MAX_TRIGGERS_PER_USER} active triggers.`,
+            );
         }
       }
       const statusChange = plan.statusChange;
-      if (!editedContent && !statusChange) return ok('Nothing to update — pass status, action_prompt, summary, or conditions.');
+      if (!editedContent && !statusChange)
+        return ok('Nothing to update — pass status, action_prompt, summary, or conditions.');
 
       const candidate: Trigger = {
         ...trigger,
@@ -2733,7 +3365,9 @@ function createUpdateTriggerTool(task: Task) {
 
         const deliveryError = editedContent ? await authorizeTriggerChange(task, candidate) : null;
         if (deliveryError) {
-          return ok(`Trigger ${trigger.id} paused. Requested edits were rejected: ${deliveryError}`);
+          return ok(
+            `Trigger ${trigger.id} paused. Requested edits were rejected: ${deliveryError}`,
+          );
         }
         if (editedContent) {
           await saveTrigger(candidate);
@@ -2747,15 +3381,17 @@ function createUpdateTriggerTool(task: Task) {
         await saveTrigger(candidate);
         if (candidate.status === 'enabled') indexTrigger(candidate);
         else deindexTrigger(candidate.id);
-        if (statusChange === 'resumed') emitEvent('trigger:resumed', task.taskId, { trigger_id: candidate.id });
-        await announceTriggerChange(candidate, editedContent ? 'edited' : statusChange!);
+        if (statusChange === 'resumed')
+          emitEvent('trigger:resumed', task.taskId, { trigger_id: candidate.id });
+        const change = editedContent ? 'edited' : statusChange;
+        if (change) await announceTriggerChange(candidate, change);
       }
 
       const updated = statusChange === 'paused' && !editedContent ? trigger : candidate;
 
       // Report state back so the PM can relay it — especially the auto-resume,
       // which the user didn't explicitly ask for and should be told about.
-      const verb = editedContent ? 'updated' : (statusChange === 'paused' ? 'paused' : 'resumed');
+      const verb = editedContent ? 'updated' : statusChange === 'paused' ? 'paused' : 'resumed';
       let msg = `Trigger ${updated.id} ${verb}.`;
       if (statusChange === 'resumed') {
         msg += autoResume
@@ -2784,9 +3420,12 @@ function createDeleteTriggerTool(task: Task) {
       const origin = await resolveTriggerOrigin(task);
       // Withdrawal can leak nothing, so a legacy proposal stays withdrawable from anywhere —
       // binding visibility would strand one bound to a private channel from its own DM.
-      const deletable = trigger.status === 'pending'
-        ? pendingTriggerIsLegacy(trigger) || pendingTriggerOwnedBy(trigger, task.taskId) || origin.kind === 'operator'
-        : await triggerVisibleFrom(trigger, origin, makePrivacyResolver());
+      const deletable =
+        trigger.status === 'pending'
+          ? pendingTriggerIsLegacy(trigger) ||
+            pendingTriggerOwnedBy(trigger, task.taskId) ||
+            origin.kind === 'operator'
+          : await triggerVisibleFrom(trigger, origin, makePrivacyResolver());
       if (!deletable) {
         return ok(
           trigger.status === 'pending'
@@ -2797,11 +3436,15 @@ function createDeleteTriggerTool(task: Task) {
       if (trigger.status === 'pending') {
         const result = await withdrawPendingTrigger(trigger.id);
         if (result.outcome === 'resolved') {
-          return ok(`The user approved proposal ${trigger.id} while this withdrawal was in flight — it is now ${result.status}, so it was not withdrawn. Read it with get_trigger and pause or delete the live trigger if that is still wanted.`);
+          return ok(
+            `The user approved proposal ${trigger.id} while this withdrawal was in flight — it is now ${result.status}, so it was not withdrawn. Read it with get_trigger and pause or delete the live trigger if that is still wanted.`,
+          );
         }
         if (result.outcome === 'gone') return ok(`Proposal ${trigger.id} was already gone.`);
         emitEvent('trigger:deleted', task.taskId, { trigger_id: trigger.id });
-        return ok(`Proposal ${trigger.id} withdrawn. Its Approve/Deny card is still in the thread but its buttons are now inert — say so, so the user doesn't try to approve it.`);
+        return ok(
+          `Proposal ${trigger.id} withdrawn. Its Approve/Deny card is still in the thread but its buttons are now inert — say so, so the user doesn't try to approve it.`,
+        );
       }
       deindexTrigger(trigger.id);
       await deleteTrigger(trigger.id);
@@ -2897,24 +3540,26 @@ function createMountRepoTool(agent: Agent, task: Task) {
   return tool(
     'mount_repo',
     'Check out a GitHub repository into this task and return its local path. Call this before any code work — nothing is cloned until you ask. ' +
-    'Pass an "owner/repo" identifier from `list_available_repos`. ' +
-    'While the task is read-only the clone sits on the repository default branch and cannot be written to; once edit mode is approved it moves onto this task\'s own branch and becomes writable. ' +
-    'Mounting a repo that is already mounted is safe — it returns the same path. ' +
-    'Pass the returned path to any worker you spawn, and never point two workers at the same clone at the same time.',
+      'Pass an "owner/repo" identifier from `list_available_repos`. ' +
+      "While the task is read-only the clone sits on the repository default branch and cannot be written to; once edit mode is approved it moves onto this task's own branch and becomes writable. " +
+      'Mounting a repo that is already mounted is safe — it returns the same path. ' +
+      'Pass the returned path to any worker you spawn, and never point two workers at the same clone at the same time.',
     {
       github: z.string().describe('Repository identifier, e.g. "org/backend".'),
     },
     async (args) => {
       const github = normalizeGithubRef(args.github);
       if (!github) {
-        return err(`"${args.github}" is not a repository identifier. Pass "owner/repo", e.g. "org/backend".`);
+        return err(
+          `"${args.github}" is not a repository identifier. Pass "owner/repo", e.g. "org/backend".`,
+        );
       }
 
       const client = getGitHubClient();
       if (!client) {
         return err(
           'GitHub is not configured for this deployment, so no repository can be mounted. ' +
-          'Tell the user rather than retrying.',
+            'Tell the user rather than retrying.',
         );
       }
 
@@ -2931,7 +3576,7 @@ function createMountRepoTool(agent: Agent, task: Task) {
         if (!reachable) {
           return err(
             `The GitHub App cannot reach "${github}". Check it appears in list_available_repos ` +
-            `(the App has to be installed on it), then retry.`,
+              `(the App has to be installed on it), then retry.`,
           );
         }
         baseBranch = reachable.default_branch;

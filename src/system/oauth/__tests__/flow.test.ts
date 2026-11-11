@@ -9,6 +9,7 @@ import {
   refreshAccessToken,
   clientAuthFor,
 } from '../flow.js';
+import { expectDefined } from '../../../test-support/assertions.js';
 
 describe('PKCE primitives', () => {
   it('generates a verifier of the recommended length and a matching S256 challenge', async () => {
@@ -49,7 +50,9 @@ describe('buildAuthorizeUrl', () => {
     expect(parsed.origin + parsed.pathname).toBe('https://auth.example.com/auth');
     expect(parsed.searchParams.get('response_type')).toBe('code');
     expect(parsed.searchParams.get('client_id')).toBe('cli');
-    expect(parsed.searchParams.get('redirect_uri')).toBe('https://archie.example.com/oauth/callback');
+    expect(parsed.searchParams.get('redirect_uri')).toBe(
+      'https://archie.example.com/oauth/callback',
+    );
     expect(parsed.searchParams.get('scope')).toBe('read write');
     expect(parsed.searchParams.get('state')).toBe('abc');
     expect(parsed.searchParams.get('code_challenge')).toBe('chal');
@@ -77,8 +80,12 @@ describe('clientAuthFor', () => {
 
 describe('exchangeCodeForTokens', () => {
   let originalFetch: typeof fetch;
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   const baseAS: oauth.AuthorizationServer = {
     issuer: 'https://auth.example.com',
@@ -86,16 +93,22 @@ describe('exchangeCodeForTokens', () => {
   };
 
   it('POSTs form-encoded params with PKCE verifier and parses the response', async () => {
-    let captured: { url: string; body: URLSearchParams; auth: string | null } | null = null;
-    globalThis.fetch = vi.fn(async (url: any, init: any) => {
-      const params = new URLSearchParams(init.body);
-      const headers = new Headers(init.headers);
-      captured = { url: String(url), body: params, auth: headers.get('authorization') };
+    const captured: { value: { url: string; body: URLSearchParams; auth: string | null } | null } =
+      { value: null };
+    globalThis.fetch = vi.fn<typeof fetch>(async (url, init) => {
+      const params = new URLSearchParams(String(init?.body ?? ''));
+      const headers = new Headers(init?.headers);
+      captured.value = { url: String(url), body: params, auth: headers.get('authorization') };
       return new Response(
-        JSON.stringify({ access_token: 'AT', token_type: 'Bearer', expires_in: 3600, refresh_token: 'RT' }),
+        JSON.stringify({
+          access_token: 'AT',
+          token_type: 'Bearer',
+          expires_in: 3600,
+          refresh_token: 'RT',
+        }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       );
-    }) as any;
+    });
 
     const tokens = await exchangeCodeForTokens({
       as: baseAS,
@@ -110,54 +123,71 @@ describe('exchangeCodeForTokens', () => {
     expect(tokens.access_token).toBe('AT');
     expect(tokens.refresh_token).toBe('RT');
     expect(tokens.expires_in).toBe(3600);
-    expect(captured!.url).toBe('https://auth.example.com/token');
-    expect(captured!.body.get('grant_type')).toBe('authorization_code');
-    expect(captured!.body.get('code')).toBe('CODE');
-    expect(captured!.body.get('code_verifier')).toBe('VERIFIER');
-    expect(captured!.body.get('redirect_uri')).toBe('https://archie.example.com/oauth/callback');
+    expect(expectDefined(captured.value).url).toBe('https://auth.example.com/token');
+    expect(expectDefined(captured.value).body.get('grant_type')).toBe('authorization_code');
+    expect(expectDefined(captured.value).body.get('code')).toBe('CODE');
+    expect(expectDefined(captured.value).body.get('code_verifier')).toBe('VERIFIER');
+    expect(expectDefined(captured.value).body.get('redirect_uri')).toBe(
+      'https://archie.example.com/oauth/callback',
+    );
     // ClientSecretBasic sends credentials in the Authorization header, not the body.
-    expect(captured!.auth).toContain('Basic ');
-    expect(captured!.body.has('client_secret')).toBe(false);
+    expect(expectDefined(captured.value).auth).toContain('Basic ');
+    expect(expectDefined(captured.value).body.has('client_secret')).toBe(false);
   });
 
   it('omits client_secret for public clients', async () => {
-    let body: URLSearchParams | null = null;
-    globalThis.fetch = vi.fn(async (_url: any, init: any) => {
-      body = new URLSearchParams(init.body);
-      return new Response(
-        JSON.stringify({ access_token: 'A', token_type: 'Bearer' }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      );
-    }) as any;
+    const body: { value: URLSearchParams | null } = { value: null };
+    globalThis.fetch = vi.fn<typeof fetch>(async (_url, init) => {
+      body.value = new URLSearchParams(String(init?.body ?? ''));
+      return new Response(JSON.stringify({ access_token: 'A', token_type: 'Bearer' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
 
     await exchangeCodeForTokens({
       as: baseAS,
       client: { client_id: 'public' },
       clientAuth: clientAuthFor(undefined),
-      code: 'C', state: 's', redirectUri: 'https://archie.example.com/oauth/callback', codeVerifier: 'V',
+      code: 'C',
+      state: 's',
+      redirectUri: 'https://archie.example.com/oauth/callback',
+      codeVerifier: 'V',
     });
-    expect(body!.has('client_secret')).toBe(false);
+    expect(expectDefined(body.value).has('client_secret')).toBe(false);
   });
 
   it('surfaces error / error_description from the issuer', async () => {
-    globalThis.fetch = vi.fn(async () => new Response(
-      JSON.stringify({ error: 'invalid_grant', error_description: 'code expired' }),
-      { status: 400, headers: { 'Content-Type': 'application/json' } },
-    )) as any;
+    globalThis.fetch = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          JSON.stringify({ error: 'invalid_grant', error_description: 'code expired' }),
+          { status: 400, headers: { 'Content-Type': 'application/json' } },
+        ),
+    );
 
-    await expect(exchangeCodeForTokens({
-      as: baseAS,
-      client: { client_id: 'cli' },
-      clientAuth: clientAuthFor(undefined),
-      code: 'C', state: 's', redirectUri: 'https://archie.example.com/oauth/callback', codeVerifier: 'V',
-    })).rejects.toThrow();
+    await expect(
+      exchangeCodeForTokens({
+        as: baseAS,
+        client: { client_id: 'cli' },
+        clientAuth: clientAuthFor(undefined),
+        code: 'C',
+        state: 's',
+        redirectUri: 'https://archie.example.com/oauth/callback',
+        codeVerifier: 'V',
+      }),
+    ).rejects.toThrow();
   });
 });
 
 describe('refreshAccessToken', () => {
   let originalFetch: typeof fetch;
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   const baseAS: oauth.AuthorizationServer = {
     issuer: 'https://auth.example.com',
@@ -165,14 +195,14 @@ describe('refreshAccessToken', () => {
   };
 
   it('POSTs grant_type=refresh_token with the stored refresh token', async () => {
-    let body: URLSearchParams | null = null;
-    globalThis.fetch = vi.fn(async (_url: any, init: any) => {
-      body = new URLSearchParams(init.body);
+    const body: { value: URLSearchParams | null } = { value: null };
+    globalThis.fetch = vi.fn<typeof fetch>(async (_url, init) => {
+      body.value = new URLSearchParams(String(init?.body ?? ''));
       return new Response(
         JSON.stringify({ access_token: 'A2', token_type: 'Bearer', expires_in: 7200 }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       );
-    }) as any;
+    });
 
     const tokens = await refreshAccessToken({
       as: baseAS,
@@ -181,21 +211,26 @@ describe('refreshAccessToken', () => {
       refreshToken: 'OLD',
     });
     expect(tokens.access_token).toBe('A2');
-    expect(body!.get('grant_type')).toBe('refresh_token');
-    expect(body!.get('refresh_token')).toBe('OLD');
-    expect(body!.get('client_id')).toBe('cli');
+    expect(expectDefined(body.value).get('grant_type')).toBe('refresh_token');
+    expect(expectDefined(body.value).get('refresh_token')).toBe('OLD');
+    expect(expectDefined(body.value).get('client_id')).toBe('cli');
   });
 
   it('throws on 4xx with the issuer error', async () => {
-    globalThis.fetch = vi.fn(async () => new Response(
-      JSON.stringify({ error: 'invalid_grant' }),
-      { status: 400, headers: { 'Content-Type': 'application/json' } },
-    )) as any;
-    await expect(refreshAccessToken({
-      as: baseAS,
-      client: { client_id: 'cli' },
-      clientAuth: clientAuthFor(undefined),
-      refreshToken: 'X',
-    })).rejects.toThrow();
+    globalThis.fetch = vi.fn<typeof fetch>(
+      async () =>
+        new Response(JSON.stringify({ error: 'invalid_grant' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+    );
+    await expect(
+      refreshAccessToken({
+        as: baseAS,
+        client: { client_id: 'cli' },
+        clientAuth: clientAuthFor(undefined),
+        refreshToken: 'X',
+      }),
+    ).rejects.toThrow();
   });
 });

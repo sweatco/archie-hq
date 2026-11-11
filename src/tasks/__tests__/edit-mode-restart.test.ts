@@ -15,7 +15,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../../system/logger.js', () => ({
-  logger: { warn: vi.fn(), system: vi.fn(), error: vi.fn(), debug: vi.fn(), agent: vi.fn(), plain: vi.fn() },
+  logger: {
+    warn: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    agent: vi.fn(),
+    plain: vi.fn(),
+  },
 }));
 vi.mock('fs/promises', () => ({
   writeFile: vi.fn().mockResolvedValue(undefined),
@@ -26,8 +33,9 @@ vi.mock('fs/promises', () => ({
   readFile: vi.fn().mockRejectedValue(Object.assign(new Error('missing'), { code: 'ENOENT' })),
 }));
 const { spawnMock, ensureTaskCloneMock } = vi.hoisted(() => ({
-  spawnMock: vi.fn(),
-  ensureTaskCloneMock: vi.fn(),
+  spawnMock: vi.fn<typeof import('../../agents/spawn.js').spawnAgent>(),
+  ensureTaskCloneMock:
+    vi.fn<typeof import('../../connectors/github/repo-clone.js').ensureTaskClone>(),
 }));
 vi.mock('../../agents/spawn.js', () => ({ spawnAgent: spawnMock }));
 vi.mock('../../connectors/github/repo-clone.js', () => ({
@@ -38,6 +46,7 @@ vi.mock('../../connectors/github/repo-clone.js', () => ({
 import { Task, activeTasks } from '../task.js';
 import type { TaskMetadata } from '../../types/task.js';
 import type { AgentDef } from '../../types/agent.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const TaskCtor = Task as unknown as new (
   taskId: string,
@@ -61,17 +70,26 @@ function metadata(): TaskMetadata {
 }
 
 const pmDef = () =>
-  ({ id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', isPm: true, pluginName: 'pm' }) as AgentDef;
+  ({
+    id: 'pm-agent',
+    key: 'pm',
+    role: 'PM',
+    expertise: '',
+    isPm: true,
+    pluginName: 'pm',
+  }) as AgentDef;
 
 describe('handleEditModeApproval — restart for a writable mount', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     spawnMock.mockReset();
     ensureTaskCloneMock.mockReset();
-    spawnMock.mockImplementation(async (agent: { handle?: unknown; session: { session_id?: string } }) => {
-      agent.session.session_id ??= 'sess-1';
-      agent.handle = { isRunning: true, running: new Promise<void>(() => {}), abort: vi.fn() };
-    });
+    spawnMock.mockImplementation(
+      async (agent: { handle?: unknown; session: { session_id?: string } }) => {
+        agent.session.session_id ??= 'sess-1';
+        agent.handle = { isRunning: true, running: new Promise<void>(() => {}), abort: vi.fn() };
+      },
+    );
     activeTasks.delete(TASK_ID);
   });
 
@@ -88,7 +106,8 @@ describe('handleEditModeApproval — restart for a writable mount', () => {
     await task.sendMessage('start work');
     const before = task.agent;
     expect(before?.isRunning).toBe(true);
-    const abort = (before!.handle as unknown as { abort: ReturnType<typeof vi.fn> }).abort;
+    const abort = (expectDefined(before).handle as unknown as { abort: ReturnType<typeof vi.fn> })
+      .abort;
 
     await task.handleEditModeApproval({ id: 'U1', name: 'Egor' });
 
@@ -100,7 +119,7 @@ describe('handleEditModeApproval — restart for a writable mount', () => {
     // ...and the reactivation spawned a fresh one that resumes the same session.
     expect(task.agent).toBeDefined();
     expect(task.agent).not.toBe(before);
-    expect(task.agent!.session.session_id).toBe('sess-1');
+    expect(expectDefined(task.agent).session.session_id).toBe('sess-1');
   });
 
   it('is a no-op on the teardown when nothing is running yet', async () => {
@@ -119,7 +138,11 @@ describe('handleEditModeApproval — restart for a writable mount', () => {
   it('routes every mounted repo through the shared clone helper, in edit mode', async () => {
     const meta = metadata();
     meta.repositories = [
-      { github: 'org/backend', clone_path: '/w/sessions/t/repos/org/backend', current_branch: 'main' },
+      {
+        github: 'org/backend',
+        clone_path: '/w/sessions/t/repos/org/backend',
+        current_branch: 'main',
+      },
       { github: 'org/mobile' },
     ];
     ensureTaskCloneMock.mockImplementation(async (opts: { attached: { github: string } }) => ({
@@ -141,8 +164,10 @@ describe('handleEditModeApproval — restart for a writable mount', () => {
       expect(opts.baseRepoPath).toContain(`/repos/${opts.attached.github}`);
     }
     // A clone already on disk is NOT skipped — that skip was the bug.
-    expect(ensureTaskCloneMock.mock.calls.map(([o]) => o.attached.github))
-      .toEqual(['org/backend', 'org/mobile']);
+    expect(ensureTaskCloneMock.mock.calls.map(([o]) => o.attached.github)).toEqual([
+      'org/backend',
+      'org/mobile',
+    ]);
   });
 
   it('does not let one repo failing to check out block the others or the respawn', async () => {

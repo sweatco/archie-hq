@@ -2,10 +2,7 @@
 
 **A**utonomous **R**esponsive and **C**ollaborative **H**yper **I**ntelligent **E**mployee
 
-[![CI](https://github.com/sweatco/archie-hq/actions/workflows/ci.yml/badge.svg)](https://github.com/sweatco/archie-hq/actions/workflows/ci.yml)
-[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](LICENSE)
-[![Built with Claude Agent SDK](https://img.shields.io/badge/built%20with-Claude%20Agent%20SDK-d97757.svg)](https://docs.anthropic.com/en/docs/claude-code/sdk)
-[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![CI](https://github.com/sweatco/archie-hq/actions/workflows/ci.yml/badge.svg)](https://github.com/sweatco/archie-hq/actions/workflows/ci.yml) [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](LICENSE) [![Built with Claude Agent SDK](https://img.shields.io/badge/built%20with-Claude%20Agent%20SDK-d97757.svg)](https://docs.anthropic.com/en/docs/claude-code/sdk) [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 **Archie is an AI employee** — you delegate real work to it in Slack, the same way you would to a colleague, and it gets the job done across any domain: engineering, marketing, analytics, ops, or anything you plug in.
 
@@ -84,9 +81,10 @@ npm run dev          # or: npm run docker:dev  (runs inside the OS sandbox)
 npm run cli
 ```
 
-Ask it something like *"summarize this: <paste a few paragraphs>"* — the PM loads the example skill and returns a structured summary, handing the work to the example worker when the material is bulky.
+Ask it something like _"summarize this: <paste a few paragraphs>"_ — the PM loads the example skill and returns a structured summary, handing the work to the example worker when the material is bulky.
 
 **Going further:**
+
 - **Your own plugins** — point `ARCHIE_PLUGINS` at a git URL, or replace `workdir/plugins` with your own checkout. Read the bundled **`writing-plugins`** skill at [`examples/plugins/.claude/skills/writing-plugins/SKILL.md`](examples/plugins/.claude/skills/writing-plugins/SKILL.md) and the [Plugin System](docs/architecture/plugin-system.md) doc.
 - **Slack** — add `SLACK_BOT_TOKEN` + `SLACK_SIGNING_SECRET` for HTTP webhook mode, or `SLACK_APP_TOKEN` (`xapp-...`) for Socket Mode (no public URL needed). See [Local Development](docs/guides/local-development.md).
 - **GitHub** — needed only for code work that opens PRs. See the [GitHub App Setup guide](docs/guides/github-setup.md) for the App, permissions, events, and env vars. The App installation is the repo allowlist; repos are cloned on demand (or warmed at startup via `archie.json`).
@@ -136,7 +134,7 @@ To add a new domain: create a plugin directory, drop in skills, and push. No cor
 
 A task is one agent and one SDK session:
 
-| | What it is | What it does |
+|  | What it is | What it does |
 | --- | --- | --- |
 | **PM agent** | One per task, Opus by default | Talks to users, loads domain skills, mounts repos, spawns and briefs workers |
 | **Plugin agents** | Worker types a plugin defines | A fixed procedure, or a reviewer blind to how the material was made |

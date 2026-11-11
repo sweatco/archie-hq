@@ -121,43 +121,60 @@ function parseMcpTool(toolName: string): { server: string; tool: string } | null
 /** PM Slack lookups + exploration — posting/reactions/mute stay hidden. */
 function commsToolPhrase(tool: string): string | null {
   switch (tool) {
-    case 'find_slack_user': return 'looking someone up';
-    case 'find_slack_channel': return 'finding the right channel';
-    case 'fetch_slack_reference': return 'pulling in a reference';
-    case 'list_channels': return 'looking over the channels';
-    case 'read_channel_history': return 'catching up on a channel';
-    case 'read_thread': return 'reading a thread';
-    default: return null;
+    case 'find_slack_user':
+      return 'looking someone up';
+    case 'find_slack_channel':
+      return 'finding the right channel';
+    case 'fetch_slack_reference':
+      return 'pulling in a reference';
+    case 'list_channels':
+      return 'looking over the channels';
+    case 'read_channel_history':
+      return 'catching up on a channel';
+    case 'read_thread':
+      return 'reading a thread';
+    default:
+      return null;
   }
 }
 
 /** PM orchestration — surface the user-meaningful actions; hide the rest. */
 function orchestrationToolPhrase(tool: string): string | null {
   switch (tool) {
-    case 'list_available_repos': return 'looking over the repos';
+    case 'list_available_repos':
+      return 'looking over the repos';
     // A cold clone of a large repo takes minutes. Without a phrase the status
     // line went blank for the whole of it, which reads as the task having
     // stalled.
-    case 'mount_repo': return 'mounting a repository';
-    default: return null;
+    case 'mount_repo':
+      return 'mounting a repository';
+    default:
+      return null;
   }
 }
 
 /** PM scheduling — reminders are user-meaningful; datetime parsing is not. */
 function schedulingToolPhrase(tool: string): string | null {
   switch (tool) {
-    case 'set_reminder': return 'setting a reminder';
-    case 'cancel_reminder': return 'clearing a reminder';
-    default: return null;
+    case 'set_reminder':
+      return 'setting a reminder';
+    case 'cancel_reminder':
+      return 'clearing a reminder';
+    default:
+      return null;
   }
 }
 
 function repoToolPhrase(tool: string): string {
   switch (tool) {
-    case 'push_branch': return 'pushing the changes';
-    case 'create_pull_request': return 'opening a pull request';
-    case 'merge_pull_request': return 'merging the changes';
-    case 'close_pull_request': return 'wrapping up the pull request';
+    case 'push_branch':
+      return 'pushing the changes';
+    case 'create_pull_request':
+      return 'opening a pull request';
+    case 'merge_pull_request':
+      return 'merging the changes';
+    case 'close_pull_request':
+      return 'wrapping up the pull request';
     case 'update_pr':
     case 'add_pr_comment':
     case 'add_review_comment':

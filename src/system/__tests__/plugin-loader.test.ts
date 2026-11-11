@@ -41,6 +41,16 @@ describe('loadMcpJson', () => {
     expect(result).toEqual({ servers: {}, descriptions: {}, policies: {} });
   });
 
+  it.each([
+    { type: 'http', url: 42 },
+    { type: 'http', url: 'https://example.com/mcp', headers: { Authorization: 42 } },
+    { command: 'node', args: [42] },
+    null,
+  ])('refuses malformed MCP connection data before handing it to the SDK: %j', async (config) => {
+    const path = await writeMcpJson({ mcpServers: { example: config } });
+    expect(() => loadMcpJson(path)).toThrow();
+  });
+
   it('extracts description into descriptions and strips it from the server config', async () => {
     const path = await writeMcpJson({
       mcpServers: {
@@ -117,7 +127,7 @@ describe('loadMcpJson', () => {
       const { servers, descriptions } = loadMcpJson(path);
 
       expect(descriptions.example).toBe('Example service');
-      expect(servers.example.headers.Authorization).toBe('Bearer secret-token');
+      expect(servers.example).toMatchObject({ headers: { Authorization: 'Bearer secret-token' } });
       expect(servers.example).not.toHaveProperty('description');
     } finally {
       delete process.env.MCP_TEST_TOKEN;
@@ -173,7 +183,11 @@ describe('loadMcpJson — archie tool policy', () => {
   });
 
   it('accepts an allow-by-default server with explicit exceptions', async () => {
-    const path = await writePolicy({ default: 'allow', ask: ['trigger_build'], deny: ['set_mcp_mode'] });
+    const path = await writePolicy({
+      default: 'allow',
+      ask: ['trigger_build'],
+      deny: ['set_mcp_mode'],
+    });
     expect(loadMcpJson(path).policies.tramline).toEqual({
       default: 'allow',
       tiers: { trigger_build: 'ask', set_mcp_mode: 'deny' },
@@ -186,8 +200,9 @@ describe('loadMcpJson — archie tool policy', () => {
     const path = await writePolicy({
       titles: { fully_release_rollout: '  Release to 100% of users — irreversible  ' },
     });
-    expect(loadMcpJson(path).policies.tramline.titles)
-      .toEqual({ fully_release_rollout: 'Release to 100% of users — irreversible' });
+    expect(loadMcpJson(path).policies.tramline.titles).toEqual({
+      fully_release_rollout: 'Release to 100% of users — irreversible',
+    });
   });
 
   it('rejects a non-string or empty title', async () => {
@@ -233,7 +248,6 @@ describe('loadMcpJson — archie tool policy', () => {
     expect(() => loadMcpJson(path)).toThrow(/must be a list of tool names/);
   });
 
-
   // A key with `__` splits differently coming back out of the SDK's
   // `mcp__<server>__<tool>` name, so the gate would never find the policy and
   // every tool of the server would run ungated. Refuse the key instead.
@@ -247,7 +261,7 @@ describe('loadMcpJson — archie tool policy', () => {
   });
 
   it('refuses an unpolicied server with a qualification delimiter', async () => {
-    const path = await writeMcpJson({ mcpServers: { 'sweat__admin': { command: 'node' } } });
+    const path = await writeMcpJson({ mcpServers: { sweat__admin: { command: 'node' } } });
     expect(loadMcpJson(path)).toEqual({ servers: {}, descriptions: {}, policies: {} });
   });
 

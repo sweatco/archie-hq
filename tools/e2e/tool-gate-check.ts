@@ -76,7 +76,9 @@ export function decideGate(observed: {
 }): GateVerdict {
   const failures: string[] = [];
   if (observed.approvalRequests < 1) {
-    failures.push('no tool_call approval was requested — the PreToolUse gate did not intercept the MCP call');
+    failures.push(
+      'no tool_call approval was requested — the PreToolUse gate did not intercept the MCP call',
+    );
   }
   if (observed.markerCountAtApprovalRequest !== 0) {
     failures.push(
@@ -86,15 +88,15 @@ export function decideGate(observed: {
   if (observed.markerCountAfterApproval !== 1) {
     failures.push(
       `marker written ${observed.markerCountAfterApproval}× after approval (expected exactly 1) — ` +
-      (observed.markerCountAfterApproval === 0
-        ? 'the grant was never spent'
-        : 'the single-use grant was spent more than once'),
+        (observed.markerCountAfterApproval === 0
+          ? 'the grant was never spent'
+          : 'the single-use grant was spent more than once'),
     );
   }
   if (observed.approvalRequests > 1) {
     failures.push(
       `${observed.approvalRequests} tool_call approvals were requested (expected 1) — ` +
-      'either the readonly tool was gated or the retry re-prompted instead of spending the grant',
+        'either the readonly tool was gated or the retry re-prompted instead of spending the grant',
     );
   }
   return { pass: failures.length === 0, failures };
@@ -114,7 +116,8 @@ async function api<T>(baseUrl: string, path: string, init?: RequestInit): Promis
     ...init,
     headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) },
   });
-  if (!res.ok) throw new Error(`${init?.method ?? 'GET'} ${path} → ${res.status}: ${await res.text()}`);
+  if (!res.ok)
+    throw new Error(`${init?.method ?? 'GET'} ${path} → ${res.status}: ${await res.text()}`);
   return res.json() as Promise<T>;
 }
 
@@ -129,13 +132,16 @@ async function pollUntil<T>(
   for (;;) {
     const result = await probe();
     if (result !== undefined) return result;
-    if (Date.now() > deadline) throw new Error(`timed out after ${capSeconds}s waiting for ${what}`);
+    if (Date.now() > deadline)
+      throw new Error(`timed out after ${capSeconds}s waiting for ${what}`);
     await sleep(5000);
   }
 }
 
 async function main(): Promise<void> {
-  const dotenv = existsSync(join(REPO_ROOT, '.env')) ? readFileSync(join(REPO_ROOT, '.env'), 'utf8') : undefined;
+  const dotenv = existsSync(join(REPO_ROOT, '.env'))
+    ? readFileSync(join(REPO_ROOT, '.env'), 'utf8')
+    : undefined;
   const baseUrl = resolveBaseUrl(process.env, dotenv);
   const nonce = `E2E-GATE-${randomBytes(4).toString('hex')}`;
 
@@ -161,9 +167,13 @@ async function main(): Promise<void> {
     (await api<{ events: GateEvent[] }>(baseUrl, `/tasks/${task_id}/events`)).events;
 
   // 2. Wait for the gate to intercept — the approval request event.
-  const ref = await pollUntil('a tool_call approval request', 420, async () => firstToolCallRef(await events()));
+  const ref = await pollUntil('a tool_call approval request', 420, async () =>
+    firstToolCallRef(await events()),
+  );
   const markerCountAtApprovalRequest = nonceCount(markerText(), nonce);
-  console.log(`tool-gate-check: approval requested (ref ${ref}); marker count now ${markerCountAtApprovalRequest}`);
+  console.log(
+    `tool-gate-check: approval requested (ref ${ref}); marker count now ${markerCountAtApprovalRequest}`,
+  );
 
   // 3. Approve that exact call via the API path.
   await api(baseUrl, `/tasks/${task_id}/approve`, {
@@ -191,14 +201,18 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   console.log('tool-gate-check: PASS');
-  console.log('  - gated MCP call intercepted by PreToolUse (approval requested, nothing executed)');
+  console.log(
+    '  - gated MCP call intercepted by PreToolUse (approval requested, nothing executed)',
+  );
   console.log('  - approval spent exactly once; readonly tool passed ungated');
 }
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 if (isMain) {
   main().catch((error) => {
-    console.error(`tool-gate-check: ERROR — ${error instanceof Error ? error.message : String(error)}`);
+    console.error(
+      `tool-gate-check: ERROR — ${error instanceof Error ? error.message : String(error)}`,
+    );
     process.exit(1);
   });
 }

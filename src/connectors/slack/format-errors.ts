@@ -5,7 +5,12 @@
  * archived, bad thread, private-channel refusal, markdown limit) can be
  * unit-tested without the whole agent tool surface.
  */
-import { SlackMarkdownLimitError, SLACK_MARKDOWN_LIMIT, PrivateChannelError, DmPostError } from './client.js';
+import {
+  SlackMarkdownLimitError,
+  SLACK_MARKDOWN_LIMIT,
+  PrivateChannelError,
+  DmPostError,
+} from './client.js';
 
 /** Pull Slack's error code (e.g. "not_in_channel") off a WebAPI error. */
 export function slackErrorCode(err: unknown): string | undefined {
@@ -36,7 +41,8 @@ export function formatSlackPostError(err: unknown, channel: string): string {
     return `Couldn't post to ${channel}: Archie isn't in that channel. Someone needs to invite it (\`/invite @Archie\`) — Archie can only write where it's been added.`;
   }
   if (code === 'is_archived') return `Couldn't post to ${channel}: the channel is archived.`;
-  if (code === 'thread_not_found') return `Couldn't post to ${channel}: that thread (thread_ts) doesn't exist. Omit thread_ts to start a new top-level message.`;
+  if (code === 'thread_not_found')
+    return `Couldn't post to ${channel}: that thread (thread_ts) doesn't exist. Omit thread_ts to start a new top-level message.`;
   return formatSlackSendError(err);
 }
 
@@ -50,7 +56,10 @@ export function formatSlackPostError(err: unknown, channel: string): string {
  * promise to report back, because that promise is exactly what pulls an agent
  * into posting again once a teammate returns with new information.
  */
-export function formatMutedTargetRefusal(channelName: string, what: 'message' | 'files' = 'message'): string {
+export function formatMutedTargetRefusal(
+  channelName: string,
+  what: 'message' | 'files' = 'message',
+): string {
   const subject = what === 'files' ? 'Those files were not uploaded' : 'Nothing was posted';
   return (
     `Blocked: ${formatChannelLabel(channelName)} is muted — someone there asked you to step back. ${subject}. Only an @mention there lifts this.\n\n` +
@@ -68,7 +77,9 @@ export function formatCrossTaskMuteRefusal(channelName: string): string {
 
 /** `#name` when a channel name is known, else the raw id. */
 function formatChannelLabel(channelName: string): string {
-  return channelName.startsWith('#') || /^[CGD][A-Z0-9]+$/.test(channelName) ? channelName : `#${channelName}`;
+  return channelName.startsWith('#') || /^[CGD][A-Z0-9]+$/.test(channelName)
+    ? channelName
+    : `#${channelName}`;
 }
 
 /** Explore-read failure → guidance (private refused / not a member). */

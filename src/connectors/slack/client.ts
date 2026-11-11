@@ -5,8 +5,19 @@
  * and handling webhooks.
  */
 
+import assert from 'node:assert/strict';
+import { z } from 'zod';
+import type { Block } from '@slack/types';
 import { WebClient } from '@slack/web-api';
-import type { SlackThreadRef, SlackFile, SlackThread, SlackThreadMessage, SlackAuthor, SlackAttachment, SlackReaction } from '../../types/index.js';
+import type {
+  SlackThreadRef,
+  SlackFile,
+  SlackThread,
+  SlackThreadMessage,
+  SlackAuthor,
+  SlackAttachment,
+  SlackReaction,
+} from '../../types/index.js';
 import type { PrCardData, SlackMemoryClassification } from '../../types/task.js';
 import { prCardSubtitle, SLACK_PR_CARD_EMOJI } from '../../system/pr-card-format.js';
 import { isMemoryReady } from '../../memory/paths.js';
@@ -51,7 +62,7 @@ export class SlackMarkdownLimitError extends Error {
   readonly limit: number;
   constructor(actualLength: number) {
     super(
-      `Slack markdown payload is ${actualLength} chars, exceeds ${SLACK_MARKDOWN_LIMIT} limit.`
+      `Slack markdown payload is ${actualLength} chars, exceeds ${SLACK_MARKDOWN_LIMIT} limit.`,
     );
     this.name = 'SlackMarkdownLimitError';
     this.actualLength = actualLength;
@@ -74,15 +85,21 @@ export function assertSlackMarkdownLength(text: string): void {
  * Build a single Slack `markdown` block carrying CommonMark text.
  * Slack renders it natively (tables, code, lists) — no legacy mrkdwn conversion.
  */
-function markdownBlock(text: string): unknown[] {
+function markdownBlock(text: string): { type: 'markdown'; text: string }[] {
   return [{ type: 'markdown', text }];
 }
+
+const slackBlocksSchema = z.array(
+  z.object({ type: z.string(), block_id: z.string().optional() }).passthrough(),
+);
 
 /**
  * Message element shape returned by conversations.history / conversations.replies.
  * Derived from the WebClient method type to avoid importing a response type.
  */
-type SlackHistoryMessage = NonNullable<Awaited<ReturnType<WebClient['conversations']['history']>>['messages']>[number];
+type SlackHistoryMessage = NonNullable<
+  Awaited<ReturnType<WebClient['conversations']['history']>>['messages']
+>[number];
 
 let slackClient: WebClient | null = null;
 let botUserId: string | null = null;
@@ -113,12 +130,17 @@ export async function initSlackClient(token: string): Promise<void> {
   try {
     const authResult = await slackClient.auth.test();
     botUserId = authResult.user_id as string;
-    botId = authResult.bot_id as string | undefined ?? null;
+    botId = (authResult.bot_id as string | undefined) ?? null;
     workspaceUrl = (authResult.url as string | undefined)?.replace(/\/$/, '') ?? null;
     homeTeamId = (authResult.team_id as string | undefined) ?? null;
-    logger.slack(`Bot user ID: ${botUserId}, bot ID: ${botId}, workspace: ${workspaceUrl}, home team: ${homeTeamId}`);
+    logger.slack(
+      `Bot user ID: ${botUserId}, bot ID: ${botId}, workspace: ${workspaceUrl}, home team: ${homeTeamId}`,
+    );
     if (!homeTeamId) {
-      logger.warn('Slack', 'auth.test did not return team_id — external-user filtering will fail open (no filtering applied)');
+      logger.warn(
+        'Slack',
+        'auth.test did not return team_id — external-user filtering will fail open (no filtering applied)',
+      );
     }
   } catch (error) {
     logger.warn('Slack', 'Failed to get bot user ID', error);
@@ -183,18 +205,21 @@ export function getSlackClient(): WebClient {
  *
  * Returns `undefined` in dry-run mode.
  */
-export async function postSlackMessage(args: {
-  channel: string;
-  text: string;
-  threadTs?: string;
-  /**
-   * Optional grey footer line rendered as a trailing `context` block beneath the
-   * message (e.g. the task id + PM model). Short and plain — not length-checked.
-   */
-  footer?: string;
-  correlationId?: string;
-  actions?: unknown[];
-}, notice = false): Promise<string | undefined> {
+export async function postSlackMessage(
+  args: {
+    channel: string;
+    text: string;
+    threadTs?: string;
+    /**
+     * Optional grey footer line rendered as a trailing `context` block beneath the
+     * message (e.g. the task id + PM model). Short and plain — not length-checked.
+     */
+    footer?: string;
+    correlationId?: string;
+    actions?: unknown[];
+  },
+  notice = false,
+): Promise<string | undefined> {
   const { channel, text, threadTs, footer } = args;
   if (dryRun) {
     const target = threadTs ? `${channel}:${threadTs}` : channel;
@@ -205,26 +230,39 @@ export async function postSlackMessage(args: {
   assertSlackMarkdownLength(renderedText);
   const sharedClient = getSlackClient();
   // A separate client also avoids waiting behind the shared client's retries.
-  const client = notice ? new WebClient(sharedClient.token, {
-    slackApiUrl: sharedClient.slackApiUrl,
-    timeout: 5000,
-    retryConfig: { retries: 0 },
-    rejectRateLimitedCalls: true,
-  }) : sharedClient;
-  const blocks = markdownBlock(renderedText);
+  const client = notice
+    ? new WebClient(sharedClient.token, {
+        slackApiUrl: sharedClient.slackApiUrl,
+        timeout: 5000,
+        retryConfig: { retries: 0 },
+        rejectRateLimitedCalls: true,
+      })
+    : sharedClient;
+  const blocks: Array<Block & Record<string, unknown>> = markdownBlock(renderedText);
   if (footer) {
     blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: footer }] });
   }
   if (args.actions?.length) blocks.push({ type: 'actions', elements: args.actions });
   const sender = args.correlationId
-    ? new WebClient(client.token, { retryConfig: { retries: 0 }, rejectRateLimitedCalls: true, timeout: 15_000 })
+    ? new WebClient(client.token, {
+        retryConfig: { retries: 0 },
+        rejectRateLimitedCalls: true,
+        timeout: 15_000,
+      })
     : client;
   const result = await sender.chat.postMessage({
     channel,
     ...(threadTs ? { thread_ts: threadTs } : {}),
     text: renderedText,
-    blocks: blocks as any,
-    ...(args.correlationId ? { metadata: { event_type: 'archie_initiative', event_payload: { delivery: args.correlationId } } } : {}),
+    blocks,
+    ...(args.correlationId
+      ? {
+          metadata: {
+            event_type: 'archie_initiative',
+            event_payload: { delivery: args.correlationId },
+          },
+        }
+      : {}),
   });
   return result.ts;
 }
@@ -265,7 +303,7 @@ export async function postSlackFiles(args: {
     logger.warn(
       'Slack',
       `files.uploadV2 failed channel=${channel} threadTs=${threadTs ?? '-'} files=${files.length} ` +
-      `code=${errAny.code ?? 'n/a'} message=${errAny.message ?? 'n/a'} data=${JSON.stringify(errAny.data ?? null)}`,
+        `code=${errAny.code ?? 'n/a'} message=${errAny.message ?? 'n/a'} data=${JSON.stringify(errAny.data ?? null)}`,
     );
     throw uploadErr;
   }
@@ -279,10 +317,12 @@ export async function postInteractiveToThread(
   channel: string,
   threadTs: string,
   text: string,
-  blocks: unknown[]
+  blocks: unknown[],
 ): Promise<string | undefined> {
   if (dryRun) {
-    logger.system(`[DRY RUN] postInteractiveToThread ${channel}:${threadTs} — ${text.slice(0, 120)}`);
+    logger.system(
+      `[DRY RUN] postInteractiveToThread ${channel}:${threadTs} — ${text.slice(0, 120)}`,
+    );
     return undefined;
   }
   const client = getSlackClient();
@@ -291,7 +331,7 @@ export async function postInteractiveToThread(
     channel,
     thread_ts: threadTs,
     text, // Fallback text for notifications
-    blocks: blocks as any,
+    blocks: slackBlocksSchema.parse(blocks),
   });
 
   return result.ts;
@@ -303,7 +343,7 @@ export async function postInteractiveToThread(
 export async function postInteractiveToThreads(
   threads: SlackThreadRef[],
   text: string,
-  blocks: unknown[]
+  blocks: unknown[],
 ): Promise<void> {
   for (const thread of threads) {
     await postInteractiveToThread(thread.channel_id, thread.thread_id, text, blocks);
@@ -314,7 +354,11 @@ export async function postInteractiveToThreads(
  * Add an emoji reaction to a message.
  * Failures are silently ignored (duplicate reactions, missing scopes, etc.).
  */
-export async function addReaction(channel: string, timestamp: string, emoji: string): Promise<void> {
+export async function addReaction(
+  channel: string,
+  timestamp: string,
+  emoji: string,
+): Promise<void> {
   if (dryRun) return;
   try {
     const client = getSlackClient();
@@ -328,7 +372,11 @@ export async function addReaction(channel: string, timestamp: string, emoji: str
  * Remove an emoji reaction from a message.
  * Failures are silently ignored (not_reacted, missing scope, etc.).
  */
-export async function removeReaction(channel: string, timestamp: string, emoji: string): Promise<void> {
+export async function removeReaction(
+  channel: string,
+  timestamp: string,
+  emoji: string,
+): Promise<void> {
   if (dryRun) return;
   try {
     const client = getSlackClient();
@@ -344,8 +392,7 @@ export async function removeReaction(channel: string, timestamp: string, emoji: 
  * reactions" — a missing scope and an unreacted message are different facts.
  */
 export type SlackReactionsResult =
-  | { ok: true; reactions: SlackReaction[] }
-  | { ok: false; error: string };
+  { ok: true; reactions: SlackReaction[] } | { ok: false; error: string };
 
 /**
  * Read the current emoji reactions on a single message. Requires the
@@ -353,13 +400,17 @@ export type SlackReactionsResult =
  * during thread ingest). On failure returns the Slack error code rather than an
  * empty list, so callers can tell "couldn't read" from "nothing there".
  */
-export async function getMessageReactions(channel: string, timestamp: string): Promise<SlackReactionsResult> {
+export async function getMessageReactions(
+  channel: string,
+  timestamp: string,
+): Promise<SlackReactionsResult> {
   if (dryRun) return { ok: true, reactions: [] };
   try {
     const client = getSlackClient();
     // `full: true` returns the complete user list per reaction (not truncated).
     const result = await client.reactions.get({ channel, timestamp, full: true });
-    const message = result.message as { reactions?: Array<{ name?: string; count?: number; users?: string[] }> } | undefined;
+    const message = result.message as
+      { reactions?: Array<{ name?: string; count?: number; users?: string[] }> } | undefined;
     const raw = message?.reactions;
     if (!raw || !Array.isArray(raw)) return { ok: true, reactions: [] };
 
@@ -371,7 +422,10 @@ export async function getMessageReactions(channel: string, timestamp: string): P
     // external participants unresolved elsewhere.
     const nameById = new Map((await listWorkspaceUsers()).map((u) => [u.id, u.realName]));
     const reactions = raw
-      .filter((r): r is { name: string; count?: number; users?: string[] } => Boolean(r) && typeof r?.name === 'string')
+      .filter(
+        (r): r is { name: string; count?: number; users?: string[] } =>
+          Boolean(r) && typeof r?.name === 'string',
+      )
       .map((r) => {
         const users = (r.users ?? []).map((uid) => nameById.get(uid) ?? uid);
         return { name: r.name, count: r.count ?? 0, ...(users.length > 0 ? { users } : {}) };
@@ -380,7 +434,8 @@ export async function getMessageReactions(channel: string, timestamp: string): P
   } catch (error) {
     // message_not_found, missing_scope, channel_not_found… — surfaced, never
     // flattened into an empty list. The code only, never the token.
-    const code = (error as { data?: { error?: string } } | undefined)?.data?.error ?? 'unknown_error';
+    const code =
+      (error as { data?: { error?: string } } | undefined)?.data?.error ?? 'unknown_error';
     logger.warn('Slack', `reactions.get failed for ${channel}:${timestamp} — ${code}`);
     return { ok: false, error: code };
   }
@@ -393,7 +448,7 @@ export async function updateMessage(
   channel: string,
   ts: string,
   text: string,
-  blocks?: unknown[]
+  blocks?: unknown[],
 ): Promise<void> {
   if (dryRun) {
     logger.system(`[DRY RUN] updateMessage ${channel}:${ts} — ${text.slice(0, 120)}`);
@@ -405,7 +460,7 @@ export async function updateMessage(
     channel,
     ts,
     text,
-    blocks: blocks as any,
+    blocks: blocks === undefined ? undefined : slackBlocksSchema.parse(blocks),
   });
 }
 
@@ -435,7 +490,8 @@ export async function deleteMessage(channel: string, ts: string): Promise<void> 
  * `pr-card-format`; here it uses Slack emoji shortcodes.
  */
 export function buildPrCardBlocks(card: PrCardData): unknown[] {
-  const escape = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const escape = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   return [
     {
       type: 'card',
@@ -458,7 +514,7 @@ const unresolvableUserIds = new Set<string>();
  */
 async function fetchMentionInfo(
   messages: Array<{ text: string }>,
-  channelIds: Set<string> = new Set()
+  channelIds: Set<string> = new Set(),
 ): Promise<{
   userInfoMap: Map<string, { name: string; realName: string }>;
   groupInfoMap: Map<string, string>;
@@ -501,13 +557,13 @@ async function fetchMentionInfo(
             unresolvableUserIds.add(userId);
             logger.debug(
               'Slack',
-              `Mention <@${userId}> is not a Slack user — leaving it as written and not asking again`
+              `Mention <@${userId}> is not a Slack user — leaving it as written and not asking again`,
             );
           } else {
             logger.warn('Slack', `Failed to get user info for ${userId}`, error);
           }
         }
-      })
+      }),
     );
   }
 
@@ -537,10 +593,10 @@ async function fetchMentionInfo(
           const channelResult = await client.conversations.info({ channel: channelId });
           const channelName = channelResult.channel?.name || channelId;
           channelInfoMap.set(channelId, channelName);
-        } catch (error) {
+        } catch {
           logger.warn('Slack', `Failed to get channel info for ${channelId}`);
         }
-      })
+      }),
     );
   }
 
@@ -571,26 +627,29 @@ function applyMentionReplacements(
   text: string,
   userInfoMap: Map<string, { name: string; realName: string }>,
   groupInfoMap: Map<string, string>,
-  channelInfoMap: Map<string, string>
+  channelInfoMap: Map<string, string>,
 ): string {
   let result = text;
 
   // Replace user mentions <@U123> with the agent-facing <@U123:Real Name> — the
   // Slack-native bracket order (matches the model's instinct; restoreMentions
   // strips the name back to <@U123> on the way out).
-  result = result.replace(/<@([A-Z0-9]+)>/g, (match, userId) => {
+  result = result.replace(/<@([A-Z0-9]+)>/g, (match: string, userId: string) => {
     const userInfo = userInfoMap.get(userId);
     return userInfo ? `<@${userId}:${userInfo.realName}>` : match;
   });
 
   // Replace group mentions <!subteam^S123|@name> with @<S123:group-name>
-  result = result.replace(/<!subteam\^([A-Z0-9]+)(\|[^>]+)?>/g, (match, groupId) => {
-    const groupName = groupInfoMap.get(groupId);
-    return groupName ? `@<${groupId}:${groupName}>` : match;
-  });
+  result = result.replace(
+    /<!subteam\^([A-Z0-9]+)(\|[^>]+)?>/g,
+    (match: string, groupId: string) => {
+      const groupName = groupInfoMap.get(groupId);
+      return groupName ? `@<${groupId}:${groupName}>` : match;
+    },
+  );
 
   // Replace channel mentions <#C123|channel-name> with #<C123:channel-name>
-  result = result.replace(/<#([A-Z0-9]+)(\|[^>]+)?>/g, (match, channelId) => {
+  result = result.replace(/<#([A-Z0-9]+)(\|[^>]+)?>/g, (match: string, channelId: string) => {
     const channelName = channelInfoMap.get(channelId);
     return channelName ? `#<${channelId}:${channelName}>` : match;
   });
@@ -619,7 +678,7 @@ function decodeSlackEntities(text: string): string {
 async function fetchThreadHistory(
   channel: string,
   threadTs: string,
-  oldest?: string
+  oldest?: string,
 ): Promise<RawSlackMessage[]> {
   const client = getSlackClient();
 
@@ -697,21 +756,50 @@ function recoverMissingUrls(extracted: string, textField: string | undefined): s
  * listed here is treated as potential content by `collectUnrenderedText`.
  */
 const PLUMBING_KEYS = new Set([
-  'type', 'subtype', 'ts', 'id', 'user', 'team', 'channel', 'mrkdwn_in', 'verbatim',
-  'emoji', 'short', 'style', 'indent', 'border', 'offset', 'length', 'range',
-  'username', 'name', 'unicode', 'skin_tone', 'locale', 'lang', 'color', 'inviter',
+  'type',
+  'subtype',
+  'ts',
+  'id',
+  'user',
+  'team',
+  'channel',
+  'mrkdwn_in',
+  'verbatim',
+  'emoji',
+  'short',
+  'style',
+  'indent',
+  'border',
+  'offset',
+  'length',
+  'range',
+  'username',
+  'name',
+  'unicode',
+  'skin_tone',
+  'locale',
+  'lang',
+  'color',
+  'inviter',
   // Accessibility label. On an image *block* it is the only content and the
   // `image` case renders it; on an image *element* inside a context row it is
   // just an icon name ("vcs", "app").
   'alt_text',
-  'mimetype', 'filetype', 'pretty_type', 'permalink', 'permalink_public',
+  'mimetype',
+  'filetype',
+  'pretty_type',
+  'permalink',
+  'permalink_public',
   // Attachment author identity is carried structurally in `SlackAttachment.author`
   // (a resolved SlackAuthor), and the card path renders `author_name` when Slack
   // gave us no id to resolve — so these are never the only copy.
-  'author_name', 'author_subname', 'author_link',
+  'author_name',
+  'author_subname',
+  'author_link',
   // Deliberately rendered by the structural pass above; listing them here keeps
   // the same content from being reported twice when phrasing differs.
-  'fallback', 'value',
+  'fallback',
+  'value',
 ]);
 
 /**
@@ -720,7 +808,8 @@ const PLUMBING_KEYS = new Set([
  * anyone's list). Content keys are plain nouns — `text`, `title`, `pretext`,
  * `footer`, `description`, `alt_text`.
  */
-const PLUMBING_KEY_SUFFIX = /_(id|ids|ts|url|urls|icon|icons|users|type|subtype|color|code|link|team|hash|name|files)$/;
+const PLUMBING_KEY_SUFFIX =
+  /_(id|ids|ts|url|urls|icon|icons|users|type|subtype|color|code|link|team|hash|name|files)$/;
 
 function isPlumbingKey(key: string): boolean {
   return PLUMBING_KEYS.has(key) || PLUMBING_KEY_SUFFIX.test(key);
@@ -735,18 +824,20 @@ function isPlumbingKey(key: string): boolean {
  * whole message body as unrendered, which would bury the real signal.
  */
 function normalizeForMatch(text: string): string {
-  return decodeSlackEntities(text)
-    // Link brackets become separators, not nothing: `<url|label>` names the same
-    // target twice, and deleting the delimiters would weld the url's tail to the
-    // label's head into a token ("comAshkenia") that matches nothing.
-    .replace(/[<>|]/g, '/')
-    .replace(/\b(?:https?:\/\/|mailto:)/g, '') // one dialect keeps the scheme, one drops it
-    .replace(/[*_~`]/g, '')            // mrkdwn emphasis, absent from rich_text
-    .replace(/[-•·‣]/g, '')            // list bullets: "- item" vs "• item"
-    // Whitespace is dropped entirely, not collapsed: the two dialects disagree
-    // about where paragraph and list breaks fall, and a break is never the only
-    // thing a fragment contributes.
-    .replace(/\s+/g, '');
+  return (
+    decodeSlackEntities(text)
+      // Link brackets become separators, not nothing: `<url|label>` names the same
+      // target twice, and deleting the delimiters would weld the url's tail to the
+      // label's head into a token ("comAshkenia") that matches nothing.
+      .replace(/[<>|]/g, '/')
+      .replace(/\b(?:https?:\/\/|mailto:)/g, '') // one dialect keeps the scheme, one drops it
+      .replace(/[*_~`]/g, '') // mrkdwn emphasis, absent from rich_text
+      .replace(/[-•·‣]/g, '') // list bullets: "- item" vs "• item"
+      // Whitespace is dropped entirely, not collapsed: the two dialects disagree
+      // about where paragraph and list breaks fall, and a break is never the only
+      // thing a fragment contributes.
+      .replace(/\s+/g, '')
+  );
 }
 
 /**
@@ -757,8 +848,11 @@ function normalizeForMatch(text: string): string {
  * nothing and reads as a loss.
  */
 function contentTokens(text: string): string[] {
-  return (decodeSlackEntities(text).toLowerCase().match(/[\p{L}\p{N}]{4,}/gu) ?? [])
-    .filter((token) => token !== 'http' && token !== 'https' && token !== 'mailto');
+  return (
+    decodeSlackEntities(text)
+      .toLowerCase()
+      .match(/[\p{L}\p{N}]{4,}/gu) ?? []
+  ).filter((token) => token !== 'http' && token !== 'https' && token !== 'mailto');
 }
 
 /**
@@ -772,7 +866,11 @@ function contentTokens(text: string): string[] {
  * tolerates the dialects without tolerating real loss: a dropped Jira link takes
  * its distinctive tokens with it.
  */
-function isCovered(candidate: string, normalizedRendered: string, renderedTokens: Set<string>): boolean {
+function isCovered(
+  candidate: string,
+  normalizedRendered: string,
+  renderedTokens: Set<string>,
+): boolean {
   const normalized = normalizeForMatch(candidate);
   if (!normalized) return true;
   if (normalizedRendered.includes(normalized)) return true;
@@ -787,12 +885,28 @@ function isCovered(candidate: string, normalizedRendered: string, renderedTokens
  * `actions` → button labels).
  */
 const PLUMBING_SUBTREES = new Set([
-  'bot_profile', 'icons', 'profile', 'user_profile', 'edited', 'reactions', 'files',
-  'metadata', 'third_party_auth', 'accessory', 'actions', 'root', 'shares',
-  'pinned_info', 'pinned_to',
+  'bot_profile',
+  'icons',
+  'profile',
+  'user_profile',
+  'edited',
+  'reactions',
+  'files',
+  'metadata',
+  'third_party_auth',
+  'accessory',
+  'actions',
+  'root',
+  'shares',
+  'pinned_info',
+  'pinned_to',
   // Interactive-control chrome, not message content: an app's overflow menu and
   // select options ("More actions…", "Why am I seeing this?").
-  'placeholder', 'options', 'option_groups', 'initial_option', 'confirm',
+  'placeholder',
+  'options',
+  'option_groups',
+  'initial_option',
+  'confirm',
 ]);
 
 /** Cap on salvaged fragments, so a pathological payload can't flood the log. */
@@ -846,7 +960,8 @@ function collectUnrenderedText(
     if (!/\p{L}/u.test(node)) return;
     const text = node.trim();
     const normalized = normalizeForMatch(text);
-    if (!normalized || seen.has(normalized) || isCovered(text, normalizedRendered, renderedTokens)) return;
+    if (!normalized || seen.has(normalized) || isCovered(text, normalizedRendered, renderedTokens))
+      return;
     seen.add(normalized);
     found.push({ path, text: text.slice(0, MAX_UNRENDERED_FRAGMENT_CHARS) });
   };
@@ -857,7 +972,11 @@ function collectUnrenderedText(
     // This is a diagnostic over an arbitrary third-party payload. It must never
     // be the reason a Slack message fails to reach an agent, so a fault here
     // degrades to "found nothing" rather than propagating out of the fetch.
-    logger.warn('Slack', 'collectUnrenderedText failed; skipping the backstop for this message', error);
+    logger.warn(
+      'Slack',
+      'collectUnrenderedText failed; skipping the backstop for this message',
+      error,
+    );
     return [];
   }
   return found;
@@ -881,13 +1000,18 @@ async function resolveRawMessages(
 
   // Intermediate shape: we extract authorId here; the public SlackAttachment
   // exposes a fully resolved SlackAuthor — resolution happens after this loop.
-  interface RawAttachment { authorId?: string; text: string }
+  interface RawAttachment {
+    authorId?: string;
+    text: string;
+  }
 
   // Extract a message into the forwarder's own text plus a list of structured
   // attachments. Each attachment carries its own text and the original
   // author's user ID when Slack provides one. Keeping author+text correlated
   // per attachment lets downstream code redact / label individual attachments.
-  const extractMessageParts = (msg: SlackHistoryMessage): {
+  const extractMessageParts = (
+    msg: SlackHistoryMessage,
+  ): {
     ownText: string;
     attachments: RawAttachment[];
   } => {
@@ -897,11 +1021,13 @@ async function resolveRawMessages(
     // (rich_text / Block Kit) and a plain-text `text` field (legacy fallback
     // for clients that can't render blocks). Prefer the structured form when
     // present; otherwise fall back to `text`.
-    const blocks = msg.blocks as Array<{
-      type: string;
-      text?: { text?: string };
-      elements?: Array<unknown>;
-    }> | undefined;
+    const blocks = msg.blocks as
+      | Array<{
+          type: string;
+          text?: { text?: string };
+          elements?: Array<unknown>;
+        }>
+      | undefined;
     let consumedTopBlocks = false;
 
     if (blocks && Array.isArray(blocks)) {
@@ -943,9 +1069,7 @@ async function resolveRawMessages(
     // top-level message, not to an attachment.
     const files = msg.files as Array<{ name?: string; title?: string }> | undefined;
     if (files && Array.isArray(files)) {
-      const fileDescriptions = files
-        .map(f => f.title || f.name)
-        .filter(Boolean);
+      const fileDescriptions = files.map((f) => f.title || f.name).filter(Boolean);
       if (fileDescriptions.length > 0) {
         ownParts.push(`[Files: ${fileDescriptions.join(', ')}]`);
       }
@@ -954,21 +1078,23 @@ async function resolveRawMessages(
     // Attachments (forwarded messages, shared content, unfurls, and every
     // bot-posted alert card). Each entry becomes one SlackAttachment with its
     // author + text correlated.
-    const rawAttachments = msg.attachments as Array<{
-      author_id?: string;
-      author_name?: string;
-      service_name?: string;
-      text?: string;
-      fallback?: string;
-      pretext?: string;
-      title?: string;
-      title_link?: string;
-      footer?: string;
-      fields?: Array<{ title?: string; value?: string }>;
-      blocks?: Array<unknown>;
-      actions?: Array<{ text?: string; url?: string }>;
-      message_blocks?: Array<{ message?: { user?: string; blocks?: Array<unknown> } }>;
-    }> | undefined;
+    const rawAttachments = msg.attachments as
+      | Array<{
+          author_id?: string;
+          author_name?: string;
+          service_name?: string;
+          text?: string;
+          fallback?: string;
+          pretext?: string;
+          title?: string;
+          title_link?: string;
+          footer?: string;
+          fields?: Array<{ title?: string; value?: string }>;
+          blocks?: Array<unknown>;
+          actions?: Array<{ text?: string; url?: string }>;
+          message_blocks?: Array<{ message?: { user?: string; blocks?: Array<unknown> } }>;
+        }>
+      | undefined;
 
     const attachments: RawAttachment[] = [];
     if (rawAttachments && Array.isArray(rawAttachments)) {
@@ -984,7 +1110,9 @@ async function resolveRawMessages(
             if (mb.message?.user && !authorId) authorId = mb.message.user;
             if (mb.message?.blocks) {
               for (const block of mb.message.blocks) {
-                const blockText = extractBlockText(block as { type: string; elements?: Array<unknown> });
+                const blockText = extractBlockText(
+                  block as { type: string; elements?: Array<unknown> },
+                );
                 if (blockText && !seg.includes(blockText)) {
                   seg.push(blockText);
                   consumedFromBlocks = true;
@@ -1018,7 +1146,11 @@ async function resolveRawMessages(
           };
           push(att.pretext);
           push(att.service_name ?? att.author_name);
-          push(att.title && att.title_link ? `${att.title} (${att.title_link})` : att.title ?? att.title_link);
+          push(
+            att.title && att.title_link
+              ? `${att.title} (${att.title_link})`
+              : (att.title ?? att.title_link),
+          );
           const fieldLines = (Array.isArray(att.fields) ? att.fields : [])
             .filter((field) => field && typeof field === 'object')
             .map((field) => [field.title, field.value].filter(Boolean).join(': '))
@@ -1027,9 +1159,10 @@ async function resolveRawMessages(
           // structured fields already say it (Bugsnag) printing both just
           // doubles the error string.
           const coveredByFields = (candidate: string | undefined) =>
-            Boolean(candidate) && fieldLines.length > 0
-            && isCovered(
-              candidate!,
+            candidate !== undefined &&
+            fieldLines.length > 0 &&
+            isCovered(
+              candidate,
               normalizeForMatch(fieldLines.join('\n')),
               new Set(contentTokens(fieldLines.join('\n'))),
             );
@@ -1066,7 +1199,11 @@ async function resolveRawMessages(
   /**
    * Extract text from a Block Kit block (handles rich_text, section, etc.)
    */
-  const extractBlockText = (block: { type: string; text?: { text?: string } | string; elements?: Array<unknown> }): string => {
+  const extractBlockText = (block: {
+    type: string;
+    text?: { text?: string } | string;
+    elements?: Array<unknown>;
+  }): string => {
     if (!block) return '';
 
     // `text` is an object on section/header, a bare string on markdown blocks.
@@ -1094,11 +1231,20 @@ async function resolveRawMessages(
       case 'image':
         // Alt text / caption is the only readable content; the URL keeps the
         // reference resolvable.
-        return [blockText, (block as { alt_text?: string }).alt_text, (block as { image_url?: string }).image_url]
-          .filter(Boolean).join(' — ');
+        return [
+          blockText,
+          (block as { alt_text?: string }).alt_text,
+          (block as { image_url?: string }).image_url,
+        ]
+          .filter(Boolean)
+          .join(' — ');
 
       case 'video': {
-        const v = block as { title?: { text?: string }; description?: { text?: string }; title_url?: string };
+        const v = block as {
+          title?: { text?: string };
+          description?: { text?: string };
+          title_url?: string;
+        };
         return [v.title?.text, v.description?.text, v.title_url].filter(Boolean).join(' — ');
       }
 
@@ -1122,7 +1268,10 @@ async function resolveRawMessages(
         if (!Array.isArray(rows)) return '';
         return rows
           .filter((row): row is Array<unknown> => Array.isArray(row))
-          .map((row) => `| ${row.map((cell) => extractBlockText(cell as { type: string })).join(' | ')} |`)
+          .map(
+            (row) =>
+              `| ${row.map((cell) => extractBlockText(cell as { type: string })).join(' | ')} |`,
+          )
           .join('\n');
       }
 
@@ -1246,9 +1395,10 @@ async function resolveRawMessages(
           // on a Bugsnag link, a page title on a Notion one. Slack's own
           // auto-generated labels are just the truncated URL, so those collapse.
           const url = el.url ?? '';
-          const label = el.text && !normalizeForMatch(url).includes(normalizeForMatch(el.text))
-            ? el.text
-            : undefined;
+          const label =
+            el.text && !normalizeForMatch(url).includes(normalizeForMatch(el.text))
+              ? el.text
+              : undefined;
           parts.push(label ? `${label} (${url})` : url || el.text || '');
           break;
         }
@@ -1257,8 +1407,7 @@ async function resolveRawMessages(
           // Canvas chip. Sometimes only a file id — which is itself the
           // information — and sometimes a docs URL alongside it.
           parts.push(
-            `[canvas ${(el as { file_id?: string }).file_id}]`
-            + (el.url ? ` ${el.url}` : ''),
+            `[canvas ${(el as { file_id?: string }).file_id}]` + (el.url ? ` ${el.url}` : ''),
           );
           break;
 
@@ -1296,30 +1445,38 @@ async function resolveRawMessages(
     };
   });
   const channelIds = new Set([channel]); // Include the thread's channel
-  const { userInfoMap, groupInfoMap, channelInfoMap } = await fetchMentionInfo(messages, channelIds);
+  const { userInfoMap, groupInfoMap, channelInfoMap } = await fetchMentionInfo(
+    messages,
+    channelIds,
+  );
 
   // Extract files from a message (including from attachments/forwarded messages)
   const extractFiles = (msg: SlackHistoryMessage): SlackFile[] | undefined => {
     const allFiles: SlackFile[] = [];
 
     // Helper to process a files array
-    const processFiles = (files: Array<{
-      id?: string;
-      name?: string;
-      mimetype?: string;
-      url_private?: string;
-      url_private_download?: string;
-    }> | undefined) => {
+    const processFiles = (
+      files:
+        | Array<{
+            id?: string;
+            name?: string;
+            mimetype?: string;
+            url_private?: string;
+            url_private_download?: string;
+          }>
+        | undefined,
+    ) => {
       if (!files || !Array.isArray(files)) return;
       for (const f of files) {
         // Prefer url_private_download for API downloads (works with Bearer token)
         // Fall back to url_private if download URL not available
-        if (f.id && (f.url_private_download || f.url_private)) {
+        const downloadUrl = f.url_private_download || f.url_private;
+        if (f.id && downloadUrl) {
           allFiles.push({
             id: f.id,
             name: f.name || 'unnamed',
             mimetype: f.mimetype || 'application/octet-stream',
-            url_private: f.url_private || f.url_private_download!,
+            url_private: f.url_private || downloadUrl,
             url_private_download: f.url_private_download,
           });
         }
@@ -1327,16 +1484,34 @@ async function resolveRawMessages(
     };
 
     // 1. Top-level files (direct file shares)
-    processFiles(msg.files as Array<{ id?: string; name?: string; mimetype?: string; url_private?: string; url_private_download?: string }> | undefined);
+    processFiles(
+      msg.files as
+        | Array<{
+            id?: string;
+            name?: string;
+            mimetype?: string;
+            url_private?: string;
+            url_private_download?: string;
+          }>
+        | undefined,
+    );
 
     // 2. Files inside attachments (forwarded messages)
-    const attachments = msg.attachments as Array<{
-      files?: Array<{ id?: string; name?: string; mimetype?: string; url_private?: string; url_private_download?: string }>;
-      image_url?: string;
-      thumb_url?: string;
-      fallback?: string;
-      id?: number;
-    }> | undefined;
+    const attachments = msg.attachments as
+      | Array<{
+          files?: Array<{
+            id?: string;
+            name?: string;
+            mimetype?: string;
+            url_private?: string;
+            url_private_download?: string;
+          }>;
+          image_url?: string;
+          thumb_url?: string;
+          fallback?: string;
+          id?: number;
+        }>
+      | undefined;
 
     if (attachments && Array.isArray(attachments)) {
       for (const att of attachments) {
@@ -1365,7 +1540,9 @@ async function resolveRawMessages(
     const raw = (msg as { reactions?: Array<{ name?: string; count?: number }> }).reactions;
     if (!raw || !Array.isArray(raw)) return [];
     return raw
-      .filter((r): r is { name: string; count?: number } => Boolean(r) && typeof r?.name === 'string')
+      .filter(
+        (r): r is { name: string; count?: number } => Boolean(r) && typeof r?.name === 'string',
+      )
       .map((r) => ({ name: r.name, count: r.count ?? 0 }));
   };
 
@@ -1379,23 +1556,28 @@ async function resolveRawMessages(
     }
   }
   const authorEntries = await Promise.all(
-    Array.from(attachmentAuthorIds).map(async (uid): Promise<readonly [string, SlackAuthor | null]> => {
-      try {
-        const info = await getUserInfo(uid);
-        return [uid, {
-          id: uid,
-          username: info.name,
-          realName: info.realName,
-          teamId: info.teamId,
-          isRestricted: info.isRestricted,
-          isUltraRestricted: info.isUltraRestricted,
-          isBot: info.isBot,
-          isAppUser: info.isAppUser,
-        }];
-      } catch {
-        return [uid, null];
-      }
-    })
+    Array.from(attachmentAuthorIds).map(
+      async (uid): Promise<readonly [string, SlackAuthor | null]> => {
+        try {
+          const info = await getUserInfo(uid);
+          return [
+            uid,
+            {
+              id: uid,
+              username: info.name,
+              realName: info.realName,
+              teamId: info.teamId,
+              isRestricted: info.isRestricted,
+              isUltraRestricted: info.isUltraRestricted,
+              isBot: info.isBot,
+              isAppUser: info.isAppUser,
+            },
+          ];
+        } catch {
+          return [uid, null];
+        }
+      },
+    ),
   );
   const authorMap = new Map(authorEntries);
 
@@ -1404,7 +1586,7 @@ async function resolveRawMessages(
     const files = extractFiles(msg);
     const { ownText, attachments } = extractedPerMessage[i];
     const resolvedAttachments: SlackAttachment[] = attachments.map((a) => {
-      const author = a.authorId ? authorMap.get(a.authorId) ?? undefined : undefined;
+      const author = a.authorId ? (authorMap.get(a.authorId) ?? undefined) : undefined;
       return {
         ...(author ? { author } : {}),
         text: applyMentionReplacements(a.text, userInfoMap, groupInfoMap, channelInfoMap),
@@ -1436,7 +1618,7 @@ async function resolveRawMessages(
       logger.warn(
         'Slack',
         `Unrendered message content at ${unrendered.map((u) => u.path).join(', ')} ` +
-        `(ts ${msg.ts}) — extend extractBlockText/extractMessageParts to render it properly`,
+          `(ts ${msg.ts}) — extend extractBlockText/extractMessageParts to render it properly`,
       );
       ownTextWithResidue = [ownText, `[unparsed: ${unrendered.map((u) => u.text).join(' | ')}]`]
         .filter(Boolean)
@@ -1445,7 +1627,12 @@ async function resolveRawMessages(
 
     return {
       user: msg.user || '',
-      ownText: applyMentionReplacements(ownTextWithResidue, userInfoMap, groupInfoMap, channelInfoMap),
+      ownText: applyMentionReplacements(
+        ownTextWithResidue,
+        userInfoMap,
+        groupInfoMap,
+        channelInfoMap,
+      ),
       ts: msg.ts || '',
       ...(files && files.length > 0 ? { files } : {}),
       ...(resolvedAttachments.length > 0 ? { attachments: resolvedAttachments } : {}),
@@ -1464,32 +1651,42 @@ async function resolveRawMessages(
  * reads pass everything).
  */
 async function resolveAuthorsAndMap(messages: RawSlackMessage[]): Promise<SlackThreadMessage[]> {
-  const authorIds = new Set(messages.filter((m) => m.user).map((m) => m.user));
+  const authorIds = new Set(messages.flatMap((m) => (m.user ? [m.user] : [])));
   const userInfoEntries = await Promise.all(
     Array.from(authorIds).map(async (uid): Promise<readonly [string, SlackAuthor]> => {
       try {
         const info = await getUserInfo(uid);
-        return [uid, {
-          id: uid,
-          username: info.name,
-          realName: info.realName,
-          teamId: info.teamId,
-          isRestricted: info.isRestricted,
-          isUltraRestricted: info.isUltraRestricted,
-          isBot: info.isBot,
-          isAppUser: info.isAppUser,
-        }];
+        return [
+          uid,
+          {
+            id: uid,
+            username: info.name,
+            realName: info.realName,
+            teamId: info.teamId,
+            isRestricted: info.isRestricted,
+            isUltraRestricted: info.isUltraRestricted,
+            isBot: info.isBot,
+            isAppUser: info.isAppUser,
+          },
+        ];
       } catch {
         return [uid, { id: uid, username: uid, realName: uid }];
       }
-    })
+    }),
   );
   const userInfoMap = new Map(userInfoEntries);
 
   return messages.map((msg) => {
-    const author: SlackAuthor = msg.user
-      ? userInfoMap.get(msg.user)!
-      : { id: msg.botId!, username: msg.botName || 'bot', realName: msg.botName || 'bot', teamId: msg.teamId };
+    let author = userInfoMap.get(msg.user);
+    if (!author) {
+      assert(msg.botId, `Missing author for Slack message ${msg.ts}`);
+      author = {
+        id: msg.botId,
+        username: msg.botName || 'bot',
+        realName: msg.botName || 'bot',
+        teamId: msg.teamId,
+      };
+    }
     return {
       user: author,
       ownText: msg.ownText,
@@ -1590,7 +1787,10 @@ export async function fetchChannelHistory(
   const channelInfo = await assertAccessibleChannel(channelId, allowedIds);
   const result = await client.conversations.history({ channel: channelId, limit });
   // conversations.history returns newest-first; reverse to chronological.
-  const raw = await resolveRawMessages((result.messages ?? []).slice().reverse() as SlackHistoryMessage[], channelId);
+  const raw = await resolveRawMessages(
+    (result.messages ?? []).slice().reverse() as SlackHistoryMessage[],
+    channelId,
+  );
   return { channel: channelInfo, messages: await resolveAuthorsAndMap(raw) };
 }
 
@@ -1629,17 +1829,24 @@ export async function getUserInfo(userId: string): Promise<{
   const client = getSlackClient();
 
   const result = await client.users.info({ user: userId });
-  const user = result.user as {
-    name?: string;
-    real_name?: string;
-    profile?: { real_name?: string; display_name?: string; real_name_normalized?: string; email?: string };
-    tz?: string;
-    team_id?: string;
-    is_restricted?: boolean;
-    is_ultra_restricted?: boolean;
-    is_bot?: boolean;
-    is_app_user?: boolean;
-  } | undefined;
+  const user = result.user as
+    | {
+        name?: string;
+        real_name?: string;
+        profile?: {
+          real_name?: string;
+          display_name?: string;
+          real_name_normalized?: string;
+          email?: string;
+        };
+        tz?: string;
+        team_id?: string;
+        is_restricted?: boolean;
+        is_ultra_restricted?: boolean;
+        is_bot?: boolean;
+        is_app_user?: boolean;
+      }
+    | undefined;
 
   // External users (Slack Connect) often only populate the name under profile.*
   // — fall through several fields before giving up to the user ID.
@@ -1693,12 +1900,14 @@ export function isInternalMemoryUser(user: {
   isAppUser?: boolean;
 }): boolean {
   const home = getHomeTeamId();
-  return !!home
-    && user.teamId === home
-    && user.isRestricted === false
-    && user.isUltraRestricted === false
-    && user.isBot === false
-    && user.isAppUser === false;
+  return (
+    !!home &&
+    user.teamId === home &&
+    user.isRestricted === false &&
+    user.isUltraRestricted === false &&
+    user.isBot === false &&
+    user.isAppUser === false
+  );
 }
 
 // ---- Shared-channel detection (Slack Connect) -----------------------------
@@ -1730,15 +1939,17 @@ export async function isChannelShared(channelId: string): Promise<boolean> {
   try {
     const client = getSlackClient();
     const result = await client.conversations.info({ channel: channelId });
-    const channel = result.channel as {
-      is_ext_shared?: boolean;
-      is_pending_ext_shared?: boolean;
-      connected_team_ids?: string[];
-    } | undefined;
+    const channel = result.channel as
+      | {
+          is_ext_shared?: boolean;
+          is_pending_ext_shared?: boolean;
+          connected_team_ids?: string[];
+        }
+      | undefined;
     const isShared =
       !!channel?.is_ext_shared ||
       !!channel?.is_pending_ext_shared ||
-      ((channel?.connected_team_ids?.length ?? 0) > 1);
+      (channel?.connected_team_ids?.length ?? 0) > 1;
     channelSharedCache.set(channelId, { isShared, fetchedAt: Date.now() });
     return isShared;
   } catch (error) {
@@ -1769,7 +1980,7 @@ export async function postEphemeral(
       channel,
       user,
       text: renderedText,
-      blocks: markdownBlock(renderedText) as any,
+      blocks: markdownBlock(renderedText),
       ...(threadTs ? { thread_ts: threadTs } : {}),
     });
   } catch (error) {
@@ -1788,8 +1999,7 @@ export async function getChannelInfo(
   try {
     const result = await client.conversations.info({ channel: channelId });
     const channel = result.channel as
-      | { name?: string; is_im?: boolean; is_private?: boolean; user?: string }
-      | undefined;
+      { name?: string; is_im?: boolean; is_private?: boolean; user?: string } | undefined;
 
     const isIm = channel?.is_im === true;
     // DMs are inherently private; otherwise read the channel's is_private flag.
@@ -1798,7 +2008,13 @@ export async function getChannelInfo(
     // For DMs, resolve the other user's name instead of showing a raw ID
     if (isIm && channel?.user) {
       const userInfo = await getUserInfo(channel.user);
-      return { id: channelId, name: `DM with ${userInfo.realName}`, isPrivate, isIm, imUserId: channel.user };
+      return {
+        id: channelId,
+        name: `DM with ${userInfo.realName}`,
+        isPrivate,
+        isIm,
+        imUserId: channel.user,
+      };
     }
 
     return {
@@ -1807,7 +2023,7 @@ export async function getChannelInfo(
       isPrivate,
       isIm,
     };
-  } catch (error) {
+  } catch {
     logger.warn('Slack', `Failed to get channel info for ${channelId}`);
     return { id: channelId, name: channelId, isPrivate: false, isIm: false };
   }
@@ -1847,15 +2063,21 @@ interface MemoryMemberTrust {
 
 const MEMORY_MEMBER_TRUST_TTL_MS = 60_000;
 const MEMORY_MEMBER_LOOKUP_CONCURRENCY = 8;
-const memoryMemberTrustCache = new Map<string, {
-  value: MemoryMemberTrust | null;
-  expiresAt: number;
-}>();
+const memoryMemberTrustCache = new Map<
+  string,
+  {
+    value: MemoryMemberTrust | null;
+    expiresAt: number;
+  }
+>();
 const memoryMemberTrustGeneration = new Map<string, number>();
-const memoryMemberTrustInFlight = new Map<string, {
-  generation: number;
-  promise: Promise<MemoryMemberTrust | null>;
-}>();
+const memoryMemberTrustInFlight = new Map<
+  string,
+  {
+    generation: number;
+    promise: Promise<MemoryMemberTrust | null>;
+  }
+>();
 const memoryMemberLookupWaiters: Array<() => void> = [];
 let activeMemoryMemberLookups = 0;
 
@@ -1879,21 +2101,31 @@ async function fetchMemoryMemberTrust(userId: string): Promise<MemoryMemberTrust
     activeMemoryMemberLookups += 1;
     try {
       const result = await getSlackClient().users.info({ user: userId });
-      const user = result.user as {
-        team_id?: string;
-        is_restricted?: boolean;
-        is_ultra_restricted?: boolean;
-        deleted?: boolean;
-      } | undefined;
-      const value = user
-        && user.team_id
-        && user.is_restricted === false
-        && user.is_ultra_restricted === false
-        && user.deleted !== true
-        ? { teamId: user.team_id, isRestricted: false as const, isUltraRestricted: false as const }
-        : null;
+      const user = result.user as
+        | {
+            team_id?: string;
+            is_restricted?: boolean;
+            is_ultra_restricted?: boolean;
+            deleted?: boolean;
+          }
+        | undefined;
+      const value =
+        user &&
+        user.team_id &&
+        user.is_restricted === false &&
+        user.is_ultra_restricted === false &&
+        user.deleted !== true
+          ? {
+              teamId: user.team_id,
+              isRestricted: false as const,
+              isUltraRestricted: false as const,
+            }
+          : null;
       if ((memoryMemberTrustGeneration.get(userId) ?? 0) !== generation) return null;
-      memoryMemberTrustCache.set(userId, { value, expiresAt: Date.now() + MEMORY_MEMBER_TRUST_TTL_MS });
+      memoryMemberTrustCache.set(userId, {
+        value,
+        expiresAt: Date.now() + MEMORY_MEMBER_TRUST_TTL_MS,
+      });
       return value;
     } finally {
       activeMemoryMemberLookups -= 1;
@@ -1905,16 +2137,19 @@ async function fetchMemoryMemberTrust(userId: string): Promise<MemoryMemberTrust
   try {
     return await lookup;
   } finally {
-    if (memoryMemberTrustInFlight.get(userId) === inFlight) memoryMemberTrustInFlight.delete(userId);
+    if (memoryMemberTrustInFlight.get(userId) === inFlight)
+      memoryMemberTrustInFlight.delete(userId);
   }
 }
 
 function isTrustedMemoryChannelMember(user: MemoryMemberTrust): boolean {
   const home = getHomeTeamId();
-  return !!home
-    && user.teamId === home
-    && user.isRestricted === false
-    && user.isUltraRestricted === false;
+  return (
+    !!home &&
+    user.teamId === home &&
+    user.isRestricted === false &&
+    user.isUltraRestricted === false
+  );
 }
 
 export async function classifySlackMemoryScope(
@@ -1924,17 +2159,19 @@ export async function classifySlackMemoryScope(
     if (!isMemoryReady() || !getHomeTeamId()) return { kind: 'none' };
 
     const result = await getSlackClient().conversations.info({ channel: channelId });
-    const channel = result.channel as {
-      id?: string;
-      is_im?: boolean;
-      is_mpim?: boolean;
-      is_private?: boolean;
-      is_shared?: boolean;
-      is_ext_shared?: boolean;
-      is_pending_ext_shared?: boolean;
-      connected_team_ids?: string[];
-      user?: string;
-    } | undefined;
+    const channel = result.channel as
+      | {
+          id?: string;
+          is_im?: boolean;
+          is_mpim?: boolean;
+          is_private?: boolean;
+          is_shared?: boolean;
+          is_ext_shared?: boolean;
+          is_pending_ext_shared?: boolean;
+          connected_team_ids?: string[];
+          user?: string;
+        }
+      | undefined;
     if (!channel) return { kind: 'none' };
 
     if (channel.is_im === true) {
@@ -1946,20 +2183,21 @@ export async function classifySlackMemoryScope(
     }
 
     if (
-      typeof channel.is_im !== 'boolean'
-      || typeof channel.is_mpim !== 'boolean'
-      || typeof channel.is_private !== 'boolean'
-      || typeof channel.is_shared !== 'boolean'
-      || typeof channel.is_ext_shared !== 'boolean'
-      || typeof channel.is_pending_ext_shared !== 'boolean'
-      || (channel.connected_team_ids !== undefined && !Array.isArray(channel.connected_team_ids))
-    ) return { kind: 'none' };
+      typeof channel.is_im !== 'boolean' ||
+      typeof channel.is_mpim !== 'boolean' ||
+      typeof channel.is_private !== 'boolean' ||
+      typeof channel.is_shared !== 'boolean' ||
+      typeof channel.is_ext_shared !== 'boolean' ||
+      typeof channel.is_pending_ext_shared !== 'boolean' ||
+      (channel.connected_team_ids !== undefined && !Array.isArray(channel.connected_team_ids))
+    )
+      return { kind: 'none' };
 
     if (
-      channel.is_shared
-      || channel.is_ext_shared
-      || channel.is_pending_ext_shared
-      || (channel.connected_team_ids?.length ?? 0) > 1
+      channel.is_shared ||
+      channel.is_ext_shared ||
+      channel.is_pending_ext_shared ||
+      (channel.connected_team_ids?.length ?? 0) > 1
     ) {
       return { kind: 'none' };
     }
@@ -2006,10 +2244,10 @@ export interface SlackFileInfo {
   url_private?: string;
   url_private_download?: string;
   filetype?: string;
-  user?: string;     // creator user id
+  user?: string; // creator user id
   title?: string;
   name?: string;
-  updated?: number;  // edit timestamp — drives canvas change detection
+  updated?: number; // edit timestamp — drives canvas change detection
 }
 
 /**
@@ -2033,11 +2271,13 @@ export async function getChannelCanvasTabs(channelId: string): Promise<CanvasTab
     const client = getSlackClient();
     const result = await client.conversations.info({ channel: channelId });
     // `properties` (canvas tabs) isn't in the WebClient types — cast to read it.
-    const channel = result.channel as {
-      properties?: {
-        tabs?: Array<{ type?: string; label?: string; data?: { file_id?: string } }>;
-      };
-    } | undefined;
+    const channel = result.channel as
+      | {
+          properties?: {
+            tabs?: Array<{ type?: string; label?: string; data?: { file_id?: string } }>;
+          };
+        }
+      | undefined;
     const tabs: CanvasTab[] = [];
     for (const tab of channel?.properties?.tabs ?? []) {
       if (tab.type === 'canvas' && tab.data?.file_id) {
@@ -2059,8 +2299,8 @@ export async function getChannelCanvasTabs(channelId: string): Promise<CanvasTab
 /** One item pinned in a channel — a message or a file, as `pins.list` reports it. */
 export interface PinnedItem {
   kind: 'message' | 'file';
-  pinnedAt: number;    // epoch seconds, Slack's unit
-  pinnedBy: string;    // Slack user id of whoever pinned it
+  pinnedAt: number; // epoch seconds, Slack's unit
+  pinnedBy: string; // Slack user id of whoever pinned it
   messageTs?: string;
   author?: string;
   /** Slack-assigned bot identity when the pinned message was posted by an app. */
@@ -2195,7 +2435,10 @@ export async function listChannelPins(channelId: string): Promise<PinnedItem[] |
     const code = (error as { data?: { error?: string } } | undefined)?.data?.error;
     if (code === 'missing_scope' || String(error).includes('missing_scope')) {
       pinsScopeMissing = true;
-      logger.warn('Slack', 'pins:read not granted — pinned-message context is dormant until the app is reinstalled with the scope');
+      logger.warn(
+        'Slack',
+        'pins:read not granted — pinned-message context is dormant until the app is reinstalled with the scope',
+      );
     } else {
       logger.warn('Slack', `Failed to list pins for ${channelId}`, error);
     }
@@ -2218,16 +2461,18 @@ export async function getSlackFileInfo(fileId: string): Promise<SlackFileInfo | 
   try {
     const client = getSlackClient();
     const result = await client.files.info({ file: fileId });
-    const f = result.file as {
-      url_private?: string;
-      url_private_download?: string;
-      filetype?: string;
-      user?: string;
-      title?: string;
-      name?: string;
-      updated?: number;
-      created?: number;
-    } | undefined;
+    const f = result.file as
+      | {
+          url_private?: string;
+          url_private_download?: string;
+          filetype?: string;
+          user?: string;
+          title?: string;
+          name?: string;
+          updated?: number;
+          created?: number;
+        }
+      | undefined;
     if (!f) return null;
     return {
       url_private: f.url_private,
@@ -2256,7 +2501,7 @@ export async function fetchSlackFileBody(fileUrl: string): Promise<string> {
   const token = (client as unknown as { token: string }).token;
 
   const response = await fetch(fileUrl, {
-    headers: { 'Authorization': `Bearer ${token}` },
+    headers: { Authorization: `Bearer ${token}` },
     redirect: 'follow',
   });
 
@@ -2290,7 +2535,6 @@ export async function isChannelReachable(channelId: string): Promise<boolean> {
   }
 }
 
-
 /**
  * Post a question to a thread and wait for a response
  * This is a simplified implementation - in production you'd use Slack's interactive features
@@ -2299,7 +2543,7 @@ export async function askUserInThread(
   channel: string,
   threadTs: string,
   question: string,
-  options?: string[]
+  options?: string[],
 ): Promise<void> {
   let message = question;
 
@@ -2357,7 +2601,10 @@ export async function extractMessageContent(
  */
 export async function cleanSlackText(text: string, channelId?: string): Promise<string> {
   const channelIds = channelId ? new Set<string>([channelId]) : new Set<string>();
-  const { userInfoMap, groupInfoMap, channelInfoMap } = await fetchMentionInfo([{ text }], channelIds);
+  const { userInfoMap, groupInfoMap, channelInfoMap } = await fetchMentionInfo(
+    [{ text }],
+    channelIds,
+  );
   return applyMentionReplacements(text, userInfoMap, groupInfoMap, channelInfoMap);
 }
 
@@ -2365,10 +2612,7 @@ export async function cleanSlackText(text: string, channelId?: string): Promise<
  * Download a Slack file to a local path
  * Requires files:read scope in the bot token
  */
-export async function downloadSlackFile(
-  fileUrl: string,
-  destPath: string
-): Promise<void> {
+export async function downloadSlackFile(fileUrl: string, destPath: string): Promise<void> {
   const client = getSlackClient();
   const token = (client as unknown as { token: string }).token;
 
@@ -2376,7 +2620,7 @@ export async function downloadSlackFile(
 
   const response = await fetch(fileUrl, {
     headers: {
-      'Authorization': `Bearer ${token}`,
+      Authorization: `Bearer ${token}`,
     },
     redirect: 'follow',
   });
@@ -2400,8 +2644,8 @@ export async function downloadSlackFile(
     if (isSlackPage) {
       throw new Error(
         `Slack returned HTML instead of file content. ` +
-        `This usually means the token lacks files:read scope or the URL requires browser authentication. ` +
-        `URL: ${fileUrl}`
+          `This usually means the token lacks files:read scope or the URL requires browser authentication. ` +
+          `URL: ${fileUrl}`,
       );
     }
   }
@@ -2479,7 +2723,11 @@ export async function fetchSlackThread(
  * Format a Slack channel reference for logs (includes IDs).
  * e.g., "slack:#<C123:bot-test>:threadTs"
  */
-export function formatSlackChannelRef(channelId: string, channelName: string, threadId: string): string {
+export function formatSlackChannelRef(
+  channelId: string,
+  channelName: string,
+  threadId: string,
+): string {
   return `slack:#<${channelId}:${channelName}>:${threadId}`;
 }
 
@@ -2497,16 +2745,16 @@ export function formatSlackChannelDisplay(channelName: string): string {
 
 export interface SlackUserInfo {
   id: string;
-  name: string;          // @handle
-  realName: string;      // Full name
-  displayName: string;   // Display name (may differ from realName)
-  title: string;         // Job title (e.g., "Senior Engineer")
-  timezone: string;      // Human timezone label (e.g., "Eastern Time (US & Canada)")
-  tz: string;            // IANA timezone (e.g., "America/New_York") — pass to parse_datetime
-  isAdmin: boolean;      // Workspace admin
-  isOwner: boolean;      // Workspace owner
-  teamId?: string;             // Slack team_id — used for external-org classification
-  isRestricted?: boolean;      // Multi-channel guest
+  name: string; // @handle
+  realName: string; // Full name
+  displayName: string; // Display name (may differ from realName)
+  title: string; // Job title (e.g., "Senior Engineer")
+  timezone: string; // Human timezone label (e.g., "Eastern Time (US & Canada)")
+  tz: string; // IANA timezone (e.g., "America/New_York") — pass to parse_datetime
+  isAdmin: boolean; // Workspace admin
+  isOwner: boolean; // Workspace owner
+  teamId?: string; // Slack team_id — used for external-org classification
+  isRestricted?: boolean; // Multi-channel guest
   isUltraRestricted?: boolean; // Single-channel guest
 }
 
@@ -2530,12 +2778,12 @@ export async function listWorkspaceUsers(): Promise<SlackUserInfo[]> {
   do {
     const result = await client.users.list({ cursor, limit: 200 });
     for (const member of result.members ?? []) {
-      if (member.deleted || member.is_bot || member.id === 'USLACKBOT') continue;
+      if (!member.id || member.deleted || member.is_bot || member.id === 'USLACKBOT') continue;
       users.push({
-        id: member.id!,
-        name: member.name ?? member.id!,
-        realName: member.real_name ?? member.name ?? member.id!,
-        displayName: member.profile?.display_name || member.real_name || member.name || member.id!,
+        id: member.id,
+        name: member.name ?? member.id,
+        realName: member.real_name ?? member.name ?? member.id,
+        displayName: member.profile?.display_name || member.real_name || member.name || member.id,
         title: member.profile?.title ?? '',
         timezone: member.tz_label ?? '',
         tz: member.tz ?? '',
@@ -2565,16 +2813,17 @@ export async function findSlackUsers(query: string): Promise<SlackUserInfo[]> {
 
   // Exact ID match
   if (/^U[A-Z0-9]+$/.test(query)) {
-    const user = users.find(u => u.id === query);
+    const user = users.find((u) => u.id === query);
     return user ? [user] : [];
   }
 
   // Name search
   const q = query.toLowerCase();
-  return users.filter(u =>
-    u.name.toLowerCase().includes(q) ||
-    u.realName.toLowerCase().includes(q) ||
-    u.displayName.toLowerCase().includes(q)
+  return users.filter(
+    (u) =>
+      u.name.toLowerCase().includes(q) ||
+      u.realName.toLowerCase().includes(q) ||
+      u.displayName.toLowerCase().includes(q),
   );
 }
 
@@ -2709,9 +2958,10 @@ export async function listWorkspaceChannels(): Promise<SlackChannelInfo[]> {
       types: 'public_channel,private_channel',
     });
     for (const ch of result.channels ?? []) {
+      if (!ch.id) continue;
       channels.push({
-        id: ch.id!,
-        name: ch.name ?? ch.id!,
+        id: ch.id,
+        name: ch.name ?? ch.id,
         topic: (ch.topic as { value?: string })?.value ?? '',
         purpose: (ch.purpose as { value?: string })?.value ?? '',
         memberCount: (ch as { num_members?: number }).num_members ?? 0,
@@ -2753,9 +3003,10 @@ export async function listBotChannels(): Promise<SlackChannelInfo[]> {
       types: 'public_channel',
     });
     for (const ch of result.channels ?? []) {
+      if (!ch.id) continue;
       channels.push({
-        id: ch.id!,
-        name: ch.name ?? ch.id!,
+        id: ch.id,
+        name: ch.name ?? ch.id,
         topic: (ch.topic as { value?: string })?.value ?? '',
         purpose: (ch.purpose as { value?: string })?.value ?? '',
         memberCount: (ch as { num_members?: number }).num_members ?? 0,
@@ -2779,15 +3030,16 @@ export async function findSlackChannels(query: string): Promise<SlackChannelInfo
 
   // Exact ID match
   if (/^C[A-Z0-9]+$/.test(query)) {
-    const ch = channels.find(c => c.id === query);
+    const ch = channels.find((c) => c.id === query);
     return ch ? [ch] : [];
   }
 
   // Name search (strip leading # if present)
   const q = query.replace(/^#/, '').toLowerCase();
-  return channels.filter(c =>
-    c.name.toLowerCase().includes(q) ||
-    c.topic.toLowerCase().includes(q) ||
-    c.purpose.toLowerCase().includes(q)
+  return channels.filter(
+    (c) =>
+      c.name.toLowerCase().includes(q) ||
+      c.topic.toLowerCase().includes(q) ||
+      c.purpose.toLowerCase().includes(q),
   );
 }

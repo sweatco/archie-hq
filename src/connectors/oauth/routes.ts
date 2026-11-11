@@ -28,14 +28,20 @@ export function mountOAuthRoutes(app: Application): void {
     const state = typeof req.query.state === 'string' ? req.query.state : null;
     const code = typeof req.query.code === 'string' ? req.query.code : null;
     const errorParam = typeof req.query.error === 'string' ? req.query.error : null;
-    const errorDescription = typeof req.query.error_description === 'string' ? req.query.error_description : null;
+    const errorDescription =
+      typeof req.query.error_description === 'string' ? req.query.error_description : null;
 
     if (!state) {
-      res.status(400).type('html').send(renderResultPage({
-        ok: false,
-        title: 'Missing state',
-        message: 'The OAuth provider did not include a state parameter.',
-      }));
+      res
+        .status(400)
+        .type('html')
+        .send(
+          renderResultPage({
+            ok: false,
+            title: 'Missing state',
+            message: 'The OAuth provider did not include a state parameter.',
+          }),
+        );
       return;
     }
 
@@ -44,22 +50,32 @@ export function mountOAuthRoutes(app: Application): void {
     if (errorParam) {
       const message = `${errorParam}${errorDescription ? `: ${errorDescription}` : ''}`;
       await markPendingError(state, message).catch(() => {});
-      res.status(400).type('html').send(renderResultPage({
-        ok: false,
-        title: 'Authorization failed',
-        message,
-      }));
+      res
+        .status(400)
+        .type('html')
+        .send(
+          renderResultPage({
+            ok: false,
+            title: 'Authorization failed',
+            message,
+          }),
+        );
       return;
     }
 
     if (!code) {
       const message = 'Missing authorization code';
       await markPendingError(state, message).catch(() => {});
-      res.status(400).type('html').send(renderResultPage({
-        ok: false,
-        title: 'Authorization failed',
-        message,
-      }));
+      res
+        .status(400)
+        .type('html')
+        .send(
+          renderResultPage({
+            ok: false,
+            title: 'Authorization failed',
+            message,
+          }),
+        );
       return;
     }
 
@@ -71,11 +87,16 @@ export function mountOAuthRoutes(app: Application): void {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logger.error('oauth', `Callback failed for state=${state}`, err);
-      res.status(500).type('html').send(renderResultPage({
-        ok: false,
-        title: 'Authorization failed',
-        message,
-      }));
+      res
+        .status(500)
+        .type('html')
+        .send(
+          renderResultPage({
+            ok: false,
+            title: 'Authorization failed',
+            message,
+          }),
+        );
     }
   });
 
@@ -98,7 +119,8 @@ async function completeFlow(state: string, code: string): Promise<CallbackOutcom
     return {
       ok: false,
       title: 'Unknown state',
-      message: 'No pending OAuth attempt matches this callback. The flow may have expired or already completed.',
+      message:
+        'No pending OAuth attempt matches this callback. The flow may have expired or already completed.',
     };
   }
 
@@ -147,7 +169,8 @@ async function completeFlow(state: string, code: string): Promise<CallbackOutcom
   }
 
   const nowSec = Math.floor(Date.now() / 1000);
-  const expiresAt = typeof tokens.expires_in === 'number' ? nowSec + tokens.expires_in : nowSec + 3600;
+  const expiresAt =
+    typeof tokens.expires_in === 'number' ? nowSec + tokens.expires_in : nowSec + 3600;
 
   await writeOAuthRecord(
     {

@@ -10,7 +10,11 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { z, toJSONSchema } from 'zod';
 import type { SlackThread } from '../types/index.js';
-import { messageBody, shouldRedact, REDACTION_PLACEHOLDER } from '../connectors/slack/message-body.js';
+import {
+  messageBody,
+  shouldRedact,
+  REDACTION_PLACEHOLDER,
+} from '../connectors/slack/message-body.js';
 import { logger } from '../system/logger.js';
 
 const TitleSchema = z.object({
@@ -18,7 +22,8 @@ const TitleSchema = z.object({
 });
 const rawTitleSchema = toJSONSchema(TitleSchema) as Record<string, unknown>;
 // Strip JSON Schema dialect URL — some SDK validators reject it.
-const { $schema: _drop, ...titleJsonSchema } = rawTitleSchema;
+const titleJsonSchema = rawTitleSchema;
+delete titleJsonSchema.$schema;
 
 const SYSTEM_PROMPT = `You generate a concise title for a task based on the initial conversation that started it.
 
@@ -55,7 +60,12 @@ function cleanTitle(raw: string): string | null {
   let t = raw.trim();
   if (!t) return null;
   // Strip surrounding matching quotes (single, double, or smart)
-  const quotePairs: Array<[string, string]> = [['"', '"'], ["'", "'"], ['“', '”'], ['‘', '’']];
+  const quotePairs: Array<[string, string]> = [
+    ['"', '"'],
+    ["'", "'"],
+    ['“', '”'],
+    ['‘', '’'],
+  ];
   for (const [open, close] of quotePairs) {
     if (t.startsWith(open) && t.endsWith(close) && t.length >= 2) {
       t = t.slice(1, -1).trim();
@@ -99,8 +109,12 @@ Respond with JSON only.`;
           NODE_ENV: process.env.NODE_ENV || 'development',
           ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
           // Forward CA-trust to the spawned CLI (TLS-intercepting proxy); no-op when unset.
-          ...(process.env.NODE_USE_SYSTEM_CA ? { NODE_USE_SYSTEM_CA: process.env.NODE_USE_SYSTEM_CA } : {}),
-          ...(process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS } : {}),
+          ...(process.env.NODE_USE_SYSTEM_CA
+            ? { NODE_USE_SYSTEM_CA: process.env.NODE_USE_SYSTEM_CA }
+            : {}),
+          ...(process.env.NODE_EXTRA_CA_CERTS
+            ? { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS }
+            : {}),
           PATH: process.env.PATH,
         },
         tools: [],
@@ -113,7 +127,7 @@ Respond with JSON only.`;
     })) {
       if (event.type !== 'result') continue;
       if (event.subtype === 'success') {
-        const parsed = TitleSchema.safeParse((event as any).structured_output);
+        const parsed = TitleSchema.safeParse(event.structured_output);
         if (parsed.success) {
           result = parsed.data;
         } else {

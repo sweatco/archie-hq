@@ -22,7 +22,7 @@ vi.mock('../slack/client.js', () => ({
   getBotUserId: vi.fn(),
   fetchSlackThread: vi.fn(),
   getBotId: vi.fn(),
-  addReaction: vi.fn(),
+  addReaction: vi.fn().mockResolvedValue(undefined),
   setSlackDryRun: vi.fn(),
   getUserInfo: vi.fn(),
   isExternalUser: vi.fn().mockReturnValue(false),
@@ -35,12 +35,21 @@ vi.mock('../slack/channel-canvas.js', () => ({ ensureChannelCanvas: vi.fn() }));
 vi.mock('../slack/title.js', () => ({ setAssistantThreadTitle: vi.fn() }));
 vi.mock('../../tasks/title-generator.js', () => ({ generateTaskTitle: vi.fn() }));
 vi.mock('../../system/shutdown.js', () => ({ getIsShuttingDown: vi.fn().mockReturnValue(false) }));
-vi.mock('../../system/event-bus.js', () => ({ onEvent: vi.fn(), offEvent: vi.fn(), emitEvent: vi.fn() }));
+vi.mock('../../system/event-bus.js', () => ({
+  onEvent: vi.fn(),
+  offEvent: vi.fn(),
+  emitEvent: vi.fn(),
+}));
 // `trigger-scheduler.js` is loaded for real (importActual below), and its import
 // chain now reaches `channel-store.ts`, which reads WORKDIR at module scope.
-vi.mock('../../system/workdir.js', () => ({ SESSIONS_DIR: '/tmp/sessions', WORKDIR: '/tmp/workdir' }));
+vi.mock('../../system/workdir.js', () => ({
+  SESSIONS_DIR: '/tmp/sessions',
+  WORKDIR: '/tmp/workdir',
+}));
 vi.mock('../../tasks/task.js', () => ({ Task: { get: vi.fn() }, activeTasks: new Map() }));
-const { findTaskOnDisk } = vi.hoisted(() => ({ findTaskOnDisk: vi.fn((id: string) => (id.startsWith('task-') ? id : undefined)) }));
+const { findTaskOnDisk } = vi.hoisted(() => ({
+  findTaskOnDisk: vi.fn((id: string) => (id.startsWith('task-') ? id : undefined)),
+}));
 vi.mock('../../tasks/persistence.js', () => ({
   findTaskByThread: vi.fn(),
   readKnowledgeLog: vi.fn(),
@@ -51,22 +60,34 @@ vi.mock('../../tasks/persistence.js', () => ({
 }));
 vi.mock('../../system/logger.js', () => ({
   logger: {
-    system: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), info: vi.fn(),
-    plain: vi.fn(), server: vi.fn(), slack: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    warn: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    plain: vi.fn(),
+    server: vi.fn(),
+    slack: vi.fn(),
   },
 }));
 const { cancelReminder } = vi.hoisted(() => ({ cancelReminder: vi.fn() }));
 vi.mock('../../system/reminder-scheduler.js', () => ({ cancelReminder }));
 
-const { loadTrigger, saveTrigger, listTriggers, deleteTrigger, countActiveTriggers } = vi.hoisted(() => ({
-  loadTrigger: vi.fn(),
-  saveTrigger: vi.fn().mockResolvedValue(undefined),
-  listTriggers: vi.fn().mockResolvedValue([]),
-  deleteTrigger: vi.fn().mockResolvedValue(undefined),
-  countActiveTriggers: vi.fn().mockResolvedValue(0),
-}));
+const { loadTrigger, saveTrigger, listTriggers, deleteTrigger, countActiveTriggers } = vi.hoisted(
+  () => ({
+    loadTrigger: vi.fn<typeof import('../../system/trigger-store.js').loadTrigger>(),
+    saveTrigger: vi.fn().mockResolvedValue(undefined),
+    listTriggers: vi.fn().mockResolvedValue([]),
+    deleteTrigger: vi.fn().mockResolvedValue(undefined),
+    countActiveTriggers: vi.fn().mockResolvedValue(0),
+  }),
+);
 vi.mock('../../system/trigger-store.js', () => ({
-  loadTrigger, saveTrigger, listTriggers, deleteTrigger, countActiveTriggers,
+  loadTrigger,
+  saveTrigger,
+  listTriggers,
+  deleteTrigger,
+  countActiveTriggers,
   // Faithful stand-in for the real store helper: the CAS itself is pinned
   // against the real filesystem in trigger-store-concurrency.test.ts, so what
   // matters here is only that a caller's mutate is applied to what loadTrigger
@@ -104,6 +125,7 @@ import { mountApiRoutes } from '../api/routes.js';
 import { Task } from '../../tasks/task.js';
 import { emitEvent } from '../../system/event-bus.js';
 import type { Trigger } from '../../types/trigger.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const TASK_ID = 'task-1';
 
@@ -112,17 +134,26 @@ type RouteHandler = (req: Request, res: Response) => Promise<void>;
 function captureRoute(path: string, method: 'get' | 'post' | 'patch' | 'delete'): RouteHandler {
   const fakeApp = { use: vi.fn() };
   mountApiRoutes(fakeApp as unknown as Application);
-  const router = fakeApp.use.mock.calls[0]![1] as {
-    stack: Array<{ route?: { path: string; methods: Record<string, boolean>; stack: Array<{ handle: RouteHandler }> } }>;
+  const router = expectDefined(fakeApp.use.mock.calls[0])[1] as {
+    stack: Array<{
+      route?: {
+        path: string;
+        methods: Record<string, boolean>;
+        stack: Array<{ handle: RouteHandler }>;
+      };
+    }>;
   };
   const layer = router.stack.find((l) => l.route?.path === path && l.route.methods[method]);
-  return layer!.route!.stack[0]!.handle;
+  return expectDefined(layer?.route?.stack[0]).handle;
 }
 
 function makeRes() {
   const res = { status: vi.fn(), json: vi.fn() };
   res.status.mockReturnValue(res);
-  return res as unknown as Response & { status: ReturnType<typeof vi.fn>; json: ReturnType<typeof vi.fn> };
+  return res as unknown as Response & {
+    status: ReturnType<typeof vi.fn>;
+    json: ReturnType<typeof vi.fn>;
+  };
 }
 
 const TRIGGER_ID = 'trg-20260729-1056-pending';
@@ -135,7 +166,9 @@ function pending(over: Partial<Trigger> = {}): Trigger {
     created_at: '2026-07-29T10:56:00.000Z',
     proposed_in_task: 'task-1',
     binding: { type: 'channel', channel_id: 'C1', channel_name: 'growth-operations' },
-    conditions: [{ type: 'schedule', tz: 'UTC', next_run_at: '2026-07-30T08:00:00.000Z', cron: '0 9 * * *' }],
+    conditions: [
+      { type: 'schedule', tz: 'UTC', next_run_at: '2026-07-30T08:00:00.000Z', cron: '0 9 * * *' },
+    ],
     action: { prompt: 'ORIGINAL' },
     ...over,
   } as Trigger;
@@ -149,12 +182,15 @@ beforeEach(() => {
 });
 
 describe('PATCH /triggers/:id — pending proposals', () => {
-  it('refuses a status change on a proposal — approval is the user\'s act', async () => {
+  it("refuses a status change on a proposal — approval is the user's act", async () => {
     loadTrigger.mockResolvedValue(pending());
     const route = captureRoute('/triggers/:id', 'patch');
     const res = makeRes();
 
-    await route({ params: { id: TRIGGER_ID }, body: { status: 'enabled' } } as unknown as Request, res);
+    await route(
+      { params: { id: TRIGGER_ID }, body: { status: 'enabled' } } as unknown as Request,
+      res,
+    );
 
     expect(res.status).toHaveBeenCalledWith(409);
     expect(saveTrigger).not.toHaveBeenCalled();
@@ -167,7 +203,13 @@ describe('PATCH /triggers/:id — pending proposals', () => {
     const route = captureRoute('/triggers/:id', 'patch');
     const res = makeRes();
 
-    await route({ params: { id: TRIGGER_ID }, body: { action_prompt: 'OPERATOR EDIT' } } as unknown as Request, res);
+    await route(
+      {
+        params: { id: TRIGGER_ID },
+        body: { action_prompt: 'OPERATOR EDIT' },
+      } as unknown as Request,
+      res,
+    );
 
     expect(saveTrigger).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(409);
@@ -179,7 +221,13 @@ describe('PATCH /triggers/:id — pending proposals', () => {
     const route = captureRoute('/triggers/:id', 'patch');
     const res = makeRes();
 
-    await route({ params: { id: TRIGGER_ID }, body: { action_prompt: 'OPERATOR EDIT' } } as unknown as Request, res);
+    await route(
+      {
+        params: { id: TRIGGER_ID },
+        body: { action_prompt: 'OPERATOR EDIT' },
+      } as unknown as Request,
+      res,
+    );
 
     const saved = saveTrigger.mock.calls[0][0] as Trigger;
     expect(saved.status).toBe('pending');
@@ -192,18 +240,22 @@ describe('PATCH /triggers/:id — pending proposals', () => {
   it('reports a withdrawal that lands mid-flight rather than recreating the proposal', async () => {
     // The third outcome of the store helper, and the one that used to be
     // reachable only by writing a record the user had just withdrawn.
-    loadTrigger
-      .mockResolvedValueOnce(pending())
-      .mockResolvedValueOnce(null);
+    loadTrigger.mockResolvedValueOnce(pending()).mockResolvedValueOnce(null);
     const route = captureRoute('/triggers/:id', 'patch');
     const res = makeRes();
 
-    await route({ params: { id: TRIGGER_ID }, body: { action_prompt: 'OPERATOR EDIT' } } as unknown as Request, res);
+    await route(
+      {
+        params: { id: TRIGGER_ID },
+        body: { action_prompt: 'OPERATOR EDIT' },
+      } as unknown as Request,
+      res,
+    );
 
     expect(saveTrigger).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(409);
     expect(res.json.mock.calls[0][0]).toMatchObject({ ok: false, stale: true });
-    expect(res.json.mock.calls[0][0].error).toMatch(/withdrawn/i);
+    expect(res.json.mock.calls[0][0]).toHaveProperty('error', expect.stringMatching(/withdrawn/i));
   });
 
   it('never deindexes on the pending path — a pending trigger is not in the index', async () => {
@@ -214,7 +266,13 @@ describe('PATCH /triggers/:id — pending proposals', () => {
     const route = captureRoute('/triggers/:id', 'patch');
     const res = makeRes();
 
-    await route({ params: { id: TRIGGER_ID }, body: { action_prompt: 'OPERATOR EDIT' } } as unknown as Request, res);
+    await route(
+      {
+        params: { id: TRIGGER_ID },
+        body: { action_prompt: 'OPERATOR EDIT' },
+      } as unknown as Request,
+      res,
+    );
 
     expect(deindexTrigger).not.toHaveBeenCalled();
   });
@@ -228,7 +286,9 @@ describe('PATCH /triggers/:id — pending proposals', () => {
     expect(announceTriggerChange).not.toHaveBeenCalled();
 
     vi.clearAllMocks();
-    loadTrigger.mockResolvedValueOnce(pending()).mockResolvedValueOnce(pending({ status: 'enabled' }));
+    loadTrigger
+      .mockResolvedValueOnce(pending())
+      .mockResolvedValueOnce(pending({ status: 'enabled' }));
     res = makeRes();
     await route({ params: { id: TRIGGER_ID } } as unknown as Request, res);
     expect(deleteTrigger).not.toHaveBeenCalled();
@@ -240,7 +300,10 @@ describe('PATCH /triggers/:id — pending proposals', () => {
     const route = captureRoute('/triggers/:id', 'patch');
     const res = makeRes();
 
-    await route({ params: { id: TRIGGER_ID }, body: { action_prompt: 'edit' } } as unknown as Request, res);
+    await route(
+      { params: { id: TRIGGER_ID }, body: { action_prompt: 'edit' } } as unknown as Request,
+      res,
+    );
 
     expect(saveTrigger).toHaveBeenCalledOnce();
     expect(announceTriggerChange).toHaveBeenCalledOnce();
@@ -249,29 +312,57 @@ describe('PATCH /triggers/:id — pending proposals', () => {
 
 describe('POST /tasks/:id/approve — trigger resolutions report the truth', () => {
   it('answers 409 when a denial was refused because the trigger is already live', async () => {
-    const task = { handleTriggerDenial: vi.fn().mockResolvedValue({ outcome: 'already_live', status: 'enabled' }) };
+    const task = {
+      handleTriggerDenial: vi
+        .fn()
+        .mockResolvedValue({ outcome: 'already_live', status: 'enabled' }),
+    };
     vi.mocked(Task.get).mockResolvedValue(task as unknown as Task);
     const route = captureRoute('/tasks/:id/approve', 'post');
     const res = makeRes();
 
-    await route({ params: { id: 'task-1' }, body: { type: 'trigger', approve: false, ref: TRIGGER_ID } } as unknown as Request, res);
+    await route(
+      {
+        params: { id: 'task-1' },
+        body: { type: 'trigger', approve: false, ref: TRIGGER_ID },
+      } as unknown as Request,
+      res,
+    );
 
     expect(res.status).toHaveBeenCalledWith(409);
-    expect(res.json.mock.calls[0][0]).toMatchObject({ ok: false, stale: true, outcome: 'already_live' });
-    expect(res.json.mock.calls[0][0].error).toMatch(/running\. Pause or delete it instead/);
+    expect(res.json.mock.calls[0][0]).toMatchObject({
+      ok: false,
+      stale: true,
+      outcome: 'already_live',
+    });
+    expect(res.json.mock.calls[0][0]).toHaveProperty(
+      'error',
+      expect.stringMatching(/running\. Pause or delete it instead/),
+    );
   });
 
   it('does not tell the operator to pause a refused deny on a trigger that is already paused', async () => {
-    const task = { handleTriggerDenial: vi.fn().mockResolvedValue({ outcome: 'already_live', status: 'paused' }) };
+    const task = {
+      handleTriggerDenial: vi.fn().mockResolvedValue({ outcome: 'already_live', status: 'paused' }),
+    };
     vi.mocked(Task.get).mockResolvedValue(task as unknown as Task);
     const route = captureRoute('/tasks/:id/approve', 'post');
     const res = makeRes();
 
-    await route({ params: { id: 'task-1' }, body: { type: 'trigger', approve: false, ref: TRIGGER_ID } } as unknown as Request, res);
+    await route(
+      {
+        params: { id: 'task-1' },
+        body: { type: 'trigger', approve: false, ref: TRIGGER_ID },
+      } as unknown as Request,
+      res,
+    );
 
     expect(res.status).toHaveBeenCalledWith(409);
-    expect(res.json.mock.calls[0][0].error).toMatch(/currently paused\. Delete it if you want it gone/);
-    expect(res.json.mock.calls[0][0].error).not.toMatch(/Pause/);
+    expect(res.json.mock.calls[0][0]).toHaveProperty(
+      'error',
+      expect.stringMatching(/currently paused\. Delete it if you want it gone/),
+    );
+    expect(res.json.mock.calls[0][0]).not.toHaveProperty('error', expect.stringMatching(/Pause/));
   });
 
   it('answers 409 when an approval enabled nothing', async () => {
@@ -280,7 +371,13 @@ describe('POST /tasks/:id/approve — trigger resolutions report the truth', () 
     const route = captureRoute('/tasks/:id/approve', 'post');
     const res = makeRes();
 
-    await route({ params: { id: 'task-1' }, body: { type: 'trigger', approve: true, ref: TRIGGER_ID } } as unknown as Request, res);
+    await route(
+      {
+        params: { id: 'task-1' },
+        body: { type: 'trigger', approve: true, ref: TRIGGER_ID },
+      } as unknown as Request,
+      res,
+    );
 
     expect(res.status).toHaveBeenCalledWith(409);
     expect(res.json.mock.calls[0][0]).toMatchObject({ ok: false, stale: true });
@@ -291,42 +388,77 @@ describe('POST /tasks/:id/approve — trigger resolutions report the truth', () 
     // the prompt in the pending list for the rest of the session, reproducing the
     // same error on every further keypress — on main this path answered ok and
     // cleared.
-    vi.mocked(Task.get).mockResolvedValue({ handleTriggerApproval: vi.fn().mockResolvedValue(null) } as unknown as Task);
+    vi.mocked(Task.get).mockResolvedValue({
+      handleTriggerApproval: vi.fn().mockResolvedValue(null),
+    } as unknown as Task);
     loadTrigger.mockResolvedValue(pending({ status: 'enabled' }));
     const route = captureRoute('/tasks/:id/approve', 'post');
     const res = makeRes();
 
-    await route({ params: { id: TASK_ID }, body: { type: 'trigger', approve: true, ref: TRIGGER_ID } } as unknown as Request, res);
+    await route(
+      {
+        params: { id: TASK_ID },
+        body: { type: 'trigger', approve: true, ref: TRIGGER_ID },
+      } as unknown as Request,
+      res,
+    );
 
     expect(res.status).toHaveBeenCalledWith(409);
-    expect(emitEvent).toHaveBeenCalledWith('approval:resolved', TASK_ID, { type: 'trigger', approve: true });
+    expect(emitEvent).toHaveBeenCalledWith('approval:resolved', TASK_ID, {
+      type: 'trigger',
+      approve: true,
+    });
   });
 
   it('KEEPS the CLI prompt when a cap blocked the approval — the operator can retry', async () => {
     // Opposite of the case above: the proposal survives a cap refusal on purpose,
     // so clearing the prompt would remove the way to approve it after freeing a slot.
-    vi.mocked(Task.get).mockResolvedValue({ handleTriggerApproval: vi.fn().mockResolvedValue(null) } as unknown as Task);
+    vi.mocked(Task.get).mockResolvedValue({
+      handleTriggerApproval: vi.fn().mockResolvedValue(null),
+    } as unknown as Task);
     loadTrigger.mockResolvedValue(pending());
     const route = captureRoute('/tasks/:id/approve', 'post');
     const res = makeRes();
 
-    await route({ params: { id: TASK_ID }, body: { type: 'trigger', approve: true, ref: TRIGGER_ID } } as unknown as Request, res);
+    await route(
+      {
+        params: { id: TASK_ID },
+        body: { type: 'trigger', approve: true, ref: TRIGGER_ID },
+      } as unknown as Request,
+      res,
+    );
 
     expect(res.status).toHaveBeenCalledWith(409);
     expect(res.json.mock.calls[0][0]).toMatchObject({ capBlocked: true });
-    expect(res.json.mock.calls[0][0].error).toMatch(/limit was reached/i);
+    expect(res.json.mock.calls[0][0]).toHaveProperty(
+      'error',
+      expect.stringMatching(/limit was reached/i),
+    );
     expect(emitEvent).not.toHaveBeenCalledWith('approval:resolved', TASK_ID, expect.anything());
   });
 
   it('clears the CLI prompt when a denial was refused — the question is settled', async () => {
-    vi.mocked(Task.get).mockResolvedValue({ handleTriggerDenial: vi.fn().mockResolvedValue({ outcome: 'already_live', status: 'enabled' }) } as unknown as Task);
+    vi.mocked(Task.get).mockResolvedValue({
+      handleTriggerDenial: vi
+        .fn()
+        .mockResolvedValue({ outcome: 'already_live', status: 'enabled' }),
+    } as unknown as Task);
     const route = captureRoute('/tasks/:id/approve', 'post');
     const res = makeRes();
 
-    await route({ params: { id: TASK_ID }, body: { type: 'trigger', approve: false, ref: TRIGGER_ID } } as unknown as Request, res);
+    await route(
+      {
+        params: { id: TASK_ID },
+        body: { type: 'trigger', approve: false, ref: TRIGGER_ID },
+      } as unknown as Request,
+      res,
+    );
 
     expect(res.status).toHaveBeenCalledWith(409);
-    expect(emitEvent).toHaveBeenCalledWith('approval:resolved', TASK_ID, { type: 'trigger', approve: false });
+    expect(emitEvent).toHaveBeenCalledWith('approval:resolved', TASK_ID, {
+      type: 'trigger',
+      approve: false,
+    });
   });
 
   it('answers ok when a denial really withdrew the proposal', async () => {
@@ -335,7 +467,13 @@ describe('POST /tasks/:id/approve — trigger resolutions report the truth', () 
     const route = captureRoute('/tasks/:id/approve', 'post');
     const res = makeRes();
 
-    await route({ params: { id: 'task-1' }, body: { type: 'trigger', approve: false, ref: TRIGGER_ID } } as unknown as Request, res);
+    await route(
+      {
+        params: { id: 'task-1' },
+        body: { type: 'trigger', approve: false, ref: TRIGGER_ID },
+      } as unknown as Request,
+      res,
+    );
 
     expect(res.json).toHaveBeenCalledWith({ ok: true });
   });
@@ -353,7 +491,7 @@ describe('GET /triggers — operator visibility', () => {
     await route({ params: { id: TRIGGER_ID } } as unknown as Request, res);
 
     expect(res.status).not.toHaveBeenCalledWith(404);
-    expect(res.json.mock.calls[0][0].trigger.status).toBe('pending');
+    expect(res.json.mock.calls[0][0]).toMatchObject({ trigger: { status: 'pending' } });
   });
 
   it('includes pending proposals, so an unapproved one is inspectable from here', async () => {
@@ -363,7 +501,10 @@ describe('GET /triggers — operator visibility', () => {
 
     await route({ query: {} } as unknown as Request, res);
 
-    const body = res.json.mock.calls[0][0] as { triggers: Array<{ id: string; status: string }>; total: number };
+    const body = res.json.mock.calls[0][0] as {
+      triggers: Array<{ id: string; status: string }>;
+      total: number;
+    };
     expect(body.triggers.map((t) => t.status)).toContain('pending');
     expect(body.total).toBe(2);
   });
@@ -384,7 +525,12 @@ describe('DELETE /tasks/:id/reminder — the operator off switch', () => {
   });
 
   it('cancels an armed reminder and reports what it cancelled', async () => {
-    const reminder = { trigger_at: '2026-08-01T05:00:00.000Z', reason: 'r', cron: '0 5,17 * * *', tz: 'UTC' };
+    const reminder = {
+      trigger_at: '2026-08-01T05:00:00.000Z',
+      reason: 'r',
+      cron: '0 5,17 * * *',
+      tz: 'UTC',
+    };
     const task = { metadata: { reminder }, save: vi.fn().mockResolvedValue(undefined) };
     vi.mocked(Task.get).mockResolvedValue(task as unknown as Task);
     const route = captureRoute('/tasks/:id/reminder', 'delete');

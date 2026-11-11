@@ -11,7 +11,7 @@
  */
 
 import { Cron } from 'croner';
-import { Task } from '../tasks/task.js';
+import type { Task } from '../tasks/task.js';
 import { appendSlackMessage } from '../tasks/persistence.js';
 import type { SlackThread } from '../types/task.js';
 import type { Trigger, TriggerBinding, TriggerCondition } from '../types/trigger.js';
@@ -78,7 +78,10 @@ export function computeNextRun(cron: string, tz: string, from?: Date): Date | nu
  * Returns `{ ok }` or `{ ok: false, error }`. Checks the gap between the next
  * two occurrences — the tightest cadence the expression produces.
  */
-export function validateRecurringInterval(cron: string, tz: string): { ok: true } | { ok: false; error: string } {
+export function validateRecurringInterval(
+  cron: string,
+  tz: string,
+): { ok: true } | { ok: false; error: string } {
   let runs: Date[];
   try {
     // Sample several upcoming runs and check the TIGHTEST gap, not just the
@@ -86,7 +89,10 @@ export function validateRecurringInterval(cron: string, tz: string): { ok: true 
     // sub-hour gap later in its cycle.
     runs = new Cron(cron, { timezone: tz }).nextRuns(6);
   } catch (err) {
-    return { ok: false, error: `Invalid cron expression: ${err instanceof Error ? err.message : String(err)}` };
+    return {
+      ok: false,
+      error: `Invalid cron expression: ${err instanceof Error ? err.message : String(err)}`,
+    };
   }
   if (runs.length < 2) {
     return { ok: false, error: 'Cron expression does not produce a recurring schedule.' };
@@ -101,6 +107,12 @@ export function validateRecurringInterval(cron: string, tz: string): { ok: true 
   return { ok: true };
 }
 
+type TriggerTask = Pick<
+  Task,
+  'taskId' | 'metadata' | 'append' | 'setMemoryDestination' | 'save' | 'sendMessage'
+>;
+type CreateTriggerTask = () => Promise<TriggerTask>;
+
 // ---- Public API ----
 
 /**
@@ -109,7 +121,8 @@ export function validateRecurringInterval(cron: string, tz: string): { ok: true 
  * after downtime). No-op firing if the kill switch is off, but the index is
  * still built so list/management endpoints stay consistent.
  */
-export async function initTriggerScheduler(): Promise<void> {
+export async function initTriggerScheduler(createTask: CreateTriggerTask): Promise<void> {
+  if (schedulerTimer) clearInterval(schedulerTimer);
   await rebuildFromDisk();
   const count = enabledTriggers.size;
   if (count > 0) {
@@ -120,9 +133,13 @@ export async function initTriggerScheduler(): Promise<void> {
     return;
   }
   schedulerTimer = setInterval(() => {
-    checkDue().catch((err) => logger.error('trigger-scheduler', 'Error checking due triggers', err));
+    checkDue(createTask).catch((err) =>
+      logger.error('trigger-scheduler', 'Error checking due triggers', err),
+    );
   }, 60_000);
-  checkDue().catch((err) => logger.error('trigger-scheduler', 'Error on initial trigger check', err));
+  checkDue(createTask).catch((err) =>
+    logger.error('trigger-scheduler', 'Error on initial trigger check', err),
+  );
 }
 
 /** Pending proposals older than this are GC'd on the boot scan. */
@@ -189,7 +206,9 @@ export function deindexTrigger(id: string): void {
 export function getChannelMessageTriggers(channelId: string): Trigger[] {
   const out: Trigger[] = [];
   for (const trigger of enabledTriggers.values()) {
-    if (trigger.conditions.some((c) => c.type === 'channel_message' && c.channel_id === channelId)) {
+    if (
+      trigger.conditions.some((c) => c.type === 'channel_message' && c.channel_id === channelId)
+    ) {
       out.push(trigger);
     }
   }
@@ -240,7 +259,9 @@ export function planTick(
   const nextConditions: TriggerCondition[] = [];
   for (const cond of trigger.conditions) {
     const isDueSchedule =
-      cond.type === 'schedule' && !!cond.next_run_at && new Date(cond.next_run_at).getTime() <= nowMs;
+      cond.type === 'schedule' &&
+      !!cond.next_run_at &&
+      new Date(cond.next_run_at).getTime() <= nowMs;
     if (!isDueSchedule) {
       nextConditions.push(cond);
       continue;
@@ -278,7 +299,11 @@ export function planStatusChange(input: {
   currentStatus: 'enabled' | 'paused';
   hasNewConditions: boolean;
   requestedStatus?: 'enabled' | 'paused';
-}): { target: 'enabled' | 'paused' | 'unchanged'; statusChange: 'resumed' | 'paused' | null; autoResume: boolean } {
+}): {
+  target: 'enabled' | 'paused' | 'unchanged';
+  statusChange: 'resumed' | 'paused' | null;
+  autoResume: boolean;
+} {
   const explicitPause = input.requestedStatus === 'paused';
   const autoResume = input.hasNewConditions && input.currentStatus === 'paused' && !explicitPause;
   const wantEnable = input.requestedStatus === 'enabled' || autoResume;
@@ -297,14 +322,14 @@ export function planStatusChange(input: {
 let ticking = false;
 
 /** Check for due schedule conditions and fire them (at most once per trigger per tick). */
-async function checkDue(): Promise<void> {
+async function checkDue(createTask: CreateTriggerTask): Promise<void> {
   if (!triggersEnabled() || ticking) return;
   ticking = true;
   try {
     const now = new Date();
     for (const trigger of [...enabledTriggers.values()]) {
       try {
-        await tickTrigger(trigger, now);
+        await tickTrigger(trigger, now, createTask);
       } catch (err) {
         // Isolate failures so one trigger's error (e.g. a disk write) doesn't
         // skip the rest of this tick.
@@ -318,13 +343,17 @@ async function checkDue(): Promise<void> {
 
 /** Fire a single trigger once if any of its schedule conditions are due, then
  * advance/expire those conditions and (de)persist. */
-async function tickTrigger(trigger: Trigger, now: Date): Promise<void> {
+async function tickTrigger(
+  trigger: Trigger,
+  now: Date,
+  createTask: CreateTriggerTask,
+): Promise<void> {
   const plan = planTick(trigger, now);
   if (plan.dueCount === 0) return;
 
   // Fire ONCE for the trigger this tick, even when several conditions coincide
   // (M2: "any match fires the trigger" — not one task per condition).
-  await fireTrigger(trigger, { kind: 'schedule' });
+  await fireTrigger(trigger, { kind: 'schedule' }, createTask);
 
   // fireTrigger may have paused + deindexed the trigger (daily cap, unreachable
   // channel). If so, leave its conditions alone.
@@ -350,7 +379,11 @@ async function tickTrigger(trigger: Trigger, now: Date): Promise<void> {
  * Firing posts no preamble — the spawned PM does the work and posts the result
  * itself, so the first message the channel sees is the actual output.
  */
-export async function fireTrigger(trigger: Trigger, context: FireContext): Promise<void> {
+export async function fireTrigger(
+  trigger: Trigger,
+  context: FireContext,
+  createTask: CreateTriggerTask,
+): Promise<void> {
   if (!triggersEnabled()) return;
 
   // Pre-flight for a channel-bound schedule fire: if the bound channel was
@@ -361,23 +394,35 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
   // doesn't consume a cap slot (L2).
   if (context.kind !== 'message' && trigger.binding.type === 'channel') {
     if (!(await isChannelReachable(trigger.binding.channel_id))) {
-      logger.warn('trigger-scheduler', `Trigger ${trigger.id} bound channel ${trigger.binding.channel_id} unreachable — pausing`);
+      logger.warn(
+        'trigger-scheduler',
+        `Trigger ${trigger.id} bound channel ${trigger.binding.channel_id} unreachable — pausing`,
+      );
       trigger.status = 'paused';
       await saveTrigger(trigger);
       deindexTrigger(trigger.id);
       emitEvent('trigger:paused', trigger.id, { reason: 'bound channel unreachable' });
-      await notifyCreator(trigger, `⚠️ A trigger you set up was paused — its channel (#${trigger.binding.channel_name}) is gone or archived. Recreate it elsewhere if you still need it.`);
+      await notifyCreator(
+        trigger,
+        `⚠️ A trigger you set up was paused — its channel (#${trigger.binding.channel_name}) is gone or archived. Recreate it elsewhere if you still need it.`,
+      );
       return;
     }
   }
 
   if (!withinDailyCap()) {
-    logger.warn('trigger-scheduler', `Daily fire cap (${DAILY_FIRE_CAP}) reached — dropping trigger ${trigger.id}`);
-    await notifyCreator(trigger, `⚠️ A trigger you set up couldn't run — Archie hit its daily limit of automated runs. It will resume tomorrow.`);
+    logger.warn(
+      'trigger-scheduler',
+      `Daily fire cap (${DAILY_FIRE_CAP}) reached — dropping trigger ${trigger.id}`,
+    );
+    await notifyCreator(
+      trigger,
+      `⚠️ A trigger you set up couldn't run — Archie hit its daily limit of automated runs. It will resume tomorrow.`,
+    );
     return;
   }
 
-  const task = await Task.create();
+  const task = await createTask();
   task.metadata.triggered_by = trigger.id;
 
   // Wire delivery. A message fire ingests the triggering thread, which links it as the default channel and
@@ -388,27 +433,35 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
   let scanChannelId: string | undefined;
   if (context.kind === 'message' && context.thread) {
     // Ingestion, not announcement. `append` is the one path every other Slack task uses, and it does five things this branch would otherwise have to reinvent (and previously simply skipped): it writes the message to knowledge.log through the single renderer with the author line and the `msg:<ts>` id, applies the redaction policy via `shouldRedact`, skips file downloads for a redacted message while downloading them otherwise so the `[Attachments: …]` suffix carries usable local paths, links `slack:<channel>:<threadId>` as a channel, and promotes it to `default_channel`. That last pair is why `linkSlackThread` is NOT also called here — `append` links the identical key with the same shape, so doing both would double-write the same record.
-    const { entries } = await task.append(context.thread);
+    const thread = context.thread;
+    const { entries } = await task.append(thread);
 
     // The ingestion floor, deliberately narrow. `fetchSlackThread` drops any raw message that has neither a `user` nor a `botId`, so the very message that fired this trigger can be missing from the thread it was fetched from — in which case `append` walked an empty (or incomplete) message list, returned no entry for it, and the PM would be woken by a fire whose triggering message it never sees. Writing it directly from the body dispatch already rendered is what closes that hole — and the line it returns joins the inline batch below.
     //
     // It fires ONLY for that reason, which is what `!context.authorId` tests — no user id and no bot id, so there is no identity for the redaction policy to classify in the first place. The fetch filter also drops a bot post from another workspace, and while the dispatch-side gate that is supposed to catch those first derives the team the same way (`bot_profile.team_id || team`, on both sides), the two read DIFFERENT PAYLOADS — the inbound `message` event on one side, what `conversations.replies` returns for that same ts on the other — so a post the event gate let through can still be dropped by the fetch. Writing on *any* absence would re-admit exactly that content, unredacted, past the one policy every other write to this log goes through. An empty body is refused for the same reason in miniature: an entry with no text claims a message the log does not actually carry. The ts comes from `thread.threadId` rather than being passed in separately — dispatch fires only on TOP-LEVEL messages, so the thread's root IS the message that fired, and the condition reads as what it actually asks: did the fetched thread contain its own root? Nothing else is needed: `append` registers the channel, promotes `default_channel` and advances `last_processed_ts` even when `thread.messages` is empty — only the per-message loop is skipped — so the thread is already owned and a second link would be redundant.
-    if (!context.authorId && context.body && !context.thread.messages.some((m) => m.ts === context.thread!.threadId)) {
+    if (
+      !context.authorId &&
+      context.body &&
+      !thread.messages.some((m) => m.ts === thread.threadId)
+    ) {
       const author = 'unknown';
-      entries.push(await appendSlackMessage(
-        task.taskId,
-        { id: context.thread.channel.id, name: context.thread.channel.name },
-        context.thread.threadId,
-        { id: author, username: author, realName: author },
-        context.body ?? '',
-        { ts: context.thread.threadId },
-      ));
+      entries.push(
+        await appendSlackMessage(
+          task.taskId,
+          { id: context.thread.channel.id, name: context.thread.channel.name },
+          context.thread.threadId,
+          { id: author, username: author, realName: author },
+          context.body ?? '',
+          { ts: context.thread.threadId },
+        ),
+      );
     }
 
     // The triggering message rides along inline. Pointing the PM at knowledge.log
     // was a pointer at a file its prompt no longer mentions — the same wake the
     // Slack path already carries, so the fire is actionable on arrival.
-    delivery = 'Post your reply in your default channel — the thread where the triggering message was posted.';
+    delivery =
+      'Post your reply in your default channel — the thread where the triggering message was posted.';
     if (entries.length > 0) {
       delivery += `\n\nThe message that fired this:\n\n${entries.join('\n\n')}`;
     }
@@ -427,9 +480,10 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
   }
   await task.save(true);
 
-  const reason = context.kind === 'message'
-    ? `a new message in #${context.channelName ?? 'a channel'} matched your filter`
-    : 'a scheduled run';
+  const reason =
+    context.kind === 'message'
+      ? `a new message in #${context.channelName ?? 'a channel'} matched your filter`
+      : 'a scheduled run';
   const seed = `${trigger.action.prompt}\n\n${delivery}`;
 
   // Refresh the home channel's standing context — its "Archie" canvas and its pinned-message index — for a
@@ -451,8 +505,14 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
   // must never cost the fire itself — a scheduled run that silently does not happen is far worse than one
   // that runs with a stale brief.
   if (scanChannelId) {
-    await Promise.all([ensureChannelCanvas(scanChannelId), ensureChannelPins(scanChannelId)])
-      .catch((err) => logger.warn('trigger-scheduler', `Failed to refresh standing context for home channel ${scanChannelId} on trigger ${trigger.id}`, err));
+    await Promise.all([ensureChannelCanvas(scanChannelId), ensureChannelPins(scanChannelId)]).catch(
+      (err) =>
+        logger.warn(
+          'trigger-scheduler',
+          `Failed to refresh standing context for home channel ${scanChannelId} on trigger ${trigger.id}`,
+          err,
+        ),
+    );
   }
 
   logger.system(`Trigger ${trigger.id} fired (${context.kind}) → task ${task.taskId}`);
@@ -473,7 +533,10 @@ type TriggerChange = 'enabled' | 'edited' | 'paused' | 'resumed' | 'deleted';
  * managed from a DM, but its bound channel always sees the change. Best-effort —
  * a failed post is logged, not thrown.
  */
-export async function announceTriggerChange(trigger: Trigger, change: TriggerChange): Promise<void> {
+export async function announceTriggerChange(
+  trigger: Trigger,
+  change: TriggerChange,
+): Promise<void> {
   // A DM's only reader is the person who just made the change.
   if (trigger.binding.type === 'user') return;
 
@@ -585,7 +648,11 @@ function describeOneOff(iso: string, tz: string): string {
   try {
     const d = new Date(iso);
     const date = d.toLocaleDateString('en-US', { timeZone: tz, month: 'short', day: 'numeric' });
-    const time = d.toLocaleTimeString('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit' });
+    const time = d.toLocaleTimeString('en-US', {
+      timeZone: tz,
+      hour: 'numeric',
+      minute: '2-digit',
+    });
     return `once on ${date} at ${time} (${friendlyTz(tz)})`;
   } catch {
     return `once at ${iso}`;
@@ -615,7 +682,11 @@ function describeCondition(c: TriggerCondition, bindingChannelId?: string): stri
   const filters: string[] = [];
   if (c.match?.contains) filters.push(`mentioning "${c.match.contains}"`);
   if (c.match?.from_user) {
-    filters.push(isAppAuthorId(c.match.from_user) ? `from the app \`${c.match.from_user}\`` : `from <@${c.match.from_user}>`);
+    filters.push(
+      isAppAuthorId(c.match.from_user)
+        ? `from the app \`${c.match.from_user}\``
+        : `from <@${c.match.from_user}>`,
+    );
   }
   return `on a new message${where}${filters.length ? ' ' + filters.join(' ') : ''}`;
 }
@@ -646,12 +717,19 @@ export function triggerWhere(trigger: Trigger): string {
 
 // Caps count enabled triggers only, so they must be re-checked at approval, not just at proposal.
 export async function triggerCapExceeded(trigger: Trigger): Promise<boolean> {
-  const overChannel = trigger.binding.type === 'channel'
-    && (await countActiveTriggers((t) => t.binding.type === 'channel' && t.binding.channel_id === (trigger.binding as { channel_id: string }).channel_id)) >= MAX_TRIGGERS_PER_CHANNEL;
+  const overChannel =
+    trigger.binding.type === 'channel' &&
+    (await countActiveTriggers(
+      (t) =>
+        t.binding.type === 'channel' &&
+        t.binding.channel_id === (trigger.binding as { channel_id: string }).channel_id,
+    )) >= MAX_TRIGGERS_PER_CHANNEL;
   if (overChannel) return true;
   return Boolean(
-    trigger.created_by && trigger.created_by !== 'unknown'
-    && (await countActiveTriggers((t) => t.created_by === trigger.created_by)) >= MAX_TRIGGERS_PER_USER,
+    trigger.created_by &&
+    trigger.created_by !== 'unknown' &&
+    (await countActiveTriggers((t) => t.created_by === trigger.created_by)) >=
+      MAX_TRIGGERS_PER_USER,
   );
 }
 
@@ -670,8 +748,20 @@ export function buildTriggerApprovalBlocks(trigger: Trigger, notice?: string): u
     {
       type: 'actions',
       elements: [
-        { type: 'button', text: { type: 'plain_text', text: 'Approve' }, action_id: 'approve_trigger', value: trigger.id, style: 'primary' },
-        { type: 'button', text: { type: 'plain_text', text: 'Deny' }, action_id: 'deny_trigger', value: trigger.id, style: 'danger' },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: 'Approve' },
+          action_id: 'approve_trigger',
+          value: trigger.id,
+          style: 'primary',
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: 'Deny' },
+          action_id: 'deny_trigger',
+          value: trigger.id,
+          style: 'danger',
+        },
       ],
     },
   ];

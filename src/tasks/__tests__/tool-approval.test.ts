@@ -20,8 +20,15 @@ vi.mock('../persistence.js', async (importOriginal) => {
 
 vi.mock('../../system/logger.js', () => ({
   logger: {
-    system: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), info: vi.fn(),
-    slack: vi.fn(), agentAction: vi.fn(), agentFinding: vi.fn(), agentToSlack: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    warn: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    slack: vi.fn(),
+    agentAction: vi.fn(),
+    agentFinding: vi.fn(),
+    agentToSlack: vi.fn(),
   },
 }));
 
@@ -32,12 +39,14 @@ import { appendAgentFinding } from '../persistence.js';
 import { emitEvent } from '../../system/event-bus.js';
 import { APPROVAL_TTL_MS, PENDING_APPROVAL_TTL_MS } from '../../agents/tool-approval-gate.js';
 import type { TaskMetadata } from '../../types/task.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const REQUEST = {
   digest: 'd1'.padEnd(16, '0'),
   server: 'tramline',
   tool: 'retry_workflow_run',
-  summary: 'Re-run this failed CI build\n*Tool:* `tramline:retry_workflow_run`\n*Arguments:* id=`wf-1`',
+  summary:
+    'Re-run this failed CI build\n*Tool:* `tramline:retry_workflow_run`\n*Arguments:* id=`wf-1`',
   heading: 'Re-run this failed CI build',
 };
 const OTHER_DIGEST = 'd2'.padEnd(16, '0');
@@ -45,7 +54,10 @@ const OTHER_DIGEST = 'd2'.padEnd(16, '0');
 type FakeTask = {
   taskId: string;
   metadata: Partial<TaskMetadata>;
-  agent: { clearPendingTeardown: ReturnType<typeof vi.fn>; deferTeardown: ReturnType<typeof vi.fn> };
+  agent: {
+    clearPendingTeardown: ReturnType<typeof vi.fn>;
+    deferTeardown: ReturnType<typeof vi.fn>;
+  };
   debouncedSave: ReturnType<typeof vi.fn>;
   save: ReturnType<typeof vi.fn>;
   sendMessage: ReturnType<typeof vi.fn>;
@@ -137,7 +149,7 @@ describe('requestToolApproval', () => {
 
     expect(await request(task)).toBe('posted');
     expect(task.postInteractiveToUser).not.toHaveBeenCalled(); // no duplicate prompt
-    expect(task.suspendStatus).toHaveBeenCalled();             // but the park is re-armed
+    expect(task.suspendStatus).toHaveBeenCalled(); // but the park is re-armed
   });
 
   // The slot's presence is what the re-arm branch and the one-at-a-time refusal
@@ -172,7 +184,7 @@ describe('requestToolApproval', () => {
     vi.advanceTimersByTime(PENDING_APPROVAL_TTL_MS + 1000);
 
     expect(await request(task, { ...REQUEST, digest: OTHER_DIGEST })).toBe('posted');
-    expect(task.metadata.pending_tool_approval!.digest).toBe(OTHER_DIGEST);
+    expect(expectDefined(task.metadata.pending_tool_approval).digest).toBe(OTHER_DIGEST);
   });
 });
 
@@ -184,7 +196,7 @@ describe('handleToolCallApproval', () => {
     expect(await approve(task, REQUEST.digest)).toBe('resolved');
     expect(task.metadata.pending_tool_approval).toBeUndefined();
     expect(task.metadata.approved_tool_calls).toHaveLength(1);
-    expect(task.metadata.approved_tool_calls![0]).toMatchObject({
+    expect(expectDefined(task.metadata.approved_tool_calls)[0]).toMatchObject({
       digest: REQUEST.digest,
       approved_by: 'U1',
     });
@@ -213,7 +225,7 @@ describe('handleToolCallApproval', () => {
     await request(task);
 
     expect(await approve(task, OTHER_DIGEST)).toBe('stale');
-    expect(task.metadata.pending_tool_approval!.digest).toBe(REQUEST.digest); // untouched
+    expect(expectDefined(task.metadata.pending_tool_approval).digest).toBe(REQUEST.digest); // untouched
     expect(task.metadata.approved_tool_calls ?? []).toHaveLength(0);
   });
 
@@ -226,7 +238,10 @@ describe('handleToolCallApproval', () => {
     expect(task.metadata.pending_tool_approval).toBeUndefined(); // slot cleared
     expect(task.metadata.approved_tool_calls ?? []).toHaveLength(0); // NO grant minted
     expect(vi.mocked(appendAgentFinding)).toHaveBeenCalledWith(
-      'task-123', 'system', expect.stringContaining('expired unspent'), 'decision',
+      'task-123',
+      'system',
+      expect.stringContaining('expired unspent'),
+      'decision',
     );
   });
 
@@ -257,7 +272,7 @@ describe('handleToolCallDenial', () => {
     const task = makeFakeTask();
     await request(task);
     expect(await deny(task, OTHER_DIGEST)).toBe('stale');
-    expect(task.metadata.pending_tool_approval!.digest).toBe(REQUEST.digest);
+    expect(expectDefined(task.metadata.pending_tool_approval).digest).toBe(REQUEST.digest);
   });
 });
 

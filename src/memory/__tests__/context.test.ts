@@ -56,12 +56,29 @@ describe('memory context builder', () => {
   });
 
   // Helper: write an entity file into the temp entities dir.
-  async function writeEntity(slug: string, frontmatter: Record<string, string>, facts: string[] = [], relations: string[] = []) {
+  async function writeEntity(
+    slug: string,
+    frontmatter: Record<string, string>,
+    facts: string[] = [],
+    relations: string[] = [],
+  ) {
     await mkdir(entitiesDir, { recursive: true });
-    const fm = Object.entries(frontmatter).map(([k, v]) => `${k}: ${v}`).join('\n');
+    const fm = Object.entries(frontmatter)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join('\n');
     const body = [
-      '---', `entity: ${slug}`, fm, '---', `<!-- L0: ${slug} summary -->`, '',
-      '## Facts', ...facts, '', '## Relations', ...relations, '',
+      '---',
+      `entity: ${slug}`,
+      fm,
+      '---',
+      `<!-- L0: ${slug} summary -->`,
+      '',
+      '## Facts',
+      ...facts,
+      '',
+      '## Relations',
+      ...relations,
+      '',
     ].join('\n');
     await writeFile(join(entitiesDir, `${slug}.md`), body, 'utf-8');
   }
@@ -100,7 +117,9 @@ describe('memory context builder', () => {
       await mkdir(usersDir, { recursive: true });
       await writeFile(join(usersDir, 'U07DANA001.md'), '- fact\n', 'utf-8');
 
-      const result = await buildMemoryContext([{ userId: 'U07DANA001', displayName: 'U07DANA001' }]);
+      const result = await buildMemoryContext([
+        { userId: 'U07DANA001', displayName: 'U07DANA001' },
+      ]);
 
       expect(result).toContain('<user_preferences user_id="U07DANA001">');
       expect(result).not.toContain('display_name=');
@@ -116,7 +135,8 @@ describe('memory context builder', () => {
     });
 
     it('includes <recent_activity> block when recent-activity.md has content', async () => {
-      const activityContent = '# Recent Activity\n\n| Date | Task ID | Summary | Domain | User |\n|------|---------|---------|--------|------|\n| 2026-04-10 | task-001 | Fixed bug | engineering | dana |\n';
+      const activityContent =
+        '# Recent Activity\n\n| Date | Task ID | Summary | Domain | User |\n|------|---------|---------|--------|------|\n| 2026-04-10 | task-001 | Fixed bug | engineering | dana |\n';
       await writeFile(activityPath, activityContent, 'utf-8');
 
       const result = await buildMemoryContext([]);
@@ -144,7 +164,8 @@ describe('memory context builder', () => {
       const userContent = '## Communication\n- Prefers async\n';
       await writeFile(join(usersDir, 'U07DANA001.md'), userContent, 'utf-8');
 
-      const activityContent = '# Recent Activity\n\n| Date | Task ID | Summary | Domain | User |\n|------|---------|---------|--------|------|\n| 2026-04-10 | task-001 | Fixed bug | engineering | dana |\n';
+      const activityContent =
+        '# Recent Activity\n\n| Date | Task ID | Summary | Domain | User |\n|------|---------|---------|--------|------|\n| 2026-04-10 | task-001 | Fixed bug | engineering | dana |\n';
       await writeFile(activityPath, activityContent, 'utf-8');
 
       const result = await buildMemoryContext([{ userId: 'U07DANA001', displayName: 'Dana' }]);
@@ -161,9 +182,15 @@ describe('memory context builder', () => {
     it('appends memory context to prompt when injection is enabled and memory exists', async () => {
       injectionEnabled = true;
       await mkdir(usersDir, { recursive: true });
-      await writeFile(join(usersDir, 'U07DANA001.md'), '## Communication\n- Prefers async\n', 'utf-8');
+      await writeFile(
+        join(usersDir, 'U07DANA001.md'),
+        '## Communication\n- Prefers async\n',
+        'utf-8',
+      );
 
-      const result = await enrichPromptWithMemory('base prompt', [{ userId: 'U07DANA001', displayName: 'Dana' }]);
+      const result = await enrichPromptWithMemory('base prompt', [
+        { userId: 'U07DANA001', displayName: 'Dana' },
+      ]);
 
       expect(result).toContain('base prompt');
       expect(result).toContain('## Organizational Memory');
@@ -174,9 +201,15 @@ describe('memory context builder', () => {
     it('returns systemPrompt unchanged when memory is disabled', async () => {
       memoryEnabled = false;
       await mkdir(usersDir, { recursive: true });
-      await writeFile(join(usersDir, 'U07DANA001.md'), '## Communication\n- Prefers async\n', 'utf-8');
+      await writeFile(
+        join(usersDir, 'U07DANA001.md'),
+        '## Communication\n- Prefers async\n',
+        'utf-8',
+      );
 
-      const result = await enrichPromptWithMemory('base prompt', [{ userId: 'U07DANA001', displayName: 'Dana' }]);
+      const result = await enrichPromptWithMemory('base prompt', [
+        { userId: 'U07DANA001', displayName: 'Dana' },
+      ]);
 
       expect(result).toBe('base prompt');
     });
@@ -187,10 +220,9 @@ describe('memory context builder', () => {
       await mkdir(usersDir, { recursive: true });
       await writeFile(join(usersDir, 'U07DANA001.md'), '- must not be read\n', 'utf-8');
 
-      const result = await enrichPromptWithMemory(
-        'base prompt',
-        [{ userId: 'U07DANA001', displayName: 'Dana' }],
-      );
+      const result = await enrichPromptWithMemory('base prompt', [
+        { userId: 'U07DANA001', displayName: 'Dana' },
+      ]);
 
       expect(result).toBe('base prompt');
     });
@@ -206,9 +238,15 @@ describe('memory context builder', () => {
       injectionEnabled = false; // production default
       const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
       await mkdir(usersDir, { recursive: true });
-      await writeFile(join(usersDir, 'U07DANA001.md'), '## Communication\n- Prefers async\n', 'utf-8');
+      await writeFile(
+        join(usersDir, 'U07DANA001.md'),
+        '## Communication\n- Prefers async\n',
+        'utf-8',
+      );
 
-      const result = await enrichPromptWithMemory('base prompt', [{ userId: 'U07DANA001', displayName: 'Dana' }]);
+      const result = await enrichPromptWithMemory('base prompt', [
+        { userId: 'U07DANA001', displayName: 'Dana' },
+      ]);
 
       expect(result).toBe('base prompt');
       expect(result).not.toContain('## Organizational Memory');
@@ -224,7 +262,9 @@ describe('memory context builder', () => {
       await mkdir(usersDir, { recursive: true });
       await writeFile(join(usersDir, 'U07DANA001.md'), '- fact\n', 'utf-8');
 
-      const result = await enrichPromptWithMemory('base prompt', [{ userId: 'U07DANA001', displayName: 'Dana' }]);
+      const result = await enrichPromptWithMemory('base prompt', [
+        { userId: 'U07DANA001', displayName: 'Dana' },
+      ]);
 
       expect(result).toBe('base prompt');
     });
@@ -254,10 +294,15 @@ describe('memory context builder', () => {
     });
 
     it('injects catalogue rows but no full entity pages or observations', async () => {
-      await writeEntity('payment-service', FM({ display_name: '"Payment Service"', scope: 'repo', repos: '[backend]' }));
-      await writeEntity('stripe', FM({ display_name: '"Stripe"', type: 'integration', scope: 'org' }), [
-        '- [fact] private observation text  <!-- touched: 2026-05-01 -->',
-      ]);
+      await writeEntity(
+        'payment-service',
+        FM({ display_name: '"Payment Service"', scope: 'repo', repos: '[backend]' }),
+      );
+      await writeEntity(
+        'stripe',
+        FM({ display_name: '"Stripe"', type: 'integration', scope: 'org' }),
+        ['- [fact] private observation text  <!-- touched: 2026-05-01 -->'],
+      );
 
       const result = await buildMemoryContext([]);
       expect(result).toContain('[[payment-service]]');
@@ -277,16 +322,23 @@ describe('memory context builder', () => {
 
     it('caps the complete catalogue block at 4,000 characters', async () => {
       for (let index = 0; index < 100; index++) {
-        await writeEntity(`service-${String(index).padStart(3, '0')}`, FM({ display_name: `"Service ${index}"` }), [
-          `- [fact] observation ${index}  <!-- touched: 2026-05-01 -->`,
-        ]);
+        await writeEntity(
+          `service-${String(index).padStart(3, '0')}`,
+          FM({ display_name: `"Service ${index}"` }),
+          [`- [fact] observation ${index}  <!-- touched: 2026-05-01 -->`],
+        );
       }
 
       const result = await buildMemoryContext([]);
       const catalogue = result.match(/<entity_index>[\s\S]*<\/entity_index>/)?.[0] ?? '';
       expect(catalogue.length).toBeLessThanOrEqual(4_000);
       expect(catalogue).toContain('_Additional entities omitted._');
-      expect(catalogue.split('\n').filter((line) => line.startsWith('| [[')).every((line) => line.endsWith('|'))).toBe(true);
+      expect(
+        catalogue
+          .split('\n')
+          .filter((line) => line.startsWith('| [['))
+          .every((line) => line.endsWith('|')),
+      ).toBe(true);
     });
 
     it('adds retrieval guidance only when memory tools are enabled', async () => {
@@ -294,7 +346,9 @@ describe('memory context builder', () => {
       expect(await buildMemoryContext([])).not.toContain('Use search_memory');
 
       toolsEnabled = true;
-      expect(await buildMemoryContext([])).toContain('Use search_memory to find relevant knowledge and read_entity for details.');
+      expect(await buildMemoryContext([])).toContain(
+        'Use search_memory to find relevant knowledge and read_entity for details.',
+      );
     });
 
     it('emits no entity blocks when there are no entities', async () => {

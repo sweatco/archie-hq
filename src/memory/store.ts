@@ -24,8 +24,8 @@ import type { MemoryUpdate } from './types.js';
 export async function readUser(username: string): Promise<string> {
   try {
     return await readFile(getUserPath(username), 'utf-8');
-  } catch (err: any) {
-    if (err.code === 'ENOENT') return '';
+  } catch (err: unknown) {
+    if (err instanceof Error && 'code' in err && err.code === 'ENOENT') return '';
     throw err;
   }
 }
@@ -44,7 +44,7 @@ export async function writeUser(username: string, content: string): Promise<void
 export async function applyUserUpdatesWithIdentity(
   userId: string,
   displayName: string,
-  updates: MemoryUpdate[]
+  updates: MemoryUpdate[],
 ): Promise<{ appliedUpdates: MemoryUpdate[]; capExceeded: boolean }> {
   let content = await readUser(userId);
   const original = content;
@@ -53,7 +53,10 @@ export async function applyUserUpdatesWithIdentity(
   for (const update of updates) {
     const clean = sanitizeUpdate(update);
     if (!clean) {
-      logger.warn('memory', `dropped user update for ${userId} (sanitizer rejected): ${JSON.stringify(update).slice(0, 120)}`);
+      logger.warn(
+        'memory',
+        `dropped user update for ${userId} (sanitizer rejected): ${JSON.stringify(update).slice(0, 120)}`,
+      );
       continue;
     }
     const next = applyUpdate(content, clean);
@@ -93,11 +96,11 @@ export function softCapExceeded(content: string, totalCap: number, sectionCap: n
 }
 
 function buildUserFrontmatter(userId: string, displayName: string): string {
-  const safeDisplay = displayName.replace(/"/g, '\\"');
+  const safeDisplay = JSON.stringify(displayName);
   return [
     '---',
     `slack_user_id: ${userId}`,
-    `display_name: "${safeDisplay}"`,
+    `display_name: ${safeDisplay}`,
     'aliases: []',
     '---',
     '',
@@ -119,15 +122,19 @@ export function applyUpdate(content: string, update: MemoryUpdate): string {
       logger.warn('memory', 'applyUpdate: update action without `old` field — skipped');
       return content;
     }
+    const oldText = update.old;
     const lines = content.split('\n');
-    const idx = lines.findIndex((line) => stripLastTouched(line).includes(update.old!));
+    const idx = lines.findIndex((line) => stripLastTouched(line).includes(oldText));
     if (idx !== -1) {
       // Refresh the touched annotation on update
       lines[idx] = appendLastTouched(`- ${update.content}`);
       return lines.join('\n');
     }
     // old text not found — skip + warn rather than silently appending
-    logger.warn('memory', `applyUpdate: \`old\` text not found, skipped: ${update.old.slice(0, 80)}`);
+    logger.warn(
+      'memory',
+      `applyUpdate: \`old\` text not found, skipped: ${update.old.slice(0, 80)}`,
+    );
     return content;
   }
 

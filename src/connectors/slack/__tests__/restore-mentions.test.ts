@@ -23,7 +23,9 @@ describe('restoreMentions', () => {
   });
 
   it('leaves an already-valid <@ID> (no name) untouched', () => {
-    expect(restoreMentions('cc <@U03RQQTK1C3> please review')).toBe('cc <@U03RQQTK1C3> please review');
+    expect(restoreMentions('cc <@U03RQQTK1C3> please review')).toBe(
+      'cc <@U03RQQTK1C3> please review',
+    );
   });
 
   it('converts multiple mixed-form mentions in one message', () => {

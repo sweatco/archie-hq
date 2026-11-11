@@ -2,12 +2,13 @@
 import React from 'react';
 import { render } from 'ink';
 import { App } from './App.js';
+import { logger } from '../system/logger.js';
 
 // Simple arg parsing — future: add --url, --task flags
 const args = process.argv.slice(2);
 
 if (args.includes('--help') || args.includes('-h')) {
-  console.log(`
+  logger.plain(`
 Archie CLI — interactive TUI for the Archie agent system
 
 Usage: npm run cli [options]
@@ -35,7 +36,14 @@ process.stdout.write('\x1b[H');
 
 const instance = render(<App />, { exitOnCtrlC: true });
 
-instance.waitUntilExit().then(() => {
-  // Restore original screen buffer on exit
-  process.stdout.write('\x1b[?1049l');
-});
+instance
+  .waitUntilExit()
+  .then(() => {
+    // Restore original screen buffer on exit
+    process.stdout.write('\x1b[?1049l');
+  })
+  .catch((error: unknown) => {
+    process.stdout.write('\x1b[?1049l');
+    logger.error('cli', 'Terminal session failed', error);
+    process.exitCode = 1;
+  });

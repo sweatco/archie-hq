@@ -8,6 +8,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Trigger } from '../../../types/trigger.js';
+import { expectDefined } from '../../../test-support/assertions.js';
 
 // One shared fake WebClient; methods are reconfigured per test. `WebClient` is used with `new`, so the mock implementation must be a regular (constructable) function that returns the shared fake.
 const slackApi = {
@@ -19,7 +20,9 @@ const slackApi = {
   reactions: { add: vi.fn(), remove: vi.fn() },
 };
 vi.mock('@slack/web-api', () => ({
-  WebClient: vi.fn(function (this: unknown) { return slackApi; }),
+  WebClient: vi.fn(function (this: unknown) {
+    return slackApi;
+  }),
 }));
 
 // The title generator's only outbound call is the Haiku query. Capturing the prompt is how the transcript it built becomes assertable — the transcript itself is internal to the module, by design.
@@ -28,7 +31,11 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query: vi.fn((args: { prompt: string }) => {
     sdk.lastPrompt = args.prompt;
     return (async function* () {
-      yield { type: 'result', subtype: 'success', structured_output: { title: 'Expired feature flags' } };
+      yield {
+        type: 'result',
+        subtype: 'success',
+        structured_output: { title: 'Expired feature flags' },
+      };
     })();
   }),
 }));
@@ -45,7 +52,9 @@ const bolt = vi.hoisted(() => {
   class FakeReceiver {
     constructor(_opts: unknown) {}
   }
-  return { exports: { App: FakeApp, ExpressReceiver: FakeReceiver, SocketModeReceiver: FakeReceiver } };
+  return {
+    exports: { App: FakeApp, ExpressReceiver: FakeReceiver, SocketModeReceiver: FakeReceiver },
+  };
 });
 vi.mock('module', async (importOriginal) => {
   const actual = await importOriginal<typeof import('module')>();
@@ -53,7 +62,7 @@ vi.mock('module', async (importOriginal) => {
     ...actual,
     createRequire: (url: string | URL) => {
       const real = actual.createRequire(url);
-      const patched = (id: string) => (id === '@slack/bolt' ? bolt.exports : real(id));
+      const patched = (id: string): unknown => (id === '@slack/bolt' ? bolt.exports : real(id));
       return Object.assign(patched, real);
     },
   };
@@ -74,7 +83,9 @@ vi.mock('../../../tasks/persistence.js', () => ({
   appendCliMessage: vi.fn(),
   readEvents: vi.fn(),
 }));
-vi.mock('../../../system/shutdown.js', () => ({ getIsShuttingDown: vi.fn().mockReturnValue(false) }));
+vi.mock('../../../system/shutdown.js', () => ({
+  getIsShuttingDown: vi.fn().mockReturnValue(false),
+}));
 vi.mock('../../../system/trigger-scheduler.js', () => ({
   getChannelMessageTriggers: vi.fn().mockReturnValue([]),
   fireTrigger: vi.fn().mockResolvedValue(undefined),
@@ -82,8 +93,14 @@ vi.mock('../../../system/trigger-scheduler.js', () => ({
 }));
 vi.mock('../../../system/logger.js', () => ({
   logger: {
-    system: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), info: vi.fn(),
-    plain: vi.fn(), server: vi.fn(), slack: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    warn: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    plain: vi.fn(),
+    server: vi.fn(),
+    slack: vi.fn(),
   },
 }));
 
@@ -109,7 +126,11 @@ function attachmentOnlyBotPost(over: Record<string, unknown> = {}): Record<strin
     bot_id: THIRD_PARTY_BOT,
     bot_profile: { name: 'Flag Janitor' },
     text: '',
-    attachments: [{ text: `${PHRASE}\n3 flags are past their removal date: android_paywall_v3, ios_streaks, web_referral` }],
+    attachments: [
+      {
+        text: `${PHRASE}\n3 flags are past their removal date: android_paywall_v3, ios_streaks, web_referral`,
+      },
+    ],
     ts: FIXTURE_TS,
     ...over,
   };
@@ -139,7 +160,13 @@ function makeTrigger(contains?: string): Trigger {
     created_by: 'U_DEV',
     created_at: '2026-08-18T12:00:00.000Z',
     binding: { type: 'channel', channel_id: CHANNEL, channel_name: 'watched' },
-    conditions: [{ type: 'channel_message', channel_id: CHANNEL, ...(contains ? { match: { contains } } : {}) }],
+    conditions: [
+      {
+        type: 'channel_message',
+        channel_id: CHANNEL,
+        ...(contains ? { match: { contains } } : {}),
+      },
+    ],
     action: { prompt: 'look into it' },
     summary: 'watch the flag janitor',
   };
@@ -150,17 +177,27 @@ beforeEach(() => {
   sdk.lastPrompt = '';
 
   slackApi.auth.test.mockResolvedValue({
-    user_id: OUR_BOT_USER, bot_id: OUR_BOT_ID, team_id: 'THOME', url: 'https://acme.slack.com',
+    user_id: OUR_BOT_USER,
+    bot_id: OUR_BOT_ID,
+    team_id: 'THOME',
+    url: 'https://acme.slack.com',
   });
   slackApi.usergroups.list.mockResolvedValue({ usergroups: [] });
   slackApi.users.list.mockResolvedValue({ members: [] });
   slackApi.users.info.mockImplementation(async ({ user }: { user: string }) => ({
     ok: true,
-    user: { id: user, name: user.toLowerCase(), real_name: `Real ${user}`, team_id: 'THOME', profile: {} },
+    user: {
+      id: user,
+      name: user.toLowerCase(),
+      real_name: `Real ${user}`,
+      team_id: 'THOME',
+      profile: {},
+    },
   }));
   // A public, non-shared channel — so nothing here is redacted and every loss of the phrase is a rendering bug rather than a policy decision.
   slackApi.conversations.info.mockResolvedValue({
-    ok: true, channel: { id: CHANNEL, name: 'watched', is_private: false, is_im: false, is_mpim: false },
+    ok: true,
+    channel: { id: CHANNEL, name: 'watched', is_private: false, is_im: false, is_mpim: false },
   });
   slackApi.conversations.replies.mockResolvedValue({ messages: [attachmentOnlyBotPost()] });
   slackApi.conversations.history.mockResolvedValue({ messages: [attachmentOnlyBotPost()] });
@@ -174,7 +211,10 @@ describe('an attachment-only bot post survives into every agent-facing entry poi
     const msg = thread.messages[0];
 
     // Asserted on `renderMessageBody` rather than through a real `Task.append`: `append` needs a session directory on disk and runs the file-download step before rendering, neither of which changes the text. These are the exact arguments `Task.append` passes (`src/tasks/task.ts`) — the fetched message's parts plus the redaction verdict from `shouldRedact` — so this is the string that would land in knowledge.log.
-    const body = renderMessageBody({ ...msg, files: undefined }, { redacted: shouldRedact(msg, thread) });
+    const body = renderMessageBody(
+      { ...msg, files: undefined },
+      { redacted: shouldRedact(msg, thread) },
+    );
 
     expect(body).toContain(PHRASE);
   });
@@ -213,12 +253,19 @@ describe('an attachment-only bot post survives into every agent-facing entry poi
     const client = await loadClient();
     client.__resetPinsScopeFlagForTests();
     slackApi.pins.list.mockResolvedValue({
-      items: [{ type: 'message', created: 1700000000, created_by: 'UPINNER', message: attachmentOnlyBotPost() }],
+      items: [
+        {
+          type: 'message',
+          created: 1700000000,
+          created_by: 'UPINNER',
+          message: attachmentOnlyBotPost(),
+        },
+      ],
     });
     const { pinBody } = await import('../message-body.js');
 
     const pins = await client.listChannelPins(CHANNEL);
-    const item = pins![0];
+    const item = expectDefined(pins)[0];
     // Calls `pinBody`, the function `channel-pins.ts:145` actually uses, rather than re-implementing its
     // options inline. Inlining `renderMessageBody(..., { includeReactions: false })` here looked equivalent
     // but left the case green against any change INSIDE `pinBody` — including dropping the reactions
@@ -233,12 +280,17 @@ describe('an attachment-only bot post survives into every agent-facing entry poi
   it('reaches trigger dispatch — the body a `contains` filter is matched against carries the report headline', async () => {
     await loadClient();
     const { handleSlackEvent } = await import('../events.js');
-    const { getChannelMessageTriggers, fireTrigger } = await import('../../../system/trigger-scheduler.js');
+    const { getChannelMessageTriggers, fireTrigger } =
+      await import('../../../system/trigger-scheduler.js');
     // A watching trigger with no filter at all: whatever body dispatch rendered is the body a filter would have been matched against. This enters at `handleSlackEvent`, so it does NOT cross the inbound subtype gate — that `bot_message` is forwarded at all is asserted in task-routing.test.ts, and this asserts what dispatch does once it arrives. The same render is also what `fireTrigger` reads as `FireContext.body`, so this pins both the matcher's input and the text the spawned agent can be handed.
     vi.mocked(getChannelMessageTriggers).mockReturnValue([makeTrigger()]);
 
     await handleSlackEvent({
-      type: 'message', channel: CHANNEL, user: '', raw: attachmentOnlyBotPost(), ts: FIXTURE_TS,
+      type: 'message',
+      channel: CHANNEL,
+      user: '',
+      raw: attachmentOnlyBotPost(),
+      ts: FIXTURE_TS,
     });
 
     expect(vi.mocked(fireTrigger)).toHaveBeenCalledTimes(1);
@@ -250,12 +302,17 @@ describe('the routing gate lets the message kinds #280 lost through', () => {
   it('fires a `contains` trigger on a top-level bot_message whose text is empty — the #280 regression, from handleSlackEvent inward', async () => {
     await loadClient();
     const { handleSlackEvent } = await import('../events.js');
-    const { getChannelMessageTriggers, fireTrigger } = await import('../../../system/trigger-scheduler.js');
+    const { getChannelMessageTriggers, fireTrigger } =
+      await import('../../../system/trigger-scheduler.js');
     vi.mocked(getChannelMessageTriggers).mockReturnValue([makeTrigger(PHRASE)]);
 
     // Top-level (no `thread_ts`), a real channel rather than a DM, and no task follows the thread — the exact conditions under which the ambient-post branch calls trigger dispatch.
     await handleSlackEvent({
-      type: 'message', channel: CHANNEL, user: '', raw: attachmentOnlyBotPost(), ts: FIXTURE_TS,
+      type: 'message',
+      channel: CHANNEL,
+      user: '',
+      raw: attachmentOnlyBotPost(),
+      ts: FIXTURE_TS,
     });
 
     expect(vi.mocked(fireTrigger)).toHaveBeenCalledTimes(1);
@@ -267,9 +324,14 @@ describe('the routing gate lets the message kinds #280 lost through', () => {
   it('forwards a me_message thread reply — the message kind the old allowlist made invisible', async () => {
     const { mayWakeTask } = await import('../task-routing.js');
 
-    expect(mayWakeTask({
-      subtype: 'me_message', channel: CHANNEL, ts: '1786127960.000100', thread_ts: FIXTURE_TS,
-    })).toBe(true);
+    expect(
+      mayWakeTask({
+        subtype: 'me_message',
+        channel: CHANNEL,
+        ts: '1786127960.000100',
+        thread_ts: FIXTURE_TS,
+      }),
+    ).toBe(true);
   });
 });
 

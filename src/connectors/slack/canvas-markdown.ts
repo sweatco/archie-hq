@@ -113,7 +113,7 @@ export function canvasHtmlToMarkdown(html: string): { markdown: string; fileIds:
       const href = el.getAttribute('href') || '';
       const sf = (el.getAttribute('data-slack-file-id') || '').replace(/^sf:/, '');
       if (sf) fileIds.add(sf);
-      return href ? `[${el.textContent || href}](${href})` : (el.textContent || '');
+      return href ? `[${el.textContent || href}](${href})` : el.textContent || '';
     },
   });
 
@@ -128,8 +128,8 @@ export function canvasHtmlToMarkdown(html: string): { markdown: string; fileIds:
       const sf = (text.match(/sf:(F[0-9A-Z]+)/) || [])[1];
       const url = (text.match(/https?:\/\/\S+/) || [])[0];
       if (sf) fileIds.add(sf);
-      const name = url ? decodeURIComponent(url.split('/').pop() || '') : (sf || 'file');
-      return url ? `[${name}](${url})` : (sf ? `\`${sf}\`` : '');
+      const name = url ? decodeURIComponent(url.split('/').pop() || '') : sf || 'file';
+      return url ? `[${name}](${url})` : sf ? `\`${sf}\`` : '';
     },
   });
 

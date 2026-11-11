@@ -21,6 +21,8 @@
 import type { PRStatus } from '../../agents/tools.js';
 
 export function isMergeReadyPerGithub(status: PRStatus): boolean {
-  return status.mergeableState === 'clean' ||
-    (status.mergeable === true && status.mergeableState === 'blocked');
+  return (
+    status.mergeableState === 'clean' ||
+    (status.mergeable === true && status.mergeableState === 'blocked')
+  );
 }

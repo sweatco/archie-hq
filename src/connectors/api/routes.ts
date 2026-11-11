@@ -9,10 +9,10 @@
 import type { Application, Request, Response } from 'express';
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
-const express = require('express');
+const express = require('express') as typeof import('express');
 
 import { readdirSync } from 'fs';
-import { onEvent, offEvent, emitEvent } from '../../system/event-bus.js';
+import { onEvent, offEvent, emitEvent, type SystemEvent } from '../../system/event-bus.js';
 import { Task } from '../../tasks/task.js';
 import {
   loadMetadata,
@@ -23,8 +23,23 @@ import {
 import { SESSIONS_DIR } from '../../system/workdir.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { logger } from '../../system/logger.js';
-import { listTriggers, loadTrigger, saveTrigger, deleteTrigger, countActiveTriggers, updatePendingTrigger, withdrawPendingTrigger } from '../../system/trigger-store.js';
-import { indexTrigger, deindexTrigger, announceTriggerChange, describeTrigger, MAX_TRIGGERS_PER_USER, MAX_TRIGGERS_PER_CHANNEL } from '../../system/trigger-scheduler.js';
+import {
+  listTriggers,
+  loadTrigger,
+  saveTrigger,
+  deleteTrigger,
+  countActiveTriggers,
+  updatePendingTrigger,
+  withdrawPendingTrigger,
+} from '../../system/trigger-store.js';
+import {
+  indexTrigger,
+  deindexTrigger,
+  announceTriggerChange,
+  describeTrigger,
+  MAX_TRIGGERS_PER_USER,
+  MAX_TRIGGERS_PER_CHANNEL,
+} from '../../system/trigger-scheduler.js';
 import type { Trigger } from '../../types/trigger.js';
 import { cancelReminder } from '../../system/reminder-scheduler.js';
 
@@ -43,14 +58,14 @@ export function mountApiRoutes(app: Application): void {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
+      Connection: 'keep-alive',
       'X-Accel-Buffering': 'no', // disable nginx/proxy buffering for SSE
     });
 
     // Send initial connected event
     res.write(`data: ${JSON.stringify({ type: 'connected' })}\n\n`);
 
-    const listener = (event: any) => {
+    const listener = (event: SystemEvent) => {
       if (taskIdFilter && event.taskId !== taskIdFilter) return;
       res.write(`data: ${JSON.stringify(event)}\n\n`);
     };
@@ -150,7 +165,9 @@ export function mountApiRoutes(app: Application): void {
 
   router.post('/tasks', async (req: Request, res: Response) => {
     try {
-      const { message } = req.body;
+      const body: unknown = req.body;
+      const message =
+        body && typeof body === 'object' && 'message' in body ? body.message : undefined;
       if (!message || typeof message !== 'string') {
         res.status(400).json({ error: 'message is required' });
         return;
@@ -175,7 +192,9 @@ export function mountApiRoutes(app: Application): void {
   router.post('/tasks/:id/message', async (req: Request, res: Response) => {
     try {
       const taskId = req.params.id as string;
-      const { message } = req.body;
+      const body: unknown = req.body;
+      const message =
+        body && typeof body === 'object' && 'message' in body ? body.message : undefined;
       if (!message || typeof message !== 'string') {
         res.status(400).json({ error: 'message is required' });
         return;
@@ -334,11 +353,12 @@ export function mountApiRoutes(app: Application): void {
               ok: false,
               stale: true,
               outcome: result.outcome,
-              error: result.outcome === 'already_live'
-                ? result.status === 'paused'
-                  ? `Trigger ${ref ?? '(none)'} was not declined — it is already approved and currently paused. Delete it if you want it gone.`
-                  : `Trigger ${ref ?? '(none)'} was not declined — it is already approved and running. Pause or delete it instead.`
-                : `Trigger ${ref ?? '(none)'} was not declined — no such proposal is pending.`,
+              error:
+                result.outcome === 'already_live'
+                  ? result.status === 'paused'
+                    ? `Trigger ${ref ?? '(none)'} was not declined — it is already approved and currently paused. Delete it if you want it gone.`
+                    : `Trigger ${ref ?? '(none)'} was not declined — it is already approved and running. Pause or delete it instead.`
+                  : `Trigger ${ref ?? '(none)'} was not declined — no such proposal is pending.`,
             });
             return;
           }
@@ -401,8 +421,9 @@ export function mountApiRoutes(app: Application): void {
   // GET /triggers — list all triggers, pending proposals included
   router.get('/triggers', async (_req: Request, res: Response) => {
     try {
-      const triggers = (await listTriggers())
-        .sort((a, b) => b.created_at.localeCompare(a.created_at));
+      const triggers = (await listTriggers()).sort((a, b) =>
+        b.created_at.localeCompare(a.created_at),
+      );
       res.json({ triggers: triggers.map(shapeTrigger), total: triggers.length });
     } catch (error) {
       logger.error('api', 'Failed to list triggers', error);
@@ -429,7 +450,10 @@ export function mountApiRoutes(app: Application): void {
   router.patch('/triggers/:id', async (req: Request, res: Response) => {
     try {
       const id = req.params.id as string;
-      const { status, action_prompt } = req.body as { status?: 'paused' | 'enabled'; action_prompt?: string };
+      const { status, action_prompt } = req.body as {
+        status?: 'paused' | 'enabled';
+        action_prompt?: string;
+      };
       const trigger = await loadTrigger(id);
       if (!trigger) {
         res.status(404).json({ error: 'Trigger not found' });
@@ -437,7 +461,8 @@ export function mountApiRoutes(app: Application): void {
       }
       if (trigger.status === 'pending' && status) {
         res.status(409).json({
-          error: 'Trigger is awaiting approval — resolve it via the approval prompt rather than setting status.',
+          error:
+            'Trigger is awaiting approval — resolve it via the approval prompt rather than setting status.',
         });
         return;
       }
@@ -450,9 +475,13 @@ export function mountApiRoutes(app: Application): void {
         if (status === 'enabled') {
           if (trigger.binding.type === 'channel') {
             const channelId = trigger.binding.channel_id;
-            const perChannel = await countActiveTriggers((t) => t.binding.type === 'channel' && t.binding.channel_id === channelId);
+            const perChannel = await countActiveTriggers(
+              (t) => t.binding.type === 'channel' && t.binding.channel_id === channelId,
+            );
             if (perChannel >= MAX_TRIGGERS_PER_CHANNEL) {
-              res.status(409).json({ error: `Channel is at the maximum of ${MAX_TRIGGERS_PER_CHANNEL} active triggers.` });
+              res.status(409).json({
+                error: `Channel is at the maximum of ${MAX_TRIGGERS_PER_CHANNEL} active triggers.`,
+              });
               return;
             }
           }
@@ -460,7 +489,9 @@ export function mountApiRoutes(app: Application): void {
             const createdBy = trigger.created_by;
             const perUser = await countActiveTriggers((t) => t.created_by === createdBy);
             if (perUser >= MAX_TRIGGERS_PER_USER) {
-              res.status(409).json({ error: `User is at the maximum of ${MAX_TRIGGERS_PER_USER} active triggers.` });
+              res.status(409).json({
+                error: `User is at the maximum of ${MAX_TRIGGERS_PER_USER} active triggers.`,
+              });
               return;
             }
           }
@@ -483,9 +514,10 @@ export function mountApiRoutes(app: Application): void {
           res.status(409).json({
             ok: false,
             stale: true,
-            error: result.outcome === 'resolved'
-              ? `Proposal was resolved while this edit was in flight — it is now ${result.status}, so nothing was changed.`
-              : 'Proposal was withdrawn while this edit was in flight, so nothing was changed.',
+            error:
+              result.outcome === 'resolved'
+                ? `Proposal was resolved while this edit was in flight — it is now ${result.status}, so nothing was changed.`
+                : 'Proposal was withdrawn while this edit was in flight, so nothing was changed.',
           });
           return;
         }
@@ -497,9 +529,12 @@ export function mountApiRoutes(app: Application): void {
       if (trigger.status === 'enabled') indexTrigger(trigger);
       else deindexTrigger(trigger.id);
 
-      if (statusChange === 'paused') emitEvent('trigger:paused', trigger.id, { trigger_id: trigger.id });
-      else if (statusChange === 'resumed') emitEvent('trigger:resumed', trigger.id, { trigger_id: trigger.id });
-      await announceTriggerChange(trigger, editedContent ? 'edited' : statusChange!);
+      if (statusChange === 'paused')
+        emitEvent('trigger:paused', trigger.id, { trigger_id: trigger.id });
+      else if (statusChange === 'resumed')
+        emitEvent('trigger:resumed', trigger.id, { trigger_id: trigger.id });
+      const change = editedContent ? 'edited' : statusChange;
+      if (change) await announceTriggerChange(trigger, change);
 
       res.json({ ok: true, trigger: shapeTrigger(trigger) });
     } catch (error) {
@@ -520,7 +555,11 @@ export function mountApiRoutes(app: Application): void {
       if (trigger.status === 'pending') {
         const result = await withdrawPendingTrigger(id);
         if (result.outcome === 'resolved') {
-          res.status(409).json({ ok: false, stale: true, error: `Proposal was approved meanwhile — it is now ${result.status}, so it was not withdrawn.` });
+          res.status(409).json({
+            ok: false,
+            stale: true,
+            error: `Proposal was approved meanwhile — it is now ${result.status}, so it was not withdrawn.`,
+          });
           return;
         }
         emitEvent('trigger:deleted', id, { trigger_id: id });

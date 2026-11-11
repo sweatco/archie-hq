@@ -1,3 +1,4 @@
+import type { MockInstance } from 'vitest';
 /**
  * One-time migration notice for tasks created before the flat-PM rework.
  *
@@ -16,7 +17,9 @@ vi.mock('../../system/logger.js', () => ({
 
 // No real SDK subprocess — just flip the agent's handle to "running", the way
 // spawn.ts wires it.
-const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
+const { spawnMock } = vi.hoisted(() => ({
+  spawnMock: vi.fn<typeof import('../../agents/spawn.js').spawnAgent>(),
+}));
 vi.mock('../../agents/spawn.js', () => ({ spawnAgent: spawnMock }));
 
 // Every save in these cases would otherwise write into a real sessions dir.
@@ -37,11 +40,15 @@ vi.mock('fs/promises', async (importOriginal) => {
   };
 });
 
-vi.mock('../../system/plugin-sync.js', () => ({ syncPlugins: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('../../system/plugin-sync.js', () => ({
+  syncPlugins: vi.fn().mockResolvedValue(undefined),
+}));
 
 // Task.get reads the folder through this one function; everything else in
 // persistence stays real.
-const { loadMetadataMock } = vi.hoisted(() => ({ loadMetadataMock: vi.fn() }));
+const { loadMetadataMock } = vi.hoisted(() => ({
+  loadMetadataMock: vi.fn<typeof import('../persistence.js').loadMetadata>(),
+}));
 vi.mock('../persistence.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../persistence.js')>();
   return { ...actual, loadMetadata: loadMetadataMock };
@@ -53,6 +60,7 @@ import { MessageQueue } from '../../agents/message-queue.js';
 import { logger } from '../../system/logger.js';
 import type { TaskMetadata } from '../../types/task.js';
 import type { AgentDef } from '../../types/agent.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const TASK_ID = 'task-20260101-0000-legacy';
 
@@ -72,10 +80,22 @@ function legacyMetadata(over: Partial<TaskMetadata> = {}): TaskMetadata {
 }
 
 function pmDef(): AgentDef {
-  return { id: 'pm-agent', key: 'pm', visibility: 'global', role: 'PM', expertise: '', isPm: true, pluginName: 'pm' } as AgentDef;
+  return {
+    id: 'pm-agent',
+    key: 'pm',
+    visibility: 'global',
+    role: 'PM',
+    expertise: '',
+    isPm: true,
+    pluginName: 'pm',
+  } as AgentDef;
 }
 
-const TaskCtor = Task as unknown as new (taskId: string, metadata: TaskMetadata, pmDef: AgentDef) => Task;
+const TaskCtor = Task as unknown as new (
+  taskId: string,
+  metadata: TaskMetadata,
+  pmDef: AgentDef,
+) => Task;
 
 /** A directory that certainly exists, standing in for a clone still on disk. */
 const REAL_CLONE = process.cwd();
@@ -115,7 +135,14 @@ describe('buildMigrationNotice', () => {
   it('names the removed tools and the replacement delegation path', () => {
     const notice = buildMigrationNotice(legacyMetadata());
 
-    for (const tool of ['send_message_to_agent', 'assign_task_owner', 'spawn_repo_agent', 'log_finding', 'share_artifact', 'get_agents_status']) {
+    for (const tool of [
+      'send_message_to_agent',
+      'assign_task_owner',
+      'spawn_repo_agent',
+      'log_finding',
+      'share_artifact',
+      'get_agents_status',
+    ]) {
       expect(notice).toContain(tool);
     }
     expect(notice).toContain('Agent tool');
@@ -127,7 +154,7 @@ describe('buildMigrationNotice', () => {
     expect(notice.split('\n').length).toBeLessThan(40);
   });
 
-  it('names the former agents from the task\'s own record, not a fixed team list', () => {
+  it("names the former agents from the task's own record, not a fixed team list", () => {
     const notice = buildMigrationNotice(
       legacyMetadata({
         agent_sessions: {
@@ -139,16 +166,22 @@ describe('buildMigrationNotice', () => {
       } as Partial<TaskMetadata>),
     );
 
-    expect(notice).toContain('The specialist agents this conversation refers to (archie-agent, copywriter-agent) no longer exist as peers');
+    expect(notice).toContain(
+      'The specialist agents this conversation refers to (archie-agent, copywriter-agent) no longer exist as peers',
+    );
     // The PM is not one of its own former peers, and no agent this task never had is named.
     expect(notice).not.toContain('pm-agent');
     expect(notice).not.toContain('mobile');
   });
 
   it('falls back to the indefinite phrasing when the metadata names nobody', () => {
-    const notice = buildMigrationNotice(legacyMetadata({ agent_sessions: { 'pm-agent': { active: false } } }));
+    const notice = buildMigrationNotice(
+      legacyMetadata({ agent_sessions: { 'pm-agent': { active: false } } }),
+    );
 
-    expect(notice).toContain('Any specialist agents this conversation refers to no longer exist as peers');
+    expect(notice).toContain(
+      'Any specialist agents this conversation refers to no longer exist as peers',
+    );
     expect(notice).not.toContain('The specialist agents this conversation refers to (');
   });
 
@@ -163,9 +196,13 @@ describe('buildMigrationNotice', () => {
       }),
     );
 
-    expect(notice).toContain(`- acme/backend — clone: ${REAL_CLONE} — branch: archie/task-x — edit mode: on`);
+    expect(notice).toContain(
+      `- acme/backend — clone: ${REAL_CLONE} — branch: archie/task-x — edit mode: on`,
+    );
     // A repo recorded before its clone finished still has to appear — as what it is.
-    expect(notice).toContain('- acme/mobile — recorded, not cloned — mount_repo will clone it fresh');
+    expect(notice).toContain(
+      '- acme/mobile — recorded, not cloned — mount_repo will clone it fresh',
+    );
     // One adoptable clone is enough to earn the sentence.
     expect(notice).toContain('mount_repo adopts these existing clones');
     expect(notice).toContain('git status');
@@ -176,14 +213,22 @@ describe('buildMigrationNotice', () => {
       legacyMetadata({
         repositories: [
           // Recorded by the old engine, then removed at completion.
-          { github: 'acme/backend', clone_path: '/sessions/gone/repos/acme/backend', current_branch: 'main' },
+          {
+            github: 'acme/backend',
+            clone_path: '/sessions/gone/repos/acme/backend',
+            current_branch: 'main',
+          },
           { github: 'acme/mobile' },
         ],
       }),
     );
 
-    expect(notice).toContain('- acme/backend — recorded, not cloned — mount_repo will clone it fresh');
-    expect(notice).toContain('- acme/mobile — recorded, not cloned — mount_repo will clone it fresh');
+    expect(notice).toContain(
+      '- acme/backend — recorded, not cloned — mount_repo will clone it fresh',
+    );
+    expect(notice).toContain(
+      '- acme/mobile — recorded, not cloned — mount_repo will clone it fresh',
+    );
     expect(notice).not.toContain('mount_repo adopts these existing clones');
   });
 
@@ -198,7 +243,12 @@ describe('buildMigrationNotice', () => {
   it('lists outstanding approvals, and omits the line when there are none', () => {
     const withPending = buildMigrationNotice(
       legacyMetadata({
-        pending_merge_approval: { github: 'acme/backend', pr_number: 42, requested_by: 'pm-agent', requested_at: '2026-01-01T00:00:00.000Z' },
+        pending_merge_approval: {
+          github: 'acme/backend',
+          pr_number: 42,
+          requested_by: 'pm-agent',
+          requested_at: '2026-01-01T00:00:00.000Z',
+        },
         pending_trigger_id: 'trig-7',
       }),
     );
@@ -209,7 +259,7 @@ describe('buildMigrationNotice', () => {
 });
 
 describe('migration notice delivery', () => {
-  let addSpy: ReturnType<typeof vi.spyOn>;
+  let addSpy: MockInstance<MessageQueue['addMessage']>;
 
   beforeEach(() => {
     vi.useFakeTimers();
@@ -230,7 +280,10 @@ describe('migration notice delivery', () => {
   });
 
   it('prepends the notice to the first wake and to no later one', async () => {
-    const metadata = legacyMetadata({ migration_notice_pending: true, runtime_version: RUNTIME_VERSION });
+    const metadata = legacyMetadata({
+      migration_notice_pending: true,
+      runtime_version: RUNTIME_VERSION,
+    });
     const task = new TaskCtor(TASK_ID, metadata, pmDef());
 
     await task.sendMessage('Task was interrupted. Review the conversation and continue.');
@@ -240,7 +293,9 @@ describe('migration notice delivery', () => {
     expect(delivered).toHaveLength(2);
     expect(delivered[0]).toContain('RUNTIME CHANGED WHILE THIS TASK WAS IDLE');
     // The wake's own content survives in front of nothing and behind the notice.
-    expect(delivered[0].endsWith('Task was interrupted. Review the conversation and continue.')).toBe(true);
+    expect(
+      delivered[0].endsWith('Task was interrupted. Review the conversation and continue.'),
+    ).toBe(true);
     expect(delivered[1]).toBe('New activity in a thread you are in.');
     // Cleared and flushed, so a restart before the PM answers cannot repeat it.
     expect(metadata.migration_notice_pending).toBe(false);
@@ -248,11 +303,17 @@ describe('migration notice delivery', () => {
   });
 
   it('leaves a wake untouched on a task that was never flagged', async () => {
-    const task = new TaskCtor(TASK_ID, legacyMetadata({ runtime_version: RUNTIME_VERSION }), pmDef());
+    const task = new TaskCtor(
+      TASK_ID,
+      legacyMetadata({ runtime_version: RUNTIME_VERSION }),
+      pmDef(),
+    );
 
     await task.sendMessage('New task. This is what arrived.');
 
-    expect(addSpy.mock.calls.map((c: unknown[]) => c[0])).toEqual(['New task. This is what arrived.']);
+    expect(addSpy.mock.calls.map((c: unknown[]) => c[0])).toEqual([
+      'New task. This is what arrived.',
+    ]);
   });
 });
 
@@ -293,7 +354,9 @@ describe('deferred write-back', () => {
     loadMetadataMock.mockResolvedValue(
       legacyMetadata({
         // Pre-v30 shape: keyed by short repo name, no github field anywhere.
-        repositories: { backend: { path: '/repos/backend' } } as unknown as TaskMetadata['repositories'],
+        repositories: {
+          backend: { path: '/repos/backend' },
+        } as unknown as TaskMetadata['repositories'],
       }),
     );
 
@@ -308,7 +371,9 @@ describe('deferred write-back', () => {
     expect(writes[0].runtime_version).toBe(RUNTIME_VERSION);
     // Dropping the entry is loud, because this task really is being run here.
     const warned = vi.mocked(logger.warn).mock.calls.map((c) => String(c[1]));
-    expect(warned.some((line) => line.includes('[migrate]') && line.includes('backend'))).toBe(true);
+    expect(warned.some((line) => line.includes('[migrate]') && line.includes('backend'))).toBe(
+      true,
+    );
   });
 
   it('persists the migration once, on the first activation', async () => {
@@ -344,9 +409,11 @@ describe('Task.create', () => {
 
     // The same is true of what landed on disk — a fresh task must never be
     // re-stamped (and so re-flagged) by the next Task.get.
-    const written = writeFileMock.mock.calls.find((c: unknown[]) => String(c[0]).includes('/metadata.json.'));
+    const written = writeFileMock.mock.calls.find((c: unknown[]) =>
+      String(c[0]).includes('/metadata.json.'),
+    );
     expect(written).toBeDefined();
-    const onDisk = JSON.parse(String(written![1])) as TaskMetadata;
+    const onDisk = JSON.parse(String(expectDefined(written)[1])) as TaskMetadata;
     expect(onDisk.runtime_version).toBe(RUNTIME_VERSION);
     expect(stampRuntimeVersion(onDisk)).toBe(false);
   });

@@ -11,7 +11,16 @@ export function recordSubagentToolUses(
   const content = event.message.content;
   if (!Array.isArray(content)) return;
   for (const block of content) {
-    if (block?.type === 'tool_use' && typeof block.id === 'string') ids.add(block.id);
+    const value: unknown = block;
+    if (
+      value &&
+      typeof value === 'object' &&
+      'type' in value &&
+      value.type === 'tool_use' &&
+      'id' in value &&
+      typeof value.id === 'string'
+    )
+      ids.add(value.id);
   }
 }
 

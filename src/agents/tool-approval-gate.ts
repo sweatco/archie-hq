@@ -119,7 +119,10 @@ export interface ClassifiedCall {
  * an unlisted tool falls to the server's `default` tier, so a tool added to
  * the server later arrives gated rather than silently open.
  */
-export function classifyToolCall(policy: McpToolPolicy | undefined, toolName: string): ClassifiedCall | undefined {
+export function classifyToolCall(
+  policy: McpToolPolicy | undefined,
+  toolName: string,
+): ClassifiedCall | undefined {
   if (!policy) return undefined;
   const parsed = parseMcpToolName(toolName);
   if (!parsed) return undefined;
@@ -132,7 +135,9 @@ export function classifyToolCall(policy: McpToolPolicy | undefined, toolName: st
   return {
     server: parsed.server,
     tool: parsed.tool,
-    tier: Object.hasOwn(serverPolicy.tiers, parsed.tool) ? serverPolicy.tiers[parsed.tool] : serverPolicy.default,
+    tier: Object.hasOwn(serverPolicy.tiers, parsed.tool)
+      ? serverPolicy.tiers[parsed.tool]
+      : serverPolicy.default,
   };
 }
 
@@ -180,7 +185,7 @@ export function callDigest(server: string, tool: string, input: unknown): string
  * the same treatment: they come from an external MCP server, not from us.
  */
 function sanitizeText(value: unknown, cap: number): string {
-  const raw = typeof value === 'string' ? value : JSON.stringify(value) ?? String(value);
+  const raw = typeof value === 'string' ? value : (JSON.stringify(value) ?? String(value));
   const flat = raw
     .replace(/[\r\n\t]+/g, ' ')
     .replace(/[`*_~<>|]/g, '')
@@ -207,8 +212,11 @@ const MAX_RENDERED_ARGS = 12;
 
 function renderArguments(input: unknown): string {
   if (!input || typeof input !== 'object') return '';
-  const entries = Object.entries(input as Record<string, unknown>).filter(([, v]) => v !== undefined);
-  const shown = entries.slice(0, MAX_RENDERED_ARGS)
+  const entries = Object.entries(input as Record<string, unknown>).filter(
+    ([, v]) => v !== undefined,
+  );
+  const shown = entries
+    .slice(0, MAX_RENDERED_ARGS)
     .map(([k, v]) => `${k}=${sanitizeArgumentValue(v)}`);
   const hidden = entries.length - shown.length;
   return hidden > 0 ? `${shown.join(', ')} (+${hidden} more)` : shown.join(', ');
@@ -230,7 +238,11 @@ export interface RenderedCall {
  * it are the agent's, and an unescaped string argument can otherwise append its
  * own lines to the prompt.
  */
-export function renderCall(serverPolicy: McpServerPolicy, call: ClassifiedCall, input: unknown): RenderedCall {
+export function renderCall(
+  serverPolicy: McpServerPolicy,
+  call: ClassifiedCall,
+  input: unknown,
+): RenderedCall {
   const title = serverPolicy.titles[call.tool];
   const heading = (title ? sanitizeText(title, 200) : '') || `Run \`${call.server}:${call.tool}\``;
   const args = renderArguments(input);
@@ -291,38 +303,45 @@ export interface ToolApprovalPort {
  * `createFilesystemGuardHooks`. Unmanaged tools always proceed, even when the
  * gate's own dependencies are broken.
  */
-export function createToolApprovalHooks(policy: McpToolPolicy, port: ToolApprovalPort): HookCallbackMatcher[] {
-  return [{
-    // Generous explicit budget: the deny path posts to Slack and fsyncs metadata
-    // inside the hook, and what a host does with a TIMED-OUT PreToolUse decision
-    // is its policy, not ours — so never get near the default.
-    timeout: 120,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    hooks: [async (input: any): Promise<HookJSONOutput> => {
-      const toolName = typeof input?.tool_name === 'string' ? input.tool_name : undefined;
-      // Classify before the try, so a throw can be attributed: an unmanaged
-      // tool must proceed even if something below would have failed, and a
-      // managed mutation must be denied rather than left to the SDK's handling
-      // of a rejected hook.
-      const call = toolName ? classifyToolCall(policy, toolName) : undefined;
-      if (!call || call.tier === 'allow') return { continue: true };
+export function createToolApprovalHooks(
+  policy: McpToolPolicy,
+  port: ToolApprovalPort,
+): HookCallbackMatcher[] {
+  return [
+    {
+      // Generous explicit budget: the deny path posts to Slack and fsyncs metadata
+      // inside the hook, and what a host does with a TIMED-OUT PreToolUse decision
+      // is its policy, not ours — so never get near the default.
+      timeout: 120,
+      hooks: [
+        async (input): Promise<HookJSONOutput> => {
+          if (input.hook_event_name !== 'PreToolUse') return { continue: true };
+          const toolName = typeof input.tool_name === 'string' ? input.tool_name : undefined;
+          // Classify before the try, so a throw can be attributed: an unmanaged
+          // tool must proceed even if something below would have failed, and a
+          // managed mutation must be denied rather than left to the SDK's handling
+          // of a rejected hook.
+          const call = toolName ? classifyToolCall(policy, toolName) : undefined;
+          if (!call || call.tier === 'allow') return { continue: true };
 
-      try {
-        return await decideCall(policy[call.server], port, call, input.tool_input);
-      } catch (error) {
-        // Fail closed. The arguments are agent-controlled, so this path is
-        // reachable on purpose as well as by accident (a deeply nested argument
-        // overflows the canonicalizer's recursion), and a security hook must
-        // not depend on how the host treats a rejected hook.
-        const message = error instanceof Error ? error.message : String(error);
-        logger.error('tool-approval', `Gate failed for ${toolName} — denying`, error);
-        return deny(
-          `\`${call.tool}\` was refused because the approval gate errored while evaluating it (${message}). ` +
-          `Nothing ran. Report this to the user.`,
-        );
-      }
-    }],
-  }];
+          try {
+            return await decideCall(policy[call.server], port, call, input.tool_input);
+          } catch (error) {
+            // Fail closed. The arguments are agent-controlled, so this path is
+            // reachable on purpose as well as by accident (a deeply nested argument
+            // overflows the canonicalizer's recursion), and a security hook must
+            // not depend on how the host treats a rejected hook.
+            const message = error instanceof Error ? error.message : String(error);
+            logger.error('tool-approval', `Gate failed for ${toolName} — denying`, error);
+            return deny(
+              `\`${call.tool}\` was refused because the approval gate errored while evaluating it (${message}). ` +
+                `Nothing ran. Report this to the user.`,
+            );
+          }
+        },
+      ],
+    },
+  ];
 }
 
 /** The gate's decision for one managed, non-`allow` call. Separated so the
@@ -336,7 +355,7 @@ async function decideCall(
   if (call.tier === 'deny') {
     return deny(
       `\`${call.tool}\` is disabled by the \`${call.server}\` tool policy and cannot be run by any agent. ` +
-      `Nothing ran. Report what you wanted to do and why, so a human can decide.`,
+        `Nothing ran. Report what you wanted to do and why, so a human can decide.`,
     );
   }
 
@@ -362,12 +381,12 @@ async function decideCall(
   if (outcome === 'already-pending') {
     return deny(
       `Another tool call is already waiting for approval on this task. One request is resolved at a ` +
-      `time — wait for the outstanding one to be approved or denied.`,
+        `time — wait for the outstanding one to be approved or denied.`,
     );
   }
 
   return deny(
     `\`${call.tool}\` needs human approval. The request has been posted and the task is pausing. ` +
-    `When it is approved you will be reactivated — re-check relevant state, then retry this exact call.`,
+      `When it is approved you will be reactivated — re-check relevant state, then retry this exact call.`,
   );
 }

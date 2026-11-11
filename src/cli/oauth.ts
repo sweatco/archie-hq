@@ -50,10 +50,18 @@ async function main(): Promise<void> {
   }
 
   switch (subcommand) {
-    case 'connect': await runConnect(rest); break;
-    case 'list':    await runList(); break;
-    case 'revoke':  await runRevoke(rest); break;
-    case 'refresh': await runRefresh(rest); break;
+    case 'connect':
+      await runConnect(rest);
+      break;
+    case 'list':
+      await runList();
+      break;
+    case 'revoke':
+      await runRevoke(rest);
+      break;
+    case 'refresh':
+      await runRefresh(rest);
+      break;
     default:
       process.stderr.write(`Unknown subcommand: ${subcommand}\n\n${USAGE}`);
       process.exit(1);
@@ -73,7 +81,7 @@ async function runConnect(args: string[]): Promise<void> {
   if (!publicUrl) {
     fatal(
       'ARCHIE_PUBLIC_URL is not set. Set it to the public HTTPS URL where the daemon is reachable, ' +
-      'e.g. https://archie.example.com',
+        'e.g. https://archie.example.com',
     );
   }
   const redirectUri = new URL(`${publicUrl.replace(/\/+$/, '')}/oauth/callback`).toString();
@@ -88,7 +96,9 @@ async function runConnect(args: string[]): Promise<void> {
   });
 
   process.stdout.write(`\nConnecting MCP server: ${serverName}\n`);
-  process.stdout.write(`Open this URL in your browser to authorize:\n\n  ${result.authorizeUrl}\n\n`);
+  process.stdout.write(
+    `Open this URL in your browser to authorize:\n\n  ${result.authorizeUrl}\n\n`,
+  );
   if (result.scopes.length) {
     process.stdout.write(`Requested scopes: ${result.scopes.join(', ')}\n\n`);
   }
@@ -124,7 +134,8 @@ async function pollForCompletion(
       if (record) return { ok: true, message: 'connected' };
       return {
         ok: false,
-        message: 'Pending state disappeared without producing a vault record (was it reaped or already revoked?)',
+        message:
+          'Pending state disappeared without producing a vault record (was it reaped or already revoked?)',
       };
     }
     if (pending.error) {
@@ -145,17 +156,24 @@ async function pollForCompletion(
 async function runList(): Promise<void> {
   const names = await listOAuthServers();
   if (!names.length) {
-    process.stdout.write('No OAuth records yet. Connect one with `npm run oauth:connect <server-name>`.\n');
+    process.stdout.write(
+      'No OAuth records yet. Connect one with `npm run oauth:connect <server-name>`.\n',
+    );
     return;
   }
   const now = Math.floor(Date.now() / 1000);
   process.stdout.write('Server               Label               Expires             Updated\n');
-  process.stdout.write('───────────────────  ──────────────────  ──────────────────  ──────────────────\n');
+  process.stdout.write(
+    '───────────────────  ──────────────────  ──────────────────  ──────────────────\n',
+  );
   for (const name of names) {
     const record = await readOAuthRecord(name);
     if (!record) continue;
     const expiresIn = record.expires_at - now;
-    const expiry = expiresIn > 0 ? `in ${formatDuration(expiresIn)}` : `expired ${formatDuration(-expiresIn)} ago`;
+    const expiry =
+      expiresIn > 0
+        ? `in ${formatDuration(expiresIn)}`
+        : `expired ${formatDuration(-expiresIn)} ago`;
     const updatedAgo = formatDuration(now - record.updated_at);
     process.stdout.write(
       `${pad(name, 19)}  ${pad(record.label ?? '', 18)}  ${pad(expiry, 18)}  ${updatedAgo} ago\n`,
@@ -194,7 +212,10 @@ async function runRefresh(args: string[]): Promise<void> {
 
 // ---- helpers ----------------------------------------------------------------
 
-function parseArgs(args: string[], schema: { flags: string[] }): {
+function parseArgs(
+  args: string[],
+  schema: { flags: string[] },
+): {
   positional: string[];
   flags: Record<string, string | undefined>;
 } {

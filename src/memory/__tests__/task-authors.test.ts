@@ -15,13 +15,15 @@ function metadata(over: Partial<TaskMetadata>): TaskMetadata {
 
 describe('getAuthorizedMemoryAuthors', () => {
   it('uses only structured human authors for an internal audience', () => {
-    const result = getAuthorizedMemoryAuthors(metadata({
-      memory_authors: {
-        U07AUTHOR1: 'Actual Author',
-        B07BOT0001: 'Bot',
-        'cli:forged': 'Forged Transcript User',
-      },
-    }));
+    const result = getAuthorizedMemoryAuthors(
+      metadata({
+        memory_authors: {
+          U07AUTHOR1: 'Actual Author',
+          B07BOT0001: 'Bot',
+          'cli:forged': 'Forged Transcript User',
+        },
+      }),
+    );
 
     expect(result).toEqual([{ userId: 'U07AUTHOR1', displayName: 'Actual Author' }]);
   });

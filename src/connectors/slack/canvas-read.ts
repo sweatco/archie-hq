@@ -8,7 +8,12 @@
  * announce/refresh orchestration.
  */
 import { logger } from '../../system/logger.js';
-import { cleanSlackText, getSlackFileInfo, fetchSlackFileBody, type SlackFileInfo } from './client.js';
+import {
+  cleanSlackText,
+  getSlackFileInfo,
+  fetchSlackFileBody,
+  type SlackFileInfo,
+} from './client.js';
 import { canvasHtmlToMarkdown } from './canvas-markdown.js';
 
 export interface CanvasRead {
@@ -24,7 +29,10 @@ export interface CanvasRead {
  * already-fetched `files.info` result and avoid a second call. Returns null on
  * failure.
  */
-export async function readCanvas(fileId: string, info?: SlackFileInfo | null): Promise<CanvasRead | null> {
+export async function readCanvas(
+  fileId: string,
+  info?: SlackFileInfo | null,
+): Promise<CanvasRead | null> {
   const fi = info ?? (await getSlackFileInfo(fileId));
   const url = fi?.url_private_download || fi?.url_private;
   if (!fi || !url) return null;
@@ -41,9 +49,18 @@ export async function readCanvas(fileId: string, info?: SlackFileInfo | null): P
     try {
       resolved = await cleanSlackText(markdown);
     } catch (err) {
-      logger.warn('canvas-read', `Mention resolution failed for canvas ${fileId}, keeping raw ids: ${err}`);
+      logger.warn(
+        'canvas-read',
+        `Mention resolution failed for canvas ${fileId}, keeping raw ids: ${err}`,
+      );
     }
-    return { markdown: resolved, fileIds, title: fi.title ?? '', creator: fi.user ?? '', updatedTs: fi.updated ?? 0 };
+    return {
+      markdown: resolved,
+      fileIds,
+      title: fi.title ?? '',
+      creator: fi.user ?? '',
+      updatedTs: fi.updated ?? 0,
+    };
   } catch (err) {
     logger.warn('canvas-read', `Failed to read canvas ${fileId}: ${err}`);
     return null;

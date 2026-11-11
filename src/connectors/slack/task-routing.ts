@@ -49,7 +49,11 @@ export function shouldCreateNewTask(
   rootAuthorWasBot: boolean,
   initiativeOrigin = false,
 ): boolean {
-  return eventType === 'app_mention' || channelId.startsWith('D') || (rootAuthorWasBot && !initiativeOrigin);
+  return (
+    eventType === 'app_mention' ||
+    channelId.startsWith('D') ||
+    (rootAuthorWasBot && !initiativeOrigin)
+  );
 }
 
 /**
@@ -124,7 +128,9 @@ export function mayReachTriggers(
   const isThreadReply = !!event.thread_ts && event.thread_ts !== event.ts;
   const isTopLevelChannelMsg = !isDm && !isThreadReply && !event.thread_ts;
   return (
-    isContentBearingSubtype(event.subtype) && isTopLevelChannelMsg && hasWatchingTrigger(event.channel)
+    isContentBearingSubtype(event.subtype) &&
+    isTopLevelChannelMsg &&
+    hasWatchingTrigger(event.channel)
   );
 }
 

@@ -31,6 +31,7 @@ How to work with the system. Setup, deployment, and development patterns.
 | Document | Description |
 |----------|-------------|
 | [Local Development](guides/local-development.md) | Prerequisites, setup, running, debugging |
+| [Coding Guidelines](guides/coding-guidelines.md) | Readability, ownership, review and automated checks |
 | [Deployment](guides/deployment.md) | GCP deployment, CI/CD, monitoring, operations |
 | [SDK Patterns](guides/sdk-patterns.md) | Agent SDK hooks, turn detection, streaming input |
 | [Bedrock Guardrails Setup](guides/bedrock-guardrails-setup.md) | Configuring AWS Bedrock guardrails for prompt injection defense |
@@ -68,6 +69,7 @@ Historical record of development milestones. Each plan has a status header indic
 | [v25](plans/v25-task-titles.md) | Task titles | Implemented |
 | [v26](plans/v26-artifact-sharing.md) | Artifact sharing | Implemented |
 | [v27](plans/v27-oauth-mcp-secrets.md) | OAuth-managed MCP secrets | Implemented |
+| [Coding Guidelines and Checks](plans/20261109-coding-guidelines-and-checks.md) | Adopt guidelines, formatting and lint with an existing-debt baseline | Implemented locally |
 
 See [plans/README.md](plans/README.md) for the full evolution arc.
 

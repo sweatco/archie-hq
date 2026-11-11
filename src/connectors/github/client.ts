@@ -6,6 +6,7 @@
  */
 
 import fs from 'fs';
+import type { Endpoints } from '@octokit/types';
 import path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
@@ -52,11 +53,16 @@ function narrowGithubId(id: number | bigint): number {
  */
 function mapStatusStateToConclusion(state: string): PRCheckEntry['conclusion'] {
   switch (state) {
-    case 'success': return 'success';
-    case 'failure': return 'failure';
-    case 'error': return 'failure';
-    case 'pending': return null;
-    default: return null;
+    case 'success':
+      return 'success';
+    case 'failure':
+      return 'failure';
+    case 'error':
+      return 'failure';
+    case 'pending':
+      return null;
+    default:
+      return null;
   }
 }
 
@@ -245,7 +251,7 @@ export function parseCheckRef(input: string): ParsedCheckRef {
 
   throw new Error(
     `Could not extract a check-run, job, or workflow-run id from: "${input}". ` +
-    `Pass a numeric id or a github.com run/check/job URL.`
+      `Pass a numeric id or a github.com run/check/job URL.`,
   );
 }
 
@@ -306,7 +312,7 @@ export class GitHubClient {
   async pushBranch(
     githubRepo: string,
     branch: string,
-    worktreePath: string
+    worktreePath: string,
   ): Promise<{ success: boolean; message: string }> {
     // Git push is done via CLI in worktree, not via GitHub API
     // This method is a placeholder that would execute git push
@@ -323,7 +329,7 @@ export class GitHubClient {
     head: string,
     base: string,
     title: string,
-    body: string
+    body: string,
   ): Promise<CreatePRResult> {
     const octokit = await this.getOctokit();
     const { owner, repo } = this.parseRepo(githubRepo);
@@ -368,7 +374,7 @@ export class GitHubClient {
         owner,
         repo,
         pull_number: prNumber,
-      }
+      },
     );
 
     // Check if any review is approved (latest per user)
@@ -404,7 +410,7 @@ export class GitHubClient {
         `mergeable=${status.mergeable}, ` +
         `mergeableState=${status.mergeableState}, ` +
         `approved=${status.approved} ` +
-        `(raw: merged=${pr.merged}, mergeable_state=${pr.mergeable_state})`
+        `(raw: merged=${pr.merged}, mergeable_state=${pr.mergeable_state})`,
     );
 
     return status;
@@ -418,12 +424,16 @@ export class GitHubClient {
     const { owner, repo } = this.parseRepo(githubRepo);
 
     const prResponse = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
-      owner, repo, pull_number: prNumber,
+      owner,
+      repo,
+      pull_number: prNumber,
     });
 
     // Fetch diff via Accept header
     const diffResponse = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
-      owner, repo, pull_number: prNumber,
+      owner,
+      repo,
+      pull_number: prNumber,
       headers: { accept: 'application/vnd.github.v3.diff' },
     });
 
@@ -450,7 +460,9 @@ export class GitHubClient {
     const { owner, repo } = this.parseRepo(githubRepo);
 
     const prResponse = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
-      owner, repo, pull_number: prNumber,
+      owner,
+      repo,
+      pull_number: prNumber,
     });
     const pr = prResponse.data;
     const state: PrCardData['state'] = pr.merged ? 'merged' : (pr.state as 'open' | 'closed');
@@ -485,7 +497,8 @@ export class GitHubClient {
     const { owner, repo } = this.parseRepo(githubRepo);
 
     const response = await octokit.request('GET /repos/{owner}/{repo}/pulls', {
-      owner, repo,
+      owner,
+      repo,
       state: filters.state || 'open',
       base: filters.base,
       sort: filters.sort || 'updated',
@@ -493,7 +506,7 @@ export class GitHubClient {
       per_page: filters.per_page || 10,
     });
 
-    return response.data.map((pr: any) => ({
+    return response.data.map((pr) => ({
       number: pr.number,
       title: pr.title,
       state: pr.state as 'open' | 'closed',
@@ -515,7 +528,7 @@ export class GitHubClient {
 
     const reviewsResponse = await octokit.request(
       'GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews',
-      { owner, repo, pull_number: prNumber }
+      { owner, repo, pull_number: prNumber },
     );
 
     return reviewsResponse.data.map((review) => ({
@@ -621,7 +634,7 @@ export class GitHubClient {
   async updatePR(
     githubRepo: string,
     prNumber: number,
-    fields: { title?: string; body?: string; base?: string }
+    fields: { title?: string; body?: string; base?: string },
   ): Promise<void> {
     const octokit = await this.getOctokit();
     const { owner, repo } = this.parseRepo(githubRepo);
@@ -665,7 +678,7 @@ export class GitHubClient {
     prNumber: number,
     path: string,
     line: number,
-    comment: string
+    comment: string,
   ): Promise<void> {
     const octokit = await this.getOctokit();
     const { owner, repo } = this.parseRepo(githubRepo);
@@ -699,9 +712,9 @@ export class GitHubClient {
    * `(githubRepo, prNumber, …)` shape callers rely on.
    */
   async resolveReviewThread(
-    githubRepo: string,
+    _githubRepo: string,
     prNumber: number,
-    threadId: string
+    threadId: string,
   ): Promise<void> {
     const octokit = await this.getOctokit();
 
@@ -711,7 +724,7 @@ export class GitHubClient {
           thread { id isResolved }
         }
       }`,
-      { threadId }
+      { threadId },
     );
 
     logger.system(`GitHub: Resolved review thread ${threadId} on PR #${prNumber}`);
@@ -725,14 +738,14 @@ export class GitHubClient {
     githubRepo: string,
     prNumber: number,
     commentId: number,
-    comment: string
+    comment: string,
   ): Promise<void> {
     const octokit = await this.getOctokit();
     const { owner, repo } = this.parseRepo(githubRepo);
 
     await octokit.request(
       'POST /repos/{owner}/{repo}/pulls/{pull_number}/comments/{comment_id}/replies',
-      { owner, repo, pull_number: prNumber, comment_id: commentId, body: comment }
+      { owner, repo, pull_number: prNumber, comment_id: commentId, body: comment },
     );
 
     logger.system(`GitHub: Replied to review comment ${commentId} on PR #${prNumber}`);
@@ -752,7 +765,7 @@ export class GitHubClient {
         owner,
         repo,
         pull_number: prNumber,
-      }
+      },
     );
 
     // Get unique reviewers
@@ -785,7 +798,7 @@ export class GitHubClient {
 
     const response = await octokit.request(
       'GET /repos/{owner}/{repo}/issues/{issue_number}/comments',
-      { owner, repo, issue_number: prNumber, per_page: 100 }
+      { owner, repo, issue_number: prNumber, per_page: 100 },
     );
 
     return response.data.map((comment) => ({
@@ -812,19 +825,23 @@ export class GitHubClient {
     const { owner, repo } = this.parseRepo(githubRepo);
 
     const prResponse = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
-      owner, repo, pull_number: prNumber,
+      owner,
+      repo,
+      pull_number: prNumber,
     });
     const headSha = prResponse.data.head.sha;
 
     const checkRunsResponse = await octokit.request(
       'GET /repos/{owner}/{repo}/commits/{ref}/check-runs',
-      { owner, repo, ref: headSha, per_page: 100 }
+      { owner, repo, ref: headSha, per_page: 100 },
     );
 
-    const statusResponse = await octokit.request(
-      'GET /repos/{owner}/{repo}/commits/{ref}/status',
-      { owner, repo, ref: headSha, per_page: 100 }
-    );
+    const statusResponse = await octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/status', {
+      owner,
+      repo,
+      ref: headSha,
+      per_page: 100,
+    });
 
     const entries: PRCheckEntry[] = [];
 
@@ -870,8 +887,12 @@ export class GitHubClient {
       const k = e.conclusion || e.status;
       counts[k] = (counts[k] || 0) + 1;
     }
-    const summary = Object.entries(counts).map(([k, v]) => `${k}=${v}`).join(', ');
-    logger.system(`GitHub: PR #${prNumber} checks (head ${headSha.slice(0, 7)}): ${entries.length} total (${summary})`);
+    const summary = Object.entries(counts)
+      .map(([k, v]) => `${k}=${v}`)
+      .join(', ');
+    logger.system(
+      `GitHub: PR #${prNumber} checks (head ${headSha.slice(0, 7)}): ${entries.length} total (${summary})`,
+    );
 
     return { headSha, entries };
   }
@@ -881,13 +902,18 @@ export class GitHubClient {
    * id equals its check-run id, so a check-run permalink id works here too.
    * Returns undefined for non-Actions checks (the endpoint 404s) or any error.
    */
-  private async tryFetchJobLogTail(owner: string, repo: string, jobId: number): Promise<string | undefined> {
+  private async tryFetchJobLogTail(
+    owner: string,
+    repo: string,
+    jobId: number,
+  ): Promise<string | undefined> {
     try {
       const octokit = await this.getOctokit();
-      const res = await octokit.request(
-        'GET /repos/{owner}/{repo}/actions/jobs/{job_id}/logs',
-        { owner, repo, job_id: jobId }
-      );
+      const res = await octokit.request('GET /repos/{owner}/{repo}/actions/jobs/{job_id}/logs', {
+        owner,
+        repo,
+        job_id: jobId,
+      });
       const text = typeof res.data === 'string' ? res.data : '';
       const tail = extractFailureTail(text);
       return tail || undefined;
@@ -905,10 +931,11 @@ export class GitHubClient {
     const octokit = await this.getOctokit();
     const { owner, repo } = this.parseRepo(githubRepo);
 
-    const res = await octokit.request(
-      'GET /repos/{owner}/{repo}/check-runs/{check_run_id}',
-      { owner, repo, check_run_id: checkRunId }
-    );
+    const res = await octokit.request('GET /repos/{owner}/{repo}/check-runs/{check_run_id}', {
+      owner,
+      repo,
+      check_run_id: checkRunId,
+    });
     const run = res.data;
 
     const report: CheckRunReport = {
@@ -936,7 +963,7 @@ export class GitHubClient {
       try {
         const ann = await octokit.request(
           'GET /repos/{owner}/{repo}/check-runs/{check_run_id}/annotations',
-          { owner, repo, check_run_id: checkRunId, per_page: 50 }
+          { owner, repo, check_run_id: checkRunId, per_page: 50 },
         );
         report.annotations = ann.data.map((a) => ({
           path: a.path,
@@ -955,8 +982,8 @@ export class GitHubClient {
 
     logger.system(
       `GitHub: check run ${checkRunId} (${report.name}): ${report.conclusion ?? report.status}` +
-      `${report.annotations ? `, ${report.annotations.length} annotations` : ''}` +
-      `${report.logTail ? ', log captured' : ''}`
+        `${report.annotations ? `, ${report.annotations.length} annotations` : ''}` +
+        `${report.logTail ? ', log captured' : ''}`,
     );
 
     return report;
@@ -970,16 +997,19 @@ export class GitHubClient {
     const octokit = await this.getOctokit();
     const { owner, repo } = this.parseRepo(githubRepo);
 
-    const runRes = await octokit.request(
-      'GET /repos/{owner}/{repo}/actions/runs/{run_id}',
-      { owner, repo, run_id: runId }
-    );
+    const runRes = await octokit.request('GET /repos/{owner}/{repo}/actions/runs/{run_id}', {
+      owner,
+      repo,
+      run_id: runId,
+    });
     const run = runRes.data;
 
-    const jobsRes = await octokit.request(
-      'GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs',
-      { owner, repo, run_id: runId, per_page: 100 }
-    );
+    const jobsRes = await octokit.request('GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs', {
+      owner,
+      repo,
+      run_id: runId,
+      per_page: 100,
+    });
 
     const FAILED = new Set(['failure', 'cancelled', 'timed_out', 'action_required']);
     const jobs: WorkflowJobEntry[] = [];
@@ -1000,7 +1030,7 @@ export class GitHubClient {
 
     logger.system(
       `GitHub: workflow run ${runId} (${run.name ?? 'unknown'}): ` +
-      `${run.conclusion ?? run.status}, ${jobs.length} jobs`
+        `${run.conclusion ?? run.status}, ${jobs.length} jobs`,
     );
 
     return {
@@ -1019,15 +1049,21 @@ export class GitHubClient {
    * Normalize a raw code-scanning alert payload (list item or single alert)
    * into the trimmed shape agents consume.
    */
-  private mapCodeScanningAlert(a: any): CodeScanningAlert {
+  private mapCodeScanningAlert(
+    a: Endpoints['GET /repos/{owner}/{repo}/code-scanning/alerts']['response']['data'][number],
+  ): CodeScanningAlert {
     const instance = a.most_recent_instance;
+    const fullDescription =
+      a.rule && 'full_description' in a.rule && typeof a.rule.full_description === 'string'
+        ? a.rule.full_description
+        : null;
     return {
-      number: a.number,
-      state: a.state,
+      number: narrowGithubId(a.number),
+      state: a.state ?? 'unknown',
       tool: a.tool?.name ?? 'unknown',
       ruleId: a.rule?.id ?? null,
       ruleName: a.rule?.name ?? null,
-      ruleDescription: a.rule?.description ?? a.rule?.full_description ?? null,
+      ruleDescription: a.rule?.description ?? fullDescription,
       severity: a.rule?.severity ?? null,
       securitySeverity: a.rule?.security_severity_level ?? null,
       url: a.html_url ?? null,
@@ -1055,30 +1091,27 @@ export class GitHubClient {
    */
   async listCodeScanningAlerts(
     githubRepo: string,
-    filters: CodeScanningAlertFilters = {}
+    filters: CodeScanningAlertFilters = {},
   ): Promise<CodeScanningAlert[]> {
     const octokit = await this.getOctokit();
     const { owner, repo } = this.parseRepo(githubRepo);
 
-    const response = await octokit.request(
-      'GET /repos/{owner}/{repo}/code-scanning/alerts',
-      {
-        owner,
-        repo,
-        state: filters.state,
-        ref: filters.ref,
-        tool_name: filters.toolName,
-        severity: filters.severity,
-        sort: 'created',
-        direction: 'desc',
-        per_page: filters.per_page ?? 30,
-      }
-    );
+    const response = await octokit.request('GET /repos/{owner}/{repo}/code-scanning/alerts', {
+      owner,
+      repo,
+      state: filters.state,
+      ref: filters.ref,
+      tool_name: filters.toolName,
+      severity: filters.severity,
+      sort: 'created',
+      direction: 'desc',
+      per_page: filters.per_page ?? 30,
+    });
 
-    const alerts = response.data.map((a: any) => this.mapCodeScanningAlert(a));
+    const alerts = response.data.map((a) => this.mapCodeScanningAlert(a));
     logger.system(
       `GitHub: code scanning alerts for ${githubRepo}` +
-        `${filters.state ? ` (state=${filters.state})` : ''}: ${alerts.length}`
+        `${filters.state ? ` (state=${filters.state})` : ''}: ${alerts.length}`,
     );
     return alerts;
   }
@@ -1086,16 +1119,13 @@ export class GitHubClient {
   /**
    * Fetch a single code scanning alert by its number.
    */
-  async getCodeScanningAlert(
-    githubRepo: string,
-    alertNumber: number
-  ): Promise<CodeScanningAlert> {
+  async getCodeScanningAlert(githubRepo: string, alertNumber: number): Promise<CodeScanningAlert> {
     const octokit = await this.getOctokit();
     const { owner, repo } = this.parseRepo(githubRepo);
 
     const response = await octokit.request(
       'GET /repos/{owner}/{repo}/code-scanning/alerts/{alert_number}',
-      { owner, repo, alert_number: alertNumber }
+      { owner, repo, alert_number: alertNumber },
     );
 
     logger.system(`GitHub: code scanning alert #${alertNumber} for ${githubRepo}`);
@@ -1122,7 +1152,9 @@ export class GitHubClient {
    * Used by the PM's `list_available_repos` tool. Paginates the installation
    * repositories endpoint and returns lightweight identifiers.
    */
-  async listAccessibleRepos(): Promise<Array<{ github: string; default_branch: string; description?: string }>> {
+  async listAccessibleRepos(): Promise<
+    Array<{ github: string; default_branch: string; description?: string }>
+  > {
     const octokit = await this.getOctokit();
     const results: Array<{ github: string; default_branch: string; description?: string }> = [];
     let page = 1;
@@ -1172,7 +1204,7 @@ export class GitHubClient {
   async mergePullRequest(
     githubRepo: string,
     prNumber: number,
-    mergeMethod: 'merge' | 'squash' | 'rebase' = 'squash'
+    mergeMethod: 'merge' | 'squash' | 'rebase' = 'squash',
   ): Promise<{ success: boolean; message: string }> {
     const octokit = await this.getOctokit();
     const { owner, repo } = this.parseRepo(githubRepo);
@@ -1206,7 +1238,7 @@ export function createGitHubClient(): GitHubClient | null {
   if (!appId || !privateKeyPath || !installationId) {
     logger.warn(
       'GitHub',
-      'GitHub App not configured. Set GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY_PATH, and GITHUB_INSTALLATION_ID'
+      'GitHub App not configured. Set GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY_PATH, and GITHUB_INSTALLATION_ID',
     );
     return null;
   }
@@ -1215,7 +1247,7 @@ export function createGitHubClient(): GitHubClient | null {
   let privateKey: string;
   try {
     privateKey = fs.readFileSync(privateKeyPath, 'utf8');
-  } catch (error) {
+  } catch {
     logger.error('GitHub', `Failed to read private key from ${privateKeyPath}`);
     return null;
   }
@@ -1379,9 +1411,13 @@ export async function fetchOrigin(repoPath: string, branch?: string): Promise<vo
     const target = branch ? `origin ${branch}` : 'origin';
     await execAsync(`git fetch ${target}`, { cwd: repoPath });
     logger.system(branch ? `Fetched origin/${branch}` : 'Fetched origin');
-  } catch (error) {
+  } catch {
     // Non-fatal - log and continue with existing refs
-    logger.system(branch ? `Fetch failed, using existing origin/${branch}` : 'Fetch failed, using existing refs');
+    logger.system(
+      branch
+        ? `Fetch failed, using existing origin/${branch}`
+        : 'Fetch failed, using existing refs',
+    );
   }
 }
 

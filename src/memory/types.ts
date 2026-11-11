@@ -50,12 +50,7 @@ export type ObservationCategory = 'fact' | 'config' | 'decision' | 'caveat';
 
 /** Closed vocabulary of typed relation edges in `## Relations`. */
 export type RelationType =
-  | 'depends_on'
-  | 'integrates'
-  | 'owned_by'
-  | 'part_of'
-  | 'touched_by'
-  | 'related_to';
+  'depends_on' | 'integrates' | 'owned_by' | 'part_of' | 'touched_by' | 'related_to';
 
 /** A single typed observation: `- [category] text  <!-- touched: ... -->` */
 export interface EntityObservation {

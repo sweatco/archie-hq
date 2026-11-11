@@ -30,6 +30,7 @@ vi.mock('../logger.js', () => ({
 }));
 
 import { initPlugins, getPlugins, getArchieConfig } from '../plugin-loader.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 function writePlugin(dirName: string, manifest: unknown): void {
   const dir = join(PLUGINS_DIR, dirName);
@@ -58,7 +59,9 @@ describe('plugin directory enumeration', () => {
     initPlugins();
     const plugins = getPlugins();
     expect(plugins.map((p) => p.name).sort()).toEqual(['engineering', 'growth']);
-    expect(plugins.find((p) => p.name === 'growth')!.dir).toBe(join(PLUGINS_DIR, 'growth'));
+    expect(expectDefined(plugins.find((p) => p.name === 'growth')).dir).toBe(
+      join(PLUGINS_DIR, 'growth'),
+    );
   });
 
   it('skips a directory with no manifest, an unparseable one, or missing fields', () => {
@@ -99,24 +102,31 @@ describe('getArchieConfig', () => {
   });
 
   it('reads the network allowlist and per-repo flags', () => {
-    writeArchieJson(JSON.stringify({
-      allowedNetworkDomains: ['sheets.googleapis.com', 'oauth2.googleapis.com'],
-      repos: {
-        'org/mobile': { warm: true, autoMerge: true },
-        'org/backend': { warm: true },
-      },
-    }));
+    writeArchieJson(
+      JSON.stringify({
+        allowedNetworkDomains: ['sheets.googleapis.com', 'oauth2.googleapis.com'],
+        repos: {
+          'org/mobile': { warm: true, autoMerge: true },
+          'org/backend': { warm: true },
+        },
+      }),
+    );
 
     const config = getArchieConfig();
-    expect(config.allowedNetworkDomains).toEqual(['sheets.googleapis.com', 'oauth2.googleapis.com']);
+    expect(config.allowedNetworkDomains).toEqual([
+      'sheets.googleapis.com',
+      'oauth2.googleapis.com',
+    ]);
     expect(config.repos['org/mobile']).toEqual({ warm: true, autoMerge: true });
     expect(config.repos['org/backend']).toEqual({ warm: true, autoMerge: false });
   });
 
   it('fails safe on a non-boolean flag', () => {
-    writeArchieJson(JSON.stringify({
-      repos: { 'org/mobile': { autoMerge: 'true', warm: 1 } },
-    }));
+    writeArchieJson(
+      JSON.stringify({
+        repos: { 'org/mobile': { autoMerge: 'true', warm: 1 } },
+      }),
+    );
 
     expect(getArchieConfig().repos['org/mobile']).toEqual({ warm: false, autoMerge: false });
   });

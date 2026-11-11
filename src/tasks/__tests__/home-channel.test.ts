@@ -10,7 +10,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../system/logger.js', () => ({
   logger: {
-    warn: vi.fn(), system: vi.fn(), error: vi.fn(), debug: vi.fn(), agent: vi.fn(), slack: vi.fn(),
+    warn: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    agent: vi.fn(),
+    slack: vi.fn(),
     agentToSlack: vi.fn(),
   },
 }));
@@ -18,7 +23,9 @@ vi.mock('../../system/logger.js', () => ({
 vi.mock('../../agents/spawn.js', () => ({ spawnAgent: vi.fn() }));
 
 // The seam under test: without stubbing `postSlackMessage` these cases would try to reach Slack.
-const { postMock } = vi.hoisted(() => ({ postMock: vi.fn() }));
+const { postMock } = vi.hoisted(() => ({
+  postMock: vi.fn<typeof import('../../connectors/slack/client.js').postSlackMessage>(),
+}));
 
 vi.mock('../../connectors/slack/client.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../connectors/slack/client.js')>();
@@ -37,6 +44,7 @@ import { appendMessageToUser } from '../persistence.js';
 import { logger } from '../../system/logger.js';
 import type { TaskMetadata } from '../../types/task.js';
 import type { AgentDef } from '../../types/agent.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const TaskCtor = Task as unknown as new (
   taskId: string,
@@ -44,7 +52,13 @@ const TaskCtor = Task as unknown as new (
   pmDef: AgentDef,
 ) => Task;
 const PM_DEF = {
-  id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', pluginName: 'core', visibility: 'global', isPm: true,
+  id: 'pm-agent',
+  key: 'pm',
+  role: 'PM',
+  expertise: '',
+  pluginName: 'core',
+  visibility: 'global',
+  isPm: true,
 } as AgentDef;
 
 const HOME = { channel_id: 'C9', channel_name: 'ops' };
@@ -80,7 +94,7 @@ function linkedChannel(threadTs: string) {
 }
 
 function lastPostArgs(): { channel: string; text: string; threadTs?: string } {
-  return postMock.mock.calls[postMock.mock.calls.length - 1]![0];
+  return expectDefined(postMock.mock.calls[postMock.mock.calls.length - 1])[0];
 }
 
 describe('postToUser opens the task thread in home_channel', () => {
@@ -101,7 +115,11 @@ describe('postToUser opens the task thread in home_channel', () => {
     expect(lastPostArgs().channel).toBe(HOME.channel_id);
 
     expect(key).toBe(`slack:${HOME.channel_id}:${TS}`);
-    expect(meta.channels[key!]).toMatchObject({ type: 'slack', channel_id: HOME.channel_id, thread_id: TS });
+    expect(meta.channels[expectDefined(key)]).toMatchObject({
+      type: 'slack',
+      channel_id: HOME.channel_id,
+      thread_id: TS,
+    });
     expect(meta.default_channel).toBe(key);
   });
 
@@ -149,7 +167,10 @@ describe('postToUser opens the task thread in home_channel', () => {
     // extractor and the offline audit read). Dropping it here would make a dry-run fire look like a fire
     // that said nothing, and the destination is still recorded as the home channel it was meant for.
     expect(vi.mocked(appendMessageToUser)).toHaveBeenCalledWith(
-      't1', 'pm-agent', 'the nightly report', `#${HOME.channel_name}`,
+      't1',
+      'pm-agent',
+      'the nightly report',
+      `#${HOME.channel_name}`,
     );
   });
 
@@ -157,7 +178,9 @@ describe('postToUser opens the task thread in home_channel', () => {
     postMock.mockRejectedValue(new Error('slack down'));
     const meta = metadata({ home_channel: HOME });
 
-    await expect(newTask(meta).postToUser('the nightly report', 'pm-agent')).rejects.toThrow('slack down');
+    await expect(newTask(meta).postToUser('the nightly report', 'pm-agent')).rejects.toThrow(
+      'slack down',
+    );
 
     expect(meta.channels).toEqual({});
     expect(meta.default_channel).toBeNull();
@@ -171,9 +194,13 @@ describe('postToUser opens the task thread in home_channel', () => {
     expect(key).toBeNull();
     expect(postMock).not.toHaveBeenCalled();
     expect(meta.channels).toEqual({});
-    expect(vi.mocked(logger.warn).mock.calls.some(
-      (c) => typeof c[1] === 'string' && c[1].includes('no default channel — message dropped'),
-    )).toBe(true);
+    expect(
+      vi
+        .mocked(logger.warn)
+        .mock.calls.some(
+          (c) => typeof c[1] === 'string' && c[1].includes('no default channel — message dropped'),
+        ),
+    ).toBe(true);
   });
 
   it('posts in-thread and opens nothing once the thread is on metadata (the post-restart shape)', async () => {
@@ -201,9 +228,13 @@ describe('postToUser opens the task thread in home_channel', () => {
     expect(postMock).not.toHaveBeenCalled();
     expect(meta.channels).toEqual({});
     expect(meta.default_channel).toBeNull();
-    expect(vi.mocked(logger.warn).mock.calls.some(
-      (c) => typeof c[1] === 'string' && c[1].includes('no default channel — message dropped'),
-    )).toBe(true);
+    expect(
+      vi
+        .mocked(logger.warn)
+        .mock.calls.some(
+          (c) => typeof c[1] === 'string' && c[1].includes('no default channel — message dropped'),
+        ),
+    ).toBe(true);
   });
 
   it('survives a metadata round-trip through disk, and the reloaded task posts in-thread', async () => {
@@ -212,7 +243,10 @@ describe('postToUser opens the task thread in home_channel', () => {
 
     const reloaded = JSON.parse(JSON.stringify(meta)) as TaskMetadata;
     expect(reloaded.home_channel).toEqual(HOME);
-    expect(reloaded.channels[key!]).toMatchObject({ channel_id: HOME.channel_id, thread_id: TS });
+    expect(reloaded.channels[expectDefined(key)]).toMatchObject({
+      channel_id: HOME.channel_id,
+      thread_id: TS,
+    });
     expect(reloaded.default_channel).toBe(key);
 
     postMock.mockClear();
@@ -258,7 +292,9 @@ describe('opening the home thread is single-flight', () => {
     // looks for a thread — resolving immediately would let the first finish and reduce this to the ordinary
     // sequential case, which the block above already covers.
     let releaseFirst: (ts: string) => void = () => {};
-    const firstPost = new Promise<string>((resolve) => { releaseFirst = resolve; });
+    const firstPost = new Promise<string>((resolve) => {
+      releaseFirst = resolve;
+    });
     postMock.mockImplementationOnce(() => firstPost);
     postMock.mockResolvedValue(TS);
 
@@ -273,7 +309,9 @@ describe('opening the home thread is single-flight', () => {
     await both;
 
     expect(postMock).toHaveBeenCalledTimes(2);
-    const rootPosts = postMock.mock.calls.filter((c) => (c[0] as { threadTs?: string }).threadTs === undefined);
+    const rootPosts = postMock.mock.calls.filter(
+      (c) => (c[0] as { threadTs?: string }).threadTs === undefined,
+    );
     // The assertion that matters: exactly one of the two posts rooted a thread.
     expect(rootPosts).toHaveLength(1);
     expect(Object.keys(meta.channels)).toEqual([`slack:${HOME.channel_id}:${TS}`]);
@@ -291,7 +329,9 @@ describe('opening the home thread is single-flight', () => {
   // survivor's thread rather than beside it.
   it('three concurrent posts root one thread even when the first attempt fails', async () => {
     let failFirst: (err: Error) => void = () => {};
-    const firstPost = new Promise<string>((_resolve, reject) => { failFirst = reject; });
+    const firstPost = new Promise<string>((_resolve, reject) => {
+      failFirst = reject;
+    });
     postMock.mockImplementationOnce(() => firstPost);
     postMock.mockResolvedValue(TS);
 
@@ -307,7 +347,9 @@ describe('opening the home thread is single-flight', () => {
     const results = await all;
 
     expect(results[0].status).toBe('rejected');
-    const rootPosts = postMock.mock.calls.filter((c) => (c[0] as { threadTs?: string }).threadTs === undefined);
+    const rootPosts = postMock.mock.calls.filter(
+      (c) => (c[0] as { threadTs?: string }).threadTs === undefined,
+    );
     // Two of the three legitimately tried to root a thread — the failed opener and the first waiter after it,
     // which found none. What must never happen is a THIRD root, or two roots that both linked.
     expect(rootPosts).toHaveLength(2);

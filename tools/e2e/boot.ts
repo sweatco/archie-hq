@@ -92,7 +92,9 @@ export type PortProbe =
  * carry the code while the top level may not.
  */
 export function isConnectionRefused(err: unknown): boolean {
-  const cause = (err as { cause?: { code?: string; errors?: Array<{ code?: string } | undefined> } }).cause;
+  const cause = (
+    err as { cause?: { code?: string; errors?: Array<{ code?: string } | undefined> } }
+  ).cause;
   return (
     cause?.code === 'ECONNREFUSED' ||
     (Array.isArray(cause?.errors) && cause.errors.some((e) => e?.code === 'ECONNREFUSED'))
@@ -167,7 +169,11 @@ export function archieContainerState(psOutput: string): ArchieContainerState {
       const state = typeof o['State'] === 'string' ? o['State'].toLowerCase() : undefined;
       const publishers = Array.isArray(o['Publishers']) ? (o['Publishers'] as unknown[]) : [];
       const publishedPorts = publishers
-        .map((p) => (typeof p === 'object' && p !== null ? (p as Record<string, unknown>)['PublishedPort'] : undefined))
+        .map((p) =>
+          typeof p === 'object' && p !== null
+            ? (p as Record<string, unknown>)['PublishedPort']
+            : undefined,
+        )
         .filter((p): p is number => typeof p === 'number' && p > 0);
       return { found: true, state, publishedPorts };
     }
@@ -226,7 +232,10 @@ export async function waitForHealth(deps: WaitDeps, opts: WaitOpts = {}): Promis
     if (psOutput !== undefined) {
       const archie = archieContainerState(psOutput);
       if (!archie.found) {
-        return { kind: 'container_exited', detail: 'archie container not present in `docker compose ps` output' };
+        return {
+          kind: 'container_exited',
+          detail: 'archie container not present in `docker compose ps` output',
+        };
       }
       if (archie.state && FAILED_STATES.has(archie.state)) {
         return { kind: 'container_exited', detail: `archie container state is "${archie.state}"` };
@@ -234,7 +243,10 @@ export async function waitForHealth(deps: WaitDeps, opts: WaitOpts = {}): Promis
     }
 
     if (deps.now() >= deadline) {
-      return { kind: 'timeout', detail: `/health did not return 200 within ${timeoutSeconds}s (last: ${lastDetail})` };
+      return {
+        kind: 'timeout',
+        detail: `/health did not return 200 within ${timeoutSeconds}s (last: ${lastDetail})`,
+      };
     }
     await deps.sleep(pollIntervalMs);
   }
@@ -302,7 +314,9 @@ export async function runBoot(deps: BootDeps, opts: BootOpts): Promise<number> {
     return 1;
   }
 
-  deps.log(`Compose up succeeded — polling ${opts.baseUrl}/health (cap ${opts.timeoutSeconds}s) ...`);
+  deps.log(
+    `Compose up succeeded — polling ${opts.baseUrl}/health (cap ${opts.timeoutSeconds}s) ...`,
+  );
   const outcome = await waitForHealth(
     {
       fetchHealth: deps.fetchHealth,
@@ -312,7 +326,9 @@ export async function runBoot(deps: BootDeps, opts: BootOpts): Promise<number> {
         // stdout as "archie container gone" and aborting a boot that was about to succeed.
         const ps = await deps.exec('docker', ['compose', 'ps', '--format', 'json']);
         if (ps.code !== 0) {
-          throw new Error(`docker compose ps failed (exit ${ps.code}): ${ps.stderr.trim() || '(no stderr)'}`);
+          throw new Error(
+            `docker compose ps failed (exit ${ps.code}): ${ps.stderr.trim() || '(no stderr)'}`,
+          );
         }
         return ps.stdout;
       },
@@ -359,11 +375,13 @@ export async function runBoot(deps: BootDeps, opts: BootOpts): Promise<number> {
 export function parseArgs(argv: string[]): { timeoutFlag?: string; noPrepare?: true } {
   const result: { timeoutFlag?: string; noPrepare?: true } = {};
   for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i]!;
+    const arg = argv[i];
     if (arg === '--timeout-seconds') {
       const value = argv[++i];
       if (value === undefined) {
-        throw new Error('--timeout-seconds requires a value (usage: npx tsx tools/e2e/boot.ts [--timeout-seconds N])');
+        throw new Error(
+          '--timeout-seconds requires a value (usage: npx tsx tools/e2e/boot.ts [--timeout-seconds N])',
+        );
       }
       result.timeoutFlag = value;
     } else if (arg.startsWith('--timeout-seconds=')) {
@@ -371,7 +389,9 @@ export function parseArgs(argv: string[]): { timeoutFlag?: string; noPrepare?: t
     } else if (arg === '--no-prepare') {
       result.noPrepare = true;
     } else {
-      throw new Error(`unknown argument: ${arg} (usage: npx tsx tools/e2e/boot.ts [--timeout-seconds N] [--no-prepare])`);
+      throw new Error(
+        `unknown argument: ${arg} (usage: npx tsx tools/e2e/boot.ts [--timeout-seconds N] [--no-prepare])`,
+      );
     }
   }
   return result;
@@ -483,10 +503,13 @@ async function main(): Promise<void> {
     if (probe.kind !== 'free') {
       const ps = await hostExec('docker', ['compose', 'ps', '--format', 'json']);
       const archie = ps.code === 0 ? archieContainerState(ps.stdout) : undefined;
-      const ourArchieOnPort = archie !== undefined && archie.found && archie.publishedPorts.includes(Number(port));
+      const ourArchieOnPort =
+        archie !== undefined && archie.found && archie.publishedPorts.includes(Number(port));
       const action = decidePortAction(probe, ourArchieOnPort);
       if (action === 'recreate') {
-        console.log(`Port ${port} is held by this project's own archie — tearing it down to boot fresh from the current checkout ...`);
+        console.log(
+          `Port ${port} is held by this project's own archie — tearing it down to boot fresh from the current checkout ...`,
+        );
         const down = await hostExec('docker', ['compose', 'down']);
         if (down.code !== 0) {
           console.error(`docker compose down failed (exit ${down.code}): ${down.stderr.trim()}`);
@@ -519,7 +542,9 @@ async function main(): Promise<void> {
         // overall cap (undici's default is ~300s); an abort is just a failed probe and
         // waitForHealth keeps polling until its own deadline.
         const probeTimeoutMs = Math.min(10_000, timeoutSeconds * 1000);
-        const res = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(probeTimeoutMs) });
+        const res = await fetch(`${baseUrl}/health`, {
+          signal: AbortSignal.timeout(probeTimeoutMs),
+        });
         return { status: res.status, body: await res.text() };
       },
       now: Date.now,

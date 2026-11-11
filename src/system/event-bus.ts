@@ -5,17 +5,33 @@
  * them to CLI clients. Events are fire-and-forget (no persistence).
  */
 
+import { z } from 'zod';
 import { EventEmitter } from 'events';
 
-export type EventType =
-  | 'task:created' | 'task:resumed' | 'task:stopped' | 'task:completed'
-  | 'agent:active' | 'agent:inactive'
-  | 'message' | 'agent:log' | 'agent:bg_task'
-  | 'status'
-  | 'approval:requested' | 'approval:resolved'
-  | 'pr_card'
-  | 'reminder:set' | 'reminder:cancelled' | 'reminder:fired'
-  | 'trigger:created' | 'trigger:fired' | 'trigger:paused' | 'trigger:resumed' | 'trigger:deleted';
+const eventTypes = [
+  'task:created',
+  'task:resumed',
+  'task:stopped',
+  'task:completed',
+  'agent:active',
+  'agent:inactive',
+  'message',
+  'agent:log',
+  'agent:bg_task',
+  'status',
+  'approval:requested',
+  'approval:resolved',
+  'pr_card',
+  'reminder:set',
+  'reminder:cancelled',
+  'reminder:fired',
+  'trigger:created',
+  'trigger:fired',
+  'trigger:paused',
+  'trigger:resumed',
+  'trigger:deleted',
+] as const;
+export type EventType = (typeof eventTypes)[number];
 
 export interface SystemEvent {
   type: EventType;
@@ -24,6 +40,14 @@ export interface SystemEvent {
   agentName?: string;
   data: Record<string, unknown>;
 }
+
+export const systemEventSchema = z.object({
+  type: z.enum(eventTypes),
+  taskId: z.string(),
+  timestamp: z.string(),
+  agentName: z.string().optional(),
+  data: z.record(z.string(), z.unknown()),
+});
 
 const bus = new EventEmitter();
 bus.setMaxListeners(50); // SSE clients + internal listeners

@@ -77,7 +77,9 @@ export interface TokenExchangeInput {
  * Validates the callback parameters (state + error checks) before the
  * exchange.
  */
-export async function exchangeCodeForTokens(input: TokenExchangeInput): Promise<oauth.TokenEndpointResponse> {
+export async function exchangeCodeForTokens(
+  input: TokenExchangeInput,
+): Promise<oauth.TokenEndpointResponse> {
   const params = new URLSearchParams({ code: input.code, state: input.state });
   const validated = oauth.validateAuthResponse(input.as, input.client, params, input.state);
   const res = await oauth.authorizationCodeGrantRequest(
@@ -101,7 +103,9 @@ export interface RefreshInput {
   resource?: string;
 }
 
-export async function refreshAccessToken(input: RefreshInput): Promise<oauth.TokenEndpointResponse> {
+export async function refreshAccessToken(
+  input: RefreshInput,
+): Promise<oauth.TokenEndpointResponse> {
   const res = await oauth.refreshTokenGrantRequest(
     input.as,
     input.client,

@@ -68,9 +68,15 @@ describe('modelDisplayLabel', () => {
 });
 
 describe('resolveAgentModel', () => {
-  const def = (over: Partial<AgentDef>): AgentDef => ({
-    id: 'x-agent', key: 'x', role: '', expertise: '', pluginName: 'p', ...over,
-  } as AgentDef);
+  const def = (over: Partial<AgentDef>): AgentDef =>
+    ({
+      id: 'x-agent',
+      key: 'x',
+      role: '',
+      expertise: '',
+      pluginName: 'p',
+      ...over,
+    }) as AgentDef;
 
   it('defaults the PM to opus and other agents to sonnet[1m]', () => {
     expect(resolveAgentModel(def({ isPm: true }))).toBe('opus');
@@ -89,16 +95,28 @@ describe('resolveAgentModel', () => {
   });
 
   it('max mode: an explicit maxMode.model wins for any agent', () => {
-    expect(resolveAgentModel(def({ model: 'opus', maxMode: { model: 'claude-fable-5-2' } }), true)).toBe('claude-fable-5-2');
-    expect(resolveAgentModel(def({ isPm: true, maxMode: { model: 'claude-fable-5-2' } }), true)).toBe('claude-fable-5-2');
-    expect(resolveAgentModel(def({ model: 'opus', maxMode: { model: 'claude-fable-5-2' } }), false)).toBe('opus'); // off → ignored
+    expect(
+      resolveAgentModel(def({ model: 'opus', maxMode: { model: 'claude-fable-5-2' } }), true),
+    ).toBe('claude-fable-5-2');
+    expect(
+      resolveAgentModel(def({ isPm: true, maxMode: { model: 'claude-fable-5-2' } }), true),
+    ).toBe('claude-fable-5-2');
+    expect(
+      resolveAgentModel(def({ model: 'opus', maxMode: { model: 'claude-fable-5-2' } }), false),
+    ).toBe('opus'); // off → ignored
   });
 });
 
 describe('resolveAgentEffort', () => {
-  const def = (over: Partial<AgentDef>): AgentDef => ({
-    id: 'x-agent', key: 'x', role: '', expertise: '', pluginName: 'p', ...over,
-  } as AgentDef);
+  const def = (over: Partial<AgentDef>): AgentDef =>
+    ({
+      id: 'x-agent',
+      key: 'x',
+      role: '',
+      expertise: '',
+      pluginName: 'p',
+      ...over,
+    }) as AgentDef;
 
   it('off max mode: returns the configured effort (may be undefined)', () => {
     expect(resolveAgentEffort(def({ effort: 'high' }), false)).toBe('high');
@@ -112,8 +130,14 @@ describe('resolveAgentEffort', () => {
   });
 
   it('max mode: an explicit maxMode.effort wins for any agent', () => {
-    expect(resolveAgentEffort(def({ effort: 'high', maxMode: { effort: 'max' } }), true)).toBe('max');
-    expect(resolveAgentEffort(def({ isPm: true, maxMode: { effort: 'xhigh' } }), true)).toBe('xhigh');
-    expect(resolveAgentEffort(def({ effort: 'high', maxMode: { effort: 'max' } }), false)).toBe('high'); // off → ignored
+    expect(resolveAgentEffort(def({ effort: 'high', maxMode: { effort: 'max' } }), true)).toBe(
+      'max',
+    );
+    expect(resolveAgentEffort(def({ isPm: true, maxMode: { effort: 'xhigh' } }), true)).toBe(
+      'xhigh',
+    );
+    expect(resolveAgentEffort(def({ effort: 'high', maxMode: { effort: 'max' } }), false)).toBe(
+      'high',
+    ); // off → ignored
   });
 });

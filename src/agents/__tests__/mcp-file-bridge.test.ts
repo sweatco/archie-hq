@@ -25,7 +25,10 @@ vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({
 
 const mockTransportCtor = vi.fn();
 vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => ({
-  StreamableHTTPClientTransport: vi.fn(function (this: Record<string, unknown>, ...args: unknown[]) {
+  StreamableHTTPClientTransport: vi.fn(function (
+    this: Record<string, unknown>,
+    ...args: unknown[]
+  ) {
     mockTransportCtor(...args);
   }),
 }));
@@ -33,17 +36,24 @@ vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => ({
 const mockStat = vi.fn();
 const mockReadFile = vi.fn();
 vi.mock('fs/promises', () => ({
-  stat: (...a: unknown[]) => mockStat(...a),
-  readFile: (...a: unknown[]) => mockReadFile(...a),
+  stat: (...a: unknown[]): unknown => mockStat(...a),
+  readFile: (...a: unknown[]): unknown => mockReadFile(...a),
 }));
 
 const mockAssertReadable = vi.fn();
 vi.mock('../artifacts.js', () => ({
-  assertReadable: (...a: unknown[]) => mockAssertReadable(...a),
+  assertReadable: (...a: unknown[]): unknown => mockAssertReadable(...a),
 }));
 
 vi.mock('../../system/logger.js', () => ({
-  logger: { error: vi.fn(), warn: vi.fn(), system: vi.fn(), info: vi.fn(), debug: vi.fn(), agent: vi.fn() },
+  logger: {
+    error: vi.fn(),
+    warn: vi.fn(),
+    system: vi.fn(),
+    info: vi.fn(),
+    debug: vi.fn(),
+    agent: vi.fn(),
+  },
 }));
 
 import { createSendFileToMcpTool } from '../mcp-file-bridge.js';
@@ -73,12 +83,14 @@ function makeAgent(overrides: Record<string, unknown> = {}) {
   } as never;
 }
 
-function runTool(args: Record<string, unknown>, agent = makeAgent(), liveServers = makeLiveServers()) {
+function runTool(
+  args: Record<string, unknown>,
+  agent = makeAgent(),
+  liveServers = makeLiveServers(),
+) {
   return createSendFileToMcpTool(agent, liveServers).handler(args as never, {});
 }
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const textOf = (res: any): string =>
+const textOf = (res: Awaited<ReturnType<typeof runTool>>): string =>
   (res.content as Array<{ text?: string }>).map((c) => c.text ?? '').join('');
 
 beforeEach(() => {
@@ -148,7 +160,11 @@ describe('send_file_to_mcp_tool', () => {
 
   it('rejects a tool the agent has in disallowedTools', async () => {
     const agent = makeAgent({
-      def: { id: 'ops-agent', mcpServers: makeLiveServers(), disallowedTools: ['mcp__sweatco-admin__delete_offer'] },
+      def: {
+        id: 'ops-agent',
+        mcpServers: makeLiveServers(),
+        disallowedTools: ['mcp__sweatco-admin__delete_offer'],
+      },
     });
     const res = await runTool(
       {
@@ -165,7 +181,11 @@ describe('send_file_to_mcp_tool', () => {
 
   it('rejects a whole-server disallow rule (mcp__<server> form)', async () => {
     const agent = makeAgent({
-      def: { id: 'ops-agent', mcpServers: makeLiveServers(), disallowedTools: ['mcp__sweatco-admin'] },
+      def: {
+        id: 'ops-agent',
+        mcpServers: makeLiveServers(),
+        disallowedTools: ['mcp__sweatco-admin'],
+      },
     });
     const res = await runTool(
       {
@@ -181,7 +201,11 @@ describe('send_file_to_mcp_tool', () => {
 
   it('enforces a tools allowlist when the def has one', async () => {
     const agent = makeAgent({
-      def: { id: 'ops-agent', mcpServers: makeLiveServers(), tools: ['mcp__file-bridge__send_file_to_mcp_tool', 'mcp__sweatco-admin__set_offer_image'] },
+      def: {
+        id: 'ops-agent',
+        mcpServers: makeLiveServers(),
+        tools: ['mcp__file-bridge__send_file_to_mcp_tool', 'mcp__sweatco-admin__set_offer_image'],
+      },
     });
     // Listed tool goes through.
     const okRes = await runTool(
@@ -288,15 +312,25 @@ describe('send_file_to_mcp_tool', () => {
     });
 
     // Transport built with the server's resolved url + auth headers.
-    const [url, opts] = mockTransportCtor.mock.calls[0] as [URL, { requestInit: { headers: Record<string, string> } }];
+    const [url, opts] = mockTransportCtor.mock.calls[0] as [
+      URL,
+      { requestInit: { headers: Record<string, string> } },
+    ];
     expect(url.toString()).toBe('https://admin.example/mcp');
-    expect(opts.requestInit.headers).toMatchObject({ 'CF-Access-Client-Id': 'cid', 'CF-Access-Client-Secret': 'sec' });
+    expect(opts.requestInit.headers).toMatchObject({
+      'CF-Access-Client-Id': 'cid',
+      'CF-Access-Client-Secret': 'sec',
+    });
 
     // Bytes base64-encoded by the tool and injected under the named argument,
     // merged with the other arguments.
     expect(mockCallTool).toHaveBeenCalledWith({
       name: 'set_offer_image',
-      arguments: { offer_id: 123, dry_run: true, image_base64: Buffer.from('hello').toString('base64') },
+      arguments: {
+        offer_id: 123,
+        dry_run: true,
+        image_base64: Buffer.from('hello').toString('base64'),
+      },
     });
 
     expect(textOf(res)).toBe('done');
@@ -330,7 +364,10 @@ describe('send_file_to_mcp_tool', () => {
   });
 
   it('surfaces a tool-reported error (isError) as an error result', async () => {
-    mockCallTool.mockResolvedValueOnce({ isError: true, content: [{ type: 'text', text: 'offer not found' }] });
+    mockCallTool.mockResolvedValueOnce({
+      isError: true,
+      content: [{ type: 'text', text: 'offer not found' }],
+    });
     const res = await runTool({
       server: 'sweatco-admin',
       tool_name: 'set_offer_image',

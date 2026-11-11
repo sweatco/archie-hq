@@ -37,14 +37,12 @@ const ENVELOPE_CLOSE = '\n</memory_evidence>';
 const MAX_TOOL_RESULT = 8_000;
 
 function envelope(content: string): string {
-  const escaped = content
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+  const escaped = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const maxBody = MAX_TOOL_RESULT - ENVELOPE_OPEN.length - ENVELOPE_CLOSE.length;
-  const body = escaped.length > maxBody
-    ? `${escaped.slice(0, Math.max(0, maxBody - 14))}\n[truncated]`
-    : escaped;
+  const body =
+    escaped.length > maxBody
+      ? `${escaped.slice(0, Math.max(0, maxBody - 14))}\n[truncated]`
+      : escaped;
   return `${ENVELOPE_OPEN}${body}${ENVELOPE_CLOSE}`;
 }
 
@@ -94,26 +92,37 @@ async function buildSearchHits(auth: AuthorizedMemory, tokens: string[]): Promis
     for (const record of await readTaskSummariesFromChannel('private', auth.privateChannelId)) {
       const text = record.markdown;
       const score = scoreText(text, tokens, 'private');
-      if (score > 0) hits.push({
-        id: `private:${record.taskId}`, kind: 'private', text: matchingExcerpt(text, tokens),
-        taskId: record.taskId, recency: record.extractionAt, score,
-      });
+      if (score > 0)
+        hits.push({
+          id: `private:${record.taskId}`,
+          kind: 'private',
+          text: matchingExcerpt(text, tokens),
+          taskId: record.taskId,
+          recency: record.extractionAt,
+          score,
+        });
     }
   }
 
   for (const record of await readPublicTaskSummaries()) {
     const text = record.markdown;
     const score = scoreText(text, tokens, 'task');
-    if (score > 0) hits.push({
-      id: `task:${record.channelId}:${record.taskId}`, kind: 'task', text: matchingExcerpt(text, tokens),
-      taskId: record.taskId, recency: record.extractionAt, score,
-    });
+    if (score > 0)
+      hits.push({
+        id: `task:${record.channelId}:${record.taskId}`,
+        kind: 'task',
+        text: matchingExcerpt(text, tokens),
+        taskId: record.taskId,
+        recency: record.extractionAt,
+        score,
+      });
   }
 
   for (const entity of await listEntities()) {
     const text = serializeEntity(entity);
     const score = scoreText(text, tokens, 'entity');
-    if (score > 0) hits.push({ id: `entity:${entity.entity}`, kind: 'entity', text, recency: '', score });
+    if (score > 0)
+      hits.push({ id: `entity:${entity.entity}`, kind: 'entity', text, recency: '', score });
   }
 
   for (const [userId, displayName] of Object.entries(auth.metadata.memory_authors ?? {})) {
@@ -122,16 +131,22 @@ async function buildSearchHits(auth: AuthorizedMemory, tokens: string[]): Promis
     if (!profile.trim()) continue;
     const text = `${displayName}\n${profile}`;
     const score = scoreText(text, tokens, 'profile');
-    if (score > 0) hits.push({ id: `profile:${userId}`, kind: 'profile', text, recency: '', score });
+    if (score > 0)
+      hits.push({ id: `profile:${userId}`, kind: 'profile', text, recency: '', score });
   }
 
   for (const entry of await readActivity()) {
     const text = `${entry.taskId} ${entry.summary} ${entry.domain}`;
     const score = scoreText(text, tokens, 'activity');
-    if (score > 0) hits.push({
-      id: `activity:${entry.taskId}`, kind: 'activity', text: entry.summary,
-      taskId: entry.taskId, recency: entry.date, score,
-    });
+    if (score > 0)
+      hits.push({
+        id: `activity:${entry.taskId}`,
+        kind: 'activity',
+        text: entry.summary,
+        taskId: entry.taskId,
+        recency: entry.date,
+        score,
+      });
   }
   return hits;
 }
@@ -144,13 +159,18 @@ function matchingExcerpt(text: string, tokens: string[]): string {
     if (index >= 0 && index < earliest) earliest = index;
   }
   const start = Math.max(0, earliest - 200);
-  return text.slice(start, start + 400).replace(/\s+/g, ' ').trim();
+  return text
+    .slice(start, start + 400)
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function rankHits(hits: SearchHit[], limit: number): SearchHit[] {
   const seenTasks = new Set<string>();
   return hits
-    .sort((a, b) => b.score - a.score || b.recency.localeCompare(a.recency) || a.id.localeCompare(b.id))
+    .sort(
+      (a, b) => b.score - a.score || b.recency.localeCompare(a.recency) || a.id.localeCompare(b.id),
+    )
     .filter((hit) => {
       if (!hit.taskId) return true;
       if (seenTasks.has(hit.taskId)) return false;
@@ -166,7 +186,13 @@ async function searchMemory(task: Task, query: string, limit: number) {
   const tokens = queryTokens(query);
   if (tokens.length === 0) return result('Query must contain at least one lexical token.');
   const hits = rankHits(await buildSearchHits(auth, tokens), limit);
-  return result(JSON.stringify(hits.map(({ score: _score, ...hit }) => hit), null, 2));
+  return result(
+    JSON.stringify(
+      hits.map(({ score: _score, ...hit }) => hit),
+      null,
+      2,
+    ),
+  );
 }
 
 async function readEntityMemory(task: Task, identifier: string) {
@@ -177,8 +203,9 @@ async function readEntityMemory(task: Task, identifier: string) {
     return result('Invalid entity identifier.');
   }
   const lower = candidate.toLowerCase();
-  const entity = (await listEntities()).find((record) =>
-    record.entity === lower || record.aliases.some((alias) => alias.toLowerCase() === lower)
+  const entity = (await listEntities()).find(
+    (record) =>
+      record.entity === lower || record.aliases.some((alias) => alias.toLowerCase() === lower),
   );
   return result(entity ? serializeEntity(entity) : 'Entity not found.');
 }
@@ -196,9 +223,7 @@ async function readTaskSummaryMemory(task: Task, taskId: string) {
 }
 
 export function shouldAttachMemoryTools(metadata: TaskMetadata): boolean {
-  return isMemoryReady()
-    && isMemoryToolsEnabled()
-    && !!metadata.memory_destination;
+  return isMemoryReady() && isMemoryToolsEnabled() && !!metadata.memory_destination;
 }
 
 async function writeResult(action: () => Promise<unknown>) {
@@ -206,7 +231,9 @@ async function writeResult(action: () => Promise<unknown>) {
     return result(JSON.stringify(await action()));
   } catch (error) {
     logger.warn('memory', 'Explicit memory write failed', error);
-    return result(JSON.stringify({ status: 'failed', message: 'Memory could not be saved. Please retry.' }));
+    return result(
+      JSON.stringify({ status: 'failed', message: 'Memory could not be saved. Please retry.' }),
+    );
   }
 }
 
@@ -243,8 +270,15 @@ export function createMemoryMcpServer(task: Task) {
         'remember_fact',
         'Save one explicit project or team fact from an authorized public conversation. Private DM or channel details may persist in a summary for that exact conversation after task completion; this tool does not publish them. Use the originating Slack message timestamp. For a new entity, provide its type and short summary.',
         {
-          entity: z.string(), content: z.string(), source_message_ts: z.string(),
-          create: z.object({ type: z.enum(['service', 'system', 'integration', 'concept', 'repo']), summary: z.string() }).optional(),
+          entity: z.string(),
+          content: z.string(),
+          source_message_ts: z.string(),
+          create: z
+            .object({
+              type: z.enum(['service', 'system', 'integration', 'concept', 'repo']),
+              summary: z.string(),
+            })
+            .optional(),
         },
         (input) => writeResult(() => rememberFact(task, input)),
       ),

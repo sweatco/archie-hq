@@ -8,10 +8,7 @@ function inbound(from: string, message: string): Ev {
   return { type: 'message', data: { from, to: 'pm-agent', message } };
 }
 
-function makeClient(opts: {
-  tasks?: string[];
-  events?: Record<string, Ev[]>;
-}): TaskClient {
+function makeClient(opts: { tasks?: string[]; events?: Record<string, Ev[]> }): TaskClient {
   const events = opts.events ?? {};
   // A task the client can list. Defaults to whatever has events, so a test that
   // only cares about one task's stream doesn't have to declare it twice.
@@ -31,7 +28,12 @@ function makeClient(opts: {
 // Deterministic clock: sleep advances virtual time instead of waiting on a real timer.
 function fakeClock() {
   let t = 0;
-  return { now: () => t, sleep: async (ms: number) => { t += ms; } };
+  return {
+    now: () => t,
+    sleep: async (ms: number) => {
+      t += ms;
+    },
+  };
 }
 const tunables = { capSeconds: 10, pollIntervalMs: 2000 };
 
@@ -57,7 +59,9 @@ describe('waitForTask — state detection', () => {
   });
 
   it('returns approval_requested with the approval type', async () => {
-    const c = makeClient({ events: { t1: [{ type: 'approval:requested', data: { approvalType: 'edit_mode' } }] } });
+    const c = makeClient({
+      events: { t1: [{ type: 'approval:requested', data: { approvalType: 'edit_mode' } }] },
+    });
     const r = await waitForTask(c, { taskId: 't1' }, { ...fakeClock(), ...tunables });
     expect(r.state).toBe('approval_requested');
     expect(r.approval_type).toBe('edit_mode');
@@ -65,7 +69,12 @@ describe('waitForTask — state detection', () => {
 
   it('surfaces a merge approval gate with its deferred stop (APPROVAL_TYPE=merge)', async () => {
     const c = makeClient({
-      events: { t1: [{ type: 'approval:requested', data: { approvalType: 'merge' } }, { type: 'task:stopped' }] },
+      events: {
+        t1: [
+          { type: 'approval:requested', data: { approvalType: 'merge' } },
+          { type: 'task:stopped' },
+        ],
+      },
     });
     const r = await waitForTask(c, { taskId: 't1' }, { ...fakeClock(), ...tunables });
     expect(r.state).toBe('approval_requested');
@@ -75,7 +84,9 @@ describe('waitForTask — state detection', () => {
   it('surfaces a tool_call gate with the digest ref the API requires back', async () => {
     const c = makeClient({
       events: {
-        t1: [{ type: 'approval:requested', data: { approvalType: 'tool_call', ref: 'sha256:abc' } }],
+        t1: [
+          { type: 'approval:requested', data: { approvalType: 'tool_call', ref: 'sha256:abc' } },
+        ],
       },
     });
     const r = await waitForTask(c, { taskId: 't1' }, { ...fakeClock(), ...tunables });
@@ -86,7 +97,9 @@ describe('waitForTask — state detection', () => {
 
   it('reports the other engine approval types (trigger, max_mode)', async () => {
     for (const type of ['trigger', 'max_mode'] as const) {
-      const c = makeClient({ events: { t1: [{ type: 'approval:requested', data: { approvalType: type } }] } });
+      const c = makeClient({
+        events: { t1: [{ type: 'approval:requested', data: { approvalType: type } }] },
+      });
       const r = await waitForTask(c, { taskId: 't1' }, { ...fakeClock(), ...tunables });
       expect(r.approval_type).toBe(type);
     }
@@ -119,7 +132,7 @@ describe('waitForTask — state detection', () => {
     expect(r.attribution).toBe('Dana: hello (E2E-abcd)');
   });
 
-  it('never attributes a task to the PM\'s own reply', async () => {
+  it("never attributes a task to the PM's own reply", async () => {
     const c = makeClient({
       events: {
         t1: [
@@ -163,7 +176,11 @@ describe('waitForTask — correlation', () => {
 describe('waitForTask — bounded & resumable', () => {
   it('returns pending with a cursor when the cap is reached', async () => {
     const c = makeClient({ events: { t1: [{ type: 'task:created' }] } });
-    const r = await waitForTask(c, { taskId: 't1' }, { ...fakeClock(), capSeconds: 5, pollIntervalMs: 2000 });
+    const r = await waitForTask(
+      c,
+      { taskId: 't1' },
+      { ...fakeClock(), capSeconds: 5, pollIntervalMs: 2000 },
+    );
     expect(r.state).toBe('pending');
     expect(r.cursor).toBe(1);
   });
@@ -172,14 +189,22 @@ describe('waitForTask — bounded & resumable', () => {
     const evs: Ev[] = [{ type: 'message', data: { from: 'pm-agent', message: 'early' } }];
     const c = makeClient({ events: { t1: evs } });
 
-    const first = await waitForTask(c, { taskId: 't1' }, { ...fakeClock(), capSeconds: 5, pollIntervalMs: 2000 });
+    const first = await waitForTask(
+      c,
+      { taskId: 't1' },
+      { ...fakeClock(), capSeconds: 5, pollIntervalMs: 2000 },
+    );
     expect(first.state).toBe('pending');
     expect(first.pm_replies).toContain('early');
 
     // task completes after the first call returned
     evs.push({ type: 'task:completed' });
 
-    const second = await waitForTask(c, { taskId: 't1', cursor: first.cursor }, { ...fakeClock(), ...tunables });
+    const second = await waitForTask(
+      c,
+      { taskId: 't1', cursor: first.cursor },
+      { ...fakeClock(), ...tunables },
+    );
     expect(second.state).toBe('completed');
     expect(second.pm_replies).not.toContain('early'); // events before the cursor are not reprocessed
   });
@@ -188,7 +213,12 @@ describe('waitForTask — bounded & resumable', () => {
 describe('waitForTask — approval-gate ordering', () => {
   it('reports approval_requested even when the gate stop lands in the same window', async () => {
     const c = makeClient({
-      events: { t1: [{ type: 'approval:requested', data: { approvalType: 'edit_mode' } }, { type: 'task:stopped' }] },
+      events: {
+        t1: [
+          { type: 'approval:requested', data: { approvalType: 'edit_mode' } },
+          { type: 'task:stopped' },
+        ],
+      },
     });
     const r = await waitForTask(c, { taskId: 't1' }, { ...fakeClock(), ...tunables });
     expect(r.state).toBe('approval_requested');
@@ -197,13 +227,19 @@ describe('waitForTask — approval-gate ordering', () => {
 
   it('a task:resumed cancels an earlier task:stopped (no spurious stopped)', async () => {
     const c = makeClient({ events: { t1: [{ type: 'task:stopped' }, { type: 'task:resumed' }] } });
-    const r = await waitForTask(c, { taskId: 't1' }, { ...fakeClock(), capSeconds: 5, pollIntervalMs: 2000 });
+    const r = await waitForTask(
+      c,
+      { taskId: 't1' },
+      { ...fakeClock(), capSeconds: 5, pollIntervalMs: 2000 },
+    );
     expect(r.state).toBe('pending');
   });
 
   it('reaches completed across a resume that follows the gate stop', async () => {
     const c = makeClient({
-      events: { t1: [{ type: 'task:stopped' }, { type: 'task:resumed' }, { type: 'task:completed' }] },
+      events: {
+        t1: [{ type: 'task:stopped' }, { type: 'task:resumed' }, { type: 'task:completed' }],
+      },
     });
     const r = await waitForTask(c, { taskId: 't1' }, { ...fakeClock(), ...tunables });
     expect(r.state).toBe('completed');

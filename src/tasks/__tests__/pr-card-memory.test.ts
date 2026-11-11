@@ -2,12 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentDef } from '../../types/agent.js';
 import type { PrCardData, TaskMetadata } from '../../types/task.js';
 
-const {
-  getPRCardData,
-  postInteractiveToThread,
-  updateMessage,
-  deleteMessage,
-} = vi.hoisted(() => ({
+const { getPRCardData, postInteractiveToThread, updateMessage, deleteMessage } = vi.hoisted(() => ({
   getPRCardData: vi.fn(),
   postInteractiveToThread: vi.fn(),
   updateMessage: vi.fn(),
@@ -28,46 +23,82 @@ vi.mock('../../connectors/slack/client.js', async (importOriginal) => ({
 vi.mock('../../agents/spawn.js', () => ({ spawnAgent: vi.fn() }));
 vi.mock('../../system/logger.js', () => ({
   logger: {
-    warn: vi.fn(), system: vi.fn(), error: vi.fn(), debug: vi.fn(), agent: vi.fn(), slack: vi.fn(),
+    warn: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    agent: vi.fn(),
+    slack: vi.fn(),
   },
 }));
 
 import { Task } from '../task.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
-const TaskCtor = Task as unknown as new (taskId: string, metadata: TaskMetadata, pmDef: AgentDef) => Task;
+const TaskCtor = Task as unknown as new (
+  taskId: string,
+  metadata: TaskMetadata,
+  pmDef: AgentDef,
+) => Task;
 const PM_DEF = {
-  id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', pluginName: 'core', visibility: 'global', isPm: true,
+  id: 'pm-agent',
+  key: 'pm',
+  role: 'PM',
+  expertise: '',
+  pluginName: 'core',
+  visibility: 'global',
+  isPm: true,
 } as AgentDef;
 const CARD: PrCardData = {
-  repo: 'acme/app', prNumber: 42, url: 'https://github.com/acme/app/pull/42',
-  headRef: 'feature', state: 'open', head_sha: 'new-sha', ci: 'passed', ciPassed: 2, ciTotal: 2,
+  repo: 'acme/app',
+  prNumber: 42,
+  url: 'https://github.com/acme/app/pull/42',
+  headRef: 'feature',
+  state: 'open',
+  head_sha: 'new-sha',
+  ci: 'passed',
+  ciPassed: 2,
+  ciTotal: 2,
 };
 
 function newTask(): Task {
-  const task = new TaskCtor('task-1', {
-    task_id: 'task-1',
-    channels: {
-      'slack:C07CHANNEL:100.0': {
-        type: 'slack', channel_id: 'C07CHANNEL', channel_name: 'dev', thread_id: '100.0',
+  const task = new TaskCtor(
+    'task-1',
+    {
+      task_id: 'task-1',
+      channels: {
+        'slack:C07CHANNEL:100.0': {
+          type: 'slack',
+          channel_id: 'C07CHANNEL',
+          channel_name: 'dev',
+          thread_id: '100.0',
+        },
       },
-    },
-    default_channel: 'slack:C07CHANNEL:100.0',
-    agent_sessions: {},
-    repositories: [{
-        github: 'acme/app',
-        branch_states: {
-          feature: {
-            pr_number: 42,
-            pr_card: {
-              fingerprint: 'old',
-              slack: { ts: '90.0', channel_id: 'C07CHANNEL', thread_id: '100.0' },
+      default_channel: 'slack:C07CHANNEL:100.0',
+      agent_sessions: {},
+      repositories: [
+        {
+          github: 'acme/app',
+          branch_states: {
+            feature: {
+              pr_number: 42,
+              pr_card: {
+                fingerprint: 'old',
+                slack: { ts: '90.0', channel_id: 'C07CHANNEL', thread_id: '100.0' },
+              },
             },
           },
         },
-      }],
-  } as unknown as TaskMetadata, PM_DEF);
-  (task as unknown as { save: (flush?: boolean) => Promise<void> }).save = vi.fn().mockResolvedValue(undefined);
-  (task as unknown as { prepareMemoryDelivery: (channelId: string) => Promise<void> }).prepareMemoryDelivery = vi.fn().mockResolvedValue(undefined);
+      ],
+    } as unknown as TaskMetadata,
+    PM_DEF,
+  );
+  (task as unknown as { save: (flush?: boolean) => Promise<void> }).save = vi
+    .fn()
+    .mockResolvedValue(undefined);
+  (
+    task as unknown as { prepareMemoryDelivery: (channelId: string) => Promise<void> }
+  ).prepareMemoryDelivery = vi.fn().mockResolvedValue(undefined);
   return task;
 }
 
@@ -86,8 +117,9 @@ describe('PR-card memory audience checks', () => {
     await task.resurfacePrCards();
 
     expect(task.prepareMemoryDelivery).toHaveBeenCalledWith('C07CHANNEL');
-    expect(vi.mocked(task.prepareMemoryDelivery).mock.invocationCallOrder[0]!)
-      .toBeLessThan(postInteractiveToThread.mock.invocationCallOrder[0]!);
+    expect(
+      expectDefined(vi.mocked(task.prepareMemoryDelivery).mock.invocationCallOrder[0]),
+    ).toBeLessThan(expectDefined(postInteractiveToThread.mock.invocationCallOrder[0]));
   });
 
   it('classifies the destination before an in-place card update', async () => {
@@ -96,7 +128,8 @@ describe('PR-card memory audience checks', () => {
     await task.refreshPrCardInPlace('acme/app', 42);
 
     expect(task.prepareMemoryDelivery).toHaveBeenCalledWith('C07CHANNEL');
-    expect(vi.mocked(task.prepareMemoryDelivery).mock.invocationCallOrder[0]!)
-      .toBeLessThan(updateMessage.mock.invocationCallOrder[0]!);
+    expect(
+      expectDefined(vi.mocked(task.prepareMemoryDelivery).mock.invocationCallOrder[0]),
+    ).toBeLessThan(expectDefined(updateMessage.mock.invocationCallOrder[0]));
   });
 });

@@ -62,7 +62,9 @@ export async function fetchProtectedResourceMetadata(
 ): Promise<ResourceServer> {
   const res = await fetch(metadataUrl, { headers: ACCEPT_JSON });
   if (!res.ok) {
-    throw new Error(`Failed to fetch protected-resource metadata at ${metadataUrl}: HTTP ${res.status}`);
+    throw new Error(
+      `Failed to fetch protected-resource metadata at ${metadataUrl}: HTTP ${res.status}`,
+    );
   }
   return oauth.processResourceDiscoveryResponse(new URL(expectedResource), res);
 }

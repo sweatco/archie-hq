@@ -2,7 +2,7 @@
 
 Thanks for your interest in contributing! Archie HQ is the open-source core engine of a multi-agent AI system built on the Claude Agent SDK — a PM agent that orchestrates specialist agents, plus a plugin system that adds new domains.
 
-The project is licensed under **AGPL-3.0-or-later**, and contributions are accepted under that same license. By opening a pull request, you agree that your contribution is licensed under AGPL-3.0-or-later. (You can use and modify Archie internally without restriction; note that running a *modified* version as a network service triggers AGPL's source-disclosure obligations.)
+The project is licensed under **AGPL-3.0-or-later**, and contributions are accepted under that same license. By opening a pull request, you agree that your contribution is licensed under AGPL-3.0-or-later. (You can use and modify Archie internally without restriction; note that running a _modified_ version as a network service triggers AGPL's source-disclosure obligations.)
 
 ## Prerequisites
 
@@ -38,12 +38,16 @@ This is the fastest way to try a change end-to-end without Slack or GitHub.
 Before you push, make sure the checks that CI runs pass locally:
 
 ```bash
-npm run typecheck
-npm run build
-npm test
+npm run check
 ```
 
 ## Code style
+
+Read the [coding guidelines](docs/guides/coding-guidelines.md) for ownership, readable control flow, type boundaries, errors and the review rubric. Lint has no suppression baseline; findings must be fixed in the owning code.
+
+- `npm run lint` and `npm run format:check` verify code without rewriting it.
+- `npm run lint:fix` applies safe lint fixes; `npm run format` applies the shared formatting. Review the resulting diff.
+- Keep lint at zero findings. Do not add suppression allowances or weaken the configured rules.
 
 - **TypeScript** throughout.
 - Use the **unified logger** at `src/system/logger.ts` for all output — never `console.log` / `console.error` / `console.warn` directly. The logger gives consistent, color-coded, semantic output.
@@ -58,7 +62,7 @@ npm test
 1. **Fork or branch** off the default branch (don't commit to it directly).
 2. Make **atomic commits** — each commit is one coherent, self-contained change with a clear message.
 3. Open a **pull request** describing what changed and why.
-4. **CI must pass.** The GitHub Actions workflow at `.github/workflows/ci.yml` runs `typecheck`, `build`, `test`, and a **gitleaks** secret scan over the full history on every push and PR.
+4. **CI must pass.** The GitHub Actions workflow at `.github/workflows/ci.yml` runs format verification, lint, typecheck, build, tests and a **gitleaks** secret scan over the full history on every push and PR.
 5. **Expect review.** A maintainer will review your PR; please be responsive to feedback.
 
 **Never commit secrets.** Keep `.env`, API keys, and tokens out of commits — gitleaks will flag them, and once something lands in history it's hard to remove. If you accidentally expose a credential, rotate it.

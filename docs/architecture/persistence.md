@@ -288,3 +288,5 @@ There is no automated cleanup or garbage collection of task directories. Complet
 - [System Orchestration](./orchestration.md) — runtime state, message routing, recovery
 - [Edit Mode](./edit-mode.md) — `mount_repo`, clone lifecycle, branch state
 - [Memory Layer](./memory.md) — the offline consumer of `knowledge.log`
+
+The canonical in-process task registry lives in `src/tasks/active-tasks.ts` and is re-exported by `task.ts` for existing callers. Persistence imports that registry directly, keeping disk lookup independent of the Task → Agent → tools runtime dependency chain. Event replay validates JSON records against the shared event schema before returning them; malformed records are skipped while the replay cursor still counts their original lines.

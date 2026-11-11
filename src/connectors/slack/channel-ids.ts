@@ -60,12 +60,18 @@ export function taskSlackChannelLabels(metadata: TaskMetadata): Map<string, stri
   const labels = new Map<string, string>();
   for (const ch of Object.values(metadata.channels)) {
     if (ch.type === 'slack' && !labels.has(ch.channel_id)) {
-      labels.set(ch.channel_id, ch.channel_name ? formatConversationLabel(ch.channel_name) : ch.channel_id);
+      labels.set(
+        ch.channel_id,
+        ch.channel_name ? formatConversationLabel(ch.channel_name) : ch.channel_id,
+      );
     }
   }
   const home = metadata.home_channel;
   if (home && !labels.has(home.channel_id)) {
-    labels.set(home.channel_id, home.channel_name ? formatConversationLabel(home.channel_name) : home.channel_id);
+    labels.set(
+      home.channel_id,
+      home.channel_name ? formatConversationLabel(home.channel_name) : home.channel_id,
+    );
   }
   return labels;
 }

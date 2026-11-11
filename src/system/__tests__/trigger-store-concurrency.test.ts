@@ -27,12 +27,21 @@ import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import type { Trigger } from '../../types/trigger.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const WORK = mkdtempSync(join(tmpdir(), 'archie-trigger-race-'));
 process.env.ARCHIE_WORKDIR = WORK;
 
 const store = await import('../trigger-store.js');
-const { saveTrigger, loadTrigger, deleteTrigger, enableProposedTrigger, updatePendingTrigger, withdrawPendingTrigger, getTriggerPath } = store;
+const {
+  saveTrigger,
+  loadTrigger,
+  deleteTrigger,
+  enableProposedTrigger,
+  updatePendingTrigger,
+  withdrawPendingTrigger,
+  getTriggerPath,
+} = store;
 const { TRIGGERS_DIR } = await import('../workdir.js');
 
 afterAll(() => {
@@ -50,7 +59,14 @@ function pending(): Trigger {
     created_at: '2026-08-24T10:30:00.000Z',
     proposed_in_task: 'task-1',
     binding: { type: 'channel', channel_id: 'C_STANDUP', channel_name: 'standup' },
-    conditions: [{ type: 'schedule', cron: '0 9 * * 1-5', tz: 'Europe/London', next_run_at: '2026-08-25T08:00:00.000Z' }],
+    conditions: [
+      {
+        type: 'schedule',
+        cron: '0 9 * * 1-5',
+        tz: 'Europe/London',
+        next_run_at: '2026-08-25T08:00:00.000Z',
+      },
+    ],
     action: { prompt: 'post the digest' },
   } as Trigger;
 }
@@ -72,21 +88,32 @@ describe('a pending edit racing the user’s Approve', () => {
     for (let i = 0; i < ITERATIONS; i++) {
       await saveTrigger(pending());
 
-      const edit = updatePendingTrigger(ID, (t) => { t.action.prompt = LONG_PROMPT; t.summary = 'the revised digest'; });
+      const edit = updatePendingTrigger(ID, (t) => {
+        t.action.prompt = LONG_PROMPT;
+        t.summary = 'the revised digest';
+      });
       const approve = enableProposedTrigger(ID, 'U_CLICKER');
       const [editResult, approved] = await Promise.all([edit, approve]);
 
       const onDisk = await loadTrigger(ID);
       expect(onDisk, `iteration ${i}: record was unparseable or missing`).not.toBeNull();
       expect(editResult.outcome, `iteration ${i}`).toBe('updated');
-      expect(approved, `iteration ${i}: serializing must not stop the approval landing`).not.toBeNull();
+      expect(
+        approved,
+        `iteration ${i}: serializing must not stop the approval landing`,
+      ).not.toBeNull();
 
       // The whole point: the approval enabled what the edit wrote.
-      expect(onDisk!.status).toBe('enabled');
-      expect(onDisk!.action.prompt, `iteration ${i}: the edit was lost`).toBe(LONG_PROMPT);
-      expect(onDisk!.summary).toBe('the revised digest');
-      expect(approved!.action.prompt, `iteration ${i}: the scheduler indexed pre-edit content`).toBe(LONG_PROMPT);
-      expect(onDisk!.updated_at, 'an edit must renew the GC clock').toBeTruthy();
+      expect(expectDefined(onDisk).status).toBe('enabled');
+      expect(expectDefined(onDisk).action.prompt, `iteration ${i}: the edit was lost`).toBe(
+        LONG_PROMPT,
+      );
+      expect(expectDefined(onDisk).summary).toBe('the revised digest');
+      expect(
+        expectDefined(approved).action.prompt,
+        `iteration ${i}: the scheduler indexed pre-edit content`,
+      ).toBe(LONG_PROMPT);
+      expect(expectDefined(onDisk).updated_at, 'an edit must renew the GC clock').toBeTruthy();
     }
   });
 
@@ -95,7 +122,9 @@ describe('a pending edit racing the user’s Approve', () => {
       await saveTrigger(pending());
 
       const approve = enableProposedTrigger(ID, 'U_CLICKER');
-      const edit = updatePendingTrigger(ID, (t) => { t.action.prompt = LONG_PROMPT; });
+      const edit = updatePendingTrigger(ID, (t) => {
+        t.action.prompt = LONG_PROMPT;
+      });
       const [approved, editResult] = await Promise.all([approve, edit]);
 
       const onDisk = await loadTrigger(ID);
@@ -105,20 +134,33 @@ describe('a pending edit racing the user’s Approve', () => {
       // The edit must abandon rather than write the trigger back to pending.
       expect(editResult.outcome, `iteration ${i}`).toBe('resolved');
       if (editResult.outcome === 'resolved') expect(editResult.status).toBe('enabled');
-      expect(onDisk!.status, `iteration ${i}: ghost — disk says pending, scheduler holds it enabled`).toBe('enabled');
-      expect(onDisk!.action.prompt, `iteration ${i}: a refused edit must change nothing`).toBe('post the digest');
+      expect(
+        expectDefined(onDisk).status,
+        `iteration ${i}: ghost — disk says pending, scheduler holds it enabled`,
+      ).toBe('enabled');
+      expect(
+        expectDefined(onDisk).action.prompt,
+        `iteration ${i}: a refused edit must change nothing`,
+      ).toBe('post the digest');
     }
   });
 
   it('leaves no temp files behind, and none that listTriggers would read as a trigger', async () => {
     await saveTrigger(pending());
     await Promise.all([
-      updatePendingTrigger(ID, (t) => { t.summary = 'a'; }),
-      updatePendingTrigger(ID, (t) => { t.summary = 'b'; }),
+      updatePendingTrigger(ID, (t) => {
+        t.summary = 'a';
+      }),
+      updatePendingTrigger(ID, (t) => {
+        t.summary = 'b';
+      }),
       enableProposedTrigger(ID, 'U'),
     ]);
     const names = readdirSync(TRIGGERS_DIR);
-    expect(names.filter((n) => n.endsWith('.tmp')), 'temp files must be renamed away').toEqual([]);
+    expect(
+      names.filter((n) => n.endsWith('.tmp')),
+      'temp files must be renamed away',
+    ).toEqual([]);
     expect(names.filter((n) => n.endsWith('.json'))).toEqual([`${ID}.json`]);
   });
 });
@@ -128,7 +170,9 @@ describe('a pending edit racing a withdrawal', () => {
     for (let i = 0; i < ITERATIONS; i++) {
       await saveTrigger(pending());
 
-      const edit = updatePendingTrigger(ID, (t) => { t.action.prompt = LONG_PROMPT; });
+      const edit = updatePendingTrigger(ID, (t) => {
+        t.action.prompt = LONG_PROMPT;
+      });
       const withdraw = deleteTrigger(ID);
       const [editResult] = await Promise.all([edit, withdraw]);
 
@@ -173,7 +217,10 @@ describe('a withdrawal racing the user’s Approve', () => {
 
       const onDisk = await loadTrigger(ID);
       // The ghost: the caller would have indexed `approved`, and the file is gone.
-      expect(Boolean(approved && !onDisk), `iteration ${i}: enabled in the index with no record on disk`).toBe(false);
+      expect(
+        Boolean(approved && !onDisk),
+        `iteration ${i}: enabled in the index with no record on disk`,
+      ).toBe(false);
       // Exactly one of them may claim to have acted.
       expect(w.outcome === 'withdrawn' ? approved === null : approved !== null).toBe(true);
     }
@@ -192,8 +239,11 @@ describe('a withdrawal racing the user’s Approve', () => {
       expect(w.outcome, `iteration ${i}`).toBe('resolved');
       if (w.outcome === 'resolved') expect(w.status).toBe('enabled');
       const onDisk = await loadTrigger(ID);
-      expect(onDisk, `iteration ${i}: an approved trigger was deleted by a racing withdrawal`).not.toBeNull();
-      expect(onDisk!.status).toBe('enabled');
+      expect(
+        onDisk,
+        `iteration ${i}: an approved trigger was deleted by a racing withdrawal`,
+      ).not.toBeNull();
+      expect(expectDefined(onDisk).status).toBe('enabled');
     }
   });
 
@@ -230,7 +280,7 @@ describe('saveTrigger is atomic', () => {
       await Promise.all([saveTrigger(big), saveTrigger(small)]);
 
       const raw = await readFile(getTriggerPath(ID), 'utf-8');
-      expect(() => JSON.parse(raw), `iteration ${i}: torn record on disk`).not.toThrow();
+      expect((): unknown => JSON.parse(raw), `iteration ${i}: torn record on disk`).not.toThrow();
       expect(await loadTrigger(ID), `iteration ${i}: record read as missing`).not.toBeNull();
     }
   });

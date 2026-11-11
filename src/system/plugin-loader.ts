@@ -17,9 +17,17 @@
  *     flags.
  */
 
+import { z } from 'zod';
+import type { McpServerConfig } from '@anthropic-ai/claude-agent-sdk';
 import { readFileSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
-import { mcpToolName, parseMcpToolName, type McpToolPolicy, type McpServerPolicy, type ToolTier } from '../agents/tool-approval-gate.js';
+import {
+  mcpToolName,
+  parseMcpToolName,
+  type McpToolPolicy,
+  type McpServerPolicy,
+  type ToolTier,
+} from '../agents/tool-approval-gate.js';
 import { PLUGINS_DIR } from './workdir.js';
 import { logger } from './logger.js';
 
@@ -27,7 +35,7 @@ export { PLUGINS_DIR };
 
 /** Parsed root .mcp.json — server connection configs plus Archie extensions */
 export interface LoadedMcpConfig {
-  servers: Record<string, any>;
+  servers: Record<string, McpServerConfig>;
   /**
    * Human-readable description per server, taken from an optional `description`
    * key on each server entry. Stripped from `servers` so the Claude Agent SDK
@@ -99,8 +107,8 @@ function parseServerPolicy(serverKey: string, raw: unknown, path: string): McpSe
   if (parseMcpToolName(mcpToolName(serverKey, 'probe'))?.server !== serverKey) {
     throw new Error(
       `${where}: server key "${serverKey}" cannot carry a policy — it does not survive ` +
-      `the mcp__<server>__<tool> round trip (no "__", no leading or trailing "_"), so the ` +
-      `gate would never match its calls. Rename the server.`,
+        `the mcp__<server>__<tool> round trip (no "__", no leading or trailing "_"), so the ` +
+        `gate would never match its calls. Rename the server.`,
     );
   }
 
@@ -108,13 +116,17 @@ function parseServerPolicy(serverKey: string, raw: unknown, path: string): McpSe
   for (const key of Object.keys(entry)) {
     if (key.startsWith('_')) continue;
     if (!allowedKeys.has(key)) {
-      throw new Error(`${where}: unknown key "${key}" — expected one of default, ${TIERS.join(', ')}, titles, or a "_"-prefixed comment.`);
+      throw new Error(
+        `${where}: unknown key "${key}" — expected one of default, ${TIERS.join(', ')}, titles, or a "_"-prefixed comment.`,
+      );
     }
   }
 
   const fallback = entry.default ?? 'ask';
   if (!TIERS.includes(fallback as ToolTier)) {
-    throw new Error(`${where}.default must be one of ${TIERS.join(', ')} — got ${JSON.stringify(fallback)}.`);
+    throw new Error(
+      `${where}.default must be one of ${TIERS.join(', ')} — got ${JSON.stringify(fallback)}.`,
+    );
   }
 
   const tiers: Record<string, ToolTier> = {};
@@ -158,25 +170,62 @@ function parseServerPolicy(serverKey: string, raw: unknown, path: string): McpSe
  * always has. A *malformed policy* throws instead: dropping it would silently
  * ungate a tool someone meant to gate.
  */
+const mcpCommonFields = {
+  timeout: z.number().optional(),
+  alwaysLoad: z.boolean().optional(),
+};
+const remoteMcpFields = {
+  ...mcpCommonFields,
+  url: z.string(),
+  headers: z.record(z.string(), z.string()).optional(),
+  tools: z
+    .array(
+      z
+        .object({
+          name: z.string(),
+          permission_policy: z.enum(['always_allow', 'always_ask', 'always_deny']).optional(),
+          org_max_permission: z.enum(['allow', 'ask', 'blocked']).optional(),
+        })
+        .passthrough(),
+    )
+    .optional(),
+};
+const mcpConnectionSchema = z.union([
+  z
+    .object({
+      ...mcpCommonFields,
+      type: z.literal('stdio').optional(),
+      command: z.string(),
+      args: z.array(z.string()).optional(),
+      env: z.record(z.string(), z.string()).optional(),
+    })
+    .passthrough(),
+  z.object({ ...remoteMcpFields, type: z.literal('http') }).passthrough(),
+  z.object({ ...remoteMcpFields, type: z.literal('sse') }).passthrough(),
+]);
+
 export function loadMcpJson(path: string): LoadedMcpConfig {
   const empty: LoadedMcpConfig = { servers: {}, descriptions: {}, policies: {} };
   if (!existsSync(path)) return empty;
 
-  let rawServers: Record<string, any>;
+  let rawServers: Record<string, unknown>;
   try {
     const raw = readFileSync(path, 'utf-8');
-    const substituted = raw.replace(/\$\{(MCP_[A-Z0-9_]+)\}/g, (_, name) => {
+    const substituted = raw.replace(/\$\{(MCP_[A-Z0-9_]+)\}/g, (_, name: string) => {
       const value = process.env[name];
       if (!value) logger.warn('system', `MCP config: env var ${name} is not set (${path})`);
       return value ?? '';
     });
-    rawServers = JSON.parse(substituted).mcpServers ?? {};
+    const parsed: unknown = JSON.parse(substituted);
+    rawServers =
+      z.object({ mcpServers: z.record(z.string(), z.unknown()).optional() }).parse(parsed)
+        .mcpServers ?? {};
   } catch {
     logger.warn('system', `MCP config: failed to parse ${path}`);
     return empty;
   }
 
-  const servers: Record<string, any> = {};
+  const servers: Record<string, McpServerConfig> = {};
   const descriptions: Record<string, string> = {};
   const policies: McpToolPolicy = {};
   for (const [name, config] of Object.entries(rawServers)) {
@@ -185,19 +234,18 @@ export function loadMcpJson(path: string): LoadedMcpConfig {
       continue;
     }
     if (!config || typeof config !== 'object' || Array.isArray(config)) {
-      servers[name] = config;
-      continue;
+      throw new Error(`MCP config ${path}: server "${name}" must be an object.`);
     }
     // `description` and `archie` are Archie metadata, not connection config —
     // split them out so the SDK only sees valid server fields.
-    const { description, archie, ...connectionConfig } = config as Record<string, any>;
+    const { description, archie, ...connectionConfig } = config as Record<string, unknown>;
     if (typeof description === 'string' && description.trim()) {
       descriptions[name] = description.trim();
     }
     if (archie !== undefined) {
       policies[name] = parseServerPolicy(name, archie, path);
     }
-    servers[name] = connectionConfig;
+    servers[name] = mcpConnectionSchema.parse(connectionConfig);
   }
 
   return { servers, descriptions, policies };
@@ -240,16 +288,19 @@ export function getArchieConfig(): ArchieConfig {
   const path = join(PLUGINS_DIR, 'archie.json');
   if (!existsSync(path)) return EMPTY_ARCHIE_CONFIG;
 
-  let raw: any;
+  let raw: Record<string, unknown>;
   try {
-    raw = JSON.parse(readFileSync(path, 'utf-8'));
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf-8'));
+    raw = z.record(z.string(), z.unknown()).parse(parsed);
   } catch {
     logger.warn('system', `archie.json: failed to parse ${path} — treating as empty`);
     return EMPTY_ARCHIE_CONFIG;
   }
 
   const allowedNetworkDomains = Array.isArray(raw?.allowedNetworkDomains)
-    ? raw.allowedNetworkDomains.filter((d: unknown): d is string => typeof d === 'string' && d.length > 0)
+    ? raw.allowedNetworkDomains.filter(
+        (d: unknown): d is string => typeof d === 'string' && d.length > 0,
+      )
     : [];
 
   const repos: Record<string, ArchieRepoConfig> = {};
@@ -303,9 +354,14 @@ function scanPlugins(): LoadedPlugin[] {
     let manifest: PluginManifest;
     try {
       if (!existsSync(manifestPath)) continue;
-      const raw = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+      const raw = z
+        .object({ name: z.string(), version: z.string(), description: z.string() })
+        .parse(JSON.parse(readFileSync(manifestPath, 'utf-8')));
       if (!raw.name || !raw.version || !raw.description) {
-        logger.warn('system', `Plugin ${entry.name}: plugin.json missing required fields (name, version, description), skipping`);
+        logger.warn(
+          'system',
+          `Plugin ${entry.name}: plugin.json missing required fields (name, version, description), skipping`,
+        );
         continue;
       }
       manifest = { name: raw.name, version: raw.version, description: raw.description };

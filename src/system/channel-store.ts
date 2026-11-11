@@ -27,11 +27,11 @@ export const SLACK_CHANNELS_DIR = join(WORKDIR, 'slack', 'channels');
 export interface ChannelCanvasEntry {
   file_id: string;
   title: string;
-  creator: string;     // Slack user id of the canvas creator
-  external: boolean;   // creator is outside the home workspace (kept false here — externals aren't stored as canvases)
-  updatedTs: number;   // files.info.updated — drives change detection
-  markdown: string;    // converted canvas body
-  fileIds: string[];   // referenced file ids extracted during conversion
+  creator: string; // Slack user id of the canvas creator
+  external: boolean; // creator is outside the home workspace (kept false here — externals aren't stored as canvases)
+  updatedTs: number; // files.info.updated — drives change detection
+  markdown: string; // converted canvas body
+  fileIds: string[]; // referenced file ids extracted during conversion
 }
 
 /**
@@ -117,7 +117,13 @@ function withChannelLock<T>(channelId: string, fn: () => Promise<T>): Promise<T>
   // Run fn regardless of whether the previous op resolved or rejected.
   const next = prev.then(fn, fn);
   // Store a never-rejecting tail so a failure doesn't poison the chain.
-  locks.set(channelId, next.then(() => {}, () => {}));
+  locks.set(
+    channelId,
+    next.then(
+      () => {},
+      () => {},
+    ),
+  );
   return next;
 }
 

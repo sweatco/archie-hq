@@ -25,8 +25,8 @@ import { appendAgentFinding } from '../tasks/persistence.js';
 // ============================================================================
 
 export interface ResearchToolCallbacks {
-  getTaskId: () => string;         // task ID for knowledge.log entries
-  getResearchesDir: () => string;  // returns <task>/researches
+  getTaskId: () => string; // task ID for knowledge.log entries
+  getResearchesDir: () => string; // returns <task>/researches
   // Which agent invoked the tool. A task runs one agent — the PM — so in
   // practice this is always its id; it stays a callback because it is also
   // what the saved report and the knowledge-log entry are attributed to.
@@ -43,7 +43,7 @@ export interface ResearchToolCallbacks {
 // `xhigh` answers from its own sandbox and returns no citations.
 // `wide-research` is async and delivers results as files.
 export const PERPLEXITY_PRESETS = ['fast', 'low', 'medium', 'high'] as const;
-export type PerplexityPreset = typeof PERPLEXITY_PRESETS[number];
+export type PerplexityPreset = (typeof PERPLEXITY_PRESETS)[number];
 
 const PresetSchema = z.object({
   preset: z.enum(PERPLEXITY_PRESETS),
@@ -51,8 +51,8 @@ const PresetSchema = z.object({
 });
 
 // The SDK's structured-output validator rejects the $schema dialect URL.
-const rawPresetSchema = toJSONSchema(PresetSchema) as Record<string, unknown>;
-const { $schema: _dropSchema, ...presetJsonSchema } = rawPresetSchema;
+const presetJsonSchema = toJSONSchema(PresetSchema) as Record<string, unknown>;
+delete presetJsonSchema.$schema;
 
 const CLASSIFIER_SYSTEM_PROMPT = `You are a research query classifier. Pick the Perplexity preset that fits the query.
 
@@ -93,8 +93,12 @@ Respond with JSON only.`;
           NODE_ENV: process.env.NODE_ENV || 'development',
           ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
           // Forward CA-trust to the spawned CLI (TLS-intercepting proxy); no-op when unset.
-          ...(process.env.NODE_USE_SYSTEM_CA ? { NODE_USE_SYSTEM_CA: process.env.NODE_USE_SYSTEM_CA } : {}),
-          ...(process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS } : {}),
+          ...(process.env.NODE_USE_SYSTEM_CA
+            ? { NODE_USE_SYSTEM_CA: process.env.NODE_USE_SYSTEM_CA }
+            : {}),
+          ...(process.env.NODE_EXTRA_CA_CERTS
+            ? { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS }
+            : {}),
           PATH: process.env.PATH,
         },
         tools: [],
@@ -107,7 +111,7 @@ Respond with JSON only.`;
     })) {
       if (event.type !== 'result') continue;
       if (event.subtype === 'success') {
-        const parsed = PresetSchema.safeParse((event as any).structured_output);
+        const parsed = PresetSchema.safeParse(event.structured_output);
         if (parsed.success) {
           result = parsed.data;
           logger.agent('research', `Classified as ${result.preset}: ${result.reasoning}`);
@@ -135,18 +139,41 @@ interface PerplexityResponse {
   citations: string[];
 }
 
-/**
- * Call Perplexity Agent API with the selected preset.
- */
-export async function callPerplexity(preset: PerplexityPreset, input: string): Promise<PerplexityResponse> {
-  const apiKey = process.env.PERPLEXITY_API_KEY!;
+const citationSchema = z.object({ type: z.string(), url: z.string().optional() });
+const responseBlockSchema = z.object({
+  type: z.string(),
+  text: z.string().optional(),
+  annotations: z.array(citationSchema).optional(),
+});
+const perplexityResponseSchema = z.object({
+  output: z
+    .array(
+      z.object({
+        type: z.string(),
+        content: z.array(responseBlockSchema).optional(),
+        results: z.array(z.object({ url: z.string().optional() })).optional(),
+      }),
+    )
+    .optional(),
+  output_text: z.string().optional(),
+  citations: z.array(z.string()).optional(),
+});
+const researchResultSchema = z.object({ research_id: z.string(), content: z.string().optional() });
+const toolTextBlocksSchema = z.array(z.object({ type: z.string(), text: z.string().optional() }));
+
+/** Call Perplexity Agent API with the selected preset. */
+export async function callPerplexity(
+  preset: PerplexityPreset,
+  input: string,
+): Promise<PerplexityResponse> {
+  const apiKey = process.env.PERPLEXITY_API_KEY;
 
   // Overriding the preset's model makes `fast` return HTTP 400, and makes
   // `high` identical to `medium`.
   const response = await fetch('https://api.perplexity.ai/v1/agent', {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${apiKey}`,
+      Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
@@ -161,7 +188,8 @@ export async function callPerplexity(preset: PerplexityPreset, input: string): P
     throw new Error(`Perplexity API error ${response.status}: ${body}`);
   }
 
-  const data = await response.json() as any;
+  const wireData: unknown = await response.json();
+  const data = perplexityResponseSchema.parse(wireData);
   // Perplexity Agent API follows OpenAI Responses API format:
   // `output` is an array with search_results and message items
   let text = '';
@@ -207,12 +235,20 @@ export async function callPerplexity(preset: PerplexityPreset, input: string): P
 // AWS Bedrock Guardrails (optional — input DLP + output injection scanning)
 // ============================================================================
 
-import { BedrockRuntimeClient, ApplyGuardrailCommand } from '@aws-sdk/client-bedrock-runtime';
+import {
+  BedrockRuntimeClient,
+  ApplyGuardrailCommand,
+  BedrockRuntimeServiceException,
+} from '@aws-sdk/client-bedrock-runtime';
 
 let bedrockClient: BedrockRuntimeClient | null = null;
 let guardrailWarningLogged = false;
 
-function getBedrockGuardrail(): { client: BedrockRuntimeClient; id: string; version: string } | null {
+function getBedrockGuardrail(): {
+  client: BedrockRuntimeClient;
+  id: string;
+  version: string;
+} | null {
   const guardrailId = process.env.BEDROCK_GUARDRAIL_ID;
   if (!guardrailId) {
     if (!guardrailWarningLogged) {
@@ -247,12 +283,14 @@ async function scanWithGuardrail(
   if (!guardrail) return { blocked: false };
 
   try {
-    const result = await guardrail.client.send(new ApplyGuardrailCommand({
-      guardrailIdentifier: guardrail.id,
-      guardrailVersion: guardrail.version,
-      source,
-      content: [{ text: { text } }],
-    }));
+    const result = await guardrail.client.send(
+      new ApplyGuardrailCommand({
+        guardrailIdentifier: guardrail.id,
+        guardrailVersion: guardrail.version,
+        source,
+        content: [{ text: { text } }],
+      }),
+    );
 
     if (result.action === 'GUARDRAIL_INTERVENED') {
       const reason = result.actionReason || `${source} blocked by guardrail`;
@@ -261,13 +299,22 @@ async function scanWithGuardrail(
       if (result.assessments) {
         for (const assessment of result.assessments) {
           if (assessment.contentPolicy?.filters?.length) {
-            logger.warn('research', `  Content policy: ${JSON.stringify(assessment.contentPolicy.filters)}`);
+            logger.warn(
+              'research',
+              `  Content policy: ${JSON.stringify(assessment.contentPolicy.filters)}`,
+            );
           }
           if (assessment.sensitiveInformationPolicy?.piiEntities?.length) {
-            logger.warn('research', `  PII detected: ${JSON.stringify(assessment.sensitiveInformationPolicy.piiEntities)}`);
+            logger.warn(
+              'research',
+              `  PII detected: ${JSON.stringify(assessment.sensitiveInformationPolicy.piiEntities)}`,
+            );
           }
           if (assessment.sensitiveInformationPolicy?.regexes?.length) {
-            logger.warn('research', `  Regex matches: ${JSON.stringify(assessment.sensitiveInformationPolicy.regexes)}`);
+            logger.warn(
+              'research',
+              `  Regex matches: ${JSON.stringify(assessment.sensitiveInformationPolicy.regexes)}`,
+            );
           }
         }
       }
@@ -277,11 +324,14 @@ async function scanWithGuardrail(
     logger.agent('research', `Guardrail ${source} scan passed`);
     return { blocked: false };
   } catch (error) {
-    const err = error as any;
+    const err = error instanceof Error ? error : new Error(String(error));
     logger.warn('research', `Guardrail scan failed for ${source}, proceeding without scan`);
     logger.warn('research', `  Error: ${err.name || 'Unknown'}: ${err.message || String(error)}`);
-    if (err.$metadata) {
-      logger.warn('research', `  HTTP ${err.$metadata.httpStatusCode}, request: ${err.$metadata.requestId}`);
+    if (err instanceof BedrockRuntimeServiceException) {
+      logger.warn(
+        'research',
+        `  HTTP ${err.$metadata.httpStatusCode}, request: ${err.$metadata.requestId}`,
+      );
     }
     return { blocked: false };
   }
@@ -297,7 +347,10 @@ function createWebResearchTool(callbacks: ResearchToolCallbacks) {
     'Research a topic using web search. Classifies query complexity and delegates to the appropriate search engine. Returns findings as markdown. Use for any task requiring up-to-date information from the internet.',
     {
       topic: z.string().describe('The topic to research'),
-      context: z.string().optional().describe('Optional context about why this research is needed and what to focus on'),
+      context: z
+        .string()
+        .optional()
+        .describe('Optional context about why this research is needed and what to focus on'),
     },
     async (args) => {
       const caller = callbacks.getCallerAgentId();
@@ -306,12 +359,14 @@ function createWebResearchTool(callbacks: ResearchToolCallbacks) {
       // Check if Perplexity API is configured
       if (!process.env.PERPLEXITY_API_KEY) {
         return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify({
-              error: 'Web research is not available: PERPLEXITY_API_KEY is not configured.',
-            }),
-          }],
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                error: 'Web research is not available: PERPLEXITY_API_KEY is not configured.',
+              }),
+            },
+          ],
           isError: true,
         };
       }
@@ -323,19 +378,21 @@ function createWebResearchTool(callbacks: ResearchToolCallbacks) {
           taskId,
           caller,
           `Research budget exceeded (${budget.used}/${budget.limit}) while requesting: "${args.topic}"`,
-          'blocker'
+          'blocker',
         );
 
-        callbacks.onResearchBudgetExceeded().catch(err =>
-          logger.error('research', 'Failed to trigger budget exceeded flow', err)
-        );
+        callbacks
+          .onResearchBudgetExceeded()
+          .catch((err) => logger.error('research', 'Failed to trigger budget exceeded flow', err));
         return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify({
-              error: `Research budget exceeded (${budget.used}/${budget.limit}). Task will be stopped.`,
-            }),
-          }],
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                error: `Research budget exceeded (${budget.used}/${budget.limit}). Task will be stopped.`,
+              }),
+            },
+          ],
           isError: true,
         };
       }
@@ -346,7 +403,7 @@ function createWebResearchTool(callbacks: ResearchToolCallbacks) {
         taskId,
         caller,
         `Requested research: "${args.topic}"${args.context ? ` (context: ${args.context})` : ''}`,
-        'discovery'
+        'discovery',
       );
 
       // Generate UUID for this research session
@@ -358,13 +415,20 @@ function createWebResearchTool(callbacks: ResearchToolCallbacks) {
       await mkdir(researchDir, { recursive: true });
 
       // Write request manifest
-      await writeFile(join(researchDir, 'request.json'), JSON.stringify({
-        id: researchId,
-        topic: args.topic,
-        context: args.context || null,
-        caller: callbacks.getCallerAgentId(),
-        created_at: new Date().toISOString(),
-      }, null, 2));
+      await writeFile(
+        join(researchDir, 'request.json'),
+        JSON.stringify(
+          {
+            id: researchId,
+            topic: args.topic,
+            context: args.context || null,
+            caller: callbacks.getCallerAgentId(),
+            created_at: new Date().toISOString(),
+          },
+          null,
+          2,
+        ),
+      );
 
       logger.agent(`research:${shortId}`, 'Starting research');
       logger.agent(`research:${shortId}`, `  Topic: ${args.topic}`);
@@ -378,13 +442,15 @@ function createWebResearchTool(callbacks: ResearchToolCallbacks) {
         const inputScan = await scanWithGuardrail(queryText, 'INPUT');
         if (inputScan.blocked) {
           return {
-            content: [{
-              type: 'text' as const,
-              text: JSON.stringify({
-                error: `Research blocked: input contains sensitive data — ${inputScan.reason}`,
-                research_id: shortId,
-              }),
-            }],
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify({
+                  error: `Research blocked: input contains sensitive data — ${inputScan.reason}`,
+                  research_id: shortId,
+                }),
+              },
+            ],
             isError: true,
           };
         }
@@ -394,24 +460,27 @@ function createWebResearchTool(callbacks: ResearchToolCallbacks) {
         logger.agent(`research:${shortId}`, `  Preset: ${preset}`);
 
         // Step 3: Call Perplexity
-        const input = args.context
-          ? `${args.topic}\n\nContext: ${args.context}`
-          : args.topic;
+        const input = args.context ? `${args.topic}\n\nContext: ${args.context}` : args.topic;
 
         const response = await callPerplexity(preset, input);
-        logger.agent(`research:${shortId}`, `  Received ${response.output_text.length} chars, ${response.citations.length} citations`);
+        logger.agent(
+          `research:${shortId}`,
+          `  Received ${response.output_text.length} chars, ${response.citations.length} citations`,
+        );
 
         // Step 4: Output scan — check for prompt injection in results
         const outputScan = await scanWithGuardrail(response.output_text, 'OUTPUT');
         if (outputScan.blocked) {
           return {
-            content: [{
-              type: 'text' as const,
-              text: JSON.stringify({
-                error: `Research blocked: output flagged for prompt injection — ${outputScan.reason}`,
-                research_id: shortId,
-              }),
-            }],
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify({
+                  error: `Research blocked: output flagged for prompt injection — ${outputScan.reason}`,
+                  research_id: shortId,
+                }),
+              },
+            ],
             isError: true,
           };
         }
@@ -441,16 +510,18 @@ function createWebResearchTool(callbacks: ResearchToolCallbacks) {
         logger.error(`research:${shortId}`, 'Research failed', error);
 
         return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify({
-              error: `Research failed: ${message}`,
-              research_id: shortId,
-            }),
-          }],
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                error: `Research failed: ${message}`,
+                research_id: shortId,
+              }),
+            },
+          ],
         };
       }
-    }
+    },
   );
 }
 
@@ -482,9 +553,12 @@ export function createResearchPostToolHook(opts: {
     matcher: 'mcp__research-tools__web_research',
     hooks: [
       async (input) => {
-        const hookInput = input as any;
-        const topic = hookInput.tool_input?.topic || 'unknown';
-        const response = hookInput.tool_response;
+        if (input.hook_event_name !== 'PostToolUse') return { continue: true };
+        const hookInput = input;
+        const topicInput = z.object({ topic: z.string() }).safeParse(hookInput.tool_input);
+        const topic = topicInput.success ? topicInput.data.topic : 'unknown';
+        const responseBlocks = toolTextBlocksSchema.safeParse(hookInput.tool_response);
+        const response = responseBlocks.success ? responseBlocks.data : [];
 
         // Parse the JSON response from the MCP tool
         let parsed: { research_id?: string; content?: string } | null = null;
@@ -492,11 +566,12 @@ export function createResearchPostToolHook(opts: {
           for (const block of response) {
             if (block.type === 'text' && block.text) {
               try {
-                const json = JSON.parse(block.text);
-                if (json.research_id) {
-                  parsed = json;
-                }
-              } catch { /* not JSON — skip */ }
+                const raw: unknown = JSON.parse(block.text);
+                const result = researchResultSchema.safeParse(raw);
+                if (result.success) parsed = result.data;
+              } catch {
+                /* not JSON — skip */
+              }
             }
           }
         }
@@ -516,7 +591,7 @@ export function createResearchPostToolHook(opts: {
           opts.getTaskId(),
           opts.getAgentId(),
           `Research completed: "${topic}" — report saved as researches/${filename}`,
-          'discovery'
+          'discovery',
         );
 
         logger.agent(opts.getAgentId(), `Research report saved to shared/researches/${filename}`);
@@ -539,8 +614,10 @@ export function createResearchDefenseTagHook(): HookCallbackMatcher {
     matcher: 'mcp__research-tools__web_research',
     hooks: [
       async (input) => {
-        const hookInput = input as any;
-        const response = hookInput.tool_response;
+        if (input.hook_event_name !== 'PostToolUse') return { continue: true };
+        const hookInput = input;
+        const responseBlocks = toolTextBlocksSchema.safeParse(hookInput.tool_response);
+        const response = responseBlocks.success ? responseBlocks.data : [];
 
         // Extract the text from the MCP response
         let resultText = '';

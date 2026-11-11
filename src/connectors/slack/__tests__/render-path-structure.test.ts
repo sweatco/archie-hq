@@ -10,6 +10,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, relative, sep } from 'node:path';
+import { expectDefined } from '../../../test-support/assertions.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // src/connectors/slack/__tests__ → repo root is four levels up.
@@ -50,12 +51,21 @@ function stripComments(src: string): string {
     const next = src[i + 1];
     if (quote) {
       out += ch;
-      if (ch === '\\') { out += next ?? ''; i += 2; continue; }
+      if (ch === '\\') {
+        out += next ?? '';
+        i += 2;
+        continue;
+      }
       if (ch === quote) quote = null;
       i += 1;
       continue;
     }
-    if (ch === '"' || ch === "'" || ch === '`') { quote = ch; out += ch; i += 1; continue; }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      quote = ch;
+      out += ch;
+      i += 1;
+      continue;
+    }
     if (ch === '/' && next === '/') {
       while (i < src.length && src[i] !== '\n') i += 1;
       continue;
@@ -78,7 +88,11 @@ function stripComments(src: string): string {
 
 const sources: SourceFile[] = walkSources(srcRoot).map((full) => {
   const path = relative(repoRoot, full).split(sep).join('/');
-  return { path, code: stripComments(readFileSync(full, 'utf-8')), isTest: path.includes('/__tests__/') };
+  return {
+    path,
+    code: stripComments(readFileSync(full, 'utf-8')),
+    isTest: path.includes('/__tests__/'),
+  };
 });
 
 /** The whole file text (comments included) — for the assertion that a name is gone from the tree entirely. */
@@ -113,17 +127,22 @@ const OWN_TEXT_READERS_ALLOWED = [
 ];
 function ownTextReadOffenders(files: SourceFile[]): string[] {
   return files
-    .filter((f) => !f.isTest && !OWN_TEXT_READERS_ALLOWED.includes(f.path) && /\.ownText\b/.test(f.code))
+    .filter(
+      (f) => !f.isTest && !OWN_TEXT_READERS_ALLOWED.includes(f.path) && /\.ownText\b/.test(f.code),
+    )
     .map((f) => f.path);
 }
 
 /** Files outside the allowed set that decide NOT to redact for themselves. The render module is the only one: the pin path's unredacted render lives inside it as the named `pinBody`, so no call site answers the question. */
-const UNREDACTED_RENDER_ALLOWED = [
-  'src/connectors/slack/message-body.ts',
-];
+const UNREDACTED_RENDER_ALLOWED = ['src/connectors/slack/message-body.ts'];
 function unredactedRenderOffenders(files: SourceFile[]): string[] {
   return files
-    .filter((f) => !f.isTest && !UNREDACTED_RENDER_ALLOWED.includes(f.path) && /redacted:\s*false/.test(f.code))
+    .filter(
+      (f) =>
+        !f.isTest &&
+        !UNREDACTED_RENDER_ALLOWED.includes(f.path) &&
+        /redacted:\s*false/.test(f.code),
+    )
     .map((f) => f.path);
 }
 
@@ -133,7 +152,10 @@ describe('the Slack render path stays single', () => {
     const gone = ['render', 'MessageForContext'].join('');
     const found = rawSources.filter((f) => f.text.includes(gone)).map((f) => f.path);
 
-    expect(found, `${gone} is the renderer message-body.ts replaced; a surviving reference means a second render path grew back`).toEqual([]);
+    expect(
+      found,
+      `${gone} is the renderer message-body.ts replaced; a surviving reference means a second render path grew back`,
+    ).toEqual([]);
   });
 
   it('reads the partial ownText field only in the extractor, the renderer and the pin render call site', () => {
@@ -154,9 +176,18 @@ describe('the Slack render path stays single', () => {
     );
 
     // Scoped to the two interface bodies deliberately: `SlackAttachment` has its own `text`, and the Slack API payload types have many. Only these two are the ingested-message shapes whose `text` field WAS the whole body.
-    for (const [name, body] of [['SlackThreadMessage', threadMessage], ['RawSlackMessage', rawMessage]] as const) {
-      expect(body, `${name} must carry the author's own text under \`ownText\`, so no caller can mistake a part of the message for the whole of it`).toMatch(/\bownText\s*:/);
-      expect(body, `${name} must not declare a \`text\` field — reintroducing it recreates the shape whose name promised the whole message and delivered only part of it`).not.toMatch(/\btext\s*:/);
+    for (const [name, body] of [
+      ['SlackThreadMessage', threadMessage],
+      ['RawSlackMessage', rawMessage],
+    ] as const) {
+      expect(
+        body,
+        `${name} must carry the author's own text under \`ownText\`, so no caller can mistake a part of the message for the whole of it`,
+      ).toMatch(/\bownText\s*:/);
+      expect(
+        body,
+        `${name} must not declare a \`text\` field — reintroducing it recreates the shape whose name promised the whole message and delivered only part of it`,
+      ).not.toMatch(/\btext\s*:/);
     }
   });
 
@@ -181,14 +212,29 @@ describe('the routing gate keeps its two questions separate', () => {
       readFileSync(join(repoRoot, 'src/connectors/slack/task-routing.ts'), 'utf-8'),
     );
     const literal = /MESSAGE_NOISE_SUBTYPES\s*=\s*new Set\(\[([\s\S]*?)\]\)/.exec(routingSource);
-    expect(literal, 'MESSAGE_NOISE_SUBTYPES must be a Set literal this test can count').not.toBeNull();
-    const entries = Array.from(literal![1].matchAll(/'([^']+)'/g)).map((m) => m[1]);
+    expect(
+      literal,
+      'MESSAGE_NOISE_SUBTYPES must be a Set literal this test can count',
+    ).not.toBeNull();
+    const entries = Array.from(expectDefined(literal)[1].matchAll(/'([^']+)'/g)).map((m) => m[1]);
 
-    expect(entries, 'the subtype gate is a denylist: a count that grew means someone added a subtype to it, and a count that shrank means the list was replaced').toHaveLength(17);
+    expect(
+      entries,
+      'the subtype gate is a denylist: a count that grew means someone added a subtype to it, and a count that shrank means the list was replaced',
+    ).toHaveLength(17);
 
     // Absent, and therefore forwarded. Each of these was invisible under the old allowlist.
-    for (const forwarded of ['bot_message', 'me_message', 'huddle_thread', 'channel_topic', 'file_mention']) {
-      expect(entries, `${forwarded} carries content and must NOT be on the noise denylist`).not.toContain(forwarded);
+    for (const forwarded of [
+      'bot_message',
+      'me_message',
+      'huddle_thread',
+      'channel_topic',
+      'file_mention',
+    ]) {
+      expect(
+        entries,
+        `${forwarded} carries content and must NOT be on the noise denylist`,
+      ).not.toContain(forwarded);
     }
     // Present, and therefore dropped: `message_changed` has its own edit handler, `channel_join` is auto-generated text with no human author.
     for (const noise of ['message_changed', 'channel_join']) {
@@ -201,7 +247,10 @@ describe('the routing gate keeps its two questions separate', () => {
       readFileSync(join(repoRoot, 'src/connectors/slack/task-routing.ts'), 'utf-8'),
     );
 
-    expect(routingSource, 'task-routing.ts is deliberately dependency-free — that is why the gate can be tested without booting Bolt, and why its drop-log lives at the call site in events.ts instead of here').not.toMatch(/^\s*import\b/m);
+    expect(
+      routingSource,
+      'task-routing.ts is deliberately dependency-free — that is why the gate can be tested without booting Bolt, and why its drop-log lives at the call site in events.ts instead of here',
+    ).not.toMatch(/^\s*import\b/m);
   });
 });
 
@@ -211,7 +260,10 @@ describe('no empty-text fallback survives', () => {
     const fallback = ['?? { ', 'text:'].join('');
     const found = rawSources.filter((f) => f.text.includes(fallback)).map((f) => f.path);
 
-    expect(found, `a "${fallback} … }" fallback silently reopens the original bug when a thread-root lookup misses: the caller gets a well-formed but empty message instead of an error, and the agent is shown a blank line where an attachment-only report was`).toEqual([]);
+    expect(
+      found,
+      `a "${fallback} … }" fallback silently reopens the original bug when a thread-root lookup misses: the caller gets a well-formed but empty message instead of an error, and the agent is shown a blank line where an attachment-only report was`,
+    ).toEqual([]);
   });
 });
 
@@ -229,21 +281,33 @@ describe('the structural matchers are discriminating', () => {
 
     expect(ownTextReadOffenders(violating)).toEqual(['src/system/some-consumer.ts']);
     // ...and the same read is fine in the renderer that owns the field, or in a test.
-    expect(ownTextReadOffenders([
-      { path: 'src/connectors/slack/message-body.ts', code: 'parts.ownText', isTest: false },
-      { path: 'src/system/__tests__/some-consumer.test.ts', code: 'msg.ownText', isTest: true },
-    ])).toEqual([]);
+    expect(
+      ownTextReadOffenders([
+        { path: 'src/connectors/slack/message-body.ts', code: 'parts.ownText', isTest: false },
+        { path: 'src/system/__tests__/some-consumer.test.ts', code: 'msg.ownText', isTest: true },
+      ]),
+    ).toEqual([]);
   });
 
   it('flags an inline `redacted: false` in code while ignoring one in prose', () => {
     const violating: SourceFile[] = [
-      { path: 'src/agents/tools.ts', code: stripComments('const body = renderMessageBody(m, { redacted: false });'), isTest: false },
+      {
+        path: 'src/agents/tools.ts',
+        code: stripComments('const body = renderMessageBody(m, { redacted: false });'),
+        isTest: false,
+      },
     ];
     expect(unredactedRenderOffenders(violating)).toEqual(['src/agents/tools.ts']);
 
     // The real src/agents/tools.ts mentions the literal only in a comment explaining why `exploreBody` exists — comment-stripping is what keeps that document from failing the rule it documents.
     const prose: SourceFile[] = [
-      { path: 'src/agents/tools.ts', code: stripComments('// named rather than an inline `redacted: false` literal\nconst body = exploreBody(m);'), isTest: false },
+      {
+        path: 'src/agents/tools.ts',
+        code: stripComments(
+          '// named rather than an inline `redacted: false` literal\nconst body = exploreBody(m);',
+        ),
+        isTest: false,
+      },
     ];
     expect(unredactedRenderOffenders(prose)).toEqual([]);
   });

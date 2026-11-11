@@ -15,13 +15,20 @@ import { mkdir, writeFile, readFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import type { Trigger } from '../../types/trigger.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const WORK = mkdtempSync(join(tmpdir(), 'archie-trigger-store-'));
 process.env.ARCHIE_WORKDIR = WORK;
 
 const store = await import('../trigger-store.js');
 const { isValidTriggerId, generateTriggerId, getTriggerPath } = store;
-const { getTriggerDataPath, ensureTriggerDataDir, removeTriggerDataDir, saveTrigger, deleteTrigger } = store;
+const {
+  getTriggerDataPath,
+  ensureTriggerDataDir,
+  removeTriggerDataDir,
+  saveTrigger,
+  deleteTrigger,
+} = store;
 const { countActiveTriggers } = store;
 const { TRIGGERS_DATA_DIR } = await import('../workdir.js');
 
@@ -36,8 +43,15 @@ function sampleTrigger(id: string): Trigger {
     status: 'enabled',
     created_by: 'UCREATOR',
     created_at: '2026-08-17T09:00:00.000Z',
-    binding: { type: 'user', user_id: 'UCREATOR', channel_id: 'DCREATOR', channel_name: 'DM with Creator' },
-    conditions: [{ type: 'schedule', tz: 'UTC', next_run_at: '2026-08-18T09:00:00.000Z', cron: '0 9 * * *' }],
+    binding: {
+      type: 'user',
+      user_id: 'UCREATOR',
+      channel_id: 'DCREATOR',
+      channel_name: 'DM with Creator',
+    },
+    conditions: [
+      { type: 'schedule', tz: 'UTC', next_run_at: '2026-08-18T09:00:00.000Z', cron: '0 9 * * *' },
+    ],
     action: { prompt: 'do the thing' },
   };
 }
@@ -101,12 +115,14 @@ describe('ensureTriggerDataDir', () => {
 
     const first = await ensureTriggerDataDir(id);
     expect(first).not.toBeNull();
-    await writeFile(join(first!, 'notes.md'), 'previous fire wrote this');
+    await writeFile(join(expectDefined(first), 'notes.md'), 'previous fire wrote this');
 
     const second = await ensureTriggerDataDir(id);
 
     expect(second).toBe(first);
-    expect(await readFile(join(first!, 'notes.md'), 'utf-8')).toBe('previous fire wrote this');
+    expect(await readFile(join(expectDefined(first), 'notes.md'), 'utf-8')).toBe(
+      'previous fire wrote this',
+    );
   });
 
   it('creates nothing and returns null once the trigger record is gone', async () => {
@@ -115,13 +131,13 @@ describe('ensureTriggerDataDir', () => {
     const id = 'trg-20260817-1205-deleted';
     await saveTrigger(sampleTrigger(id));
     const path = await ensureTriggerDataDir(id);
-    await writeFile(join(path!, 'notes.md'), 'carry-over');
+    await writeFile(join(expectDefined(path), 'notes.md'), 'carry-over');
 
     await deleteTrigger(id);
-    expect(existsSync(path!)).toBe(false);
+    expect(existsSync(expectDefined(path))).toBe(false);
 
     expect(await ensureTriggerDataDir(id)).toBeNull();
-    expect(existsSync(path!)).toBe(false);
+    expect(existsSync(expectDefined(path))).toBe(false);
   });
 
   it('returns null for a trigger that never existed', async () => {
@@ -134,7 +150,7 @@ describe('removeTriggerDataDir', () => {
   it('removes a populated directory, nested subdirectories included', async () => {
     const id = 'trg-20260817-1202-rmtree';
     await saveTrigger(sampleTrigger(id));
-    const path = (await ensureTriggerDataDir(id))!;
+    const path = expectDefined(await ensureTriggerDataDir(id));
     await writeFile(join(path, 'state.json'), '{"seen":1}');
     await mkdir(join(path, 'nested', 'deeper'), { recursive: true });
     await writeFile(join(path, 'nested', 'deeper', 'log.txt'), 'entry');
@@ -153,28 +169,31 @@ describe('removeTriggerDataDir', () => {
   // caller reports a deletion while the data is still on disk.
   // Skipped as root, which ignores directory permissions, so the chmod would not
   // bite and the test would pass vacuously.
-  it.skipIf(process.getuid?.() === 0)('rejects rather than reporting success when the filesystem refuses', async () => {
-    const id = 'trg-20260817-1207-eacces';
-    await saveTrigger(sampleTrigger(id));
-    const path = (await ensureTriggerDataDir(id))!;
-    await writeFile(join(path, 'state.json'), '{"seen":1}');
+  it.skipIf(process.getuid?.() === 0)(
+    'rejects rather than reporting success when the filesystem refuses',
+    async () => {
+      const id = 'trg-20260817-1207-eacces';
+      await saveTrigger(sampleTrigger(id));
+      const path = expectDefined(await ensureTriggerDataDir(id));
+      await writeFile(join(path, 'state.json'), '{"seen":1}');
 
-    // Strip write permission from the PARENT, so removing `path` itself fails.
-    chmodSync(TRIGGERS_DATA_DIR, 0o500);
-    try {
-      await expect(removeTriggerDataDir(id)).rejects.toThrow();
-      expect(existsSync(path)).toBe(true); // the refusal was real, so the rejection is meaningful
-    } finally {
-      chmodSync(TRIGGERS_DATA_DIR, 0o700);
-    }
-  });
+      // Strip write permission from the PARENT, so removing `path` itself fails.
+      chmodSync(TRIGGERS_DATA_DIR, 0o500);
+      try {
+        await expect(removeTriggerDataDir(id)).rejects.toThrow();
+        expect(existsSync(path)).toBe(true); // the refusal was real, so the rejection is meaningful
+      } finally {
+        chmodSync(TRIGGERS_DATA_DIR, 0o700);
+      }
+    },
+  );
 });
 
 describe('deleteTrigger', () => {
   it('removes both the record file and the data directory', async () => {
     const id = 'trg-20260817-1204-both01';
     await saveTrigger(sampleTrigger(id));
-    const dataPath = (await ensureTriggerDataDir(id))!;
+    const dataPath = expectDefined(await ensureTriggerDataDir(id));
     await writeFile(join(dataPath, 'notes.md'), 'carry-over');
 
     await deleteTrigger(id);
@@ -204,7 +223,11 @@ describe('countActiveTriggers counts only what is running', () => {
   // temp workdir, and an unscoped count would tally those too.
   it('excludes pending and paused triggers', async () => {
     const CREATOR = 'UCAPTEST';
-    const mk = (id: string, status: Trigger['status']) => ({ ...sampleTrigger(id), status, created_by: CREATOR });
+    const mk = (id: string, status: Trigger['status']) => ({
+      ...sampleTrigger(id),
+      status,
+      created_by: CREATOR,
+    });
     await saveTrigger(mk('trg-20260824-1000-en1', 'enabled'));
     await saveTrigger(mk('trg-20260824-1000-en2', 'enabled'));
     await saveTrigger(mk('trg-20260824-1000-pau', 'paused'));

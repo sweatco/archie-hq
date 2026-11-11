@@ -39,7 +39,9 @@ const raw = readFileSync(entryPath, 'utf8');
 // without a dated heading (stray model noise) are dropped with a warning.
 const start = raw.search(DATE_HEADING);
 if (start === -1) {
-  console.error('Refusing to insert: entry has no "## YYYY-MM-DD" heading. Got:\n' + raw.slice(0, 160));
+  console.error(
+    'Refusing to insert: entry has no "## YYYY-MM-DD" heading. Got:\n' + raw.slice(0, 160),
+  );
   process.exit(1);
 }
 const sections = raw
@@ -57,7 +59,9 @@ const sections = raw
 // picking one would silently lose bullets, so fail loudly instead.
 const dates = sections.map((s) => s.date);
 if (new Set(dates).size !== dates.length) {
-  console.error(`Refusing to insert: duplicate dated sections in the entry file (${dates.join(', ')}).`);
+  console.error(
+    `Refusing to insert: duplicate dated sections in the entry file (${dates.join(', ')}).`,
+  );
   process.exit(1);
 }
 
@@ -82,7 +86,8 @@ for (const { date, text } of sections) {
     console.error(
       `Refusing to insert: entry for ${date} has a heading but no changelog bullets ` +
         `(an empty "no changes" record). A quiet day should be skipped upstream, not committed.\n` +
-        'Got:\n' + text.slice(0, 200),
+        'Got:\n' +
+        text.slice(0, 200),
     );
     process.exit(4);
   }

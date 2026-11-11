@@ -13,9 +13,15 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs/promises';
-import * as path from 'path';
 
 const execAsync = promisify(exec);
+
+function commandErrorMessage(error: unknown): string {
+  if (error && typeof error === 'object' && 'stderr' in error && error.stderr) {
+    return String(error.stderr);
+  }
+  return error instanceof Error ? error.message : String(error);
+}
 
 // Colors for output
 const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
@@ -56,10 +62,10 @@ async function checkEnvVars(): Promise<string> {
     'GITHUB_APP_ID',
     'GITHUB_APP_PRIVATE_KEY_PATH',
     'GITHUB_INSTALLATION_ID',
-    'GIT_ASKPASS'
+    'GIT_ASKPASS',
   ];
 
-  const missing = required.filter(v => !process.env[v]);
+  const missing = required.filter((v) => !process.env[v]);
   if (missing.length > 0) {
     throw new Error(`Missing env vars: ${missing.join(', ')}`);
   }
@@ -68,7 +74,8 @@ async function checkEnvVars(): Promise<string> {
 }
 
 async function checkPrivateKey(): Promise<string> {
-  const keyPath = process.env.GITHUB_APP_PRIVATE_KEY_PATH!;
+  const keyPath = process.env.GITHUB_APP_PRIVATE_KEY_PATH;
+  if (!keyPath) throw new Error('GITHUB_APP_PRIVATE_KEY_PATH is required');
   try {
     const stat = await fs.stat(keyPath);
     return `Key file exists (${stat.size} bytes)`;
@@ -78,7 +85,8 @@ async function checkPrivateKey(): Promise<string> {
 }
 
 async function checkGitAskpass(): Promise<string> {
-  const askpassPath = process.env.GIT_ASKPASS!;
+  const askpassPath = process.env.GIT_ASKPASS;
+  if (!askpassPath) throw new Error('GIT_ASKPASS is required');
   try {
     await fs.access(askpassPath, fs.constants.X_OK);
     return `GIT_ASKPASS executable at ${askpassPath}`;
@@ -89,7 +97,8 @@ async function checkGitAskpass(): Promise<string> {
 
 async function testTokenGeneration(): Promise<string> {
   // Simulate what GIT_ASKPASS does for password prompt
-  const askpassPath = process.env.GIT_ASKPASS!;
+  const askpassPath = process.env.GIT_ASKPASS;
+  if (!askpassPath) throw new Error('GIT_ASKPASS is required');
 
   try {
     const { stdout } = await execAsync(`"${askpassPath}" "Password for 'https://github.com':"`, {
@@ -101,13 +110,15 @@ async function testTokenGeneration(): Promise<string> {
       throw new Error('Empty token returned');
     }
     if (!token.startsWith('ghs_')) {
-      throw new Error(`Token doesn't look like GitHub installation token: ${token.substring(0, 10)}...`);
+      throw new Error(
+        `Token doesn't look like GitHub installation token: ${token.substring(0, 10)}...`,
+      );
     }
 
     return `Token generated: ${token.substring(0, 10)}...${token.substring(token.length - 4)}`;
-  } catch (error: any) {
-    if (error.stderr) {
-      throw new Error(`Token generation failed: ${error.stderr}`);
+  } catch (error: unknown) {
+    if (error && typeof error === 'object' && 'stderr' in error && error.stderr) {
+      throw new Error(`Token generation failed: ${String(error.stderr)}`);
     }
     throw error;
   }
@@ -122,7 +133,9 @@ async function testRemoteUrl(repoPath: string): Promise<string> {
   const url = await getRemoteUrl(repoPath);
 
   if (url.startsWith('git@')) {
-    throw new Error(`SSH URL detected: ${url}\n    GIT_ASKPASS only works with HTTPS URLs.\n    Fix: git remote set-url origin https://github.com/OWNER/REPO.git`);
+    throw new Error(
+      `SSH URL detected: ${url}\n    GIT_ASKPASS only works with HTTPS URLs.\n    Fix: git remote set-url origin https://github.com/OWNER/REPO.git`,
+    );
   }
 
   if (!url.startsWith('https://')) {
@@ -147,7 +160,7 @@ async function testFetch(repoPath: string, branch: string): Promise<string> {
   }
 
   try {
-    const { stdout, stderr } = await execAsync(`git fetch origin ${branch}`, {
+    await execAsync(`git fetch origin ${branch}`, {
       cwd: repoPath,
       timeout: 60000,
     });
@@ -158,9 +171,8 @@ async function testFetch(repoPath: string, branch: string): Promise<string> {
     });
 
     return `Fetched origin/${branch} (${refCheck.trim().substring(0, 7)})`;
-  } catch (error: any) {
-    const stderr = error.stderr || error.message;
-    throw new Error(`Fetch failed: ${stderr}`);
+  } catch (error: unknown) {
+    throw new Error(`Fetch failed: ${commandErrorMessage(error)}`);
   }
 }
 
@@ -169,8 +181,10 @@ async function testWorktreeList(repoPath: string): Promise<string> {
     const { stdout } = await execAsync('git worktree list', { cwd: repoPath });
     const lines = stdout.trim().split('\n');
     return `${lines.length} worktree(s) found`;
-  } catch (error: any) {
-    throw new Error(`Worktree list failed: ${error.message}`);
+  } catch (error: unknown) {
+    throw new Error(
+      `Worktree list failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 
@@ -193,14 +207,18 @@ async function testWorktreeCreate(repoPath: string, branch: string): Promise<str
     await execAsync(`git branch -D ${testBranch}`, { cwd: repoPath });
 
     return `Created and cleaned up test worktree (branch: ${stdout.trim()})`;
-  } catch (error: any) {
+  } catch (error: unknown) {
     // Try to cleanup on failure
     try {
-      await execAsync(`git worktree remove "${testPath}" --force`, { cwd: repoPath }).catch(() => {});
+      await execAsync(`git worktree remove "${testPath}" --force`, { cwd: repoPath }).catch(
+        () => {},
+      );
       await execAsync(`git branch -D ${testBranch}`, { cwd: repoPath }).catch(() => {});
-    } catch {}
+    } catch {
+      /* Cleanup is best effort; report the original worktree failure below. */
+    }
 
-    throw new Error(`Worktree creation failed: ${error.stderr || error.message}`);
+    throw new Error(`Worktree creation failed: ${commandErrorMessage(error)}`);
   }
 }
 
@@ -237,8 +255,8 @@ async function main() {
 
   // Summary
   console.log('\n' + '='.repeat(40));
-  const passed = results.filter(r => r.success).length;
-  const failed = results.filter(r => !r.success).length;
+  const passed = results.filter((r) => r.success).length;
+  const failed = results.filter((r) => !r.success).length;
 
   if (failed === 0) {
     console.log(green(`\n✓ All ${passed} tests passed\n`));
@@ -248,7 +266,7 @@ async function main() {
   }
 }
 
-main().catch(error => {
-  console.error(red('\nFatal error:'), error.message);
+main().catch((error) => {
+  console.error(red('\nFatal error:'), error instanceof Error ? error.message : String(error));
   process.exit(1);
 });

@@ -1,18 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Box, Text, useInput, useStdout } from 'ink';
 import { fetchTriggers, updateTrigger, deleteTrigger } from '../api.js';
-
-interface TriggerSummary {
-  id: string;
-  status: string;
-  created_by: string;
-  created_at: string;
-  last_fired_at: string | null;
-  binding_kind: 'channel' | 'user';
-  channel_name: string;
-  action_prompt: string;
-  summary: string;
-}
+import type { TriggerSummary } from '../api-contract.js';
 
 interface TriggerListProps {
   onBack: () => void;
@@ -22,10 +11,14 @@ interface TriggerListProps {
 
 function StatusIcon({ status }: { status: string }) {
   switch (status) {
-    case 'enabled': return <Text color="green">[on]</Text>;
-    case 'paused': return <Text color="yellow">[--]</Text>;
-    case 'pending': return <Text color="cyan">[..]</Text>;
-    default: return <Text color="gray">[?]</Text>;
+    case 'enabled':
+      return <Text color="green">[on]</Text>;
+    case 'paused':
+      return <Text color="yellow">[--]</Text>;
+    case 'pending':
+      return <Text color="cyan">[..]</Text>;
+    default:
+      return <Text color="gray">[?]</Text>;
   }
 }
 
@@ -44,8 +37,8 @@ export function TriggerList({ onBack, active, refreshTrigger }: TriggerListProps
       const { triggers: t } = await fetchTriggers();
       setTriggers(t);
       setError(null);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
@@ -53,7 +46,9 @@ export function TriggerList({ onBack, active, refreshTrigger }: TriggerListProps
 
   useEffect(() => {
     setLoading(true);
-    load();
+    load().catch((error: unknown) =>
+      setError(error instanceof Error ? error.message : String(error)),
+    );
   }, [load, refreshTrigger]);
 
   useInput((input, key) => {
@@ -67,30 +62,48 @@ export function TriggerList({ onBack, active, refreshTrigger }: TriggerListProps
     } else if ((input === 'p' || input === 'P') && triggers[cursor]) {
       const t = triggers[cursor];
       if (t.status === 'pending') {
-        setError('That proposal is still awaiting approval — approve or deny it in its thread, or press [d] to withdraw it.');
+        setError(
+          'That proposal is still awaiting approval — approve or deny it in its thread, or press [d] to withdraw it.',
+        );
       } else {
         const next = t.status === 'enabled' ? 'paused' : 'enabled';
-        updateTrigger(t.id, { status: next }).then(load).catch((e: any) => setError(e.message));
+        updateTrigger(t.id, { status: next })
+          .then(load)
+          .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
       }
     } else if ((input === 'd' || input === 'D') && triggers[cursor]) {
-      deleteTrigger(triggers[cursor].id).then(() => {
-        setCursor((c) => Math.max(0, c - 1));
-        return load();
-      }).catch((e: any) => setError(e.message));
+      deleteTrigger(triggers[cursor].id)
+        .then(() => {
+          setCursor((c) => Math.max(0, c - 1));
+          return load();
+        })
+        .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
     } else if (input === 'r' || input === 'R') {
-      load();
+      load().catch((error: unknown) =>
+        setError(error instanceof Error ? error.message : String(error)),
+      );
     }
   });
 
   if (loading) {
-    return <Box padding={1}><Text dimColor>Loading triggers...</Text></Box>;
+    return (
+      <Box padding={1}>
+        <Text dimColor>Loading triggers...</Text>
+      </Box>
+    );
   }
 
   if (error) {
     return (
       <Box flexDirection="column" padding={1}>
         <Text color="red">Error: {error}</Text>
-        <Text dimColor>Press <Text color="cyan" bold>b</Text> to go back</Text>
+        <Text dimColor>
+          {'Press '}
+          <Text color="cyan" bold>
+            b
+          </Text>
+          {' to go back'}
+        </Text>
       </Box>
     );
   }
@@ -99,20 +112,29 @@ export function TriggerList({ onBack, active, refreshTrigger }: TriggerListProps
     return (
       <Box flexDirection="column" padding={1}>
         <Text bold>No triggers set up</Text>
-        <Text dimColor>Ask Archie in Slack or the CLI to "remind me…" or "every weekday at 9am…". Press <Text color="cyan" bold>b</Text> to go back.</Text>
+        <Text dimColor>
+          {'Ask Archie in Slack or the CLI to "remind me…" or "every weekday at 9am…". Press '}
+          <Text color="cyan" bold>
+            b
+          </Text>
+          {' to go back.'}
+        </Text>
       </Box>
     );
   }
 
-  const scrollTop = Math.max(0, Math.min(cursor - Math.floor(visibleRows / 2), triggers.length - visibleRows));
+  const scrollTop = Math.max(
+    0,
+    Math.min(cursor - Math.floor(visibleRows / 2), triggers.length - visibleRows),
+  );
   const visible = triggers.slice(scrollTop, scrollTop + visibleRows);
 
   return (
     <Box flexDirection="column" padding={1}>
       <Box marginBottom={1}>
         <Text bold>Triggers ({triggers.length})</Text>
-        <Text dimColor>   [p] pause/resume  [d] delete  [r] refresh  [b] back</Text>
-        <Text dimColor>   [..] awaiting approval</Text>
+        <Text dimColor>{'   [p] pause/resume  [d] delete  [r] refresh  [b] back'}</Text>
+        <Text dimColor>{'   [..] awaiting approval'}</Text>
       </Box>
       {visible.map((t, i) => {
         const selected = scrollTop + i === cursor;
@@ -120,11 +142,22 @@ export function TriggerList({ onBack, active, refreshTrigger }: TriggerListProps
         return (
           <Box key={t.id} paddingX={1}>
             <Text wrap="truncate-end">
-              <Text color={selected ? 'cyan' : undefined} bold={selected}>{selected ? '> ' : '  '}</Text>
+              <Text color={selected ? 'cyan' : undefined} bold={selected}>
+                {selected ? '> ' : '  '}
+              </Text>
               <StatusIcon status={t.status} />
-              <Text color={selected ? 'cyan' : undefined} bold={selected}> {t.id}</Text>
-              <Text dimColor>  {where}</Text>
-              <Text>  {t.summary}</Text>
+              <Text color={selected ? 'cyan' : undefined} bold={selected}>
+                {' '}
+                {t.id}
+              </Text>
+              <Text dimColor>
+                {'  '}
+                {where}
+              </Text>
+              <Text>
+                {'  '}
+                {t.summary}
+              </Text>
             </Text>
           </Box>
         );

@@ -17,8 +17,11 @@ import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render } from 'ink-testing-library';
 import { TaskList } from './TaskList.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
-const { fetchTasksMock } = vi.hoisted(() => ({ fetchTasksMock: vi.fn() }));
+const { fetchTasksMock } = vi.hoisted(() => ({
+  fetchTasksMock: vi.fn<typeof import('../api.js').fetchTasks>(),
+}));
 vi.mock('../api.js', () => ({ fetchTasks: fetchTasksMock }));
 
 const PAGE_SIZE = 20;
@@ -43,7 +46,12 @@ function page(offset: number, count: number, total: number) {
 
 function renderList(refreshTrigger = 0, active = false) {
   return render(
-    <TaskList onSelect={() => {}} onCreate={() => {}} refreshTrigger={refreshTrigger} active={active} />,
+    <TaskList
+      onSelect={() => {}}
+      onCreate={() => {}}
+      refreshTrigger={refreshTrigger}
+      active={active}
+    />,
   );
 }
 
@@ -60,7 +68,7 @@ function assertNoBareHeader(frame: string) {
 
 /** Serves pages out of a live array, so tests can prepend and refresh. */
 function serveFrom(list: ReturnType<typeof task>[]) {
-  return async ({ offset }: { offset: number }) => ({
+  return async ({ offset = 0 } = {}) => ({
     tasks: list.slice(offset, offset + PAGE_SIZE),
     total: list.length,
   });
@@ -68,7 +76,12 @@ function serveFrom(list: ReturnType<typeof task>[]) {
 
 /** Which task the cursor (`>`) currently sits on. */
 function selectedTask(frame: string): string | null {
-  return frame.split('\n').find((l) => l.trimStart().startsWith('>'))?.match(/task-\d+/)?.[0] ?? null;
+  return (
+    frame
+      .split('\n')
+      .find((l) => l.trimStart().startsWith('>'))
+      ?.match(/task-\d+/)?.[0] ?? null
+  );
 }
 
 /** The task rows currently rendered, top to bottom. */
@@ -132,7 +145,7 @@ describe('TaskList', () => {
     // with nothing beneath it. Refreshing in place keeps the previous rows on
     // screen while page 0 retries, so the window is never empty.
     let pageZeroFails = false;
-    fetchTasksMock.mockImplementation(async ({ offset }: { offset: number }) => {
+    fetchTasksMock.mockImplementation(async ({ offset = 0 } = {}) => {
       if (offset === 0 && pageZeroFails) throw new Error('page 0 unavailable');
       return page(offset, PAGE_SIZE, 40);
     });
@@ -150,7 +163,7 @@ describe('TaskList', () => {
     await runRetry();
 
     // A header with a count but no task rows is the exact broken state.
-    assertNoBareHeader(lastFrame()!);
+    assertNoBareHeader(expectDefined(lastFrame()));
     // Rows from before the failed refresh are retained rather than blanked.
     expect(lastFrame()).toContain('task-0');
 
@@ -160,14 +173,16 @@ describe('TaskList', () => {
     expect(lastFrame()).toContain('Tasks (40)');
     expect(lastFrame()).toContain('task-0');
 
-    const zeroOffsetCalls = fetchTasksMock.mock.calls.filter((c) => c[0].offset === 0);
+    const zeroOffsetCalls = fetchTasksMock.mock.calls.filter((c) => c[0]?.offset === 0);
     expect(zeroOffsetCalls.length).toBeGreaterThan(2);
     unmount();
   });
 
   it('discards a response from before a refresh so it cannot clobber the new list', async () => {
     let releaseStale: (() => void) | undefined;
-    const stale = new Promise<void>((resolve) => { releaseStale = resolve; });
+    const stale = new Promise<void>((resolve) => {
+      releaseStale = resolve;
+    });
 
     fetchTasksMock
       // First mount: hangs until we release it, then resolves with old data.
@@ -187,7 +202,7 @@ describe('TaskList', () => {
     await settle();
     expect(lastFrame()).toContain('task-1');
 
-    releaseStale!();
+    expectDefined(releaseStale)();
     await settle();
 
     expect(lastFrame()).toContain('task-1');
@@ -210,8 +225,8 @@ describe('TaskList', () => {
       const list = Array.from({ length: 60 }, (_, i) => task(i));
       const { lastFrame, rerender, stdin, unmount } = await renderScrolledDown(list, 25);
 
-      const anchored = selectedTask(lastFrame()!);
-      const windowBefore = visibleTasks(lastFrame()!);
+      const anchored = selectedTask(expectDefined(lastFrame()));
+      const windowBefore = visibleTasks(expectDefined(lastFrame()));
       expect(anchored).not.toBe('task-0'); // genuinely scrolled away from the top
 
       // A task:* SSE event: the API prepends the new task (newest-first) and
@@ -225,8 +240,8 @@ describe('TaskList', () => {
       // The list grew and the data refreshed...
       expect(lastFrame()).toContain('Tasks (61)');
       // ...but the viewport did not move: same selection, same rows on screen.
-      expect(selectedTask(lastFrame()!)).toBe(anchored);
-      expect(visibleTasks(lastFrame()!)).toEqual(windowBefore);
+      expect(selectedTask(expectDefined(lastFrame()))).toBe(anchored);
+      expect(visibleTasks(expectDefined(lastFrame()))).toEqual(windowBefore);
       expect(lastFrame()).not.toContain('task-999'); // the new task is above, off screen
 
       void stdin;
@@ -239,16 +254,16 @@ describe('TaskList', () => {
       const list = Array.from({ length: 60 }, (_, i) => task(i));
       const { lastFrame, rerender, unmount } = await renderScrolledDown(list, 25);
 
-      const anchored = selectedTask(lastFrame()!);
-      const windowBefore = visibleTasks(lastFrame()!);
+      const anchored = selectedTask(expectDefined(lastFrame()));
+      const windowBefore = visibleTasks(expectDefined(lastFrame()));
 
       rerender(
         <TaskList onSelect={() => {}} onCreate={() => {}} refreshTrigger={1} active={true} />,
       );
       await settle();
 
-      expect(selectedTask(lastFrame()!)).toBe(anchored);
-      expect(visibleTasks(lastFrame()!)).toEqual(windowBefore);
+      expect(selectedTask(expectDefined(lastFrame()))).toBe(anchored);
+      expect(visibleTasks(expectDefined(lastFrame()))).toEqual(windowBefore);
       unmount();
     });
 
@@ -257,7 +272,7 @@ describe('TaskList', () => {
       fetchTasksMock.mockImplementation(serveFrom(list));
       const { lastFrame, rerender, unmount } = renderList(0, true);
       await settle();
-      expect(visibleTasks(lastFrame()!)[0]).toBe('task-0');
+      expect(visibleTasks(expectDefined(lastFrame()))[0]).toBe('task-0');
 
       list.unshift(task(999));
       rerender(
@@ -266,7 +281,7 @@ describe('TaskList', () => {
       await settle();
 
       // At the top the newest task should appear rather than be scrolled past.
-      expect(visibleTasks(lastFrame()!)[0]).toBe('task-999');
+      expect(visibleTasks(expectDefined(lastFrame()))[0]).toBe('task-999');
       unmount();
     });
   });

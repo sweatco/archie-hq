@@ -18,6 +18,7 @@
  * test module graph stays a single mock; all paths are built locally.
  */
 
+import { z } from 'zod';
 import { createReadStream, existsSync } from 'fs';
 import { readdir } from 'fs/promises';
 import { createInterface } from 'readline';
@@ -151,7 +152,7 @@ async function scanTranscript(filePath: string, ctx: ScanContext): Promise<void>
       if (!line.trim()) continue;
       let entry: Record<string, unknown>;
       try {
-        entry = JSON.parse(line);
+        entry = z.record(z.string(), z.unknown()).parse(JSON.parse(line));
       } catch {
         continue; // skip malformed
       }
@@ -259,7 +260,9 @@ async function collectTokens(taskId: string): Promise<{
 async function collectCost(
   taskId: string,
   reduce: NonceReducer,
-): Promise<{ grand: number; perAgent: Map<string, number>; costRecordedTurns: number } | undefined> {
+): Promise<
+  { grand: number; perAgent: Map<string, number>; costRecordedTurns: number } | undefined
+> {
   // (a) INLINE allowlist barrier: reject an unsafe taskId before a path is
   // built — an unsafe id reports no cost (undefined), like a missing file.
   if (!/^task-\d{8}-\d{4}-[a-z0-9]+$/.test(taskId)) return undefined;
@@ -281,7 +284,15 @@ async function collectCost(
     for await (const line of rl) {
       if (!line.trim()) continue;
       try {
-        records.push(JSON.parse(line));
+        records.push(
+          z
+            .object({
+              query_nonce: z.string().optional(),
+              agentKey: z.string().optional(),
+              total_cost_usd: z.number().optional(),
+            })
+            .parse(JSON.parse(line)),
+        );
       } catch {
         continue; // skip malformed
       }
@@ -295,9 +306,10 @@ async function collectCost(
   const groups = new Map<string, UsageRecordLite[]>();
   let singleton = 0;
   for (const r of records) {
-    const nonce = typeof r.query_nonce === 'string' && r.query_nonce
-      ? r.query_nonce
-      : `__no-nonce-${singleton++}`;
+    const nonce =
+      typeof r.query_nonce === 'string' && r.query_nonce
+        ? r.query_nonce
+        : `__no-nonce-${singleton++}`;
     const list = groups.get(nonce);
     if (list) list.push(r);
     else groups.set(nonce, [r]);

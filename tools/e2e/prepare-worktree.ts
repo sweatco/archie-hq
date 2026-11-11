@@ -45,7 +45,19 @@
  * plain inputs and are unit-tested; main does the disk work.
  */
 
-import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'fs';
+import {
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmdirSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from 'fs';
 import { createServer, type AddressInfo } from 'net';
 import { dirname, join } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
@@ -74,12 +86,17 @@ export interface TreeState {
  * In a worktree the common dir is `<main>/.git`; in the main checkout it is this
  * repo's own `.git`, which yields `repoRoot` — reported as "not a worktree".
  */
-export function mainCheckoutFrom(gitCommonDirAbsolute: string, repoRoot: string): { kind: 'worktree'; main: string } | { kind: 'main-checkout' } {
+export function mainCheckoutFrom(
+  gitCommonDirAbsolute: string,
+  repoRoot: string,
+): { kind: 'worktree'; main: string } | { kind: 'main-checkout' } {
   const trimmed = gitCommonDirAbsolute.trim().replace(/\/+$/, '');
   if (!trimmed) return { kind: 'main-checkout' };
   const main = trimmed.endsWith('/.git') ? dirname(trimmed) : trimmed;
   const normalize = (p: string) => p.replace(/\/+$/, '');
-  return normalize(main) === normalize(repoRoot) ? { kind: 'main-checkout' } : { kind: 'worktree', main };
+  return normalize(main) === normalize(repoRoot)
+    ? { kind: 'main-checkout' }
+    : { kind: 'worktree', main };
 }
 
 /** Replace the `PORT=` line with `port`, or append one when the file has none. */
@@ -143,7 +160,9 @@ export function planPreparation(state: TreeState, main: string, freePort: string
       replacesSymlink: state.secrets === 'symlink',
     });
   } else {
-    notes.push('secrets/: a real directory holding every entry found in the main checkout’s — left as is.');
+    notes.push(
+      'secrets/: a real directory holding every entry found in the main checkout’s — left as is.',
+    );
   }
 
   if (state.dotenv === 'absent') {
@@ -161,7 +180,9 @@ export function planPreparation(state: TreeState, main: string, freePort: string
   }
 
   if (!state.nodeModules) {
-    notes.push('node_modules is absent — run `npm install` before the suite (the boot itself builds inside Docker and does not need it).');
+    notes.push(
+      'node_modules is absent — run `npm install` before the suite (the boot itself builds inside Docker and does not need it).',
+    );
   }
 
   return { actions, notes, errors };
@@ -173,7 +194,9 @@ export function renderPlan(plan: PreparePlan): string[] {
     if (a.kind === 'link') lines.push(`link   ${a.path} -> ${a.from}`);
     else if (a.kind === 'copy-secrets') {
       const what = a.entries.length > 0 ? a.entries.join(', ') : '(nothing missing)';
-      lines.push(`copy   secrets/ from ${a.from}${a.replacesSymlink ? ' (replacing a symlink — Docker cannot build through one)' : ''}: ${what}`);
+      lines.push(
+        `copy   secrets/ from ${a.from}${a.replacesSymlink ? ' (replacing a symlink — Docker cannot build through one)' : ''}: ${what}`,
+      );
     } else lines.push(`write  .env from ${a.from} with PORT=${a.port}`);
   }
   return lines;
@@ -192,7 +215,8 @@ function classify(path: string): EntryKind {
     return 'absent';
   }
   if (st.isSymbolicLink()) return 'symlink';
-  if (st.isDirectory()) return readdirSync(path).filter((n) => n !== '.DS_Store').length === 0 ? 'empty-dir' : 'dir';
+  if (st.isDirectory())
+    return readdirSync(path).filter((n) => n !== '.DS_Store').length === 0 ? 'empty-dir' : 'dir';
   return 'file';
 }
 
@@ -233,7 +257,9 @@ function readTreeState(repoRoot: string, main: string): TreeState {
   const secrets = classify(join(repoRoot, 'secrets'));
   let secretsMissing: string[] = [];
   try {
-    const mainEntries = readdirSync(join(main, 'secrets')).filter((n) => !SECRETS_PLACEHOLDERS.has(n));
+    const mainEntries = readdirSync(join(main, 'secrets')).filter(
+      (n) => !SECRETS_PLACEHOLDERS.has(n),
+    );
     secretsMissing =
       secrets === 'symlink'
         ? mainEntries
@@ -262,7 +288,10 @@ function readTreeState(repoRoot: string, main: string): TreeState {
 
 function applyPlan(plan: PreparePlan, repoRoot: string, state: TreeState, io: PrepareIo): void {
   for (const a of plan.actions) {
-    const dest = join(repoRoot, a.kind === 'link' ? a.path : a.kind === 'copy-secrets' ? 'secrets' : '.env');
+    const dest = join(
+      repoRoot,
+      a.kind === 'link' ? a.path : a.kind === 'copy-secrets' ? 'secrets' : '.env',
+    );
     if (a.kind === 'link') {
       // .DS_Store counts as empty to classify but not to rmdirSync.
       if (classify(dest) === 'empty-dir') {
@@ -278,9 +307,15 @@ function applyPlan(plan: PreparePlan, repoRoot: string, state: TreeState, io: Pr
       }
       mkdirSync(dest, { recursive: true });
       for (const entry of a.entries) {
-        cpSync(join(a.from, entry), join(dest, entry), { recursive: true, force: false, errorOnExist: false });
+        cpSync(join(a.from, entry), join(dest, entry), {
+          recursive: true,
+          force: false,
+          errorOnExist: false,
+        });
       }
-      io.log(`copied   secrets/ entries: ${a.entries.length > 0 ? a.entries.join(', ') : '(none missing)'}`);
+      io.log(
+        `copied   secrets/ entries: ${a.entries.length > 0 ? a.entries.join(', ') : '(none missing)'}`,
+      );
     } else {
       writeFileSync(dest, rewritePort(state.mainDotenv ?? '', a.port), { mode: 0o600 });
       io.log(`wrote    .env from ${a.from} with PORT=${a.port}`);
@@ -308,7 +343,9 @@ export async function runPrepare(
 ): Promise<PrepareResult> {
   const commonDir = await exec('git', ['rev-parse', '--path-format=absolute', '--git-common-dir']);
   if (commonDir.code !== 0) {
-    io.error(`git rev-parse --git-common-dir failed (exit ${commonDir.code}): ${commonDir.stderr.trim() || '(no stderr)'}`);
+    io.error(
+      `git rev-parse --git-common-dir failed (exit ${commonDir.code}): ${commonDir.stderr.trim() || '(no stderr)'}`,
+    );
     return { code: 1 };
   }
 
@@ -330,7 +367,8 @@ export async function runPrepare(
   if (opts.printPlanOnly) {
     io.log(`Worktree of ${where.main}. Planned actions:`);
     const rendered = renderPlan(plan);
-    for (const line of rendered.length > 0 ? rendered : ['(nothing — already prepared)']) io.log(`  ${line}`);
+    for (const line of rendered.length > 0 ? rendered : ['(nothing — already prepared)'])
+      io.log(`  ${line}`);
     for (const n of plan.notes) io.log(`  note: ${n}`);
     return { code: 0 };
   }
@@ -343,7 +381,9 @@ export async function runPrepare(
   }
   for (const n of plan.notes) io.log(`note: ${n}`);
 
-  const written = plan.actions.find((a): a is Extract<Action, { kind: 'write-env' }> => a.kind === 'write-env');
+  const written = plan.actions.find(
+    (a): a is Extract<Action, { kind: 'write-env' }> => a.kind === 'write-env',
+  );
   io.log('Harness prerequisites satisfied — `npx tsx tools/e2e/boot.ts` can boot this worktree.');
   return written ? { code: 0, port: written.port } : { code: 0 };
 }
@@ -352,7 +392,10 @@ export function parseArgs(argv: string[]): { printPlanOnly: boolean } {
   let printPlanOnly = false;
   for (const arg of argv) {
     if (arg === '--print-plan') printPlanOnly = true;
-    else throw new Error(`unknown argument: ${arg} (usage: npx tsx tools/e2e/prepare-worktree.ts [--print-plan])`);
+    else
+      throw new Error(
+        `unknown argument: ${arg} (usage: npx tsx tools/e2e/prepare-worktree.ts [--print-plan])`,
+      );
   }
   return { printPlanOnly };
 }

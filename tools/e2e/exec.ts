@@ -45,7 +45,11 @@ export function makeExec(options: ExecOptions = {}): ExecFn {
         if (options.echo) process.stderr.write(chunk);
       });
       child.on('error', (err) => {
-        resolve({ code: 127, stdout, stderr: `${stderr}${stderr ? '\n' : ''}failed to spawn ${cmd}: ${err.message}` });
+        resolve({
+          code: 127,
+          stdout,
+          stderr: `${stderr}${stderr ? '\n' : ''}failed to spawn ${cmd}: ${err.message}`,
+        });
       });
       child.on('close', (code) => {
         resolve({ code: code ?? 1, stdout, stderr });

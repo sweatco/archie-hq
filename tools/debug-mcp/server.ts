@@ -96,7 +96,8 @@ server.tool(
     sections.push(`Task: ${m.task_id}`);
     sections.push(`Status: ${m.status}`);
     if (m.title) sections.push(`Title: ${m.title}`);
-    if (m.edit_allowed !== undefined) sections.push(`Edit mode: ${m.edit_allowed ? 'allowed' : 'not allowed'}`);
+    if (m.edit_allowed !== undefined)
+      sections.push(`Edit mode: ${m.edit_allowed ? 'allowed' : 'not allowed'}`);
     sections.push(`Created: ${m.created_at}`);
     sections.push(`Updated: ${m.updated_at}`);
 
@@ -115,7 +116,9 @@ server.tool(
     const lines = events.map(renderEventLine).filter((l): l is string => l !== null);
     if (lines.length > 0) {
       const tail = lines.slice(-30);
-      sections.push(`\nTranscript (last ${tail.length} of ${lines.length} lines):\n${tail.join('\n')}`);
+      sections.push(
+        `\nTranscript (last ${tail.length} of ${lines.length} lines):\n${tail.join('\n')}`,
+      );
     }
 
     return { content: [{ type: 'text', text: sections.join('\n') }] };
@@ -161,7 +164,10 @@ server.tool(
   'Get the event log for a task. Use the "after" cursor to poll for new events since your last check.',
   {
     task_id: z.string().describe('The task ID'),
-    after: z.number().optional().describe('Return events after this cursor (from a previous call\'s total field)'),
+    after: z
+      .number()
+      .optional()
+      .describe("Return events after this cursor (from a previous call's total field)"),
   },
   async ({ task_id, after }) => {
     const result = await client.getEvents(task_id, after);
@@ -185,21 +191,31 @@ server.tool(
     task_id: z.string().describe('The task ID'),
     type: z.enum(APPROVAL_TYPES).describe('The request type to approve/deny'),
     approve: z.boolean().describe('true to approve, false to deny'),
-    github: z.string().optional().describe('Repo of the pending PR, e.g. "org/repo" (required for type "merge")'),
-    pr_number: z.number().optional().describe('Number of the pending PR (required for type "merge")'),
+    github: z
+      .string()
+      .optional()
+      .describe('Repo of the pending PR, e.g. "org/repo" (required for type "merge")'),
+    pr_number: z
+      .number()
+      .optional()
+      .describe('Number of the pending PR (required for type "merge")'),
     ref: z
       .string()
       .optional()
-      .describe('Id of the pending item, echoed from the approval event (required for type "tool_call")'),
+      .describe(
+        'Id of the pending item, echoed from the approval event (required for type "tool_call")',
+      ),
   },
   async ({ task_id, type, approve, github, pr_number, ref }) => {
     const { stale } = await client.approve(task_id, type, approve, { github, pr_number, ref });
     if (stale) {
       return {
-        content: [{
-          type: 'text',
-          text: `STALE: ${type} resolution for ${task_id} did not match the pending request — nothing was approved or denied`,
-        }],
+        content: [
+          {
+            type: 'text',
+            text: `STALE: ${type} resolution for ${task_id} did not match the pending request — nothing was approved or denied`,
+          },
+        ],
       };
     }
     const action = approve ? 'Approved' : 'Denied';
@@ -215,7 +231,9 @@ server.tool(
     nonce: z
       .string()
       .optional()
-      .describe("Substring matched in the task's event log — use when you tagged a message with a nonce but don't yet know the task id."),
+      .describe(
+        "Substring matched in the task's event log — use when you tagged a message with a nonce but don't yet know the task id.",
+      ),
     timeout_seconds: z
       .number()
       .optional()

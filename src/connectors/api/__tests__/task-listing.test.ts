@@ -19,12 +19,22 @@ const require = createRequire(import.meta.url);
 vi.mock('../../../system/workdir.js', async () => {
   const { tmpdir } = await import('os');
   const { join } = await import('path');
-  const dir = join(tmpdir(), `archie-api-listing-${process.pid}-${Math.random().toString(36).slice(2)}`);
+  const dir = join(
+    tmpdir(),
+    `archie-api-listing-${process.pid}-${Math.random().toString(36).slice(2)}`,
+  );
   return { SESSIONS_DIR: dir, WORKDIR: tmpdir(), TRIGGERS_DIR: join(dir, 'triggers') };
 });
 
 vi.mock('../../../system/logger.js', () => ({
-  logger: { warn: vi.fn(), system: vi.fn(), error: vi.fn(), debug: vi.fn(), agent: vi.fn(), plain: vi.fn() },
+  logger: {
+    warn: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    agent: vi.fn(),
+    plain: vi.fn(),
+  },
 }));
 
 vi.mock('../../../system/event-bus.js', () => ({
@@ -40,20 +50,23 @@ vi.mock('../../slack/client.js', () => ({
 }));
 
 // A listing that constructs one of these is the bug. Nothing here should call it.
-const { taskGetMock, migrateSpy } = vi.hoisted(() => ({ taskGetMock: vi.fn(), migrateSpy: vi.fn() }));
+const { taskGetMock, migrateSpy } = vi.hoisted(() => ({
+  taskGetMock: vi.fn(),
+  migrateSpy: vi.fn(),
+}));
 vi.mock('../../../tasks/task.js', () => ({
   Task: { get: taskGetMock, create: vi.fn() },
   activeTasks: new Map(),
   migrateRepositoriesShape: migrateSpy,
   readRepositories: (m: { repositories?: unknown }) =>
-    Array.isArray(m.repositories) ? m.repositories : [],
+    Array.isArray(m.repositories) ? (m.repositories as unknown[]) : [],
 }));
 
 import { mountApiRoutes } from '../routes.js';
 import { logger } from '../../../system/logger.js';
 import { SESSIONS_DIR } from '../../../system/workdir.js';
 
-const express = require('express');
+const express = require('express') as typeof import('express');
 
 const LEGACY = 'task-20260301-0900-legacy';
 
@@ -63,7 +76,14 @@ async function writeLegacyTask(taskId: string, status: string): Promise<void> {
   await mkdir(dir, { recursive: true });
   const metadata = {
     task_id: taskId,
-    channels: { 'slack:C1:111.0': { type: 'slack', channel_id: 'C1', channel_name: 'bugs', thread_id: '111.0' } },
+    channels: {
+      'slack:C1:111.0': {
+        type: 'slack',
+        channel_id: 'C1',
+        channel_name: 'bugs',
+        thread_id: '111.0',
+      },
+    },
     default_channel: 'slack:C1:111.0',
     agent_sessions: {},
     repositories: { backend: { path: '/repos/backend' }, mobile: { path: '/repos/mobile' } },
@@ -124,6 +144,8 @@ describe('GET /api/tasks', () => {
     expect(warned.filter((line) => line.includes('[migrate]'))).toEqual([]);
 
     // And the folder is byte-identical: a read must never upgrade one.
-    expect(await readFile(join(SESSIONS_DIR, LEGACY, 'shared', 'metadata.json'), 'utf-8')).toBe(before);
+    expect(await readFile(join(SESSIONS_DIR, LEGACY, 'shared', 'metadata.json'), 'utf-8')).toBe(
+      before,
+    );
   });
 });

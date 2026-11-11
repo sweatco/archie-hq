@@ -1,3 +1,5 @@
+import type { McpServerConfig } from '@anthropic-ai/claude-agent-sdk';
+
 /**
  * Agent-related type definitions
  */
@@ -105,7 +107,7 @@ export interface AgentDef {
   agentPrompt?: string;
 
   /** MCP server configs resolved from plugin's .mcp.json (server name → config) */
-  mcpServers?: Record<string, any>;
+  mcpServers?: Record<string, McpServerConfig>;
 
   /**
    * Human-readable descriptions for this agent's MCP servers (server name →

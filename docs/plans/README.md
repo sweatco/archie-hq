@@ -30,6 +30,8 @@ Historical record of Archie's incremental development. Each plan represents a mi
 | [20260818](20260818-slack-single-message-path.md) | One Slack message render path, and a denylist inbound gate | Implemented |
 | [20260819](20260819-trigger-task-owns-conversation.md) | A trigger-fired task owns its conversation: the message that fired it, and its own thread | Implemented |
 | [20260926](20260926-prompt-only-concise-pilot.md) | PM prompt and skill concise reply pilot | Draft; 26-reply comparison passed length target, failed factuality gate |
+| [20261109](20261109-coding-guidelines-and-checks.md) | Coding guidelines, formatting and zero-debt lint checks | Implemented |
+| [20261110](20261110-coding-guidelines-review.md) | Guidelines review of PR #370 and targeted repairs | Implemented and verified locally |
 
 ## Evolution Arc
 

@@ -7,6 +7,7 @@ import type { TaskMetadata } from '../../types/task.js';
 import { InitiativeService } from '../service.js';
 import type { BackgroundModel } from '../model.js';
 import type { ObservationSlack } from '../slack.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 const NOW = Date.parse('2026-10-20T10:00:00Z');
 const TS = ((NOW - 30_000) / 1000).toFixed(6);
@@ -17,61 +18,155 @@ let model: BackgroundModel;
 let messages: SourceMessage[];
 
 beforeEach(() => {
-  vi.useFakeTimers(); vi.setSystemTime(NOW);
+  vi.useFakeTimers();
+  vi.setSystemTime(NOW);
   store = new InitiativeStore(':memory:', 'T1', NOW - 60_000);
   store.channel('C1', true, false);
-  messages = [{ channel: 'C1', thread: TS, ts: TS, version: TS, author: 'U1', text: 'I will release today at noon.' }];
+  messages = [
+    {
+      channel: 'C1',
+      thread: TS,
+      ts: TS,
+      version: TS,
+      author: 'U1',
+      text: 'I will release today at noon.',
+    },
+  ];
   store.record(messages[0], NOW);
   slack = {
     inspect: vi.fn(async () => ({ shared: false, recipientCanRead: true })),
-    channels: vi.fn(async () => ['C1']), page: vi.fn(async () => ({ messages })),
-    dm: vi.fn(async () => 'D1'), recipient: vi.fn(async channel => channel === 'D1' ? 'U1' : null), verifyDm: vi.fn(async (channel) => channel === 'D1'),
-    send: vi.fn(async () => 'sent-ts'), find: vi.fn(async () => undefined),
-    active: vi.fn(() => false), link: (channel, thread) => `https://slack.test/${channel}/${thread}`,
+    channels: vi.fn(async () => ['C1']),
+    page: vi.fn(async () => ({ messages })),
+    dm: vi.fn(async () => 'D1'),
+    recipient: vi.fn(async (channel: string) => (channel === 'D1' ? 'U1' : null)),
+    verifyDm: vi.fn(async (channel: string) => channel === 'D1'),
+    send: vi.fn(async () => 'sent-ts'),
+    find: vi.fn(async () => undefined),
+    active: vi.fn(() => false),
+    link: (channel, thread) => `https://slack.test/${channel}/${thread}`,
   };
-  model = { complete: vi.fn(async (request) => ({ resolved: false, help: null, public: false, evidence: (request.input as { matter: Matter }).matter.evidence })) as BackgroundModel['complete'] };
-  service = new InitiativeService(store, slack, model, { mode: 'shadow', extractionModel: 'haiku', investigationModel: 'sonnet' }, () => NOW);
+  model = {
+    complete: vi.fn(async (request: Parameters<BackgroundModel['complete']>[0]) => ({
+      resolved: false,
+      help: null,
+      public: false,
+      evidence: (request.input as { matter: Matter }).matter.evidence,
+    })) as BackgroundModel['complete'],
+  };
+  service = new InitiativeService(
+    store,
+    slack,
+    model,
+    { mode: 'shadow', extractionModel: 'haiku', investigationModel: 'sonnet' },
+    () => NOW,
+  );
 });
-afterEach(() => { service.stop(); store.close(); vi.useRealTimers(); });
+afterEach(() => {
+  service.stop();
+  store.close();
+  vi.useRealTimers();
+});
 
 describe('independent PR review probes', () => {
   it('schedules a follow-up no later than an explicit approaching deadline', async () => {
-    const evidence = store.snapshot('C1', TS)!.evidence.map((e) => e.id);
-    vi.mocked(model.complete).mockResolvedValueOnce({ threads: [{ channel: 'C1', thread: TS, observations: [], matters: [{
-      key: 'release', title: 'Release', detail: 'Release in one hour', evidence, state: 'open', owner: 'U1',
-      deadline: { date: '2026-10-20', time: '12:00', timeZone: 'Europe/Lisbon' }, explicit: true,
-    }] }] });
+    const evidence = expectDefined(store.snapshot('C1', TS)).evidence.map((e) => e.id);
+    vi.mocked(model.complete).mockResolvedValueOnce({
+      threads: [
+        {
+          channel: 'C1',
+          thread: TS,
+          observations: [],
+          matters: [
+            {
+              key: 'release',
+              title: 'Release',
+              detail: 'Release in one hour',
+              evidence,
+              state: 'open',
+              owner: 'U1',
+              deadline: { date: '2026-10-20', time: '12:00', timeZone: 'Europe/Lisbon' },
+              explicit: true,
+            },
+          ],
+        },
+      ],
+    });
     store.schedule('extract', 'global', NOW);
     await service.tick(NOW);
     const matter = store.matters()[0];
     expect(model.complete).toHaveBeenCalledTimes(2);
-    const due = Number(store['row']("SELECT due FROM jobs WHERE kind='investigate' AND target=?", matter.id)!.due);
-    expect(due).toBeLessThanOrEqual(matter.deadline!);
+    const due = Number(
+      expectDefined(
+        store['row']("SELECT due FROM jobs WHERE kind='investigate' AND target=?", matter.id),
+      ).due,
+    );
+    expect(due).toBeLessThanOrEqual(expectDefined(matter.deadline));
   });
 
   it('repairs a transient metadata-lookup gap after successful full reconciliation', async () => {
     vi.mocked(slack.inspect).mockRejectedValueOnce(new Error('temporary Slack outage'));
-    await new ObservationRecall(store, slack).search({ memory_destination: { channel_id: 'C1' } } as TaskMetadata, 'release', 10);
+    await new ObservationRecall(store, slack).search(
+      { memory_destination: { channel_id: 'C1' } } as TaskMetadata,
+      'release',
+      10,
+    );
     store.schedule('collect', 'C1', NOW);
     store.schedule('thread', `C1:${TS}`, NOW, JSON.stringify({ channel: 'C1', thread: TS }));
     await service.tick(NOW);
-    expect(store['row']("SELECT allowed FROM channels WHERE id='C1'")!.allowed).toBe(1);
+    expect(expectDefined(store['row']("SELECT allowed FROM channels WHERE id='C1'")).allowed).toBe(
+      1,
+    );
     expect(slack.page).toHaveBeenCalled();
-    expect(store.snapshot('C1', TS)!.gap).toBeNull();
+    expect(expectDefined(store.snapshot('C1', TS)).gap).toBeNull();
   });
 
   it('suppresses the same intervention when citation order changes', async () => {
     const replyTs = ((NOW - 20_000) / 1000).toFixed(6);
-    messages.push({ channel: 'C1', thread: TS, ts: replyTs, version: replyTs, author: 'U2', text: 'The release checklist is ready.' });
+    messages.push({
+      channel: 'C1',
+      thread: TS,
+      ts: replyTs,
+      version: replyTs,
+      author: 'U2',
+      text: 'The release checklist is ready.',
+    });
     store.record(messages[1], NOW);
-    const snapshot = store.snapshot('C1', TS)!;
+    const snapshot = expectDefined(store.snapshot('C1', TS));
     const evidence = snapshot.evidence.map((e) => e.id);
-    const matter: Matter = { id: 'release', channel: 'C1', thread: TS, title: 'Release', detail: 'Prepare release', evidence,
-      state: 'open', owner: 'U1', deadline: null, explicit: true, nextCheck: NOW, valid: true };
+    const matter: Matter = {
+      id: 'release',
+      channel: 'C1',
+      thread: TS,
+      title: 'Release',
+      detail: 'Prepare release',
+      evidence,
+      state: 'open',
+      owner: 'U1',
+      deadline: null,
+      explicit: true,
+      nextCheck: NOW,
+      valid: true,
+    };
     store.apply([snapshot], [], [matter]);
-    store.enqueueDelivery({ id: 'previous', recipient: matter.owner, channel: 'D1', thread: null, text: 'I can prepare the release.', matters: [matter.id], evidence,
-      digest: false, state: 'sent', ts: 'prior-ts', created: NOW - 86_400_000 });
-    vi.mocked(model.complete).mockResolvedValueOnce({ resolved: false, help: 'I can prepare the release.', public: false, evidence: [...evidence].reverse() });
+    store.enqueueDelivery({
+      id: 'previous',
+      recipient: matter.owner,
+      channel: 'D1',
+      thread: null,
+      text: 'I can prepare the release.',
+      matters: [matter.id],
+      evidence,
+      digest: false,
+      state: 'sent',
+      ts: 'prior-ts',
+      created: NOW - 86_400_000,
+    });
+    vi.mocked(model.complete).mockResolvedValueOnce({
+      resolved: false,
+      help: 'I can prepare the release.',
+      public: false,
+      evidence: [...evidence].reverse(),
+    });
     store.schedule('investigate', matter.id, NOW);
     await service.tick(NOW);
     expect(store.deliveries('pending')).toHaveLength(0);

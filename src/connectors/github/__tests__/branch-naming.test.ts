@@ -7,11 +7,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import {
-  BRANCH_PREFIX,
-  taskBranchName,
-  extractTaskIdFromBranch,
-} from '../branch-naming.js';
+import { BRANCH_PREFIX, taskBranchName, extractTaskIdFromBranch } from '../branch-naming.js';
 
 const TASK_ID = 'task-20260101-1823-abc123';
 

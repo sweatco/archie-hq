@@ -22,6 +22,7 @@
  * directly) with zero other changes. This is a temporary debugging aid; it
  * should be OFF in steady-state production.
  */
+import { z } from 'zod';
 import http from 'node:http';
 import https from 'node:https';
 import { appendFile } from 'node:fs/promises';
@@ -73,16 +74,31 @@ function attribute(systemText: string): { taskId: string; agentId: string } {
 /** Parse a captured /v1/messages body into a token breakdown. Never throws. */
 function breakdown(body: string): Record<string, unknown> | null {
   try {
-    const j = JSON.parse(body);
+    const raw: unknown = JSON.parse(body);
+    const j = z
+      .object({
+        system: z
+          .union([z.string(), z.array(z.object({ text: z.string().optional() }).passthrough())])
+          .optional(),
+        messages: z.array(z.unknown()).optional(),
+        tools: z.array(z.object({ name: z.string().optional() }).passthrough()).optional(),
+        model: z.string().optional(),
+      })
+      .parse(raw);
     if (!j || (!j.system && !j.messages)) return null;
     const systemText = Array.isArray(j.system)
-      ? j.system.map((s: any) => s?.text ?? '').join('')
-      : (typeof j.system === 'string' ? j.system : '');
+      ? j.system.map((s) => s?.text ?? '').join('')
+      : typeof j.system === 'string'
+        ? j.system
+        : '';
     const tools = Array.isArray(j.tools) ? j.tools : [];
     const toolsStr = JSON.stringify(tools);
     const messagesStr = JSON.stringify(j.messages ?? []);
     const { taskId, agentId } = attribute(systemText);
-    const withTok = tools.map((t: any) => ({ name: t?.name ?? '?', tok: estTokens(JSON.stringify(t)) }));
+    const withTok = tools.map((t) => ({
+      name: t?.name ?? '?',
+      tok: estTokens(JSON.stringify(t)),
+    }));
     const perTool = [...withTok].sort((a, b) => b.tok - a.tok).slice(0, 15);
     // Tally by source: mcp__<server>__tool → "<server>"; everything else → "builtin".
     // This is the actionable view — shows which MCP server (or the built-in set)
@@ -91,7 +107,7 @@ function breakdown(body: string): Record<string, unknown> | null {
     for (const t of withTok) {
       const m = /^mcp__([^_]+(?:_[^_]+)*?)__/.exec(t.name);
       const key = m ? m[1] : 'builtin';
-      (byServer[key] ??= { tok: 0, n: 0 });
+      byServer[key] ??= { tok: 0, n: 0 };
       byServer[key].tok += t.tok;
       byServer[key].n += 1;
     }
@@ -126,7 +142,7 @@ async function recordRequest(path: string, body: string): Promise<void> {
   }
   logger.system(
     `[context-probe] ${rep.taskId}/${rep.agentId}: TOTAL≈${rep.total_req_tok} tok ` +
-    `(system=${rep.system_tok}, tools=${rep.tools_tok}/${rep.n_tools}, messages=${rep.messages_tok})`,
+      `(system=${rep.system_tok}, tools=${rep.tools_tok}/${rep.n_tools}, messages=${rep.messages_tok})`,
   );
 }
 
@@ -140,7 +156,7 @@ export function startContextProbe(): void {
 
   const server = http.createServer((clientReq, clientRes) => {
     const chunks: Buffer[] = [];
-    clientReq.on('data', (c) => chunks.push(c));
+    clientReq.on('data', (c: Buffer) => chunks.push(c));
     clientReq.on('end', () => {
       const body = Buffer.concat(chunks);
 
@@ -175,22 +191,38 @@ export function startContextProbe(): void {
 
   server.on('error', (err) => {
     listening = false;
-    logger.error('context-probe', `proxy failed to start on ${PROBE_HOST}:${PROBE_PORT} — agents will use the API directly`, err);
+    logger.error(
+      'context-probe',
+      `proxy failed to start on ${PROBE_HOST}:${PROBE_PORT} — agents will use the API directly`,
+      err,
+    );
   });
   server.listen(PROBE_PORT, PROBE_HOST, () => {
     listening = true;
-    logger.system(`[context-probe] ENABLED — proxy on http://${PROBE_HOST}:${PROBE_PORT} → ${UPSTREAM_BASE}, logging to ${LOG_PATH}`);
-    logger.system('[context-probe] DEBUG AID — set CONTEXT_PROBE_ENABLED=false + redeploy to disable.');
+    logger.system(
+      `[context-probe] ENABLED — proxy on http://${PROBE_HOST}:${PROBE_PORT} → ${UPSTREAM_BASE}, logging to ${LOG_PATH}`,
+    );
+    logger.system(
+      '[context-probe] DEBUG AID — set CONTEXT_PROBE_ENABLED=false + redeploy to disable.',
+    );
   });
 }
 
 /** Wire an upstream-request error to a clean 502 so a forward failure surfaces like an API error rather than hanging. */
-function upstreamRes_onError(upstreamReq: http.ClientRequest, clientRes: http.ServerResponse): void {
+function upstreamRes_onError(
+  upstreamReq: http.ClientRequest,
+  clientRes: http.ServerResponse,
+): void {
   upstreamReq.on('error', (err) => {
     logger.error('context-probe', 'upstream forward failed', err);
     if (!clientRes.headersSent) {
       clientRes.writeHead(502, { 'content-type': 'application/json' });
-      clientRes.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: `context-probe upstream error: ${String(err)}` } }));
+      clientRes.end(
+        JSON.stringify({
+          type: 'error',
+          error: { type: 'api_error', message: `context-probe upstream error: ${String(err)}` },
+        }),
+      );
     } else {
       clientRes.destroy();
     }

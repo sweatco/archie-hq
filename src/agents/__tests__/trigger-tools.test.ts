@@ -19,7 +19,9 @@ vi.mock('../../connectors/github/client.js', () => ({
 }));
 vi.mock('../../connectors/github/repo-clone.js', () => ({
   gitExec: vi.fn().mockResolvedValue(''),
-  setupSharedClone: vi.fn().mockResolvedValue({ clone_path: '/wt', branch: 'feat/x', base_branch: 'main' }),
+  setupSharedClone: vi
+    .fn()
+    .mockResolvedValue({ clone_path: '/wt', branch: 'feat/x', base_branch: 'main' }),
   cloneExists: vi.fn().mockResolvedValue(false),
   isWorktree: vi.fn().mockResolvedValue(false),
   fetchOrigin: vi.fn().mockResolvedValue(undefined),
@@ -29,7 +31,15 @@ vi.mock('../../tasks/persistence.js', () => ({
   getReposPath: vi.fn().mockReturnValue('/sessions/task-1/repos'),
 }));
 vi.mock('../../system/logger.js', () => ({
-  logger: { agentAction: vi.fn(), agentFinding: vi.fn(), agentToSlack: vi.fn(), system: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
+  logger: {
+    agentAction: vi.fn(),
+    agentFinding: vi.fn(),
+    agentToSlack: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    warn: vi.fn(),
+    debug: vi.fn(),
+  },
 }));
 vi.mock('../registry.js', () => ({
   getAgentIds: vi.fn().mockReturnValue([]),
@@ -39,8 +49,16 @@ vi.mock('../registry.js', () => ({
 vi.mock('../../system/event-bus.js', () => ({ emitEvent: vi.fn() }));
 
 // The store is the unit under test's collaborator — fully stubbed so nothing hits disk.
-const { loadTrigger, saveTrigger, listTriggers, deleteTrigger, countActiveTriggers, updatePendingTrigger, withdrawPendingTrigger } = vi.hoisted(() => {
-  const loadTrigger = vi.fn();
+const {
+  loadTrigger,
+  saveTrigger,
+  listTriggers,
+  deleteTrigger,
+  countActiveTriggers,
+  updatePendingTrigger,
+  withdrawPendingTrigger,
+} = vi.hoisted(() => {
+  const loadTrigger = vi.fn<typeof import('../../system/trigger-store.js').loadTrigger>();
   const saveTrigger = vi.fn();
   // Faithful stand-in for the real store helper. The property that matters about
   // the real one — that the re-read, the status check and the write happen
@@ -67,12 +85,23 @@ const { loadTrigger, saveTrigger, listTriggers, deleteTrigger, countActiveTrigge
     return { outcome: 'withdrawn' };
   });
   return {
-    loadTrigger, saveTrigger, updatePendingTrigger, deleteTrigger, withdrawPendingTrigger,
-    listTriggers: vi.fn(), countActiveTriggers: vi.fn(),
+    loadTrigger,
+    saveTrigger,
+    updatePendingTrigger,
+    deleteTrigger,
+    withdrawPendingTrigger,
+    listTriggers: vi.fn(),
+    countActiveTriggers: vi.fn(),
   };
 });
 vi.mock('../../system/trigger-store.js', () => ({
-  loadTrigger, saveTrigger, listTriggers, deleteTrigger, countActiveTriggers, updatePendingTrigger, withdrawPendingTrigger,
+  loadTrigger,
+  saveTrigger,
+  listTriggers,
+  deleteTrigger,
+  countActiveTriggers,
+  updatePendingTrigger,
+  withdrawPendingTrigger,
   generateTriggerId: vi.fn().mockReturnValue('trg-20260729-1200-newone'),
 }));
 
@@ -84,7 +113,13 @@ const { announceTriggerChange, indexTrigger, deindexTrigger } = vi.hoisted(() =>
 }));
 vi.mock('../../system/trigger-scheduler.js', async (importActual) => {
   const actual = await importActual<typeof import('../../system/trigger-scheduler.js')>();
-  return { ...actual, announceTriggerChange, indexTrigger, deindexTrigger, triggersEnabled: () => true };
+  return {
+    ...actual,
+    announceTriggerChange,
+    indexTrigger,
+    deindexTrigger,
+    triggersEnabled: () => true,
+  };
 });
 
 // Origin resolution + privacy: talk to Slack. Force a public-channel origin so
@@ -108,7 +143,7 @@ import { createOrchestrationMcpServer } from '../tools.js';
 import type { Agent } from '../agent.js';
 import type { Task } from '../../tasks/task.js';
 
-const postInteractiveToUser = vi.fn().mockResolvedValue(true);
+const postInteractiveToUser = vi.fn<Task['postInteractiveToUser']>().mockResolvedValue(true);
 
 function makeAgent(): Agent {
   return {
@@ -123,7 +158,14 @@ function makeTask(): Task {
   return {
     taskId: 'task-1',
     metadata: {
-      channels: { [key]: { type: 'slack', channel_id: 'C1', thread_id: '1.0', channel_name: 'growth-operations' } },
+      channels: {
+        [key]: {
+          type: 'slack',
+          channel_id: 'C1',
+          thread_id: '1.0',
+          channel_name: 'growth-operations',
+        },
+      },
       default_channel: key,
     },
     postInteractiveToUser,
@@ -134,12 +176,20 @@ function makeTask(): Task {
 }
 
 /** Build the orchestration server and pull a tool's invokable handler out of the registry. */
-function getHandler(name: string): (args: Record<string, unknown>) => Promise<{ content: { text: string }[] }> {
+function getHandler(
+  name: string,
+): (args: Record<string, unknown>) => Promise<{ content: { text: string }[] }> {
   const server = createOrchestrationMcpServer(makeAgent(), makeTask());
-  const inst = server.instance as unknown as { _registeredTools?: Record<string, unknown>; _tools?: Iterable<[string, unknown]> };
+  const inst = server.instance as unknown as {
+    _registeredTools?: Record<string, unknown>;
+    _tools?: Iterable<[string, unknown]>;
+  };
   const raw = inst._registeredTools ?? Object.fromEntries(inst._tools ?? []);
   const entry = raw[name] as { callback?: unknown; handler?: unknown; cb?: unknown };
-  const fn = (entry.callback ?? entry.handler ?? entry.cb) as (a: unknown, b: unknown) => Promise<{ content: { text: string }[] }>;
+  const fn = (entry.callback ?? entry.handler ?? entry.cb) as (
+    a: unknown,
+    b: unknown,
+  ) => Promise<{ content: { text: string }[] }>;
   return (args) => fn(args, {});
 }
 
@@ -153,7 +203,14 @@ function pendingTrigger(over: Partial<Trigger> = {}): Trigger {
     created_at: '2026-07-29T10:56:00.000Z',
     proposed_in_task: 'task-1',
     binding: { type: 'channel', channel_id: 'C1', channel_name: 'growth-operations' },
-    conditions: [{ type: 'schedule', tz: 'Europe/London', next_run_at: '2026-07-30T08:00:00.000Z', cron: '0 9 * * *' }],
+    conditions: [
+      {
+        type: 'schedule',
+        tz: 'Europe/London',
+        next_run_at: '2026-07-30T08:00:00.000Z',
+        cron: '0 9 * * *',
+      },
+    ],
     action: { prompt: 'original instruction' },
     summary: 'Original watch',
     ...over,
@@ -161,7 +218,12 @@ function pendingTrigger(over: Partial<Trigger> = {}): Trigger {
 }
 
 function enabledTrigger(over: Partial<Trigger> = {}): Trigger {
-  return pendingTrigger({ id: 'trg-20260723-1401-live', status: 'enabled', summary: 'Live watch', ...over });
+  return pendingTrigger({
+    id: 'trg-20260723-1401-live',
+    status: 'enabled',
+    summary: 'Live watch',
+    ...over,
+  });
 }
 
 beforeEach(() => {
@@ -197,11 +259,13 @@ describe('update_trigger — a pending proposal is editable', () => {
   it('edits the proposal instead of reporting it as nonexistent', async () => {
     loadTrigger.mockResolvedValue(pendingTrigger());
 
-    const out = text(await getHandler('update_trigger')({
-      id: 'trg-20260729-1056-pending',
-      summary: 'Revised watch',
-      action_prompt: 'revised instruction',
-    }));
+    const out = text(
+      await getHandler('update_trigger')({
+        id: 'trg-20260729-1056-pending',
+        summary: 'Revised watch',
+        action_prompt: 'revised instruction',
+      }),
+    );
 
     // The regression: this used to be "No trigger ... found."
     expect(out).not.toMatch(/no trigger .* found/i);
@@ -214,7 +278,12 @@ describe('update_trigger — a pending proposal is editable', () => {
   it('keeps the edited proposal pending and out of the scheduler', async () => {
     loadTrigger.mockResolvedValue(pendingTrigger());
 
-    const out = text(await getHandler('update_trigger')({ id: 'trg-20260729-1056-pending', summary: 'Revised watch' }));
+    const out = text(
+      await getHandler('update_trigger')({
+        id: 'trg-20260729-1056-pending',
+        summary: 'Revised watch',
+      }),
+    );
 
     const saved = saveTrigger.mock.calls[0][0] as Trigger;
     expect(saved.status).toBe('pending');
@@ -225,10 +294,14 @@ describe('update_trigger — a pending proposal is editable', () => {
   it('re-posts an approval card so the user decides on the CURRENT details', async () => {
     loadTrigger.mockResolvedValue(pendingTrigger());
 
-    await getHandler('update_trigger')({ id: 'trg-20260729-1056-pending', summary: 'Revised watch' });
+    await getHandler('update_trigger')({
+      id: 'trg-20260729-1056-pending',
+      summary: 'Revised watch',
+    });
 
     expect(postInteractiveToUser).toHaveBeenCalledOnce();
-    const [cardText, , approvalType, , , ref] = postInteractiveToUser.mock.calls[0];
+    const [cardText, , approvalType, , , ref]: Parameters<Task['postInteractiveToUser']> =
+      postInteractiveToUser.mock.calls[0];
     expect(cardText).toContain('Revised watch');
     expect(approvalType).toBe('trigger');
     expect(ref).toBe('trg-20260729-1056-pending'); // same id — the old card can't enable a superseded version
@@ -237,7 +310,10 @@ describe('update_trigger — a pending proposal is editable', () => {
   it('does not announce a pending edit to the bound channel — nothing is running yet', async () => {
     loadTrigger.mockResolvedValue(pendingTrigger());
 
-    await getHandler('update_trigger')({ id: 'trg-20260729-1056-pending', summary: 'Revised watch' });
+    await getHandler('update_trigger')({
+      id: 'trg-20260729-1056-pending',
+      summary: 'Revised watch',
+    });
 
     // Positive assertion first: without it this test passes on ANY path that
     // rejects the update outright (it did — under the pre-fix "No trigger found"
@@ -247,10 +323,12 @@ describe('update_trigger — a pending proposal is editable', () => {
     expect(announceTriggerChange).not.toHaveBeenCalled();
   });
 
-  it('refuses to enable a pending proposal — only the user\'s approval can do that', async () => {
+  it("refuses to enable a pending proposal — only the user's approval can do that", async () => {
     loadTrigger.mockResolvedValue(pendingTrigger());
 
-    const out = text(await getHandler('update_trigger')({ id: 'trg-20260729-1056-pending', status: 'enabled' }));
+    const out = text(
+      await getHandler('update_trigger')({ id: 'trg-20260729-1056-pending', status: 'enabled' }),
+    );
 
     expect(out).toMatch(/awaiting the user's approval/i);
     expect(saveTrigger).not.toHaveBeenCalled();
@@ -264,11 +342,13 @@ describe('update_trigger — a pending proposal is editable', () => {
     // the caller cannot check without re-reading.
     loadTrigger.mockResolvedValue(pendingTrigger());
 
-    const out = text(await getHandler('update_trigger')({
-      id: 'trg-20260729-1056-pending',
-      status: 'enabled',
-      summary: 'Weekly, not daily',
-    }));
+    const out = text(
+      await getHandler('update_trigger')({
+        id: 'trg-20260729-1056-pending',
+        status: 'enabled',
+        summary: 'Weekly, not daily',
+      }),
+    );
 
     expect(saveTrigger).not.toHaveBeenCalled();
     expect(out).toMatch(/nothing was changed/i);
@@ -287,7 +367,9 @@ describe('update_trigger — a pending proposal is editable', () => {
   it('still reports a genuinely missing trigger as not found', async () => {
     loadTrigger.mockResolvedValue(null);
 
-    const out = text(await getHandler('update_trigger')({ id: 'trg-20260729-9999-absent', summary: 'x' }));
+    const out = text(
+      await getHandler('update_trigger')({ id: 'trg-20260729-9999-absent', summary: 'x' }),
+    );
 
     expect(out).toMatch(/no trigger .* found/i);
   });
@@ -296,7 +378,9 @@ describe('update_trigger — a pending proposal is editable', () => {
     loadTrigger.mockResolvedValue(enabledTrigger());
     countActiveTriggers.mockResolvedValue(0);
 
-    const out = text(await getHandler('update_trigger')({ id: 'trg-20260723-1401-live', summary: 'Renamed' }));
+    const out = text(
+      await getHandler('update_trigger')({ id: 'trg-20260723-1401-live', summary: 'Renamed' }),
+    );
 
     expect(saveTrigger).toHaveBeenCalledOnce();
     expect(indexTrigger).toHaveBeenCalledOnce();
@@ -333,12 +417,17 @@ describe('delete_trigger — withdrawing an unapproved proposal', () => {
 
 describe('pending proposals are scoped to the task that proposed them', () => {
   it('a proposal from another task is neither listed nor editable', async () => {
-    const foreign = pendingTrigger({ id: 'trg-20260729-1100-foreign', proposed_in_task: 'task-999' });
+    const foreign = pendingTrigger({
+      id: 'trg-20260729-1100-foreign',
+      proposed_in_task: 'task-999',
+    });
     listTriggers.mockResolvedValue([foreign]);
     loadTrigger.mockResolvedValue(foreign);
 
     const listed = text(await getHandler('list_triggers')({}));
-    const edited = text(await getHandler('update_trigger')({ id: 'trg-20260729-1100-foreign', summary: 'hijacked' }));
+    const edited = text(
+      await getHandler('update_trigger')({ id: 'trg-20260729-1100-foreign', summary: 'hijacked' }),
+    );
 
     // Before ownership scoping a PUBLIC-bound pending proposal was visible from
     // every origin, so another conversation could rewrite its action prompt and
@@ -359,22 +448,31 @@ describe('pending proposals are scoped to the task that proposed them', () => {
     loadTrigger.mockResolvedValue(priv);
 
     const listed = text(await getHandler('list_triggers')({}));
-    const edited = text(await getHandler('update_trigger')({ id: 'trg-20260729-1056-pending', summary: 'Revised' }));
+    const edited = text(
+      await getHandler('update_trigger')({ id: 'trg-20260729-1056-pending', summary: 'Revised' }),
+    );
 
     expect(listed).toContain('trg-20260729-1056-pending');
     expect(edited).toMatch(/updated and re-posted/i);
     expect(saveTrigger).toHaveBeenCalledOnce();
   });
 
-  it('get_trigger shows this task its own proposal and hides another conversation\'s', async () => {
+  it("get_trigger shows this task its own proposal and hides another conversation's", async () => {
     loadTrigger.mockResolvedValue(pendingTrigger({ proposed_in_task: 'task-1' }));
-    expect(text(await getHandler('get_trigger')({ id: 'trg-20260729-1056-pending' }))).toContain('awaiting approval — not running');
+    expect(text(await getHandler('get_trigger')({ id: 'trg-20260729-1056-pending' }))).toContain(
+      'awaiting approval — not running',
+    );
     loadTrigger.mockResolvedValue(pendingTrigger({ proposed_in_task: 'task-other' }));
-    expect(text(await getHandler('get_trigger')({ id: 'trg-20260729-1056-pending' }))).toMatch(/isn't visible from here/);
+    expect(text(await getHandler('get_trigger')({ id: 'trg-20260729-1056-pending' }))).toMatch(
+      /isn't visible from here/,
+    );
   });
 
   it('withdrawal is scoped the same way', async () => {
-    const foreign = pendingTrigger({ id: 'trg-20260729-1100-foreign', proposed_in_task: 'task-999' });
+    const foreign = pendingTrigger({
+      id: 'trg-20260729-1100-foreign',
+      proposed_in_task: 'task-999',
+    });
     loadTrigger.mockResolvedValue(foreign);
 
     const out = text(await getHandler('delete_trigger')({ id: 'trg-20260729-1100-foreign' }));
@@ -392,12 +490,14 @@ describe('pending proposals are scoped to the task that proposed them', () => {
     loadTrigger.mockResolvedValue(owned);
     postInteractiveToUser.mockResolvedValueOnce(false);
 
-    const out = text(await getHandler('update_trigger')({ id: 'trg-20260729-1056-pending', summary: 'Revised' }));
+    const out = text(
+      await getHandler('update_trigger')({ id: 'trg-20260729-1056-pending', summary: 'Revised' }),
+    );
 
-    expect(saveTrigger).toHaveBeenCalledOnce();       // the edit still happened
+    expect(saveTrigger).toHaveBeenCalledOnce(); // the edit still happened
     expect(out).toMatch(/no new approval card/i);
     expect(out).not.toMatch(/re-posted for approval/i);
-    expect(out).toMatch(/old card|superseded/i);       // and says what the user is looking at
+    expect(out).toMatch(/old card|superseded/i); // and says what the user is looking at
   });
 
   it('a legacy proposal bound to a PRIVATE channel is still withdrawable from the DM that made it', async () => {
@@ -412,7 +512,9 @@ describe('pending proposals are scoped to the task that proposed them', () => {
     });
     loadTrigger.mockResolvedValue(legacy);
 
-    const out = text(await getHandler('delete_trigger')({ id: 'trg-20260701-0900-legacy-private' }));
+    const out = text(
+      await getHandler('delete_trigger')({ id: 'trg-20260701-0900-legacy-private' }),
+    );
 
     expect(out).toMatch(/withdrawn/i);
     expect(out).not.toMatch(/another conversation/i);
@@ -439,7 +541,9 @@ describe('pending proposals are scoped to the task that proposed them', () => {
     const listed = text(await getHandler('list_triggers')({}));
     expect(listed).toContain('trg-20260701-0900-legacy');
 
-    const edited = text(await getHandler('update_trigger')({ id: 'trg-20260701-0900-legacy', summary: 'Revised' }));
+    const edited = text(
+      await getHandler('update_trigger')({ id: 'trg-20260701-0900-legacy', summary: 'Revised' }),
+    );
     expect(edited).toMatch(/can't be edited from here/i);
     expect(edited).toMatch(/withdraw it/i);
     expect(saveTrigger).not.toHaveBeenCalled();
@@ -469,11 +573,17 @@ describe('editing a pending proposal delegates the write to the store', () => {
   it('hands the store a mutate that applies only the requested fields', async () => {
     loadTrigger.mockResolvedValue(pendingTrigger({ action: { prompt: 'UNTOUCHED' } }));
 
-    await getHandler('update_trigger')({ id: 'trg-20260729-1056-pending', summary: 'Revised watch' });
+    await getHandler('update_trigger')({
+      id: 'trg-20260729-1056-pending',
+      summary: 'Revised watch',
+    });
 
     // Delegation: hand-rolling load-modify-save here is the defect, and it looks
     // identical from the outside unless this is asserted directly.
-    expect(updatePendingTrigger).toHaveBeenCalledWith('trg-20260729-1056-pending', expect.any(Function));
+    expect(updatePendingTrigger).toHaveBeenCalledWith(
+      'trg-20260729-1056-pending',
+      expect.any(Function),
+    );
     // Apply the captured mutate to a fresh probe: it must set the summary and
     // leave everything it was not asked to change alone.
     const mutate = updatePendingTrigger.mock.calls[0][1] as (t: Trigger) => void;
@@ -490,7 +600,12 @@ describe('editing a pending proposal delegates the write to the store', () => {
       .mockResolvedValueOnce(pendingTrigger())
       .mockResolvedValueOnce(pendingTrigger({ status: 'enabled' }));
 
-    const out = text(await getHandler('update_trigger')({ id: 'trg-20260729-1056-pending', summary: 'Revised watch' }));
+    const out = text(
+      await getHandler('update_trigger')({
+        id: 'trg-20260729-1056-pending',
+        summary: 'Revised watch',
+      }),
+    );
 
     expect(saveTrigger).not.toHaveBeenCalled(); // must not stamp status back to pending
     expect(out).toMatch(/while this edit was in flight/i);
@@ -498,16 +613,18 @@ describe('editing a pending proposal delegates the write to the store', () => {
   });
 
   it('reports a withdrawal that lands mid-flight', async () => {
-    loadTrigger
-      .mockResolvedValueOnce(pendingTrigger())
-      .mockResolvedValueOnce(null);
+    loadTrigger.mockResolvedValueOnce(pendingTrigger()).mockResolvedValueOnce(null);
 
-    const out = text(await getHandler('update_trigger')({ id: 'trg-20260729-1056-pending', summary: 'Revised watch' }));
+    const out = text(
+      await getHandler('update_trigger')({
+        id: 'trg-20260729-1056-pending',
+        summary: 'Revised watch',
+      }),
+    );
 
     expect(saveTrigger).not.toHaveBeenCalled();
     expect(out).toMatch(/withdrawn while this edit was in flight/i);
   });
-
 });
 
 describe('propose_trigger records the proposing task', () => {
@@ -560,20 +677,27 @@ describe('a trigger-fired task is not an operator', () => {
 
   function handlerFor(task: Task, name: string) {
     const server = createOrchestrationMcpServer(makeAgent(), task);
-    const inst = server.instance as unknown as { _registeredTools?: Record<string, unknown>; _tools?: Iterable<[string, unknown]> };
+    const inst = server.instance as unknown as {
+      _registeredTools?: Record<string, unknown>;
+      _tools?: Iterable<[string, unknown]>;
+    };
     const raw = inst._registeredTools ?? Object.fromEntries(inst._tools ?? []);
     const entry = raw[name] as { callback?: unknown; handler?: unknown; cb?: unknown };
-    const fn = (entry.callback ?? entry.handler ?? entry.cb) as (a: unknown, b: unknown) => Promise<{ content: { text: string }[] }>;
+    const fn = (entry.callback ?? entry.handler ?? entry.cb) as (
+      a: unknown,
+      b: unknown,
+    ) => Promise<{ content: { text: string }[] }>;
     return (args: Record<string, unknown>) => fn(args, {});
   }
 
   /** A proposal made in a different conversation, bound to a private channel. */
-  const foreign = () => pendingTrigger({
-    id: 'trg-20260801-1100-foreign',
-    proposed_in_task: 'somebody-elses-dm',
-    summary: 'their private proposal',
-    binding: { type: 'channel', channel_id: 'C_PRIVATE', channel_name: 'their-private-channel' },
-  });
+  const foreign = () =>
+    pendingTrigger({
+      id: 'trg-20260801-1100-foreign',
+      proposed_in_task: 'somebody-elses-dm',
+      summary: 'their private proposal',
+      binding: { type: 'channel', channel_id: 'C_PRIVATE', channel_name: 'their-private-channel' },
+    });
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -587,18 +711,28 @@ describe('a trigger-fired task is not an operator', () => {
 
   it('cannot edit one — the action prompt of someone else’s proposal stays put', async () => {
     loadTrigger.mockResolvedValue(foreign());
-    const out = text(await handlerFor(firedTask(), 'update_trigger')({
-      id: 'trg-20260801-1100-foreign',
-      action_prompt: 'INJECTED by a different conversation',
-    }));
+    const out = text(
+      await handlerFor(
+        firedTask(),
+        'update_trigger',
+      )({
+        id: 'trg-20260801-1100-foreign',
+        action_prompt: 'INJECTED by a different conversation',
+      }),
+    );
     expect(out).toMatch(/another conversation/i);
     expect(saveTrigger).not.toHaveBeenCalled();
-    expect(postInteractiveToUser, 'no card may be posted for a proposal it does not own').not.toHaveBeenCalled();
+    expect(
+      postInteractiveToUser,
+      'no card may be posted for a proposal it does not own',
+    ).not.toHaveBeenCalled();
   });
 
   it('cannot withdraw one', async () => {
     loadTrigger.mockResolvedValue(foreign());
-    const out = text(await handlerFor(firedTask(), 'delete_trigger')({ id: 'trg-20260801-1100-foreign' }));
+    const out = text(
+      await handlerFor(firedTask(), 'delete_trigger')({ id: 'trg-20260801-1100-foreign' }),
+    );
     expect(out).toMatch(/another conversation/i);
     expect(deleteTrigger).not.toHaveBeenCalled();
   });
@@ -607,7 +741,12 @@ describe('a trigger-fired task is not an operator', () => {
     // The fix must not blind a fired task to its own channel — that is the
     // context it legitimately works in.
     listTriggers.mockResolvedValue([
-      pendingTrigger({ id: 'trg-20260801-1200-ours', status: 'enabled', proposed_in_task: undefined, binding: { type: 'channel', channel_id: 'C_HOME', channel_name: 'ops-daily' } }),
+      pendingTrigger({
+        id: 'trg-20260801-1200-ours',
+        status: 'enabled',
+        proposed_in_task: undefined,
+        binding: { type: 'channel', channel_id: 'C_HOME', channel_name: 'ops-daily' },
+      }),
     ]);
     const out = text(await handlerFor(firedTask(), 'list_triggers')({}));
     expect(out).toContain('trg-20260801-1200-ours');

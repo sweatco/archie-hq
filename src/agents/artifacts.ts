@@ -27,10 +27,7 @@ import { getArtifactsPath } from '../tasks/persistence.js';
  * Companion to a future `assertWritable` (sandbox.allowWritePaths) — the pair
  * keeps the call sites readable while sharing the same root-validation logic.
  */
-export async function assertReadable(
-  inputPath: string,
-  sandbox: SandboxOptions,
-): Promise<string> {
+export async function assertReadable(inputPath: string, sandbox: SandboxOptions): Promise<string> {
   return assertInsideRoots(inputPath, sandbox.allowReadPaths, 'readable');
 }
 

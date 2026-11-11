@@ -7,6 +7,7 @@
 
 import { relative } from 'path';
 import pc from 'picocolors';
+import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 
 // Project root path to trim from all file paths
 const PROJECT_ROOT = process.cwd();
@@ -15,17 +16,19 @@ const PROJECT_ROOT = process.cwd();
 const COLORS_ENABLED = !process.env.NO_COLOR && process.stdout.isTTY;
 
 // Color helper that respects NO_COLOR
-const c = COLORS_ENABLED ? pc : {
-  blue: (s: string) => s,
-  green: (s: string) => s,
-  cyan: (s: string) => s,
-  magenta: (s: string) => s,
-  yellow: (s: string) => s,
-  red: (s: string) => s,
-  dim: (s: string) => s,
-  bold: (s: string) => s,
-  gray: (s: string) => s,
-};
+const c = COLORS_ENABLED
+  ? pc
+  : {
+      blue: (s: string) => s,
+      green: (s: string) => s,
+      cyan: (s: string) => s,
+      magenta: (s: string) => s,
+      yellow: (s: string) => s,
+      red: (s: string) => s,
+      dim: (s: string) => s,
+      bold: (s: string) => s,
+      gray: (s: string) => s,
+    };
 
 /**
  * Agent name to color mapping
@@ -35,7 +38,6 @@ const AGENT_COLORS: Record<string, (s: string) => string> = {
   'backend-agent': pc.green,
   'mobile-agent': pc.cyan,
 };
-
 
 /**
  * Get color for an agent name
@@ -136,20 +138,21 @@ export class Logger {
   agentTool(
     agentName: string,
     toolName: string,
-    input: any,
-    opts?: { editMode?: boolean; cwds?: string[]; subagentLabel?: string }
+    rawInput: unknown,
+    opts?: { editMode?: boolean; cwds?: string[]; subagentLabel?: string },
   ): void {
+    const input = parseToolLogInput(rawInput);
     const label = formatAgentLabel(agentName, opts?.editMode);
     const cwds = opts?.cwds || [];
 
     if (toolName === 'Read') {
-      const displayPath = trimFilePath(input.file_path, cwds);
+      const displayPath = trimFilePath(input.file_path ?? '', cwds);
       console.log(`${label} ${c.dim('Reading:')} ${displayPath}`);
     } else if (toolName === 'Write') {
-      const displayPath = trimFilePath(input.file_path, cwds);
+      const displayPath = trimFilePath(input.file_path ?? '', cwds);
       console.log(`${label} ${c.dim('Writing:')} ${displayPath}`);
     } else if (toolName === 'Edit') {
-      const displayPath = trimFilePath(input.file_path, cwds);
+      const displayPath = trimFilePath(input.file_path ?? '', cwds);
       console.log(`${label} ${c.dim('Editing:')} ${displayPath}`);
     } else if (toolName === 'Grep') {
       console.log(`${label} ${c.dim('Searching:')} "${input.pattern}"`);
@@ -178,7 +181,8 @@ export class Logger {
       console.log(`${label} ${c.dim('Tool:')} ${formatAgentSpawnLine(input)}`);
     } else if (toolName === 'WebSearch') {
       const searchQuery = input.query || '';
-      const displayQuery = searchQuery.length > 80 ? searchQuery.substring(0, 77) + '...' : searchQuery;
+      const displayQuery =
+        searchQuery.length > 80 ? searchQuery.substring(0, 77) + '...' : searchQuery;
       console.log(`${label} ${c.dim('WebSearch:')} "${displayQuery}"`);
     } else if (toolName === 'WebFetch') {
       const url = input.url || '';
@@ -194,9 +198,9 @@ export class Logger {
       const server = parts[1] || '';
       const tool = parts.slice(2).join('__') || '';
       // Show key params inline, truncated
-      const params = Object.entries(input || {})
+      const params = Object.entries(rawInput && typeof rawInput === 'object' ? rawInput : {})
         .map(([k, v]) => {
-          const s = typeof v === 'string' ? v : JSON.stringify(v);
+          const s = typeof v === 'string' ? v : (JSON.stringify(v) ?? String(v));
           return `${k}=${s.length > 60 ? s.substring(0, 57) + '...' : s}`;
         })
         .join(', ');
@@ -215,14 +219,12 @@ export class Logger {
     fromAgent: string,
     toAgent: string,
     message: string,
-    opts?: { editMode?: boolean; truncate?: number }
+    opts?: { editMode?: boolean; truncate?: number },
   ): void {
     const fromLabel = formatAgentLabel(fromAgent, opts?.editMode);
     const toLabel = formatAgentLabel(toAgent);
 
-    const displayMessage = opts?.truncate
-      ? message.substring(0, opts.truncate) + '...'
-      : message;
+    const displayMessage = opts?.truncate ? message.substring(0, opts.truncate) + '...' : message;
 
     console.log(`${fromLabel} ${c.dim('→')} ${toLabel}: ${displayMessage}`);
   }
@@ -234,12 +236,10 @@ export class Logger {
     agentName: string,
     type: string,
     entry: string,
-    opts?: { editMode?: boolean; truncate?: number }
+    opts?: { editMode?: boolean; truncate?: number },
   ): void {
     const label = formatAgentLabel(agentName, opts?.editMode);
-    const displayEntry = opts?.truncate
-      ? entry.substring(0, opts.truncate) + '...'
-      : entry;
+    const displayEntry = opts?.truncate ? entry.substring(0, opts.truncate) + '...' : entry;
 
     console.log(`${label} ${c.yellow('[' + type + ']')}: ${displayEntry}`);
   }
@@ -251,7 +251,7 @@ export class Logger {
     agentName: string,
     action: string,
     details: string,
-    opts?: { editMode?: boolean }
+    opts?: { editMode?: boolean },
   ): void {
     const label = formatAgentLabel(agentName, opts?.editMode);
     if (details) {
@@ -264,7 +264,11 @@ export class Logger {
   /**
    * Log an agent posting to Slack
    */
-  agentToSlack(agentName: string, message: string, opts?: { editMode?: boolean; destination?: string }): void {
+  agentToSlack(
+    agentName: string,
+    message: string,
+    opts?: { editMode?: boolean; destination?: string },
+  ): void {
     const label = formatAgentLabel(agentName, opts?.editMode);
     const dest = opts?.destination ? `[${opts.destination}]` : '[Slack]';
     console.log(`${label} ${c.dim('→')} ${c.cyan(dest)}: ${message}`);
@@ -273,7 +277,7 @@ export class Logger {
   /**
    * Log an error
    */
-  error(prefix: string, message: string, error?: any): void {
+  error(prefix: string, message: string, error?: unknown): void {
     if (error) {
       // '%s' pins the format string so % specifiers in caller-provided text are never interpreted
       console.error('%s', `${c.red('[' + prefix + ']')} ${message}`, error);
@@ -285,7 +289,7 @@ export class Logger {
   /**
    * Log a warning
    */
-  warn(prefix: string, message: string, error?: any): void {
+  warn(prefix: string, message: string, error?: unknown): void {
     if (error) {
       // '%s' pins the format string so % specifiers in caller-provided text are never interpreted
       console.warn('%s', `${c.yellow('[' + prefix + ']')} ${message}`, error);
@@ -304,9 +308,9 @@ export class Logger {
   /**
    * Log a debug message with an object (logged as-is for console inspection)
    */
-  debug(prefix: string, message: string, data?: any): void {
+  debug(prefix: string, message: string, data?: unknown): void {
     if (data !== undefined) {
-      console.log(`${c.dim('[' + prefix + ']')} ${message}`, data);
+      console.log('%s', `${c.dim('[' + prefix + ']')} ${message}`, data);
     } else {
       console.log(`${c.dim('[' + prefix + ']')} ${message}`);
     }
@@ -321,6 +325,35 @@ interface AgentSpawnInput {
   subagent_type?: string;
   model?: string;
   description?: string;
+}
+
+interface ToolLogInput extends AgentSpawnInput {
+  file_path?: string;
+  pattern?: string;
+  command?: string;
+  skill?: string;
+  prompt?: string;
+  name?: string;
+  query?: string;
+  url?: string;
+}
+
+function parseToolLogInput(raw: unknown): ToolLogInput {
+  if (!raw || typeof raw !== 'object') return {};
+  const input = raw as Record<string, unknown>;
+  return {
+    file_path: typeof input.file_path === 'string' ? input.file_path : undefined,
+    pattern: typeof input.pattern === 'string' ? input.pattern : undefined,
+    command: typeof input.command === 'string' ? input.command : undefined,
+    skill: typeof input.skill === 'string' ? input.skill : undefined,
+    description: typeof input.description === 'string' ? input.description : undefined,
+    prompt: typeof input.prompt === 'string' ? input.prompt : undefined,
+    subagent_type: typeof input.subagent_type === 'string' ? input.subagent_type : undefined,
+    name: typeof input.name === 'string' ? input.name : undefined,
+    model: typeof input.model === 'string' ? input.model : undefined,
+    query: typeof input.query === 'string' ? input.query : undefined,
+    url: typeof input.url === 'string' ? input.url : undefined,
+  };
 }
 
 /**
@@ -352,7 +385,7 @@ const subagentLabelCounts = new Map<string, number>();
  * Extract a short label from a Task tool call for subagent identification.
  * Numbers duplicates: researcher#1, researcher#2, etc.
  */
-function extractSubagentLabel(input: any): string {
+function extractSubagentLabel(input: ToolLogInput): string {
   // Prefer subagent_type (e.g. "researcher", "report-writer") or name
   let base: string;
   if (input.subagent_type) {
@@ -360,9 +393,8 @@ function extractSubagentLabel(input: any): string {
   } else if (input.name) {
     base = input.name;
   } else if (input.description) {
-    base = input.description.length > 20
-      ? input.description.substring(0, 20).trim()
-      : input.description;
+    base =
+      input.description.length > 20 ? input.description.substring(0, 20).trim() : input.description;
   } else {
     base = 'subagent';
   }
@@ -379,10 +411,10 @@ function extractSubagentLabel(input: any): string {
  * Tracks parent_tool_use_id to label events from subagents.
  */
 export function processAgentEventForLogging(
-  event: any,
+  event: SDKMessage,
   agentName: string,
   cwds: string[],
-  editMode?: boolean
+  editMode?: boolean,
 ): void {
   if (event.type === 'assistant') {
     const content = event.message.content;
@@ -398,7 +430,7 @@ export function processAgentEventForLogging(
       for (const block of content) {
         if (block.type === 'tool_use') {
           const toolName = block.name;
-          const input = block.input as any;
+          const input = parseToolLogInput(block.input);
 
           // Track Task tool calls for subagent labeling
           let subagentLabel: string | undefined;
@@ -407,7 +439,7 @@ export function processAgentEventForLogging(
             subagentLabels.set(block.id, subagentLabel);
           }
 
-          logger.agentTool(displayName, toolName, input, { editMode, cwds, subagentLabel });
+          logger.agentTool(displayName, toolName, block.input, { editMode, cwds, subagentLabel });
         }
       }
     }

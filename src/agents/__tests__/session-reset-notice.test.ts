@@ -1,3 +1,4 @@
+import { expectNext } from '../../test-support/assertions.js';
 /**
  * The notice a fresh session gets when resuming the previous one failed.
  *
@@ -16,7 +17,12 @@ import { MessageQueue, createRecoverableInputGenerator } from '../message-queue.
 const REAL_CLONE = process.cwd();
 
 function metadata(over: Partial<SessionResetNoticeInput> = {}): SessionResetNoticeInput {
-  return { channels: {}, default_channel: null, repositories: [], ...over } as SessionResetNoticeInput;
+  return {
+    channels: {},
+    default_channel: null,
+    repositories: [],
+    ...over,
+  } as SessionResetNoticeInput;
 }
 
 function slackTask(over: Partial<SessionResetNoticeInput> = {}): SessionResetNoticeInput {
@@ -60,25 +66,29 @@ describe('buildSessionResetNotice', () => {
   });
 
   it('falls back to a linked Slack thread when the originating channel is not one', () => {
-    const notice = buildSessionResetNotice(
-      slackTask({ default_channel: 'cli:local' }),
-    );
+    const notice = buildSessionResetNotice(slackTask({ default_channel: 'cli:local' }));
 
     expect(notice).toContain('thread_ts 1716998400.123456');
   });
 
   it('lists the mounted repos and the outstanding approvals the fresh session cannot know about', () => {
-    const notice = buildSessionResetNotice(slackTask({
-      repositories: [
-        { github: 'sweatco/archie-hq', clone_path: REAL_CLONE, current_branch: 'feat/x' },
-        { github: 'sweatco/other', clone_path: '/definitely/not/here' },
-      ],
-      edit_allowed: true,
-      pending_merge_approval: { github: 'sweatco/archie-hq', pr_number: 42 },
-    } as Partial<SessionResetNoticeInput>));
+    const notice = buildSessionResetNotice(
+      slackTask({
+        repositories: [
+          { github: 'sweatco/archie-hq', clone_path: REAL_CLONE, current_branch: 'feat/x' },
+          { github: 'sweatco/other', clone_path: '/definitely/not/here' },
+        ],
+        edit_allowed: true,
+        pending_merge_approval: { github: 'sweatco/archie-hq', pr_number: 42 },
+      } as Partial<SessionResetNoticeInput>),
+    );
 
-    expect(notice).toContain(`- sweatco/archie-hq — clone: ${REAL_CLONE} — branch: feat/x — edit mode: on`);
-    expect(notice).toContain('- sweatco/other — recorded, not cloned — mount_repo will clone it fresh');
+    expect(notice).toContain(
+      `- sweatco/archie-hq — clone: ${REAL_CLONE} — branch: feat/x — edit mode: on`,
+    );
+    expect(notice).toContain(
+      '- sweatco/other — recorded, not cloned — mount_repo will clone it fresh',
+    );
     expect(notice).toContain('mount_repo adopts these existing clones');
     expect(notice).toContain('Pending approvals: merge of sweatco/archie-hq#42.');
   });
@@ -97,7 +107,10 @@ describe('buildSessionResetNotice', () => {
  * generator reads the replayed messages into the fresh session.
  */
 describe('the replayed wake on a fresh-session retry', () => {
-  async function drain(gen: AsyncGenerator<{ message: { content: string } }>, n: number): Promise<string[]> {
+  async function drain(
+    gen: AsyncGenerator<{ message: { content: string } }>,
+    n: number,
+  ): Promise<string[]> {
     const out: string[] = [];
     for (let i = 0; i < n; i++) {
       const next = await gen.next();
@@ -152,12 +165,14 @@ describe('the replayed wake on a fresh-session retry', () => {
     queue.detachWaiters();
     recoverable.reset('SESSION RESET — notice body');
     const retry = recoverable.generator();
-    expect(await drain(retry, 1)).toEqual(['SESSION RESET — notice body\n\nthe wake that was in flight']);
+    expect(await drain(retry, 1)).toEqual([
+      'SESSION RESET — notice body\n\nthe wake that was in flight',
+    ]);
     const waiting = retry.next(); // the fresh attempt is reading
 
     queue.addMessage('RECOVERY: nudge');
 
-    expect((await waiting).value?.message.content).toBe('RECOVERY: nudge');
+    expect((await expectNext({ next: () => waiting })).message.content).toBe('RECOVERY: nudge');
     // The abandoned generator never wakes — nothing yields into the dead query.
     expect(await Promise.race([parked, Promise.resolve('still parked')])).toBe('still parked');
   });

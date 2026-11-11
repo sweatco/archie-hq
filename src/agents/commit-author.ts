@@ -9,8 +9,7 @@ import type { TaskMetadata } from '../types/task.js';
  * clone's `user.*` config (the bot).
  */
 export type CommitAuthorEnv =
-  | { GIT_AUTHOR_NAME: string; GIT_AUTHOR_EMAIL: string }
-  | Record<string, never>;
+  { GIT_AUTHOR_NAME: string; GIT_AUTHOR_EMAIL: string } | Record<string, never>;
 
 /**
  * Build the commit-author env for a spawning agent.

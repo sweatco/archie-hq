@@ -1,3 +1,5 @@
+import { MessageQueue } from '../message-queue.js';
+import { mcpToolHandler } from '../../test-support/mcp.js';
 /**
  * The read side of trigger management, and the one validation that keeps an author filter honest.
  *
@@ -18,7 +20,9 @@ vi.mock('../../connectors/github/client.js', () => ({
 }));
 vi.mock('../../connectors/github/repo-clone.js', () => ({
   gitExec: vi.fn().mockResolvedValue(''),
-  setupSharedClone: vi.fn().mockResolvedValue({ clone_path: '/wt', branch: 'feat/x', base_branch: 'main' }),
+  setupSharedClone: vi
+    .fn()
+    .mockResolvedValue({ clone_path: '/wt', branch: 'feat/x', base_branch: 'main' }),
   cloneExists: vi.fn().mockResolvedValue(false),
   isWorktree: vi.fn().mockResolvedValue(false),
   fetchOrigin: vi.fn().mockResolvedValue(undefined),
@@ -29,7 +33,14 @@ vi.mock('../../tasks/persistence.js', () => ({
   isThreadMuted: vi.fn().mockResolvedValue(false),
 }));
 vi.mock('../../system/logger.js', () => ({
-  logger: { agentAction: vi.fn(), agentFinding: vi.fn(), agentToSlack: vi.fn(), system: vi.fn(), error: vi.fn(), warn: vi.fn() },
+  logger: {
+    agentAction: vi.fn(),
+    agentFinding: vi.fn(),
+    agentToSlack: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    warn: vi.fn(),
+  },
 }));
 vi.mock('../registry.js', () => ({
   getAgentIds: vi.fn().mockReturnValue([]),
@@ -59,7 +70,11 @@ import type { Agent } from '../agent.js';
 import type { Task } from '../../tasks/task.js';
 
 function makeAgent(): Agent {
-  return { def: { id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', pluginName: 'pm', isPm: true }, queue: {} as any, session: { active: false } } as unknown as Agent;
+  return {
+    def: { id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', pluginName: 'pm', isPm: true },
+    queue: new MessageQueue(),
+    session: { active: false },
+  } as unknown as Agent;
 }
 
 /**
@@ -72,19 +87,20 @@ function makeTask(): Task {
     taskId: 'task-1',
     isActive: true,
     metadata: { channels: {}, default_channel: null },
-    touch: vi.fn(), debouncedSave: vi.fn(), save: vi.fn().mockResolvedValue(undefined),
+    touch: vi.fn(),
+    debouncedSave: vi.fn(),
+    save: vi.fn().mockResolvedValue(undefined),
     prepareTriggerDelivery: vi.fn().mockResolvedValue(undefined),
     postInteractiveToUser: vi.fn().mockResolvedValue(undefined),
   } as unknown as Task;
 }
 
-function getHandler(name: string, task: Task): (args: Record<string, unknown>) => Promise<{ content: { text: string }[] }> {
+function getHandler(
+  name: string,
+  task: Task,
+): (args: Record<string, unknown>) => Promise<{ content: { text: string }[] }> {
   const server = createOrchestrationMcpServer(makeAgent(), task);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const raw = (server.instance as any)._registeredTools ?? Object.fromEntries((server.instance as any)._tools ?? []);
-  const entry = raw[name];
-  const fn = entry.callback ?? entry.handler ?? entry.cb;
-  return (args) => fn(args, {});
+  return mcpToolHandler(server, name);
 }
 
 function textOf(result: { content: { text: string }[] }): string {
@@ -99,12 +115,17 @@ const WATCHER: Trigger = {
   created_at: '2026-08-20T12:19:00.559Z',
   approved_by: 'U03RQQTE1EF',
   binding: { type: 'channel', channel_id: 'C05MFQCEN0N', channel_name: 'sweatcoin-mobile' },
-  conditions: [{
-    type: 'channel_message',
-    channel_id: 'C05MFQCEN0N',
-    match: { contains: 'Expired Feature Flags Report', from_user: 'B0A9ZRW2TS9' },
-  }],
-  action: { prompt: 'DEDUPLICATION — CHECK THIS FIRST. Do nothing at all if a report was already produced today.' },
+  conditions: [
+    {
+      type: 'channel_message',
+      channel_id: 'C05MFQCEN0N',
+      match: { contains: 'Expired Feature Flags Report', from_user: 'B0A9ZRW2TS9' },
+    },
+  ],
+  action: {
+    prompt:
+      'DEDUPLICATION — CHECK THIS FIRST. Do nothing at all if a report was already produced today.',
+  },
   summary: 'Flag Release Status report',
 };
 
@@ -148,7 +169,14 @@ describe('get_trigger reads back everything an edit has to preserve', () => {
   it('surfaces the cron, timezone and next run of a schedule condition', async () => {
     loadTrigger.mockResolvedValue({
       ...WATCHER,
-      conditions: [{ type: 'schedule', cron: '0 9 * * 1-5', tz: 'Europe/London', next_run_at: '2026-09-03T08:00:00.000Z' }],
+      conditions: [
+        {
+          type: 'schedule',
+          cron: '0 9 * * 1-5',
+          tz: 'Europe/London',
+          next_run_at: '2026-09-03T08:00:00.000Z',
+        },
+      ],
     } satisfies Trigger);
 
     const out = textOf(await getHandler('get_trigger', makeTask())({ id: WATCHER.id }));
@@ -174,7 +202,11 @@ describe('get_trigger reads back everything an edit has to preserve', () => {
   // A pending proposal is not yet a trigger anywhere else in this surface (`list_triggers` and
   // `update_trigger` both filter it out); the read tool must not become the one way to see one.
   it('reads a pending proposal this task made, marked as not running', async () => {
-    loadTrigger.mockResolvedValue({ ...WATCHER, status: 'pending', proposed_in_task: 'task-1' } satisfies Trigger);
+    loadTrigger.mockResolvedValue({
+      ...WATCHER,
+      status: 'pending',
+      proposed_in_task: 'task-1',
+    } satisfies Trigger);
     const out = textOf(await getHandler('get_trigger', makeTask())({ id: WATCHER.id }));
     expect(out).toContain('awaiting approval — not running');
   });
@@ -182,8 +214,19 @@ describe('get_trigger reads back everything an edit has to preserve', () => {
 
 describe('an author filter must be an id a message can actually carry', () => {
   const proposal = (from_user: string) => ({
-    binding: { type: 'channel' as const, channel_id: 'C05MFQCEN0N', channel_name: 'sweatcoin-mobile' },
-    conditions: [{ type: 'channel_message' as const, channel_id: 'C05MFQCEN0N', contains: 'Expired Feature Flags Report', from_user }],
+    binding: {
+      type: 'channel' as const,
+      channel_id: 'C05MFQCEN0N',
+      channel_name: 'sweatcoin-mobile',
+    },
+    conditions: [
+      {
+        type: 'channel_message' as const,
+        channel_id: 'C05MFQCEN0N',
+        contains: 'Expired Feature Flags Report',
+        from_user,
+      },
+    ],
     action_prompt: 'produce the flag release status report',
     summary: 'Flag Release Status report',
   });
@@ -221,10 +264,15 @@ describe('an author filter must be an id a message can actually carry', () => {
   it('refuses an unmatchable filter on update_trigger too', async () => {
     loadTrigger.mockResolvedValue(WATCHER);
 
-    const out = textOf(await getHandler('update_trigger', makeTask())({
-      id: WATCHER.id,
-      conditions: [{ type: 'channel_message', channel_id: 'C05MFQCEN0N', from_user: 'flagbot' }],
-    }));
+    const out = textOf(
+      await getHandler(
+        'update_trigger',
+        makeTask(),
+      )({
+        id: WATCHER.id,
+        conditions: [{ type: 'channel_message', channel_id: 'C05MFQCEN0N', from_user: 'flagbot' }],
+      }),
+    );
 
     expect(out).toMatch(/not a Slack author id/i);
     expect(saveTrigger).not.toHaveBeenCalled();

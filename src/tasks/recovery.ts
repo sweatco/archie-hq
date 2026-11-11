@@ -118,7 +118,7 @@ export function idleDecision(
  * racing with message delivery (a webhook may be about to wake it).
  */
 export function scheduleIdleCheck(task: Task): void {
-  setTimeout(async () => {
+  const checkIdleTask = async () => {
     if (getIsShuttingDown()) return;
     const action = idleDecision(task);
     if (action === 'complete') {
@@ -126,6 +126,11 @@ export function scheduleIdleCheck(task: Task): void {
     } else if (action === 'recover') {
       await triggerRecovery(task);
     }
+  };
+  setTimeout(() => {
+    checkIdleTask().catch((error: unknown) =>
+      logger.error('runtime', 'Idle task check failed', error),
+    );
   }, 3000);
 }
 
@@ -148,7 +153,10 @@ const PAUSED_NOTICE =
 async function triggerRecovery(task: Task): Promise<void> {
   task.recoveryAttempts += 1;
 
-  logger.warn('recovery', `Agent inactive for task ${task.taskId} (attempt ${task.recoveryAttempts})`);
+  logger.warn(
+    'recovery',
+    `Agent inactive for task ${task.taskId} (attempt ${task.recoveryAttempts})`,
+  );
 
   if (task.recoveryAttempts >= 3) {
     const cycle = task.nuclearRecoveryCycles + 1;
@@ -162,9 +170,11 @@ async function triggerRecovery(task: Task): Promise<void> {
         'recovery',
         `Task ${task.taskId} stalled after ${MAX_NUCLEAR_RECOVERY_CYCLES} nuclear recovery cycles (cycle ${cycle}) — pausing instead of respawning`,
       );
-      await task.postToUser(PAUSED_NOTICE).catch((err: unknown) =>
-        logger.error('recovery', 'Failed to post recovery pause message', err),
-      );
+      await task
+        .postToUser(PAUSED_NOTICE)
+        .catch((err: unknown) =>
+          logger.error('recovery', 'Failed to post recovery pause message', err),
+        );
       // A recurring reminder re-activates the task on every slot, and activation resets this budget —
       // so a looping task would loop again each interval, forever. Stop it with the pause.
       if (task.metadata.reminder?.cron) {

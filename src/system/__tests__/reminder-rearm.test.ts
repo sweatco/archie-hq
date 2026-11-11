@@ -51,7 +51,7 @@ describe('planReminderRearm', () => {
     expect(out?.trigger_at.toISOString()).toBe('2026-07-31T17:00:00.000Z');
   });
 
-  it('resolves the cron in its own timezone, not the host\'s', () => {
+  it("resolves the cron in its own timezone, not the host's", () => {
     // 09:00 Europe/London in July is BST (UTC+1) → 08:00Z.
     const out = planReminderRearm(
       { cron: '0 9 * * *', tz: 'Europe/London' },
@@ -85,10 +85,12 @@ describe('planReminderRearm — bounded recurrence', () => {
   it('stops once the next slot falls past the window — this is what bounds it', () => {
     // A "7-day watch" must expire by itself rather than firing forever, which is
     // exactly what the unbounded trigger schema could not express.
-    expect(planReminderRearm(
-      { cron: '0 9 * * *', tz: 'UTC', until: '2026-08-04T23:59:00Z' },
-      new Date('2026-08-04T09:00:00Z'),
-    )).toBeNull();
+    expect(
+      planReminderRearm(
+        { cron: '0 9 * * *', tz: 'UTC', until: '2026-08-04T23:59:00Z' },
+        new Date('2026-08-04T09:00:00Z'),
+      ),
+    ).toBeNull();
   });
 
   it('treats the boundary as inclusive — a slot exactly at until still runs', () => {
@@ -100,9 +102,11 @@ describe('planReminderRearm — bounded recurrence', () => {
   });
 
   it('drops the recurrence rather than running unbounded when until is unparseable', () => {
-    expect(planReminderRearm(
-      { cron: '0 9 * * *', tz: 'UTC', until: 'whenever' },
-      new Date('2026-07-29T09:00:00Z'),
-    )).toBeNull();
+    expect(
+      planReminderRearm(
+        { cron: '0 9 * * *', tz: 'UTC', until: 'whenever' },
+        new Date('2026-07-29T09:00:00Z'),
+      ),
+    ).toBeNull();
   });
 });

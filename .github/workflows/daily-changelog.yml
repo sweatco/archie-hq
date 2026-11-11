@@ -52,15 +52,15 @@ name: Daily changelog
 on:
   schedule:
     # 02:00 UTC daily — late enough to capture the full previous UTC day.
-    - cron: "0 2 * * *"
+    - cron: '0 2 * * *'
   workflow_dispatch:
     inputs:
       date:
-        description: "Day to summarize (YYYY-MM-DD, UTC). Defaults to backfilling every undocumented day up to yesterday."
+        description: 'Day to summarize (YYYY-MM-DD, UTC). Defaults to backfilling every undocumented day up to yesterday.'
         required: false
         type: string
       dry_run:
-        description: "Preview the drafted entry in the run summary without committing."
+        description: 'Preview the drafted entry in the run summary without committing.'
         required: false
         type: boolean
         default: false

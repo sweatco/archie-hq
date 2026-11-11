@@ -13,12 +13,18 @@ import type { SlackAttachment } from '../../../types/index.js';
 
 // events.ts loads Bolt through `createRequire`, which bypasses vitest's module registry entirely — so `module` itself is mocked and its `createRequire` returns a require that hands back a fake Bolt while every other id falls through to the real one. That is what makes the registered `message` handler reachable from a unit test: the gate and its drop-log live inside it, not inside an exported function.
 const bolt = vi.hoisted(() => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const handlers = new Map<string, (arg: any) => unknown>();
+  const handlers = new Map<
+    string,
+    (arg: { event: unknown; body?: { event_id?: string } }) => unknown
+  >();
   class FakeApp {
     constructor(_opts: unknown) {}
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    event(name: string, handler: (arg: any) => unknown) { handlers.set(name, handler); }
+    event(
+      name: string,
+      handler: (arg: { event: unknown; body?: { event_id?: string } }) => unknown,
+    ) {
+      handlers.set(name, handler);
+    }
     action(_name: string, _handler: unknown) {}
     async start() {}
     async stop() {}
@@ -26,7 +32,10 @@ const bolt = vi.hoisted(() => {
   class FakeReceiver {
     constructor(_opts: unknown) {}
   }
-  return { handlers, exports: { App: FakeApp, ExpressReceiver: FakeReceiver, SocketModeReceiver: FakeReceiver } };
+  return {
+    handlers,
+    exports: { App: FakeApp, ExpressReceiver: FakeReceiver, SocketModeReceiver: FakeReceiver },
+  };
 });
 
 vi.mock('module', async (importOriginal) => {
@@ -35,7 +44,7 @@ vi.mock('module', async (importOriginal) => {
     ...actual,
     createRequire: (url: string | URL) => {
       const real = actual.createRequire(url);
-      const patched = (id: string) => (id === '@slack/bolt' ? bolt.exports : real(id));
+      const patched = (id: string): unknown => (id === '@slack/bolt' ? bolt.exports : real(id));
       return Object.assign(patched, real);
     },
   };
@@ -48,7 +57,7 @@ vi.mock('../client.js', () => ({
   getBotUserId: vi.fn().mockReturnValue('U_BOT'),
   fetchSlackThread: vi.fn(),
   getBotId: vi.fn().mockReturnValue('B_OURS'),
-  addReaction: vi.fn(),
+  addReaction: vi.fn().mockResolvedValue(undefined),
   setSlackDryRun: vi.fn(),
   getUserInfo: vi.fn().mockResolvedValue({ name: 'dev', realName: 'A Dev', teamId: 'T_HOME' }),
   isExternalUser: vi.fn().mockReturnValue(false),
@@ -59,7 +68,9 @@ vi.mock('../client.js', () => ({
   extractMessageContent: vi.fn(
     async (message: unknown): Promise<{ text: string; attachments?: SlackAttachment[] }> => {
       const raw = (message ?? {}) as { text?: string; attachments?: Array<{ text?: string }> };
-      const attachments = (raw.attachments ?? []).map((a) => ({ text: a.text ?? '' })) as SlackAttachment[];
+      const attachments = (raw.attachments ?? []).map((a) => ({
+        text: a.text ?? '',
+      })) as SlackAttachment[];
       return { text: raw.text ?? '', ...(attachments.length > 0 ? { attachments } : {}) };
     },
   ),
@@ -69,7 +80,9 @@ vi.mock('../channel-canvas.js', () => ({ ensureChannelCanvas: vi.fn() }));
 vi.mock('../channel-pins.js', () => ({ ensureChannelPins: vi.fn() }));
 vi.mock('../title.js', () => ({ setAssistantThreadTitle: vi.fn() }));
 vi.mock('../../../tasks/title-generator.js', () => ({ generateTaskTitle: vi.fn() }));
-vi.mock('../../../system/shutdown.js', () => ({ getIsShuttingDown: vi.fn().mockReturnValue(false) }));
+vi.mock('../../../system/shutdown.js', () => ({
+  getIsShuttingDown: vi.fn().mockReturnValue(false),
+}));
 vi.mock('../../../system/event-bus.js', () => ({
   onEvent: vi.fn(),
   offEvent: vi.fn(),
@@ -100,17 +113,24 @@ vi.mock('../../../system/trigger-scheduler.js', () => ({
 
 vi.mock('../../../system/logger.js', () => ({
   logger: {
-    system: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), info: vi.fn(),
-    plain: vi.fn(), server: vi.fn(), slack: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    warn: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    plain: vi.fn(),
+    server: vi.fn(),
+    slack: vi.fn(),
   },
 }));
 
-import { handleSlackEvent, mountSlackApp } from '../events.js';
-import { fetchSlackThread, getBotUserId, isExternalUser, extractMessageContent } from '../client.js';
-import { getChannelMessageTriggers, fireTrigger } from '../../../system/trigger-scheduler.js';
+import { mountSlackApp } from '../events.js';
+import { fetchSlackThread, getBotUserId, isExternalUser } from '../client.js';
+import { getChannelMessageTriggers } from '../../../system/trigger-scheduler.js';
 import { logger } from '../../../system/logger.js';
 import { Task } from '../../../tasks/task.js';
 import { findTaskByThread } from '../../../tasks/persistence.js';
+import { expectDefined } from '../../../test-support/assertions.js';
 
 const CHANNEL = 'C0SWEEP';
 const DM = 'D0SWEEP';
@@ -145,11 +165,23 @@ const FORWARDED_SUBTYPES: Array<string | undefined> = [
 
 /** The 17 the denylist refuses. Swept too: a denied subtype must be dropped before any thread fetch. */
 const DENIED_SUBTYPES = [
-  'message_changed', 'message_deleted', 'message_replied',
-  'channel_join', 'channel_leave', 'group_join', 'group_leave',
-  'channel_archive', 'channel_unarchive', 'group_archive', 'group_unarchive',
-  'channel_convert_to_private', 'channel_convert_to_public', 'channel_posting_permissions',
-  'pinned_item', 'unpinned_item', 'ekm_access_denied',
+  'message_changed',
+  'message_deleted',
+  'message_replied',
+  'channel_join',
+  'channel_leave',
+  'group_join',
+  'group_leave',
+  'channel_archive',
+  'channel_unarchive',
+  'group_archive',
+  'group_unarchive',
+  'channel_convert_to_private',
+  'channel_convert_to_public',
+  'channel_posting_permissions',
+  'pinned_item',
+  'unpinned_item',
+  'ekm_access_denied',
 ];
 
 /**
@@ -176,18 +208,28 @@ beforeEach(async () => {
     shared: false,
     currentMessageTs: '1700000000.000001',
     rootAuthorWasBot: false,
-    messages: [{ user: { id: 'U_DEV', username: 'dev', realName: 'A Dev' }, ownText: 'hi', ts: '1700000000.000001' }],
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as any);
-  await mountSlackApp({} as Application, { slackBotToken: 'xoxb-test', slackAppToken: 'xapp-test' });
-  messageHandler = bolt.handlers.get('message')!;
+    messages: [
+      {
+        user: { id: 'U_DEV', username: 'dev', realName: 'A Dev' },
+        ownText: 'hi',
+        ts: '1700000000.000001',
+      },
+    ],
+  });
+  await mountSlackApp({} as Application, {
+    slackBotToken: 'xoxb-test',
+    slackAppToken: 'xapp-test',
+  });
+  messageHandler = expectDefined(bolt.handlers.get('message'));
 });
 
 /** Drive the real registered handler and surface anything it threw. */
 async function deliver(event: Record<string, unknown>): Promise<void> {
   await messageHandler({ event });
   await flush();
-  const thrown = vi.mocked(logger.error).mock.calls.filter((c) => String(c[1] ?? '').includes('Error processing Slack event'));
+  const thrown = vi
+    .mocked(logger.error)
+    .mock.calls.filter((c) => String(c[1] ?? '').includes('Error processing Slack event'));
   expect(thrown, `handler threw for ${JSON.stringify(event).slice(0, 120)}`).toEqual([]);
 }
 
@@ -196,23 +238,51 @@ describe('the denylist admits these subtypes without anything downstream choking
     const label = subtype ?? '(no subtype)';
 
     it(`survives a top-level channel post: ${label}`, async () => {
-      await deliver({ type: 'message', ...(subtype ? { subtype } : {}), channel: CHANNEL, user: 'U_DEV', text: 'hello', ts: '1700000000.000100' });
+      await deliver({
+        type: 'message',
+        ...(subtype ? { subtype } : {}),
+        channel: CHANNEL,
+        user: 'U_DEV',
+        text: 'hello',
+        ts: '1700000000.000100',
+      });
       // Nothing watches this channel, so an ambient post must not create a task.
       expect(vi.mocked(Task.create)).not.toHaveBeenCalled();
     });
 
     it(`survives a thread reply with no task following it: ${label}`, async () => {
-      await deliver({ type: 'message', ...(subtype ? { subtype } : {}), channel: CHANNEL, user: 'U_DEV', text: 'hello', ts: '1700000000.000200', thread_ts: '1700000000.000001' });
+      await deliver({
+        type: 'message',
+        ...(subtype ? { subtype } : {}),
+        channel: CHANNEL,
+        user: 'U_DEV',
+        text: 'hello',
+        ts: '1700000000.000200',
+        thread_ts: '1700000000.000001',
+      });
       expect(vi.mocked(Task.create)).not.toHaveBeenCalled();
     });
 
     it(`survives the awkward shape — no user, no text, an app bot_id: ${label}`, async () => {
-      await deliver({ type: 'message', ...(subtype ? { subtype } : {}), channel: CHANNEL, bot_id: 'B_THIRD', ts: '1700000000.000300' });
+      await deliver({
+        type: 'message',
+        ...(subtype ? { subtype } : {}),
+        channel: CHANNEL,
+        bot_id: 'B_THIRD',
+        ts: '1700000000.000300',
+      });
       expect(vi.mocked(Task.create)).not.toHaveBeenCalled();
     });
 
     it(`survives a nested message object: ${label}`, async () => {
-      await deliver({ type: 'message', ...(subtype ? { subtype } : {}), channel: CHANNEL, user: 'U_DEV', ts: '1700000000.000400', message: { ts: '1700000000.000400', user: 'U_DEV', text: 'nested' } });
+      await deliver({
+        type: 'message',
+        ...(subtype ? { subtype } : {}),
+        channel: CHANNEL,
+        user: 'U_DEV',
+        ts: '1700000000.000400',
+        message: { ts: '1700000000.000400', user: 'U_DEV', text: 'nested' },
+      });
       expect(vi.mocked(Task.create)).not.toHaveBeenCalled();
     });
   }
@@ -229,13 +299,17 @@ describe('a body-less DM cannot seed a task, whatever its subtype', () => {
       currentMessageTs: '1700000000.000900',
       rootAuthorWasBot: false,
       messages: [],
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any);
+    });
   });
 
   for (const subtype of FORWARDED_SUBTYPES) {
     it(`refuses to create a task for a content-less DM: ${subtype ?? '(no subtype)'}`, async () => {
-      await deliver({ type: 'message', ...(subtype ? { subtype } : {}), channel: DM, ts: '1700000000.000900' });
+      await deliver({
+        type: 'message',
+        ...(subtype ? { subtype } : {}),
+        channel: DM,
+        ts: '1700000000.000900',
+      });
       expect(vi.mocked(Task.create)).not.toHaveBeenCalled();
     });
   }
@@ -247,18 +321,31 @@ describe('a body-less DM cannot seed a task, whatever its subtype', () => {
       shared: false,
       currentMessageTs: '1700000000.000901',
       rootAuthorWasBot: false,
-      messages: [{ user: { id: 'U_DEV', username: 'dev', realName: 'A Dev' }, ownText: 'hello', ts: '1700000000.000901' }],
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any);
+      messages: [
+        {
+          user: { id: 'U_DEV', username: 'dev', realName: 'A Dev' },
+          ownText: 'hello',
+          ts: '1700000000.000901',
+        },
+      ],
+    });
     vi.mocked(Task.create).mockResolvedValue({
       metadata: { channels: {}, title: 'x' },
-      append: vi.fn().mockResolvedValue({ linkedNewThread: true, entries: ['[ts] [<@U1:R> in #dm] hello'] }),
+      append: vi
+        .fn()
+        .mockResolvedValue({ linkedNewThread: true, entries: ['[ts] [<@U1:R> in #dm] hello'] }),
       ackMessage: vi.fn(),
       sendMessage: vi.fn().mockResolvedValue(undefined),
       debouncedSave: vi.fn(),
     } as never);
 
-    await deliver({ type: 'message', channel: DM, user: 'U_DEV', text: 'hello', ts: '1700000000.000901' });
+    await deliver({
+      type: 'message',
+      channel: DM,
+      user: 'U_DEV',
+      text: 'hello',
+      ts: '1700000000.000901',
+    });
     expect(vi.mocked(Task.create)).toHaveBeenCalledTimes(1);
   });
 });
@@ -267,10 +354,20 @@ describe('the denied subtypes are dropped before any thread fetch', () => {
   for (const subtype of DENIED_SUBTYPES) {
     it(`drops ${subtype} without fetching a thread`, async () => {
       // `message_changed` has its own handler and is expected to reach it, so only assert no task is created.
-      await deliver({ type: 'message', subtype, channel: CHANNEL, user: 'U_DEV', text: 'noise', ts: '1700000000.000500' });
+      await deliver({
+        type: 'message',
+        subtype,
+        channel: CHANNEL,
+        user: 'U_DEV',
+        text: 'noise',
+        ts: '1700000000.000500',
+      });
       expect(vi.mocked(Task.create)).not.toHaveBeenCalled();
       if (subtype !== 'message_changed') {
-        expect(vi.mocked(fetchSlackThread), `${subtype} should be refused before the thread fetch`).not.toHaveBeenCalled();
+        expect(
+          vi.mocked(fetchSlackThread),
+          `${subtype} should be refused before the thread fetch`,
+        ).not.toHaveBeenCalled();
       }
     });
   }

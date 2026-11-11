@@ -1,3 +1,5 @@
+import { MessageQueue } from '../message-queue.js';
+import { mcpToolHandler } from '../../test-support/mcp.js';
 /**
  * Handler-level tests for the sequencing gate a trigger-fired task sits behind: while it has a `home_channel` but no channel of its own, `post_to_channel` must refuse (it posts WITHOUT linking, which is the detached message homing a fired task exists to replace), while `post_to_user` and `report_completion` must be allowed through — their first post is what opens the task's thread.
  *
@@ -12,7 +14,9 @@ vi.mock('../../connectors/github/client.js', () => ({
 }));
 vi.mock('../../connectors/github/repo-clone.js', () => ({
   gitExec: vi.fn().mockResolvedValue(''),
-  setupSharedClone: vi.fn().mockResolvedValue({ clone_path: '/wt', branch: 'feat/x', base_branch: 'main' }),
+  setupSharedClone: vi
+    .fn()
+    .mockResolvedValue({ clone_path: '/wt', branch: 'feat/x', base_branch: 'main' }),
   cloneExists: vi.fn().mockResolvedValue(false),
   isWorktree: vi.fn().mockResolvedValue(false),
   fetchOrigin: vi.fn().mockResolvedValue(undefined),
@@ -24,7 +28,14 @@ vi.mock('../../tasks/persistence.js', () => ({
   isThreadMuted,
 }));
 vi.mock('../../system/logger.js', () => ({
-  logger: { agentAction: vi.fn(), agentFinding: vi.fn(), agentToSlack: vi.fn(), system: vi.fn(), error: vi.fn(), warn: vi.fn() },
+  logger: {
+    agentAction: vi.fn(),
+    agentFinding: vi.fn(),
+    agentToSlack: vi.fn(),
+    system: vi.fn(),
+    error: vi.fn(),
+    warn: vi.fn(),
+  },
 }));
 vi.mock('../registry.js', () => ({
   getAgentIds: vi.fn().mockReturnValue([]),
@@ -79,7 +90,11 @@ import type { Task } from '../../tasks/task.js';
 const MANDATE = 'Sergei: "can you flag this in #incidents when you know"';
 
 function makeAgent(): Agent {
-  return { def: { id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', pluginName: 'pm', isPm: true }, queue: {} as any, session: { active: false } } as unknown as Agent;
+  return {
+    def: { id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', pluginName: 'pm', isPm: true },
+    queue: new MessageQueue(),
+    session: { active: false },
+  } as unknown as Agent;
 }
 
 /**
@@ -91,7 +106,10 @@ function makeTask(opts: { home?: boolean; originChannelId?: string } = {}): Task
   if (opts.originChannelId) {
     const key = `slack:${opts.originChannelId}:1.0`;
     channels[key] = {
-      type: 'slack', channel_id: opts.originChannelId, thread_id: '1.0', channel_name: 'origin',
+      type: 'slack',
+      channel_id: opts.originChannelId,
+      thread_id: '1.0',
+      channel_name: 'origin',
     };
     default_channel = key;
   }
@@ -105,19 +123,23 @@ function makeTask(opts: { home?: boolean; originChannelId?: string } = {}): Task
       default_channel,
       ...(opts.home ? { home_channel: { channel_id: 'CHOME', channel_name: 'ops-daily' } } : {}),
     },
-    touch: vi.fn(), debouncedSave: vi.fn(), save: vi.fn().mockResolvedValue(undefined),
+    touch: vi.fn(),
+    debouncedSave: vi.fn(),
+    save: vi.fn().mockResolvedValue(undefined),
     postToUser: vi.fn().mockResolvedValue(null),
     postFilesToUser: vi.fn().mockResolvedValue(undefined),
     prepareMemoryDelivery: vi.fn(async (channelId: string) => {
       audience ??= channelId;
-      if (audience !== channelId) throw new Error('delivery blocked: this task belongs to a different Slack audience');
+      if (audience !== channelId)
+        throw new Error('delivery blocked: this task belongs to a different Slack audience');
       return { kind: 'public', channel_id: audience };
     }),
     prepareTriggerDelivery: vi.fn(async (binding: { type: string; channel_id?: string }) => {
       const channelId = binding.channel_id;
       if (!channelId) throw new Error('delivery blocked');
       audience ??= channelId;
-      if (audience !== channelId) throw new Error('delivery blocked: this task belongs to a different Slack audience');
+      if (audience !== channelId)
+        throw new Error('delivery blocked: this task belongs to a different Slack audience');
     }),
     resurfacePrCards: vi.fn().mockResolvedValue(undefined),
     suspendStatus: vi.fn(),
@@ -128,15 +150,12 @@ function makeTask(opts: { home?: boolean; originChannelId?: string } = {}): Task
 
 /** Build an MCP server and pull a tool's invokable handler out of its registry. `post_to_channel`/`post_to_user` live on the comms server, `report_completion` on the orchestration one. */
 function handlerFrom(
-  build: (agent: Agent, task: Task) => { instance: unknown },
+  build: (agent: Agent, task: Task) => Parameters<typeof mcpToolHandler>[0],
   name: string,
   task: Task,
 ): (args: Record<string, unknown>) => Promise<{ content: { text: string }[] }> {
   const server = build(makeAgent(), task);
-  const raw = (server.instance as any)._registeredTools ?? Object.fromEntries((server.instance as any)._tools ?? []);
-  const entry = raw[name];
-  const fn = entry.callback ?? entry.handler ?? entry.cb;
-  return (args) => fn(args, {});
+  return mcpToolHandler(server, name);
 }
 
 function getHandler(name: string, task: Task) {
@@ -216,7 +235,11 @@ describe('post_to_channel waits until the task has a channel of its own', () => 
 
     const out = textOf(await post({ channel: 'CHOME', message: 'aside', mandate: MANDATE }));
 
-    expect(postSlackMessage).toHaveBeenCalledWith({ channel: 'CHOME', text: 'aside', threadTs: undefined });
+    expect(postSlackMessage).toHaveBeenCalledWith({
+      channel: 'CHOME',
+      text: 'aside',
+      threadTs: undefined,
+    });
     expect(out).toContain('1716998400.123456');
   });
 
@@ -226,7 +249,11 @@ describe('post_to_channel waits until the task has a channel of its own', () => 
 
     const out = textOf(await post({ channel: 'C123', message: 'heads up', mandate: MANDATE }));
 
-    expect(postSlackMessage).toHaveBeenCalledWith({ channel: 'C123', text: 'heads up', threadTs: undefined });
+    expect(postSlackMessage).toHaveBeenCalledWith({
+      channel: 'C123',
+      text: 'heads up',
+      threadTs: undefined,
+    });
     expect(out).not.toMatch(/no channel of its own yet/i);
   });
 
@@ -279,7 +306,12 @@ describe('report_completion with a message across both shapes', () => {
   it('posts the completion message on a task with a home channel and no channels', async () => {
     const task = makeTask({ home: true });
 
-    const out = textOf(await getOrchestrationHandler('report_completion', task)({ message: 'done, here is the digest' }));
+    const out = textOf(
+      await getOrchestrationHandler(
+        'report_completion',
+        task,
+      )({ message: 'done, here is the digest' }),
+    );
 
     expect(task.postToUser).toHaveBeenCalled();
     expect(task.setCompletionIntent).toHaveBeenCalled();
@@ -289,7 +321,9 @@ describe('report_completion with a message across both shapes', () => {
   it('still returns the byte-identical old refusal without a home channel', async () => {
     const task = makeTask();
 
-    const out = textOf(await getOrchestrationHandler('report_completion', task)({ message: 'done' }));
+    const out = textOf(
+      await getOrchestrationHandler('report_completion', task)({ message: 'done' }),
+    );
 
     expect(task.postToUser).not.toHaveBeenCalled();
     expect(task.setCompletionIntent).not.toHaveBeenCalled();
@@ -325,13 +359,17 @@ describe('propose_trigger refuses a binding that is not a channel', () => {
   // card the Task would post), because what is under test here is the prefix check, not trigger creation.
   it('lets a C… id through the guard', async () => {
     const task = makeTask();
-    (task as unknown as { postInteractiveToUser: unknown }).postInteractiveToUser = vi.fn().mockResolvedValue(undefined);
+    (task as unknown as { postInteractiveToUser: unknown }).postInteractiveToUser = vi
+      .fn()
+      .mockResolvedValue(undefined);
 
     const out = textOf(await getOrchestrationHandler('propose_trigger', task)(args('C0123456789')));
 
     expect(out).not.toMatch(/has to deliver to a channel/i);
     expect(task.metadata.pending_trigger_id).toBeDefined();
-    expect(task.prepareTriggerDelivery).toHaveBeenCalledWith(expect.objectContaining({ channel_id: 'C0123456789' }));
+    expect(task.prepareTriggerDelivery).toHaveBeenCalledWith(
+      expect.objectContaining({ channel_id: 'C0123456789' }),
+    );
   });
 
   it('leaves the trigger unchanged when memory delivery authorization blocks', async () => {

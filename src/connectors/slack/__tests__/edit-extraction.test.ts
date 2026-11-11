@@ -19,7 +19,9 @@ const slackApi = {
 };
 
 vi.mock('@slack/web-api', () => ({
-  WebClient: vi.fn(function (this: unknown) { return slackApi; }),
+  WebClient: vi.fn(function (this: unknown) {
+    return slackApi;
+  }),
 }));
 vi.mock('../../../system/logger.js', () => ({
   logger: { slack: vi.fn(), warn: vi.fn(), system: vi.fn(), error: vi.fn(), plain: vi.fn() },
@@ -32,15 +34,26 @@ beforeEach(async () => {
   vi.clearAllMocks();
   vi.resetModules();
   slackApi.auth.test.mockResolvedValue({
-    user_id: 'UBOT', bot_id: 'BBOT', team_id: 'THOME', url: 'https://acme.slack.com',
+    user_id: 'UBOT',
+    bot_id: 'BBOT',
+    team_id: 'THOME',
+    url: 'https://acme.slack.com',
   });
   slackApi.usergroups.list.mockResolvedValue({ usergroups: [] });
   slackApi.users.list.mockResolvedValue({ members: [] });
   slackApi.users.info.mockImplementation(async ({ user }: { user: string }) => ({
-    ok: true, user: { id: user, name: user.toLowerCase(), real_name: `Real ${user}`, team_id: 'THOME', profile: {} },
+    ok: true,
+    user: {
+      id: user,
+      name: user.toLowerCase(),
+      real_name: `Real ${user}`,
+      team_id: 'THOME',
+      profile: {},
+    },
   }));
   slackApi.conversations.info.mockResolvedValue({
-    ok: true, channel: { id: 'C1', name: 'bot-test', is_private: false, is_im: false, is_mpim: false },
+    ok: true,
+    channel: { id: 'C1', name: 'bot-test', is_private: false, is_im: false, is_mpim: false },
   });
   client = await import('../client.js');
   await client.initSlackClient('xoxb-test');
@@ -54,37 +67,46 @@ describe('extractMessageContent — the edit path renders like every other path'
       ts: '1786225194.525969',
       user: 'UHUMAN',
       text: 'I am just testing some changes. <https://acme.atlassian.net/browse/IO-3021?a=1&amp;b=2|[BE][CoreExp] Support failed flow for joinable offer>',
-      blocks: [{
-        type: 'rich_text',
-        elements: [{
-          type: 'rich_text_section',
+      blocks: [
+        {
+          type: 'rich_text',
           elements: [
-            { type: 'text', text: 'I am just testing some changes. ' },
             {
-              type: 'attachment_mention',
-              url: 'https://acme.atlassian.net/browse/IO-3021?a=1&b=2',
-              text: '[BE][CoreExp] Support failed flow for joinable offer',
-              product_name: 'Jira Cloud',
+              type: 'rich_text_section',
+              elements: [
+                { type: 'text', text: 'I am just testing some changes. ' },
+                {
+                  type: 'attachment_mention',
+                  url: 'https://acme.atlassian.net/browse/IO-3021?a=1&b=2',
+                  text: '[BE][CoreExp] Support failed flow for joinable offer',
+                  product_name: 'Jira Cloud',
+                },
+              ],
             },
           ],
-        }],
-      }],
+        },
+      ],
     };
 
     const { text } = await client.extractMessageContent(edited, 'C1');
 
     expect(text).toBe(
-      'I am just testing some changes. [BE][CoreExp] Support failed flow for joinable offer '
-      + '(https://acme.atlassian.net/browse/IO-3021?a=1&b=2)',
+      'I am just testing some changes. [BE][CoreExp] Support failed flow for joinable offer ' +
+        '(https://acme.atlassian.net/browse/IO-3021?a=1&b=2)',
     );
-    expect(text).not.toContain('|');      // no raw <url|label> mrkdwn
-    expect(text).not.toContain('&amp;');  // entity decoded
+    expect(text).not.toContain('|'); // no raw <url|label> mrkdwn
+    expect(text).not.toContain('&amp;'); // entity decoded
   });
 
   it('surfaces attachment cards on an edited message', async () => {
     const edited = {
-      type: 'message', ts: '2.0', user: 'UHUMAN', text: '',
-      attachments: [{ title: '[FIRING:2] DiskFull', title_link: 'https://g.example.com/a', text: 'Value: 1' }],
+      type: 'message',
+      ts: '2.0',
+      user: 'UHUMAN',
+      text: '',
+      attachments: [
+        { title: '[FIRING:2] DiskFull', title_link: 'https://g.example.com/a', text: 'Value: 1' },
+      ],
     };
 
     const { text, attachments } = await client.extractMessageContent(edited, 'C1');
@@ -96,7 +118,9 @@ describe('extractMessageContent — the edit path renders like every other path'
 
   it('still resolves mentions, as the old cleanSlackText path did', async () => {
     const edited = {
-      type: 'message', ts: '3.0', user: 'UHUMAN',
+      type: 'message',
+      ts: '3.0',
+      user: 'UHUMAN',
       text: 'ping <@UOTHER> about this',
     };
 
@@ -106,7 +130,10 @@ describe('extractMessageContent — the edit path renders like every other path'
   });
 
   it('returns empty text rather than throwing on a payload it cannot read', async () => {
-    const { text } = await client.extractMessageContent({ type: 'message', ts: '4.0', blocks: null }, 'C1');
+    const { text } = await client.extractMessageContent(
+      { type: 'message', ts: '4.0', blocks: null },
+      'C1',
+    );
     expect(typeof text).toBe('string');
   });
 });

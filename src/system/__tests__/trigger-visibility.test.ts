@@ -15,7 +15,9 @@ function channelTrigger(channelId: string): Trigger {
     created_by: 'U1',
     created_at: '2026-06-24T00:00:00Z',
     binding: { type: 'channel', channel_id: channelId, channel_name: channelId },
-    conditions: [{ type: 'schedule', tz: 'UTC', cron: '0 9 * * *', next_run_at: '2026-06-25T09:00:00Z' }],
+    conditions: [
+      { type: 'schedule', tz: 'UTC', cron: '0 9 * * *', next_run_at: '2026-06-25T09:00:00Z' },
+    ],
     action: { prompt: 'do the thing' },
   };
 }
@@ -26,14 +28,22 @@ function dmTrigger(userId: string): Trigger {
     status: 'enabled',
     created_by: userId,
     created_at: '2026-06-24T00:00:00Z',
-    binding: { type: 'user', user_id: userId, channel_id: `D${userId}`, channel_name: `DM with ${userId}` },
-    conditions: [{ type: 'schedule', tz: 'UTC', cron: '0 9 * * *', next_run_at: '2026-06-25T09:00:00Z' }],
+    binding: {
+      type: 'user',
+      user_id: userId,
+      channel_id: `D${userId}`,
+      channel_name: `DM with ${userId}`,
+    },
+    conditions: [
+      { type: 'schedule', tz: 'UTC', cron: '0 9 * * *', next_run_at: '2026-06-25T09:00:00Z' },
+    ],
     action: { prompt: 'do the thing' },
   };
 }
 
 // Privacy resolver driven by an explicit private-set.
-const privacyFn = (privateChannels: Set<string>) => async (channelId: string) => privateChannels.has(channelId);
+const privacyFn = (privateChannels: Set<string>) => async (channelId: string) =>
+  privateChannels.has(channelId);
 
 describe('triggerVisibleFrom', () => {
   const publicResolver = privacyFn(new Set());
@@ -74,20 +84,37 @@ describe('triggerVisibleFrom', () => {
     expect(await triggerVisibleFrom(t, origin, privacyFn(new Set(['C_FLIP'])))).toBe(false);
   });
 
-  it('DM trigger is visible only from that user\'s DM', async () => {
-    expect(await triggerVisibleFrom(dmTrigger('U1'), { kind: 'dm', userId: 'U1' }, publicResolver)).toBe(true);
-    expect(await triggerVisibleFrom(dmTrigger('U1'), { kind: 'dm', userId: 'U2' }, publicResolver)).toBe(false);
-    expect(await triggerVisibleFrom(dmTrigger('U1'), { kind: 'channel', channelId: 'C_PUB' }, publicResolver)).toBe(false);
+  it("DM trigger is visible only from that user's DM", async () => {
+    expect(
+      await triggerVisibleFrom(dmTrigger('U1'), { kind: 'dm', userId: 'U1' }, publicResolver),
+    ).toBe(true);
+    expect(
+      await triggerVisibleFrom(dmTrigger('U1'), { kind: 'dm', userId: 'U2' }, publicResolver),
+    ).toBe(false);
+    expect(
+      await triggerVisibleFrom(
+        dmTrigger('U1'),
+        { kind: 'channel', channelId: 'C_PUB' },
+        publicResolver,
+      ),
+    ).toBe(false);
   });
 
-  it('DM trigger is hidden from another user\'s DM even when that origin carries a channelId', async () => {
-    const origin: TriggerOrigin = { kind: 'dm', userId: 'U2', channelId: 'DU2', channelName: 'DM with U2' };
+  it("DM trigger is hidden from another user's DM even when that origin carries a channelId", async () => {
+    const origin: TriggerOrigin = {
+      kind: 'dm',
+      userId: 'U2',
+      channelId: 'DU2',
+      channelName: 'DM with U2',
+    };
     expect(await triggerVisibleFrom(dmTrigger('U1'), origin, publicResolver)).toBe(false);
   });
 
   it('operator (CLI) sees everything', async () => {
     const resolver = privacyFn(new Set(['C_PRIV']));
-    expect(await triggerVisibleFrom(channelTrigger('C_PRIV'), { kind: 'operator' }, resolver)).toBe(true);
+    expect(await triggerVisibleFrom(channelTrigger('C_PRIV'), { kind: 'operator' }, resolver)).toBe(
+      true,
+    );
     expect(await triggerVisibleFrom(dmTrigger('U1'), { kind: 'operator' }, resolver)).toBe(true);
   });
 });

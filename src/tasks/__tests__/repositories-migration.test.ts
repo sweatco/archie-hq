@@ -17,9 +17,10 @@ vi.mock('../../system/logger.js', () => ({
 }));
 
 import { logger } from '../../system/logger.js';
+import { expectDefined } from '../../test-support/assertions.js';
 
 /** Minimal metadata wrapper — only `repositories` matters for these tests. */
-function meta(repositories: any): TaskMetadata {
+function meta(repositories: unknown): TaskMetadata {
   return {
     task_id: 'task-test',
     channels: {},
@@ -42,7 +43,11 @@ describe('migrateRepositoriesShape', () => {
           clone_path: '/sessions/task-test/repos/backend-agent/acme/backend',
           current_branch: 'archie/task-test',
           branch_states: {
-            'archie/task-test': { base_branch: 'main', pr_number: 42, last_processed_comment_id: 1001 },
+            'archie/task-test': {
+              base_branch: 'main',
+              pr_number: 42,
+              last_processed_comment_id: 1001,
+            },
           },
         },
       ],
@@ -61,7 +66,7 @@ describe('migrateRepositoriesShape', () => {
     expect(att.current_branch).toBe('archie/task-test');
     // Branch/PR/comment-dedup state survives intact — this is what
     // findTaskByPRNumber / findTaskByBranch resolve on.
-    expect(att.branch_states!['archie/task-test']).toEqual({
+    expect(expectDefined(att.branch_states)['archie/task-test']).toEqual({
       base_branch: 'main',
       pr_number: 42,
       last_processed_comment_id: 1001,
@@ -97,7 +102,7 @@ describe('migrateRepositoriesShape', () => {
 
     expect(m.repositories).toHaveLength(1);
     expect(m.repositories[0].clone_path).toBe('/c/backend');
-    expect(m.repositories[0].branch_states!['archie/task-test'].pr_number).toBe(42);
+    expect(expectDefined(m.repositories[0].branch_states)['archie/task-test'].pr_number).toBe(42);
   });
 
   it('drops pre-v30 entries, whose github identifier is no longer resolvable', () => {
@@ -130,12 +135,16 @@ describe('migrateRepositoriesShape', () => {
   it('running twice produces the same result (migration then no-op)', () => {
     const m = meta({
       'backend-agent': [
-        { github: 'acme/backend', clone_path: '/c/backend', branch_states: { 'feature/x': { pr_number: 9 } } },
+        {
+          github: 'acme/backend',
+          clone_path: '/c/backend',
+          branch_states: { 'feature/x': { pr_number: 9 } },
+        },
       ],
     });
 
     migrateRepositoriesShape(m);
-    const afterFirst = JSON.parse(JSON.stringify(m.repositories));
+    const afterFirst = structuredClone(m.repositories);
     expect(migrateRepositoriesShape(m)).toBe(false);
     expect(m.repositories).toEqual(afterFirst);
   });

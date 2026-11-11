@@ -5,10 +5,7 @@
  * prevent concurrent writes from corrupting shared memory files.
  */
 
-import {
-  isMemoryReady,
-  isMemoryHumanUserId,
-} from './paths.js';
+import { isMemoryReady, isMemoryHumanUserId } from './paths.js';
 import { readUser, applyUserUpdatesWithIdentity } from './store.js';
 import { runExtraction } from './extractor.js';
 import { applyEntityUpdate, listEntities, readEntity } from './entities.js';
@@ -58,7 +55,10 @@ let extractionQueue: Promise<void> = Promise.resolve();
 
 export function enqueueMemoryWrite<T>(write: () => Promise<T>): Promise<T> {
   const operation = extractionQueue.then(write);
-  extractionQueue = operation.then(() => {}, () => {});
+  extractionQueue = operation.then(
+    () => {},
+    () => {},
+  );
   return operation;
 }
 
@@ -102,10 +102,11 @@ async function processExtraction(taskId: string): Promise<void> {
 
   const destination = metadata.memory_destination;
   if (!destination) return;
-  const classify = async () => scopeForSlackChannel(
-    await classifySlackMemoryScope(destination.channel_id),
-    destination.channel_id,
-  );
+  const classify = async () =>
+    scopeForSlackChannel(
+      await classifySlackMemoryScope(destination.channel_id),
+      destination.channel_id,
+    );
   const scope = await classify();
   if (!isAuthorizedMemoryScope(destination, scope)) return;
 
@@ -116,21 +117,25 @@ async function processExtraction(taskId: string): Promise<void> {
   }
 
   if (scope.kind === 'private_channel' || scope.kind === 'user') {
-    const outcome = await runExtraction({
-      userMemory: '',
-      entityIndex: '',
-      taskId,
-      status: metadata.status,
-      createdAt: metadata.created_at,
-      transcript,
-    }, new Set());
+    const outcome = await runExtraction(
+      {
+        userMemory: '',
+        entityIndex: '',
+        taskId,
+        status: metadata.status,
+        createdAt: metadata.created_at,
+        transcript,
+      },
+      new Set(),
+    );
     if (!outcome) return;
     const current = await classify();
     if (
-      !isAuthorizedMemoryScope(destination, current)
-      || current.kind !== scope.kind
-      || (scope.kind === 'user' && current.kind === 'user' && current.user_id !== scope.user_id)
-    ) return;
+      !isAuthorizedMemoryScope(destination, current) ||
+      current.kind !== scope.kind ||
+      (scope.kind === 'user' && current.kind === 'user' && current.user_id !== scope.user_id)
+    )
+      return;
     const safeTaskSummary = sanitizeTaskSummary(outcome.task_summary);
     if (!safeTaskSummary) {
       logger.warn('memory', `dropped task summary for ${taskId} (sanitizer rejected)`);
@@ -141,7 +146,13 @@ async function processExtraction(taskId: string): Promise<void> {
       'private',
       destination.channel_id,
       taskId,
-      buildPrivateSummaryMarkdown(taskId, destination.channel_id, metadata, safeTaskSummary, extractionAt),
+      buildPrivateSummaryMarkdown(
+        taskId,
+        destination.channel_id,
+        metadata,
+        safeTaskSummary,
+        extractionAt,
+      ),
     );
     return;
   }
@@ -152,18 +163,26 @@ async function processExtraction(taskId: string): Promise<void> {
 
   // Load existing memory for ALL involved users in parallel.
   const savedObservations = (await listEntities())
-    .filter((entity) => entity.relations.some((relation) => relation.type === 'touched_by' && relation.target === taskId))
-    .flatMap((entity) => entity.observations.map((observation) =>
-      `- [[${entity.entity}]] [${observation.category}] ${observation.text}`
-    ));
-  const entityIndex = `${await readIndexMarkdown()}${savedObservations.length
-    ? `\nExisting observations on entities touched by this task (do not add equivalent observations; distinct new details are allowed):\n${savedObservations.join('\n')}`
-    : ''}`;
+    .filter((entity) =>
+      entity.relations.some(
+        (relation) => relation.type === 'touched_by' && relation.target === taskId,
+      ),
+    )
+    .flatMap((entity) =>
+      entity.observations.map(
+        (observation) => `- [[${entity.entity}]] [${observation.category}] ${observation.text}`,
+      ),
+    );
+  const entityIndex = `${await readIndexMarkdown()}${
+    savedObservations.length
+      ? `\nExisting observations on entities touched by this task (do not add equivalent observations; distinct new details are allowed):\n${savedObservations.join('\n')}`
+      : ''
+  }`;
   const userMemoryBlocks = await Promise.all(
     users.map(async (u) => {
       const mem = await readUser(u.userId);
       return { user: u, memory: mem };
-    })
+    }),
   );
   const userMemory = userMemoryBlocks
     .filter((b) => b.memory.trim())
@@ -181,7 +200,7 @@ async function processExtraction(taskId: string): Promise<void> {
       createdAt: metadata.created_at,
       transcript,
     },
-    allowedUserIds
+    allowedUserIds,
   );
 
   if (!result) {
@@ -197,8 +216,8 @@ async function processExtraction(taskId: string): Promise<void> {
   const displayNameById = new Map(users.map((u) => [u.userId, u.displayName]));
   const appliedUserUpdates: Record<string, MemoryUpdate[]> = {};
   for (const [userId, updates] of Object.entries(result.user_updates)) {
-    const attributedUpdates = updates.filter((update) =>
-      metadata.memory_message_authors?.[update.source_message_ts ?? ''] === userId
+    const attributedUpdates = updates.filter(
+      (update) => metadata.memory_message_authors?.[update.source_message_ts ?? ''] === userId,
     );
     if (attributedUpdates.length > 0) {
       const displayName = displayNameById.get(userId) ?? userId;
@@ -229,8 +248,8 @@ async function processExtraction(taskId: string): Promise<void> {
     for (const target of housekeepingTargets) {
       extractionQueue = extractionQueue.then(() =>
         runHousekeeping(target).catch((err) =>
-          logger.warn('memory', `housekeeping for ${target} failed: ${err}`)
-        )
+          logger.warn('memory', `housekeeping for ${target} failed: ${err}`),
+        ),
       );
     }
   }
@@ -290,7 +309,7 @@ async function writeSummary(
   result: ExtractionResult,
   users: UserRef[],
   activityIndex: ActivityEntry[],
-  related?: ActivityEntry[]
+  related?: ActivityEntry[],
 ): Promise<void> {
   const housekeepingNotes = drainHousekeepingNotes();
   const extractionAt = new Date().toISOString();
@@ -376,7 +395,8 @@ export function buildSummaryMarkdown(
   // Related Tasks section. Caller may pass a precomputed list (e.g. entity-based);
   // otherwise fall back to lexical similarity over the activity index.
   lines.push('', '## Related Tasks', '');
-  const relatedTasks = related ?? selectRelatedTasks(result.activity_summary, result.domain, activityIndex, taskId);
+  const relatedTasks =
+    related ?? selectRelatedTasks(result.activity_summary, result.domain, activityIndex, taskId);
   lines.push(renderRelatedTasks(relatedTasks));
 
   return lines.join('\n') + '\n';
@@ -484,9 +504,38 @@ function renderUpdateBullet(u: MemoryUpdate): string {
 // ---- Related Tasks ----
 
 const STOPWORDS = new Set([
-  'a', 'an', 'and', 'or', 'but', 'the', 'of', 'in', 'on', 'at', 'to', 'for',
-  'with', 'as', 'by', 'is', 'was', 'were', 'be', 'been', 'being', 'are', 'am',
-  'this', 'that', 'these', 'those', 'it', 'its', 'from', 'into', 'about',
+  'a',
+  'an',
+  'and',
+  'or',
+  'but',
+  'the',
+  'of',
+  'in',
+  'on',
+  'at',
+  'to',
+  'for',
+  'with',
+  'as',
+  'by',
+  'is',
+  'was',
+  'were',
+  'be',
+  'been',
+  'being',
+  'are',
+  'am',
+  'this',
+  'that',
+  'these',
+  'those',
+  'it',
+  'its',
+  'from',
+  'into',
+  'about',
 ]);
 
 function tokenise(s: string): Set<string> {
@@ -495,7 +544,7 @@ function tokenise(s: string): Set<string> {
       .toLowerCase()
       .replace(/[^a-z0-9 ]+/g, ' ')
       .split(/\s+/)
-      .filter((t) => t.length > 2 && !STOPWORDS.has(t))
+      .filter((t) => t.length > 2 && !STOPWORDS.has(t)),
   );
 }
 
@@ -509,7 +558,7 @@ export function selectRelatedTasks(
   domain: string,
   activityIndex: ActivityEntry[],
   excludeTaskId?: string,
-  options: { limit?: number; minOverlap?: number } = {}
+  options: { limit?: number; minOverlap?: number } = {},
 ): ActivityEntry[] {
   const limit = options.limit ?? 5;
   const minOverlap = options.minOverlap ?? 2;
@@ -551,7 +600,7 @@ export async function selectRelatedTasksByEntity(
   touchedSlugs: string[],
   currentTaskId: string,
   activityIndex: ActivityEntry[],
-  limit = 5
+  limit = 5,
 ): Promise<ActivityEntry[]> {
   if (touchedSlugs.length === 0) return [];
   const byTask = new Map<string, number>();
@@ -569,8 +618,15 @@ export async function selectRelatedTasksByEntity(
   return Array.from(byTask.entries())
     .sort((a, b) => b[1] - a[1])
     .slice(0, limit)
-    .map(([taskId]) =>
-      indexByTask.get(taskId) ?? { date: '', taskId, summary: 'related via shared entity', domain: '', user: '' }
+    .map(
+      ([taskId]) =>
+        indexByTask.get(taskId) ?? {
+          date: '',
+          taskId,
+          summary: 'related via shared entity',
+          domain: '',
+          user: '',
+        },
     );
 }
 

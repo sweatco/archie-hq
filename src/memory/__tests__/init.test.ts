@@ -9,7 +9,7 @@ const originalMemoryFlag = process.env.ARCHIE_MEMORY;
 const { onEventMock, readPendingMock, linkMock } = vi.hoisted(() => ({
   onEventMock: vi.fn(),
   readPendingMock: vi.fn(),
-  linkMock: vi.fn(),
+  linkMock: vi.fn<typeof import('fs/promises').link>(),
 }));
 
 vi.mock('fs/promises', async (importOriginal) => {
@@ -47,7 +47,11 @@ vi.mock('../pending-queue.js', () => ({
 
 vi.mock('../../system/logger.js', () => ({
   logger: {
-    system: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn(), info: vi.fn(),
+    system: vi.fn(),
+    warn: vi.fn(),
+    debug: vi.fn(),
+    error: vi.fn(),
+    info: vi.fn(),
   },
 }));
 
@@ -79,14 +83,18 @@ describe('scoped memory initialization', () => {
 
     await expect(memory.initMemory('TWORKSPACE')).resolves.toBe(true);
 
-    const marker = JSON.parse(await readFile(join(tempRoot, 'memory', '.scoped-v1.json'), 'utf-8'));
+    const marker: unknown = JSON.parse(
+      await readFile(join(tempRoot, 'memory', '.scoped-v1.json'), 'utf-8'),
+    );
     expect(marker).toEqual({ version: 1, team_id: 'TWORKSPACE' });
     expect(linkMock).toHaveBeenCalledTimes(1);
     const [[from, to]] = linkMock.mock.calls;
     expect(dirname(String(from))).toBe(join(tempRoot, 'memory'));
     expect(String(from)).toMatch(/\.scoped-v1\.json\.\d+\.[0-9a-f-]{36}\.tmp$/);
     expect(to).toBe(join(tempRoot, 'memory', '.scoped-v1.json'));
-    expect((await readdir(join(tempRoot, 'memory'))).some((entry) => /\.tmp$/.test(entry))).toBe(false);
+    expect((await readdir(join(tempRoot, 'memory'))).some((entry) => /\.tmp$/.test(entry))).toBe(
+      false,
+    );
     await expect(readdir(join(tempRoot, 'memory'))).resolves.toEqual(
       expect.arrayContaining(['.scoped-v1.json', 'public', 'private', 'runtime']),
     );
@@ -119,9 +127,11 @@ describe('scoped memory initialization', () => {
     const memory = await loadMemory();
 
     await expect(memory.initMemory('TWORKSPACE')).resolves.toBe(true);
-    await expect(readdir(memoryDir)).resolves.not.toEqual(expect.arrayContaining([
-      expect.stringMatching(new RegExp(`^\\.scoped-v1\\.json\\.${process.pid}\\..+\\.tmp$`)),
-    ]));
+    await expect(readdir(memoryDir)).resolves.not.toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(new RegExp(`^\\.scoped-v1\\.json\\.${process.pid}\\..+\\.tmp$`)),
+      ]),
+    );
   });
 
   it('removes an exact stale crashed marker temp before initializing', async () => {
@@ -155,13 +165,18 @@ describe('scoped memory initialization', () => {
     const memory = await loadMemory();
 
     await expect(memory.initMemory('TWORKSPACE')).resolves.toBe(true);
-    await expect(readFile(join(memoryDir, '.scoped-v1.json.123.tmp.bak'), 'utf-8')).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(
+      readFile(join(memoryDir, '.scoped-v1.json.123.tmp.bak'), 'utf-8'),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('fails closed on workspace mismatch without changing existing data', async () => {
     const memoryDir = join(tempRoot, 'memory');
     await mkdir(memoryDir, { recursive: true });
-    await writeFile(join(memoryDir, '.scoped-v1.json'), JSON.stringify({ version: 1, team_id: 'TOTHER' }));
+    await writeFile(
+      join(memoryDir, '.scoped-v1.json'),
+      JSON.stringify({ version: 1, team_id: 'TOTHER' }),
+    );
     await writeFile(join(memoryDir, 'keep.txt'), 'untouched');
     const memory = await loadMemory();
 
@@ -178,8 +193,12 @@ describe('scoped memory initialization', () => {
     const memory = await loadMemory();
 
     await expect(memory.initMemory('TWORKSPACE')).resolves.toBe(true);
-    await expect(readFile(join(memoryDir, 'legacy.md'), 'utf-8')).rejects.toMatchObject({ code: 'ENOENT' });
-    await expect(readFile(join(memoryDir, '.scoped-v1.json'), 'utf-8')).resolves.toContain('TWORKSPACE');
+    await expect(readFile(join(memoryDir, 'legacy.md'), 'utf-8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    await expect(readFile(join(memoryDir, '.scoped-v1.json'), 'utf-8')).resolves.toContain(
+      'TWORKSPACE',
+    );
     expect(memory.isMemoryReady()).toBe(true);
     expect(onEventMock).toHaveBeenCalledTimes(1);
   });

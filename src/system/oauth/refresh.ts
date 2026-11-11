@@ -6,11 +6,7 @@
 
 import { withKeyMutex } from '../secrets-vault.js';
 import { refreshAccessToken, clientAuthFor } from './flow.js';
-import {
-  readOAuthRecord,
-  readOAuthSealed,
-  writeOAuthRecord,
-} from './storage.js';
+import { readOAuthRecord, readOAuthSealed, writeOAuthRecord } from './storage.js';
 import type { OAuthSealed } from './types.js';
 
 /** Refresh if the token expires within this many seconds. */
@@ -29,7 +25,10 @@ export class OAuthRecordMissingError extends Error {
 }
 
 export class OAuthRefreshError extends Error {
-  constructor(public readonly serverName: string, cause: unknown) {
+  constructor(
+    public readonly serverName: string,
+    cause: unknown,
+  ) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     super(`Failed to refresh OAuth token for "${serverName}": ${reason}`);
   }
@@ -73,7 +72,10 @@ export async function ensureFreshToken(
 
     const sealed = await readOAuthSealed(record);
     if (!sealed.refresh_token) {
-      throw new OAuthRefreshError(serverName, new Error('No refresh_token stored — reconnect required'));
+      throw new OAuthRefreshError(
+        serverName,
+        new Error('No refresh_token stored — reconnect required'),
+      );
     }
 
     let response;
@@ -93,15 +95,15 @@ export async function ensureFreshToken(
 
     const refreshedSealed: OAuthSealed = {
       access_token: response.access_token,
-      refresh_token: typeof response.refresh_token === 'string' ? response.refresh_token : sealed.refresh_token,
+      refresh_token:
+        typeof response.refresh_token === 'string' ? response.refresh_token : sealed.refresh_token,
       client_id: sealed.client_id,
       client_secret: sealed.client_secret,
       token_type: response.token_type,
     };
 
-    const expiresAt = typeof response.expires_in === 'number'
-      ? nowSec + response.expires_in
-      : record.expires_at; // unknown lifetime — leave as-is so we re-try next time
+    const expiresAt =
+      typeof response.expires_in === 'number' ? nowSec + response.expires_in : record.expires_at; // unknown lifetime — leave as-is so we re-try next time
 
     await writeOAuthRecord(
       {

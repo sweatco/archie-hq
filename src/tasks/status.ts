@@ -188,4 +188,3 @@ export class TaskStatusController {
 function compose(fragment: string): string {
   return `is ${fragment}…`;
 }
-
