@@ -32,6 +32,7 @@ How to work with the system. Setup, deployment, and development patterns.
 |----------|-------------|
 | [Local Development](guides/local-development.md) | Prerequisites, setup, running, debugging |
 | [Coding Guidelines](guides/coding-guidelines.md) | Readability, ownership, review and automated checks |
+| [Project Management](guides/project-management.md) | Work board, process-only agent nudges, acceptance, and GitHub automation |
 | [Deployment](guides/deployment.md) | GCP deployment, CI/CD, monitoring, operations |
 | [SDK Patterns](guides/sdk-patterns.md) | Agent SDK hooks, turn detection, streaming input |
 | [Bedrock Guardrails Setup](guides/bedrock-guardrails-setup.md) | Configuring AWS Bedrock guardrails for prompt injection defense |
@@ -70,6 +71,8 @@ Historical record of development milestones. Each plan has a status header indic
 | [v26](plans/v26-artifact-sharing.md) | Artifact sharing | Implemented |
 | [v27](plans/v27-oauth-mcp-secrets.md) | OAuth-managed MCP secrets | Implemented |
 | [Coding Guidelines and Checks](plans/20261109-coding-guidelines-and-checks.md) | Adopt guidelines, formatting and lint with an existing-debt baseline | Implemented locally |
+| [Issue Disposition Review](plans/20261111-issue-disposition.md) | Evidence and next process step for all 44 existing open issues | Classification proposed; no closures |
+| [Project Management Setup](plans/20261111-project-management.md) | Board, agent rules, automation, verification, and remaining merge step | Native workflows configured; hosted report awaits merge |
 
 See [plans/README.md](plans/README.md) for the full evolution arc.
 
@@ -84,6 +87,7 @@ Future work and unimplemented features. These are ideas that have been designed 
 | [LLM Guard Integration](proposals/llm-guard-integration.md) | Full DLP scanning service |
 | [Analytics Plugin Gaps](proposals/analytics-plugin-gaps.md) | Roadmap for analytics plugin (MVP shipped) |
 | [Architecture Simplification](proposals/architecture-simplification.md) | Ideas to reduce complexity in core flows |
+| [Memory](proposals/memory.md) | Memory initiative, evaluation baseline, and D4 human source review/calibration |
 
 ## Quick Reference
 

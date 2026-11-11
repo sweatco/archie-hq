@@ -1,0 +1,29 @@
+name: Task
+description: Track an actionable deliverable or a decision.
+type: Task
+body:
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objective
+      description: The result or decision this task should produce.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Observable evidence that the task is complete.
+      placeholder: '- [ ] The agreed outcome is verified and the evidence is linked.'
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Link the proposal, initiative, related issue, or implementation PR.
+  - type: textarea
+    id: next-step
+    attributes:
+      label: Next step and dependencies
+      description: State the next action or exact decision needed and any prerequisite. Leave unknown owners and dates explicit.

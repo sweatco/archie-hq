@@ -26,7 +26,7 @@
     "e2e:prepare": "tsx tools/e2e/prepare-worktree.ts",
     "docker:dev": "docker compose up --build",
     "docker:stop": "docker compose down",
-    "test": "vitest run --reporter=verbose",
+    "test": "vitest run --reporter=verbose && node --test tools/pm/issue-health.test.mjs",
     "test:watch": "vitest"
   },
   "engines": {
