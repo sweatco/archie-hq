@@ -72,6 +72,15 @@ export class AttentionRecords {
     return row ? (JSON.parse(row.response) as unknown) : undefined;
   }
 
+  extractionAttempts(key: string): number {
+    const row = this.row<{ attempts: number }>(
+      `SELECT count(*) attempts FROM requests r JOIN charge_scopes s ON s.charge=r.charge
+       WHERE s.scope=? AND r.usage IS NOT NULL`,
+      `extract:${key}`,
+    );
+    return row?.attempts ?? 0;
+  }
+
   cacheExtraction(key: string, created: number, response: object) {
     this.run(
       'INSERT OR REPLACE INTO extractions VALUES (?,?,?)',
@@ -85,8 +94,9 @@ export class AttentionRecords {
     this.run('DELETE FROM extractions WHERE id=?', key);
   }
 
-  deferThread(changed: number, channel: string, thread: string) {
-    this.run('UPDATE threads SET changed=? WHERE channel=? AND thread=?', changed, channel, thread);
+  deferThread(readyAt: number, channel: string, thread: string) {
+    // Reuse thread ordering for retry eligibility; new evidence resets it at capture.
+    this.run('UPDATE threads SET changed=? WHERE channel=? AND thread=?', readyAt, channel, thread);
   }
 
   currentMessage(channel: string, timestamp: string) {

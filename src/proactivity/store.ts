@@ -765,18 +765,19 @@ export class InitiativeStore {
     return { channel, thread, generation: Number(row.generation), evidence, gap, removed };
   }
 
-  dirty(limit = 16): ThreadSnapshot[] {
+  dirty(limit = 16, readyBefore = Number.MAX_SAFE_INTEGER): ThreadSnapshot[] {
     return this.rows(
       `WITH pending AS (
         SELECT t.channel,t.thread,t.changed FROM threads t
         JOIN channels c ON c.id=t.channel
-        WHERE c.allowed=1 AND t.generation>t.processed
+        WHERE c.allowed=1 AND t.generation>t.processed AND t.changed<=?
       ), source_groups AS (
         SELECT channel,MIN(changed) AS oldest FROM pending GROUP BY channel
       )
       SELECT p.channel,p.thread FROM pending p
       JOIN source_groups g ON g.channel=p.channel
       ORDER BY g.oldest,p.channel,p.changed LIMIT ?`,
+      readyBefore,
       limit,
     )
       .map((r) => {

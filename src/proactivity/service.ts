@@ -63,7 +63,7 @@ const Findings = z.object({
           .max(20),
       }),
     )
-    .max(16),
+    .max(1),
 });
 type ThreadFindings = z.infer<typeof Findings>['threads'][number];
 const sourceKey = (source: Pick<ThreadSnapshot, 'channel' | 'thread'>) =>
@@ -283,7 +283,13 @@ export class InitiativeService {
   ) {
     return {
       model: this.config.extractionModel,
-      system: `${SYSTEM}\nEach part follows earlier context for the same thread. Return its full consolidated state, replacing carried findings. Reuse stable keys and resolve earlier commitments when later evidence cancels them. Set reopen only when new human evidence substantively changes a resolved matter. Set owner to a human Slack ID only when cited human evidence explicitly establishes their responsibility: use the author's ID for a first-person commitment or an explicit Slack mention for an assignment. Otherwise owner=null. Never infer responsibility from display names, participation or administration. Extract deadline as local date YYYY-MM-DD, time HH:mm and IANA timeZone; preserve the source clock time, never compute an epoch or timezone offset. Return null when the date, time or zone cannot be established; do not invent an end-of-day time.`,
+      system: [
+        SYSTEM,
+        'Return the supplied thread, even when it has no findings. Keep only meaningful changes and distinct actionable matters; use one short sentence per observation or detail. Every finding must cite supplied human evidence from this thread, not bot output alone. Keep citation numbers in evidence arrays, not prose.',
+        'Each part follows earlier context for the same thread. Return its full consolidated state, replacing carried findings. Reuse stable keys and resolve earlier commitments when later evidence cancels them. Set reopen only when new human evidence substantively changes a resolved matter.',
+        "Set owner to a human Slack ID only when cited human evidence explicitly establishes their responsibility: use the author's ID for a first-person commitment or an explicit Slack mention for an assignment. A direct request to a mentioned person for review or feedback assigns that review, even before acceptance; it does not assign approval of the proposal or spending. A CC or incidental mention is not an assignment. Otherwise owner=null. Never infer responsibility from display names, participation or administration. Preserve tentative wording such as 'try'.",
+        'Extract deadline as local date YYYY-MM-DD, time HH:mm and IANA timeZone; preserve the source clock time, never compute an epoch or timezone offset. Return null when the date, time or zone cannot be established; do not invent an end-of-day time. Keep missing-date explanations in the structured result, not titles or prose intended for employees.',
+      ].join('\n'),
       schema: Findings,
       input: {
         now: Math.max(...threads.flatMap((s) => s.evidence.map((e) => e.captured)), 0),
@@ -385,29 +391,50 @@ export class InitiativeService {
   }
 
   private async extract(job: Job, now: number, signal: AbortSignal): Promise<void> {
-    const snapshots: ThreadSnapshot[] = [];
-    for (const source of this.store.dirty()) {
-      if (await this.access.check(source.channel)) snapshots.push(source);
+    for (const source of this.store.dirty(16, now)) {
+      signal.throwIfAborted();
+      if (!(await this.access.check(source.channel))) continue;
+      try {
+        await this.extractThread(job, source, now, signal);
+      } catch (error) {
+        if (signal.aborted) throw error;
+        const retryAt = now + (error instanceof AdmissionDeferred ? HOUR : 5 * 60_000);
+        this.store.attention.deferThread(retryAt, source.channel, source.thread);
+        logger.warn('initiative', `Background extract deferred for ${sourceKey(source)}`, error);
+      }
     }
-    if (!snapshots.length) return;
-    const previous = snapshots.flatMap((s) => this.store.threadMatters(s.channel, s.thread));
+  }
+
+  private async extractThread(
+    job: Job,
+    source: ThreadSnapshot,
+    now: number,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const snapshots = [source];
+    if (!source.evidence.some((e) => !e.own && !e.bot && !e.deleted)) {
+      this.store.apply(snapshots, [], [], job);
+      return;
+    }
+    const previous = this.store.threadMatters(source.channel, source.thread);
     const carried = new Map<string, ThreadFindings>();
     const supplied = new Map<string, Set<number>>();
     const buildRequest = (threads: ThreadSnapshot[]) =>
       this.extractionRequest(threads, snapshots, previous, carried);
-    const remaining = snapshots
-      .map((snapshot) => ({
-        ...snapshot,
-        evidence: snapshot.evidence.map((evidence) => ({ ...evidence })),
-      }))
-      .sort((a, b) => a.channel.localeCompare(b.channel));
+    const remaining = [
+      { ...source, evidence: source.evidence.map((evidence) => ({ ...evidence })) },
+    ];
     const keys: string[] = [];
     let applying = false;
     try {
       while (remaining.length) {
         signal.throwIfAborted();
         const batch = extractionBatch(remaining, (part) => {
-          if (new Set(part.map((source) => source.channel)).size !== 1) return false;
+          // Bound source material as well as input tokens to leave room for the findings.
+          if (
+            part.flatMap((s) => s.evidence).reduce((length, e) => length + e.text.length, 0) > 6000
+          )
+            return false;
           const request = buildRequest(part);
           return (
             this.model.fits?.(request) ?? Buffer.byteLength(JSON.stringify(request.input)) < 8000
@@ -432,6 +459,11 @@ export class InitiativeService {
           .digest('hex');
         keys.push(key);
         const cached = this.store.attention.extractionPart(key);
+        if (!cached && this.store.attention.extractionAttempts(key) >= 3) {
+          throw new AdmissionDeferred(
+            'Unchanged extraction failed three times; waiting for new evidence',
+          );
+        }
         const part = cached
           ? Findings.parse(cached)
           : await this.model.complete({ ...request, scope: `extract:${key}` }, signal);
@@ -453,7 +485,6 @@ export class InitiativeService {
         for (const key of applying ? keys : keys.slice(-1))
           this.store.attention.discardExtraction(key);
       }
-      for (const s of snapshots) this.store.attention.deferThread(now, s.channel, s.thread);
       throw error;
     }
   }
@@ -652,8 +683,15 @@ export class InitiativeService {
         thread: bounded[0],
         related: bounded.slice(1),
         repositories: this.config.repositories ?? [],
-        instruction:
-          'Check whether resolved using cited current evidence, never missing context. Offer concrete useful help only. Public follow-ups need an evidenced unresolved request and two business days of inactivity. No help is better than repetition. When ordinary repository work would help, suggest one scoped task with an allowed repository, intended result and supplied human evidence IDs; otherwise suggestion=null. A suggestion never authorizes execution.',
+        instruction: [
+          'Check whether resolved using cited current evidence, never missing context. Offer concrete useful help only.',
+          'Write help as a ready-to-send Slack reply: one or two short sentences with a useful next step, not an evidence recap.',
+          'Keep the requested action unchanged: feedback is not approval, and a proposal is not a scheduled change.',
+          'Address the responsible employee as you in a private reply; use names from the source or Slack mentions when another person must be identified. Never print bare Slack IDs, numeric citation markers or internal parsing/coverage commentary. Keep citations in the evidence array; the host adds the source link.',
+          'In private replies, refer to the linked source thread rather than saying here.',
+          'Public follow-ups need an evidenced unresolved request and two business days of inactivity. No help is better than repetition.',
+          'When ordinary repository work would help, suggest one scoped task with an allowed repository, intended result and supplied human evidence IDs; otherwise suggestion=null. A suggestion never authorizes execution.',
+        ].join(' '),
       },
       schema: Assessment,
       priority: true,
@@ -700,9 +738,9 @@ export class InitiativeService {
         recipient,
         channel: await this.slack.dm(recipient),
         thread: null,
-        text: matters
-          .map((m) => `• ${m.title}: ${m.detail}\n${this.slack.link(m.channel, m.thread)}`)
-          .join('\n\n'),
+        text: `Open items for you:\n\n${matters
+          .map((m) => `• ${m.title}\n${this.slack.link(m.channel, m.thread)}`)
+          .join('\n\n')}`,
         matters: matters.map((m) => m.id),
         evidence: matters.flatMap((m) => m.evidence),
         digest: true,
