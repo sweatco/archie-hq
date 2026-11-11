@@ -270,7 +270,7 @@ describe('initiative runtime integration', () => {
           };
         });
         const start = vi.spyOn(ordinaryTasks, 'start').mockImplementation(async () => {
-          expectDefined(expectDefined(metadata).approved_start).phase = 'ready';
+          expectDefined(metadata?.approved_start).phase = 'ready';
         });
         vi.spyOn(ordinaryTasks, 'read').mockImplementation(async () => metadata ?? null);
         if (recovery) {
@@ -482,9 +482,12 @@ describe('initiative runtime integration', () => {
     expect(f.post).toHaveBeenCalledWith(
       expect.objectContaining({
         channel: 'D_OWNER',
-        text: expect.stringContaining('ARCHIE_PROACTIVITY_MODE') as unknown,
       }),
     );
+    const notice = expectDefined(
+      f.post.mock.calls.find(([message]) => message.channel === 'D_OWNER'),
+    )[0];
+    expect(notice.text).toContain('ARCHIE_PROACTIVITY_MODE');
   });
 
   it('recognizes a proactive origin during lookup failures without exposing its cached context', async () => {

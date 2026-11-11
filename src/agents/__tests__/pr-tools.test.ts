@@ -1,4 +1,4 @@
-import { registeredMcpTools } from '../../test-support/mcp.js';
+import { registeredMcpTools, mcpToolHandler } from '../../test-support/mcp.js';
 /**
  * Unit tests for GitHub PR tool handlers.
  *
@@ -153,15 +153,8 @@ function makeTask(overrides: Partial<Task['metadata']> = {}): Task {
   } as unknown as Task;
 }
 
-/** Extract a tool handler from an MCP server by name */
-function getToolFromServer(server: Parameters<typeof registeredMcpTools>[0], toolName: string) {
-  const tools = registeredMcpTools(server);
-  if (!tools[toolName]) throw new Error(`Tool '${toolName}' not found in server`);
-  return tools[toolName].callback;
-}
-
 function getRepoTool(agent: Agent, task: Task, toolName: string) {
-  return getToolFromServer(createRepoToolsMcpServer(agent, task), toolName);
+  return mcpToolHandler(createRepoToolsMcpServer(agent, task), toolName);
 }
 
 // ---- Tests ----
@@ -188,12 +181,6 @@ describe('branch tools preserve the mounted attachment', () => {
 
 describe('merge_pull_request', () => {
   beforeEach(() => {
-    vi.mocked(getGitHubClient).mockReturnValue(
-      Object.assign(
-        new GitHubClient({ appId: '1', privateKey: 'unused', installationId: 1 }),
-        mockGitHubClient,
-      ),
-    );
     vi.clearAllMocks();
     vi.mocked(getGitHubClient).mockReturnValue(
       Object.assign(
@@ -419,6 +406,7 @@ describe('merge_pull_request — policy gating', () => {
       pr_number: 42,
       requested_by: 'pm-agent',
     });
+    expect(task.metadata.pending_merge_approval?.requested_at).toBeTypeOf('string');
     expect(task.debouncedSave).toHaveBeenCalled();
     expect(task.suspendStatus).toHaveBeenCalledTimes(1);
     expect(agent.deferTeardown).toHaveBeenCalledTimes(1);
@@ -446,6 +434,7 @@ describe('merge_pull_request — policy gating', () => {
       pr_number: 42,
       requested_by: 'pm-agent',
     });
+    expect(task.metadata.pending_merge_approval?.requested_at).toBeTypeOf('string');
     expect(task.suspendStatus).toHaveBeenCalledTimes(1);
     expect(agent.deferTeardown).toHaveBeenCalledTimes(1);
     expect(mockGitHubClient.mergePullRequest).not.toHaveBeenCalled();
@@ -776,10 +765,7 @@ describe('request_edit_mode', () => {
   it('is a no-op when edit mode is already approved (idempotent)', async () => {
     const agent = makeAgent();
     const task = makeTask({ edit_allowed: true });
-    const handler = getToolFromServer(
-      createOrchestrationMcpServer(agent, task),
-      'request_edit_mode',
-    );
+    const handler = mcpToolHandler(createOrchestrationMcpServer(agent, task), 'request_edit_mode');
 
     const result = await handler({ reason: 'tweak the config' });
 
@@ -794,10 +780,7 @@ describe('request_edit_mode', () => {
     agent.clearPendingTeardown();
     agent.deferTeardown = vi.fn();
     const task = makeTask({ edit_allowed: false });
-    const handler = getToolFromServer(
-      createOrchestrationMcpServer(agent, task),
-      'request_edit_mode',
-    );
+    const handler = mcpToolHandler(createOrchestrationMcpServer(agent, task), 'request_edit_mode');
 
     const result = await handler({ reason: 'apply the fix' });
 

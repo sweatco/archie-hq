@@ -14,7 +14,6 @@
  * Drives the real Express handlers captured from the mounted router.
  */
 
-import { z } from 'zod';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../slack/client.js', () => ({
@@ -145,7 +144,7 @@ function captureRoute(path: string, method: 'get' | 'post' | 'patch' | 'delete')
     }>;
   };
   const layer = router.stack.find((l) => l.route?.path === path && l.route.methods[method]);
-  return expectDefined(expectDefined(expectDefined(layer).route).stack[0]).handle;
+  return expectDefined(layer?.route?.stack[0]).handle;
 }
 
 function makeRes() {
@@ -256,9 +255,7 @@ describe('PATCH /triggers/:id — pending proposals', () => {
     expect(saveTrigger).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(409);
     expect(res.json.mock.calls[0][0]).toMatchObject({ ok: false, stale: true });
-    expect(z.object({ error: z.string() }).parse(res.json.mock.calls[0][0]).error).toMatch(
-      /withdrawn/i,
-    );
+    expect(res.json.mock.calls[0][0]).toHaveProperty('error', expect.stringMatching(/withdrawn/i));
   });
 
   it('never deindexes on the pending path — a pending trigger is not in the index', async () => {
@@ -338,8 +335,9 @@ describe('POST /tasks/:id/approve — trigger resolutions report the truth', () 
       stale: true,
       outcome: 'already_live',
     });
-    expect(z.object({ error: z.string() }).parse(res.json.mock.calls[0][0]).error).toMatch(
-      /running\. Pause or delete it instead/,
+    expect(res.json.mock.calls[0][0]).toHaveProperty(
+      'error',
+      expect.stringMatching(/running\. Pause or delete it instead/),
     );
   });
 
@@ -360,12 +358,11 @@ describe('POST /tasks/:id/approve — trigger resolutions report the truth', () 
     );
 
     expect(res.status).toHaveBeenCalledWith(409);
-    expect(z.object({ error: z.string() }).parse(res.json.mock.calls[0][0]).error).toMatch(
-      /currently paused\. Delete it if you want it gone/,
+    expect(res.json.mock.calls[0][0]).toHaveProperty(
+      'error',
+      expect.stringMatching(/currently paused\. Delete it if you want it gone/),
     );
-    expect(z.object({ error: z.string() }).parse(res.json.mock.calls[0][0]).error).not.toMatch(
-      /Pause/,
-    );
+    expect(res.json.mock.calls[0][0]).not.toHaveProperty('error', expect.stringMatching(/Pause/));
   });
 
   it('answers 409 when an approval enabled nothing', async () => {
@@ -433,8 +430,9 @@ describe('POST /tasks/:id/approve — trigger resolutions report the truth', () 
 
     expect(res.status).toHaveBeenCalledWith(409);
     expect(res.json.mock.calls[0][0]).toMatchObject({ capBlocked: true });
-    expect(z.object({ error: z.string() }).parse(res.json.mock.calls[0][0]).error).toMatch(
-      /limit was reached/i,
+    expect(res.json.mock.calls[0][0]).toHaveProperty(
+      'error',
+      expect.stringMatching(/limit was reached/i),
     );
     expect(emitEvent).not.toHaveBeenCalledWith('approval:resolved', TASK_ID, expect.anything());
   });

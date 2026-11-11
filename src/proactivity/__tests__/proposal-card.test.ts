@@ -59,8 +59,8 @@ describe('proposal card replacement', () => {
       expect(call).toMatchObject({
         channel: 'D_OWNER',
         ts: delivery.ts,
-        text: expect.stringContaining(delivery.text) as unknown,
       });
+      expect(call.text).toContain(delivery.text);
       expect(call.blocks).toEqual([{ type: 'markdown', text: call.text }]);
       expect(JSON.stringify(call.blocks)).not.toContain('initiative_start_task');
       expect(call.blocks.some((block) => block.type === 'actions')).toBe(false);

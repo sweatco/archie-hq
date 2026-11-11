@@ -349,9 +349,10 @@ describe('AC6-unit: nonce-based cost', () => {
     const backend = report.agents.find((a) => a.agentKey === 'backend');
     expect(pm?.cost).toBeCloseTo(0.25, 10);
     expect(backend?.cost).toBeCloseTo(0.3, 10);
-    expect(
-      expectDefined(expectDefined(pm).cost) + expectDefined(expectDefined(backend).cost),
-    ).toBeCloseTo(expectDefined(report.cost).grand, 10);
+    expect(expectDefined(pm?.cost) + expectDefined(backend?.cost)).toBeCloseTo(
+      expectDefined(report.cost).grand,
+      10,
+    );
     expect(report.cost?.grand).toBeCloseTo(0.55, 10);
   });
 

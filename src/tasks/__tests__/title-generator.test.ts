@@ -215,10 +215,8 @@ describe('generateTaskTitle', () => {
   it('uses haiku model and json_schema output format', async () => {
     state.queryEvents = [successEvent('A title')];
     await generateTaskTitle(makeThread());
-    expect(expectDefined(expectDefined(state.lastQueryArgs).options).model).toBe('haiku');
-    expect(expectDefined(expectDefined(state.lastQueryArgs).options).outputFormat?.type).toBe(
-      'json_schema',
-    );
-    expect(expectDefined(expectDefined(state.lastQueryArgs).options).tools).toEqual([]);
+    expect(expectDefined(state.lastQueryArgs?.options).model).toBe('haiku');
+    expect(expectDefined(state.lastQueryArgs?.options).outputFormat?.type).toBe('json_schema');
+    expect(expectDefined(state.lastQueryArgs?.options).tools).toEqual([]);
   });
 });

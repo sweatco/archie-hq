@@ -2700,17 +2700,13 @@ export class Task {
     if (this.saveTimer) return;
     const flushSavedTask = async () => {
       this.saveTimer = undefined;
-      try {
-        this.syncAgentSession();
-        this.metadata.updated_at = new Date().toISOString();
-        await persistTaskMetadata(this.taskId, this.metadata);
-      } catch (err) {
-        logger.error('task', `Failed to save task ${this.taskId}`, err);
-      }
+      this.syncAgentSession();
+      this.metadata.updated_at = new Date().toISOString();
+      await persistTaskMetadata(this.taskId, this.metadata);
     };
     this.saveTimer = setTimeout(() => {
       flushSavedTask().catch((error: unknown) =>
-        logger.error('runtime', 'Task save failed', error),
+        logger.error('task', `Failed to save task ${this.taskId}`, error),
       );
     }, 500);
   }

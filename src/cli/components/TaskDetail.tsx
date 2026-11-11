@@ -306,24 +306,20 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
 
   // Initial load: fetch metadata + events
   const loadInitial = useCallback(async () => {
-    try {
-      const [detail, eventsResult] = await Promise.all([
-        fetchTaskDetail(taskId),
-        fetchTaskEvents(taskId),
-      ]);
-      setStatus(detail.metadata?.status || '');
-      setReminder(detail.metadata?.reminder ?? null);
-      setTitle(detail.metadata?.title ?? null);
-      setLiveStatus(''); // ephemeral — repopulates from the next `status` event
-      setEvents(eventsResult.events);
-      setEventCursor(eventsResult.total);
+    const [detail, eventsResult] = await Promise.all([
+      fetchTaskDetail(taskId),
+      fetchTaskEvents(taskId),
+    ]);
+    setStatus(detail.metadata?.status || '');
+    setReminder(detail.metadata?.reminder ?? null);
+    setTitle(detail.metadata?.title ?? null);
+    setLiveStatus(''); // ephemeral — repopulates from the next `status` event
+    setEvents(eventsResult.events);
+    setEventCursor(eventsResult.total);
 
-      setError(null);
-      // Scroll to bottom after initial load
-      setTimeout(() => scrollRef.current?.scrollToBottom(), 50);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
+    setError(null);
+    // Scroll to bottom after initial load
+    setTimeout(() => scrollRef.current?.scrollToBottom(), 50);
   }, [taskId]);
 
   useEffect(() => {
@@ -487,12 +483,10 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
     }
   });
 
-  const handleSendMessage = async (message: string) => {
-    try {
-      await sendMessage(taskId, message);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
+  const handleSendMessage = (message: string) => {
+    sendMessage(taskId, message).catch((error: unknown) =>
+      setError(error instanceof Error ? error.message : String(error)),
+    );
   };
 
   if (error) {
@@ -579,11 +573,7 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
       {/* Message input */}
       <Box paddingX={1}>
         <MessageInput
-          onSubmit={(message) => {
-            handleSendMessage(message).catch((error: unknown) =>
-              setError(error instanceof Error ? error.message : String(error)),
-            );
-          }}
+          onSubmit={handleSendMessage}
           active={inputActive}
           placeholder={inputActive ? 'Type message to PM...' : 'Press Tab to type...'}
         />

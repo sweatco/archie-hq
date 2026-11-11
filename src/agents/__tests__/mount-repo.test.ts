@@ -1,6 +1,6 @@
 import { GitHubClient } from '../../connectors/github/client.js';
 import { MessageQueue } from '../message-queue.js';
-import { registeredMcpTools } from '../../test-support/mcp.js';
+import { mcpToolHandler } from '../../test-support/mcp.js';
 /**
  * `mount_repo` — the only path by which a task gets a clone.
  *
@@ -118,8 +118,7 @@ function makeTask(overrides: Partial<Task['metadata']> = {}): Task {
 
 function mountTool(agent: Agent, task: Task) {
   const server = createOrchestrationMcpServer(agent, task);
-  const tools = registeredMcpTools(server);
-  return tools['mount_repo'].callback;
+  return mcpToolHandler(server, 'mount_repo');
 }
 
 /** The options object mount_repo handed the clone layer on call `n`. */

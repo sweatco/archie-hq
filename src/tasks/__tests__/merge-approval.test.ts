@@ -119,9 +119,8 @@ function reposWithPR(pr: { github: string; pr_number: number }): TaskMetadata['r
 
 /** Read the merge_armed flag off the reposWithPR branch state. */
 function armedFlag(task: FakeTask): boolean | undefined {
-  return expectDefined(
-    expectDefined(expectDefined(task.metadata.repositories[0]).branch_states)['feat/x'],
-  ).merge_armed;
+  return expectDefined(expectDefined(task.metadata.repositories[0]?.branch_states)['feat/x'])
+    .merge_armed;
 }
 
 const approver = { id: 'U1', name: 'Dana' };

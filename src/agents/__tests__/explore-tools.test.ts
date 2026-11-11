@@ -1,5 +1,5 @@
 import { MessageQueue } from '../message-queue.js';
-import { registeredMcpTools } from '../../test-support/mcp.js';
+import { mcpToolHandler } from '../../test-support/mcp.js';
 /**
  * Handler-level tests for the `post_to_channel` explore tool — the success path
  * (returns the posted ts, message not linked to the task) plus the DM-rejection
@@ -146,10 +146,7 @@ function getHandler(
   task: Task = makeTask(),
 ): (args: Record<string, unknown>) => Promise<{ content: { text: string }[] }> {
   const server = createCommsMcpServer(makeAgent(), task);
-  const raw = registeredMcpTools(server);
-  const entry = raw[name];
-  const fn = entry.callback;
-  return (args) => fn(args, {});
+  return mcpToolHandler(server, name);
 }
 
 async function textOf(result: { content: { text: string }[] }): Promise<string> {

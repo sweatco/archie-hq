@@ -349,21 +349,17 @@ export function handleChecksReadyDirect(
   const notifyChecksReady = async () => {
     checksReadyTimers.delete(key);
     logger.system(`GitHub: Firing checks_ready for ${key}`);
-    try {
-      const entry = await appendGitHubEvent(taskId, githubRepo, {
-        from: 'ci',
-        destination: `PR #${prNumber}`,
-        message: `checks updated — call get_pr_checks(${prNumber}) to inspect`,
-      });
-      const task = await Task.get(taskId);
-      await task.sendMessage(AGENT_PROMPTS.githubActivity(entry));
-    } catch (error) {
-      logger.error('checks-ready', `Failed to deliver checks_ready ping for ${key}`, error);
-    }
+    const entry = await appendGitHubEvent(taskId, githubRepo, {
+      from: 'ci',
+      destination: `PR #${prNumber}`,
+      message: `checks updated — call get_pr_checks(${prNumber}) to inspect`,
+    });
+    const task = await Task.get(taskId);
+    await task.sendMessage(AGENT_PROMPTS.githubActivity(entry));
   };
   const timer = setTimeout(() => {
     notifyChecksReady().catch((error: unknown) =>
-      logger.error('runtime', 'Check notification failed', error),
+      logger.error('checks-ready', `Failed to deliver checks_ready ping for ${key}`, error),
     );
   }, CHECKS_READY_DEBOUNCE_MS);
 

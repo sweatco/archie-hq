@@ -15,9 +15,8 @@ export const VERBATIM_MAX = 200;
 const SummarySchema = z.object({
   summary: z.string(),
 });
-const rawSummarySchema = toJSONSchema(SummarySchema) as Record<string, unknown>;
+const summaryJsonSchema = toJSONSchema(SummarySchema) as Record<string, unknown>;
 // Strip JSON Schema dialect URL — some SDK validators reject it.
-const summaryJsonSchema = rawSummarySchema;
 delete summaryJsonSchema.$schema;
 
 const SYSTEM_PROMPT = `You write a one-line index entry for a message someone pinned in a Slack channel.

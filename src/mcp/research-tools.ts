@@ -51,8 +51,7 @@ const PresetSchema = z.object({
 });
 
 // The SDK's structured-output validator rejects the $schema dialect URL.
-const rawPresetSchema = toJSONSchema(PresetSchema) as Record<string, unknown>;
-const presetJsonSchema = rawPresetSchema;
+const presetJsonSchema = toJSONSchema(PresetSchema) as Record<string, unknown>;
 delete presetJsonSchema.$schema;
 
 const CLASSIFIER_SYSTEM_PROMPT = `You are a research query classifier. Pick the Perplexity preset that fits the query.
@@ -140,9 +139,6 @@ interface PerplexityResponse {
   citations: string[];
 }
 
-/**
- * Call Perplexity Agent API with the selected preset.
- */
 const citationSchema = z.object({ type: z.string(), url: z.string().optional() });
 const responseBlockSchema = z.object({
   type: z.string(),
@@ -165,6 +161,7 @@ const perplexityResponseSchema = z.object({
 const researchResultSchema = z.object({ research_id: z.string(), content: z.string().optional() });
 const toolTextBlocksSchema = z.array(z.object({ type: z.string(), text: z.string().optional() }));
 
+/** Call Perplexity Agent API with the selected preset. */
 export async function callPerplexity(
   preset: PerplexityPreset,
   input: string,

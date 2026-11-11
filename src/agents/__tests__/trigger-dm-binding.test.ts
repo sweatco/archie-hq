@@ -1,5 +1,5 @@
 import { MessageQueue } from '../message-queue.js';
-import { registeredMcpTools } from '../../test-support/mcp.js';
+import { mcpToolHandler } from '../../test-support/mcp.js';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../connectors/github/client.js', () => ({
@@ -170,10 +170,7 @@ function getOrchestrationHandler(
   task: Task,
 ): (args: Record<string, unknown>) => Promise<{ content: { text: string }[] }> {
   const server = createOrchestrationMcpServer(makeAgent(), task);
-  const raw = registeredMcpTools(server);
-  const entry = raw[name];
-  const fn = entry.callback;
-  return (args) => fn(args, {});
+  return mcpToolHandler(server, name);
 }
 
 function textOf(result: { content: { text: string }[] }): string {

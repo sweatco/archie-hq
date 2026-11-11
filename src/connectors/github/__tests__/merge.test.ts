@@ -247,7 +247,7 @@ describe('checkAndMergeLinkedPRs — non-auto policy (AC1)', () => {
     // The marker must be in the persisted JSON — that is what any instance
     // loaded after a restart (or any later webhook) is built from.
     const persistedState = expectDefined(
-      expectDefined(expectDefined(world.persisted().repositories[0]).branch_states)['feat/x'],
+      expectDefined(world.persisted().repositories[0]?.branch_states)['feat/x'],
     );
     expect(persistedState.merge_ready_notified).toBe(true);
 

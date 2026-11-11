@@ -29,7 +29,7 @@ describe('bounded Slack notice delivery with the real WebClient', () => {
     fetchMock.mockImplementation(
       (_url, init) =>
         new Promise((_, reject) => {
-          const requestSignal = expectDefined(expectDefined(init).signal);
+          const requestSignal = expectDefined(init?.signal);
           captured.signal = requestSignal;
           requestSignal.addEventListener('abort', () => reject(requestSignal.reason), {
             once: true,

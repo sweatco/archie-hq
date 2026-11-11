@@ -50,6 +50,7 @@ describe('applyOAuthBindings', () => {
       notion: { type: 'http' as const, url: 'https://mcp.notion.com/mcp' },
       builtin: createSdkMcpServer({ name: 'test', tools: [] }),
     };
+    const builtinBefore = { ...mcp.builtin };
     const result = await inject.applyOAuthBindings(mcp);
     expect(result.injected).toEqual(['notion']);
     expect(mcp.notion).toMatchObject({
@@ -58,7 +59,7 @@ describe('applyOAuthBindings', () => {
       headers: { Authorization: 'Bearer AT' },
     });
     // Built-in (non-http) servers are untouched.
-    expect(mcp.builtin.type).toBe('sdk');
+    expect(mcp.builtin).toEqual(builtinBefore);
   });
 
   it('skips http servers without a vault record', async () => {

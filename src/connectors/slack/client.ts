@@ -89,6 +89,10 @@ function markdownBlock(text: string): { type: 'markdown'; text: string }[] {
   return [{ type: 'markdown', text }];
 }
 
+const slackBlocksSchema = z.array(
+  z.object({ type: z.string(), block_id: z.string().optional() }).passthrough(),
+);
+
 /**
  * Message element shape returned by conversations.history / conversations.replies.
  * Derived from the WebClient method type to avoid importing a response type.
@@ -250,9 +254,7 @@ export async function postSlackMessage(
     channel,
     ...(threadTs ? { thread_ts: threadTs } : {}),
     text: renderedText,
-    blocks: z
-      .array(z.object({ type: z.string(), block_id: z.string().optional() }).passthrough())
-      .parse(blocks),
+    blocks,
     ...(args.correlationId
       ? {
           metadata: {
@@ -329,9 +331,7 @@ export async function postInteractiveToThread(
     channel,
     thread_ts: threadTs,
     text, // Fallback text for notifications
-    blocks: z
-      .array(z.object({ type: z.string(), block_id: z.string().optional() }).passthrough())
-      .parse(blocks),
+    blocks: slackBlocksSchema.parse(blocks),
   });
 
   return result.ts;
@@ -460,9 +460,7 @@ export async function updateMessage(
     channel,
     ts,
     text,
-    blocks: z
-      .array(z.object({ type: z.string(), block_id: z.string().optional() }).passthrough())
-      .parse(blocks),
+    blocks: blocks === undefined ? undefined : slackBlocksSchema.parse(blocks),
   });
 }
 

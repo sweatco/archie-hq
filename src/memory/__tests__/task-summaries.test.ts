@@ -143,7 +143,7 @@ describe('canonical task summaries', () => {
     );
     const row = expectDefined(overview.split('\n').find((line) => line.includes('[task-1]')));
     expect(row).toContain('First \\| line');
-    const excerpt = expectDefined(expectDefined(row.match(/\.md\) \| (.*) \|$/))[1]);
+    const excerpt = expectDefined(row.match(/\.md\) \| (.*) \|$/)?.[1]);
     expect(excerpt.replace(/\\\|/g, '|')).toHaveLength(200);
   });
 

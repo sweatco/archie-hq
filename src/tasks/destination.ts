@@ -8,18 +8,23 @@ export function approvedReplyConversation(
   const key = metadata.default_channel;
   const channels = metadata.channels ?? {};
   const channel = key ? channels[key] : undefined;
-  if (
-    !key ||
-    channel?.type !== 'slack' ||
-    typeof channel.channel_id !== 'string' ||
-    !channel.channel_id.startsWith('D') ||
-    typeof channel.thread_id !== 'string' ||
-    !/^\d+\.\d+$/.test(channel.thread_id) ||
-    key !== `slack:${channel.channel_id}:${channel.thread_id}` ||
-    Object.keys(channels).length !== 1 ||
-    metadata.home_channel ||
-    metadata.memory_destination?.channel_id !== channel.channel_id
-  ) {
+  if (!key || channel?.type !== 'slack') {
+    throw new Error('Approved task has no consistent owner reply conversation');
+  }
+
+  const isDirectMessage =
+    typeof channel.channel_id === 'string' && channel.channel_id.startsWith('D');
+  const hasThreadTimestamp =
+    typeof channel.thread_id === 'string' && /^\d+\.\d+$/.test(channel.thread_id);
+  if (!isDirectMessage || !hasThreadTimestamp) {
+    throw new Error('Approved task has no consistent owner reply conversation');
+  }
+
+  const isSoleReplyConversation =
+    key === `slack:${channel.channel_id}:${channel.thread_id}` &&
+    Object.keys(channels).length === 1;
+  const matchesMemoryDestination = metadata.memory_destination?.channel_id === channel.channel_id;
+  if (!isSoleReplyConversation || metadata.home_channel || !matchesMemoryDestination) {
     throw new Error('Approved task has no consistent owner reply conversation');
   }
   return { key, channel };

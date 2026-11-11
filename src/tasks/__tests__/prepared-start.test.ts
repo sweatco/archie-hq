@@ -407,6 +407,30 @@ describe('durable prepared task starts', () => {
       },
     ],
     [
+      'missing conversation',
+      (m: TaskMetadata) => {
+        m.channels = {};
+      },
+    ],
+    [
+      'public conversation',
+      (m: TaskMetadata) => {
+        expectSlackChannel(m).channel_id = 'C_PUBLIC';
+      },
+    ],
+    [
+      'invalid thread timestamp',
+      (m: TaskMetadata) => {
+        expectSlackChannel(m).thread_id = 'invalid';
+      },
+    ],
+    [
+      'competing home channel',
+      (m: TaskMetadata) => {
+        m.home_channel = { channel_id: 'C_PUBLIC', channel_name: 'general' };
+      },
+    ],
+    [
       'inconsistent thread key',
       (m: TaskMetadata) => {
         expectSlackChannel(m).thread_id = '999.0';

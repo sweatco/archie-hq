@@ -1,5 +1,5 @@
 import { MessageQueue } from '../message-queue.js';
-import { registeredMcpTools } from '../../test-support/mcp.js';
+import { mcpToolHandler } from '../../test-support/mcp.js';
 /**
  * Handler-level tests for `get_message_reactions`. The tool has to keep three
  * outcomes apart: reactions, genuinely none, and a read that failed. Rendering a
@@ -89,10 +89,7 @@ function getHandler(
   task: Task,
 ): (args: Record<string, unknown>) => Promise<{ content: { text: string }[] }> {
   const server = createCommsMcpServer(makeAgent(), task);
-  const raw = registeredMcpTools(server);
-  const entry = raw['get_message_reactions'];
-  const fn = entry.callback;
-  return (args) => fn(args, {});
+  return mcpToolHandler(server, 'get_message_reactions');
 }
 
 async function textOf(result: { content: { text: string }[] }): Promise<string> {

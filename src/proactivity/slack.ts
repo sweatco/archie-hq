@@ -200,28 +200,7 @@ export class PublicSlack implements ProposalSlack {
       threadTs: delivery.thread ?? undefined,
       text: delivery.text.replace(/<!(?:channel|here|everyone)>/g, '[group mention]'),
       correlationId: delivery.id,
-      actions:
-        !delivery.channel.startsWith('D') || !delivery.recipient
-          ? undefined
-          : delivery.proposal
-            ? [
-                {
-                  type: 'button',
-                  text: { type: 'plain_text', text: 'Start task' },
-                  action_id: 'initiative_start_task',
-                  value: `${delivery.id}:start:${delivery.proposal.version}`,
-                  visible_to_user_ids: [delivery.recipient],
-                },
-              ]
-            : delivery.matters.length === 1
-              ? ['handled', 'later', 'not useful', 'stop following'].map((action) => ({
-                  type: 'button',
-                  text: { type: 'plain_text', text: action },
-                  action_id: `initiative_${action.replaceAll(' ', '_')}`,
-                  value: `${delivery.id}:${action}`,
-                  visible_to_user_ids: [delivery.recipient],
-                }))
-              : undefined,
+      actions: deliveryActions(delivery),
     });
   }
 
@@ -292,4 +271,30 @@ export class PublicSlack implements ProposalSlack {
       `https://app.slack.com/archives/${channel}/p${thread.replace('.', '')}`
     );
   }
+}
+
+function deliveryActions(delivery: Delivery) {
+  const recipient = delivery.recipient;
+  if (!delivery.channel.startsWith('D') || !recipient) return;
+
+  if (delivery.proposal) {
+    return [
+      {
+        type: 'button',
+        text: { type: 'plain_text', text: 'Start task' },
+        action_id: 'initiative_start_task',
+        value: `${delivery.id}:start:${delivery.proposal.version}`,
+        visible_to_user_ids: [recipient],
+      },
+    ];
+  }
+
+  if (delivery.matters.length !== 1) return;
+  return ['handled', 'later', 'not useful', 'stop following'].map((action) => ({
+    type: 'button',
+    text: { type: 'plain_text', text: action },
+    action_id: `initiative_${action.replaceAll(' ', '_')}`,
+    value: `${delivery.id}:${action}`,
+    visible_to_user_ids: [recipient],
+  }));
 }

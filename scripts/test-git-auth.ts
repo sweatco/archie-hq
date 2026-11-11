@@ -16,6 +16,13 @@ import * as fs from 'fs/promises';
 
 const execAsync = promisify(exec);
 
+function commandErrorMessage(error: unknown): string {
+  if (error && typeof error === 'object' && 'stderr' in error && error.stderr) {
+    return String(error.stderr);
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 // Colors for output
 const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
 const red = (s: string) => `\x1b[31m${s}\x1b[0m`;
@@ -165,13 +172,7 @@ async function testFetch(repoPath: string, branch: string): Promise<string> {
 
     return `Fetched origin/${branch} (${refCheck.trim().substring(0, 7)})`;
   } catch (error: unknown) {
-    const stderr =
-      error && typeof error === 'object' && 'stderr' in error && error.stderr
-        ? String(error.stderr)
-        : error instanceof Error
-          ? error.message
-          : String(error);
-    throw new Error(`Fetch failed: ${stderr}`);
+    throw new Error(`Fetch failed: ${commandErrorMessage(error)}`);
   }
 }
 
@@ -217,9 +218,7 @@ async function testWorktreeCreate(repoPath: string, branch: string): Promise<str
       /* Cleanup is best effort; report the original worktree failure below. */
     }
 
-    throw new Error(
-      `Worktree creation failed: ${error && typeof error === 'object' && 'stderr' in error && error.stderr ? String(error.stderr) : error instanceof Error ? error.message : String(error)}`,
-    );
+    throw new Error(`Worktree creation failed: ${commandErrorMessage(error)}`);
   }
 }
 

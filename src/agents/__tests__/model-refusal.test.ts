@@ -147,7 +147,7 @@ async function nextInput(
 }
 
 async function stopHook(options: Options): Promise<void> {
-  await expectDefined(expectDefined(expectDefined(expectDefined(options.hooks).Stop)[0]).hooks[0])(
+  await expectDefined(options.hooks?.Stop?.[0]?.hooks[0])(
     { hook_event_name: 'Stop', background_tasks: [] } as never,
     undefined,
     { signal: new AbortController().signal },
@@ -229,7 +229,7 @@ afterAll(async () => {
 
 async function run(): Promise<void> {
   await task.sendMessage('Investigate this request.');
-  await expectDefined(expectDefined(task.agent).handle).running;
+  await expectDefined(task.agent?.handle).running;
 }
 
 function useSlackChannel(muted = false): void {
@@ -440,7 +440,7 @@ describe('model refusal in the production SDK loop', () => {
       yield result();
     };
     await task.sendMessage('Investigate this request.');
-    const oldHandle = expectDefined(expectDefined(task.agent).handle);
+    const oldHandle = expectDefined(task.agent?.handle);
     await vi.waitFor(() => expect(postSlackMessage).toHaveBeenCalledTimes(1));
     const reply = task.sendMessage('Please continue.');
     scenario = async function* (options) {
@@ -451,7 +451,7 @@ describe('model refusal in the production SDK loop', () => {
     await vi.advanceTimersByTimeAsync(5000);
     await oldHandle.running;
     await reply;
-    await expectDefined(expectDefined(task.agent).handle).running;
+    await expectDefined(task.agent?.handle).running;
     expect(inputs).toEqual(['Investigate this request.', 'Please continue.']);
     expect(task.recoveryAttempts).toBe(0);
     expect(logger.error).toHaveBeenCalled();
@@ -475,7 +475,7 @@ describe('model refusal in the production SDK loop', () => {
       yield result();
     };
     await task.sendMessage('Investigate this request.');
-    const oldHandle = expectDefined(expectDefined(task.agent).handle);
+    const oldHandle = expectDefined(task.agent?.handle);
     try {
       await vi.waitFor(() => expect(task.metadata.status).toBe('stopped'), { timeout: 1000 });
       expect(cards).not.toHaveBeenCalled();
@@ -484,7 +484,7 @@ describe('model refusal in the production SDK loop', () => {
         yield result('end_turn');
       };
       await task.sendMessage('Continue despite stalled PR-card delivery.');
-      await expectDefined(expectDefined(task.agent).handle).running;
+      await expectDefined(task.agent?.handle).running;
       expect(inputs).toEqual([
         'Investigate this request.',
         'Continue despite stalled PR-card delivery.',
@@ -596,7 +596,7 @@ describe('model refusal in the production SDK loop', () => {
     await task.sendMessage('Investigate this request.');
     await vi.waitFor(() => expect(expectDefined(task.agent).session.active).toBe(false));
     await vi.advanceTimersByTimeAsync(3000);
-    await expectDefined(expectDefined(task.agent).handle).running;
+    await expectDefined(task.agent?.handle).running;
     expect(task.recoveryAttempts).toBe(1);
     expect(events.some((event) => event.type === 'agent:log')).toBe(false);
   });
@@ -683,7 +683,7 @@ describe('model refusal in the production SDK loop', () => {
       expect(inputs).toEqual(['Investigate this request.', 'Continue with this newer request.']);
 
       await task.sendMessage('Keep the recovered conversation.');
-      await expectDefined(expectDefined(task.agent).handle).running;
+      await expectDefined(task.agent?.handle).running;
       expect(expectDefined(queryMock.mock.calls[2])[0].options).toMatchObject({
         resume: 'session-2',
       });
@@ -872,10 +872,7 @@ describe('model refusal in the production SDK loop', () => {
       yield assistant();
       yield {
         ...result(),
-        user_message_uuids: [
-          expectDefined(expectDefined(currentInput).uuid),
-          expectDefined(folded.uuid),
-        ],
+        user_message_uuids: [expectDefined(currentInput?.uuid), expectDefined(folded.uuid)],
       } as SDKMessage;
     };
     await run();
@@ -926,7 +923,7 @@ describe('model refusal in the production SDK loop', () => {
       }),
     );
     await vi.advanceTimersByTimeAsync(5000);
-    await expectDefined(expectDefined(task.agent).handle).running;
+    await expectDefined(task.agent?.handle).running;
     expect(task.metadata.status).toBe('stopped');
     expect(queryMock).toHaveBeenCalledTimes(1);
     expect(logger.warn).toHaveBeenCalled();
@@ -939,10 +936,7 @@ describe('model refusal in the production SDK loop', () => {
       yield {
         ...assistant(),
         user_message_uuid: folded.uuid,
-        user_message_uuids: [
-          expectDefined(expectDefined(currentInput).uuid),
-          expectDefined(folded.uuid),
-        ],
+        user_message_uuids: [expectDefined(currentInput?.uuid), expectDefined(folded.uuid)],
       } as SDKMessage;
       throw new Error('stream closed');
     };
@@ -967,7 +961,7 @@ describe('model refusal in the production SDK loop', () => {
         yield result();
       };
       await task.sendMessage('Investigate this request.');
-      const oldHandle = expectDefined(expectDefined(task.agent).handle);
+      const oldHandle = expectDefined(task.agent?.handle);
       await oldHandle.running;
       scenario = async function* (options, _prompt) {
         await vi.advanceTimersByTimeAsync(800);
@@ -979,7 +973,7 @@ describe('model refusal in the production SDK loop', () => {
         yield result('end_turn');
       };
       await reply;
-      await expectDefined(expectDefined(task.agent).handle).running;
+      await expectDefined(task.agent?.handle).running;
       expect(expectDefined(task.agent).handle).not.toBe(oldHandle);
       expect(queryMock).toHaveBeenCalledTimes(2);
       expect(expectDefined(queryMock.mock.calls[1])[0].options.resume).toBeUndefined();
@@ -1045,7 +1039,7 @@ describe('model refusal in the production SDK loop', () => {
         prompt_uuid: expectDefined(refused.uuid),
       });
       await task.sendMessage('Continue with this safe request.');
-      await expectDefined(expectDefined(task.agent).handle).running;
+      await expectDefined(task.agent?.handle).running;
       expect(expectDefined(queryMock.mock.calls[1])[0].options).toMatchObject({
         resume: 'session-1',
         resumeSessionAt: 'kept-output',
@@ -1056,8 +1050,7 @@ describe('model refusal in the production SDK loop', () => {
         expect(expectDefined(queryMock.mock.calls[2])[0].options.resume).toBeUndefined();
         expect(expectDefined(queryMock.mock.calls[2])[0].options.resumeSessionAt).toBeUndefined();
         expect(
-          expectDefined(expectDefined(queryMock.mock.calls[2])[0].options.abortController).signal
-            .aborted,
+          expectDefined(queryMock.mock.calls[2]?.[0].options.abortController).signal.aborted,
         ).toBe(false);
         expect(inputs.at(-1)).toContain('Continue with this safe request.');
         expect(inputs.at(-1)).not.toContain('A request that will refuse.');
@@ -1078,13 +1071,13 @@ describe('model refusal in the production SDK loop', () => {
       scenario = async function* (options) {
         const attempt = queryMock.mock.calls.length;
         if (attempt === 1) {
-          firstUuid = expectDefined(expectDefined(currentInput).uuid);
+          firstUuid = expectDefined(currentInput?.uuid);
           await writeSession('kept-output');
           yield assistant();
           yield result();
         } else if (attempt === 2) {
           expect(options.resumeDropsTurn).toBe(firstUuid);
-          secondUuid = expectDefined(expectDefined(currentInput).uuid);
+          secondUuid = expectDefined(currentInput?.uuid);
           await writeSession('kept-output', 'session-2');
           if (hasAssistant) {
             yield assistant();
@@ -1105,7 +1098,7 @@ describe('model refusal in the production SDK loop', () => {
       };
       await run();
       await task.sendMessage('A second request that also refuses.');
-      await expectDefined(expectDefined(task.agent).handle).running;
+      await expectDefined(task.agent?.handle).running;
       expect(expectDefined(task.agent).session.refusal_recovery).toEqual({
         prompt_uuid: secondUuid,
       });
@@ -1117,7 +1110,7 @@ describe('model refusal in the production SDK loop', () => {
       ) as TaskMetadata;
       task = new TaskCtor(task.taskId, metadata, PM);
       await task.sendMessage('Continue with a safe request.');
-      await expectDefined(expectDefined(task.agent).handle).running;
+      await expectDefined(task.agent?.handle).running;
       expect(queryMock).toHaveBeenCalledTimes(3);
       expect(expectDefined(task.agent).session.refusal_recovery).toBeUndefined();
       await vi.advanceTimersByTimeAsync(3000);

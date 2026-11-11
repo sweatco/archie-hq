@@ -22,6 +22,7 @@ const slackApi = {
   usergroups: { list: vi.fn() },
   pins: { list: vi.fn() },
   reactions: { get: vi.fn() },
+  chat: { update: vi.fn() },
 };
 
 // WebClient is used with `new`, so the mock implementation must be a regular
@@ -94,6 +95,30 @@ beforeEach(async () => {
   memoryPaths.setMemoryReady(true);
   client = await import('../client.js');
   await client.initSlackClient('xoxb-test');
+});
+
+describe('updateMessage', () => {
+  it('updates text without requiring replacement blocks', async () => {
+    await client.updateMessage('C1', '1.0', 'Updated text');
+
+    expect(slackApi.chat.update).toHaveBeenCalledWith({
+      channel: 'C1',
+      ts: '1.0',
+      text: 'Updated text',
+      blocks: undefined,
+    });
+  });
+
+  it('preserves an empty array used to clear existing blocks', async () => {
+    await client.updateMessage('C1', '1.0', 'Approval resolved', []);
+
+    expect(slackApi.chat.update).toHaveBeenCalledWith({
+      channel: 'C1',
+      ts: '1.0',
+      text: 'Approval resolved',
+      blocks: [],
+    });
+  });
 });
 
 describe('classifySlackMemoryScope', () => {

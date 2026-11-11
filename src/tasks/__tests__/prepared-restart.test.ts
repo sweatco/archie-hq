@@ -51,15 +51,19 @@ describe('prepared task process restarts', () => {
       expect(first.status).toBe(37);
       const evidencePath = join(root, 'sessions', input.taskId, 'shared/proposal-evidence.md');
       expect(readFileSync(evidencePath, 'utf8')).toBe(input.evidence);
-      expect(metadata()).toMatchObject({
+      const prepared = metadata();
+      expect(prepared).toMatchObject({
         status: 'preparing',
         approved_start: {
           correlation: input.correlation,
           phase: 'prepared',
-          brief: expect.stringContaining(evidencePath) as unknown,
         },
         memory_destination: { channel_id: 'D_OWNER' },
       });
+      expect(prepared).toHaveProperty(
+        'approved_start.brief',
+        expect.stringContaining(evidencePath),
+      );
       const second = run(`${imports} const task = await Task.prepare(input);
         const { recoverActiveTasks } = await import(${JSON.stringify(resolve('src/tasks/recovery.ts'))});
         await recoverActiveTasks(); if (task.metadata.status !== 'preparing') process.exit(1);`);
@@ -68,14 +72,18 @@ describe('prepared task process restarts', () => {
         `${imports} const task = await Task.prepare(input); task.deliver = async () => process.exit(39); await task.startPrepared();`,
       );
       expect(third.status, third.stderr).toBe(39);
-      expect(metadata()).toMatchObject({
+      const activated = metadata();
+      expect(activated).toMatchObject({
         status: 'in_progress',
         approved_start: {
           phase: 'ready',
           correlation: input.correlation,
-          brief: expect.stringContaining(input.brief) as unknown,
         },
       });
+      expect(activated).toHaveProperty(
+        'approved_start.brief',
+        expect.stringContaining(input.brief),
+      );
       const fourth = run(
         `${imports} const task = await Task.prepare(input); if (await task.startPrepared()) process.exit(1);`,
       );

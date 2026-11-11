@@ -391,8 +391,8 @@ describe('owner-approved proposal handoff', () => {
     await handoff.drainCards();
     expect(store.handoff(proposalId)).toMatchObject({
       state: 'activated',
-      card_retry: expect.any(Number) as unknown,
     });
+    expect(store.handoff(proposalId)?.card_retry).toBeTypeOf('number');
     expect(store.handoff(proposalId)?.card_state).not.toBe('activated');
     expect(store.pendingHandoffCards(NOW)).toEqual([]);
     store.close();

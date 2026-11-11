@@ -143,7 +143,7 @@ function captureApproveRoute(): RouteHandler {
   const layer = router.stack.find(
     (l) => l.route?.path === '/tasks/:id/approve' && l.route.methods['post'],
   );
-  return expectDefined(expectDefined(expectDefined(layer).route).stack[0]).handle;
+  return expectDefined(layer?.route?.stack[0]).handle;
 }
 
 function makeRes() {
