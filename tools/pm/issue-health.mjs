@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
+import { checkRepository } from './check-repository.mjs';
 
 const attentionLabels = ['pm:decision', 'pm:blocked', 'pm:parked'];
 
@@ -101,11 +102,12 @@ export function readRepositoryPages(repository, resource, run = execFileSync) {
 
 function main() {
   const { values } = parseArgs({ options: { output: { type: 'string' } } });
+  const repository = checkRepository();
   const config = JSON.parse(
     readFileSync(new URL('../../.github/project.json', import.meta.url), 'utf8'),
   );
-  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(config.repository)) {
-    throw new Error('Invalid repository in .github/project.json');
+  if (config.repository !== repository.full_name) {
+    throw new Error('Project health target must match the verified canonical repository');
   }
   const report = renderIssueHealth({
     repository: config.repository,

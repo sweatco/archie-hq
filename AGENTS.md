@@ -48,9 +48,11 @@ In a fresh worktree, `.env`, `workdir`, `claude-data` and a real `secrets/` dire
 
 ## Project management
 
-Use the [Archie project](https://github.com/orgs/sweatco/projects/16), following the [project management guide](docs/guides/project-management.md). Repo-local `technical-project-management` and `github-issues` skills supply coordination and GitHub operations. Initiative membership does not imply an owner, priority, deadline, or implementation commitment.
+For the canonical `sweatco/archie-hq` repository, follow the required [research → idea → implementation routine](docs/guides/project-management.md) and use the [Archie project](https://github.com/orgs/sweatco/projects/16). Repo-local `technical-project-management` and `github-issues` skills supply coordination and GitHub operations. Initiative membership does not imply an owner, priority, deadline, or implementation commitment.
 
-At natural planning and progress handoffs, offer one process-only nudge about capturing an idea, recording a decision, preparing actionable work, or reconciling evidence. The user owns ideas and priorities. Complete authorized work first; avoid ceremony on unrelated coding tasks and repeated declined nudges. Record acceptance explicitly; a merged PR alone does not establish the delivered outcome.
+When research yields a substantive implementation idea, create or update its proposal with sources, the user's conclusion, decisions, and the next step as part of the task. When the user chooses implementation, record the accepted scope and prepare actionable issues, dependencies, acceptance criteria, and any useful milestone. Reconcile progress and acceptance at execution checkpoints and handoff. Perform this routine without asking whether the user wants a process nudge. The user owns ideas and priorities; respect analysis-only requests, parked work, and declined changes, and keep unrelated coding tasks lightweight. A merged PR alone does not establish the delivered outcome.
+
+Before accessing upstream PM records or making a PM write, run `node tools/pm/check-repository.mjs`. It must verify this checkout's `origin` and GitHub identity as canonical. Forks and unknown repository contexts must not write to Archie's Project, issues, milestones, or labels, even if they have an upstream remote or a copied project config. Verify each issue or PR belongs to the canonical repository before adding it; follow the guide's scope rules.
 
 Prepare concrete, reviewable changes before requesting approval. Require explicit approval in the current chat for each GitHub mutation, Git remote write, or release. An approved automation may run within its defined scope.
 

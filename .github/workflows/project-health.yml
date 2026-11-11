@@ -12,6 +12,7 @@ permissions:
 
 jobs:
   report:
+    if: github.repository == 'sweatco/archie-hq' && github.repository_id == '1120227357'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -20,7 +21,7 @@ jobs:
         with:
           node-version: 24
       - name: Check the report behavior
-        run: node --test tools/pm/issue-health.test.mjs
+        run: node --test tools/pm/*.test.mjs
       - name: Publish the issue health summary
         env:
           GH_TOKEN: ${{ github.token }}

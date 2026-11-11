@@ -21,7 +21,7 @@ body:
     id: context
     attributes:
       label: Context
-      description: Link the proposal, initiative, related issue, or implementation PR.
+      description: Link the research/proposal and accepted scope decision, initiative, related issue, or implementation PR.
   - type: textarea
     id: next-step
     attributes:
