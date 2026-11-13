@@ -108,33 +108,22 @@ export function notificationWindow(now: number): boolean {
 
 function validateExtractionPart(
   findings: ThreadFindings[],
-  batch: ThreadSnapshot[],
-  snapshots: ThreadSnapshot[],
-  supplied: Map<string, Set<number>>,
+  source: ThreadSnapshot,
+  supplied: Set<number>,
 ): void {
-  const expectedThreads = new Set(batch.map(sourceKey));
-  const seenThreads = new Set<string>();
-  for (const thread of findings) {
-    const key = sourceKey(thread);
-    if (seenThreads.has(key) || !expectedThreads.has(key)) {
-      throw new Error('Unexpected or duplicate extraction source');
-    }
-    seenThreads.add(key);
-    const snapshot = snapshots.find((source) => sourceKey(source) === key);
-    assert(snapshot, `Missing source snapshot ${key} for extraction`);
-    const suppliedEvidence = supplied.get(key);
-    for (const item of [...thread.observations, ...thread.matters]) {
-      const hasUnsupportedCitation = item.evidence.some((id) => !suppliedEvidence?.has(id));
-      const hasHumanEvidence = item.evidence.some((id) =>
-        snapshot.evidence.some((evidence) => evidence.id === id && !evidence.own && !evidence.bot),
-      );
-      if (!item.evidence.length || hasUnsupportedCitation || !hasHumanEvidence) {
-        throw new Error('Unsupported extraction citations');
-      }
-    }
+  const thread = findings[0];
+  if (!thread) throw new Error('Extraction omitted a supplied thread');
+  if (findings.length !== 1 || sourceKey(thread) !== sourceKey(source)) {
+    throw new Error('Unexpected or duplicate extraction source');
   }
-  if (batch.some((thread) => !seenThreads.has(sourceKey(thread)))) {
-    throw new Error('Extraction omitted a supplied thread');
+  for (const item of [...thread.observations, ...thread.matters]) {
+    const hasUnsupportedCitation = item.evidence.some((id) => !supplied.has(id));
+    const hasHumanEvidence = item.evidence.some((id) =>
+      source.evidence.some((evidence) => evidence.id === id && !evidence.own && !evidence.bot),
+    );
+    if (!item.evidence.length || hasUnsupportedCitation || !hasHumanEvidence) {
+      throw new Error('Unsupported extraction citations');
+    }
   }
 }
 
@@ -279,7 +268,7 @@ export class InitiativeService {
     threads: ThreadSnapshot[],
     snapshots: ThreadSnapshot[],
     previous: Matter[],
-    carried: Map<string, ThreadFindings>,
+    carried: ThreadFindings[],
   ) {
     return {
       model: this.config.extractionModel,
@@ -303,26 +292,20 @@ export class InitiativeService {
             state,
             evidence: evidence.slice(-4),
           })),
-        carried: threads.flatMap((source) => {
-          const prior = carried.get(sourceKey(source));
-          if (!prior) return [];
-          return [
-            {
-              ...prior,
-              observations: prior.observations.map((o) => ({
-                ...o,
-                text: o.text.slice(0, 80),
-                evidence: o.evidence.slice(-4),
-              })),
-              matters: prior.matters.map((m) => ({
-                ...m,
-                title: m.title.slice(0, 80),
-                detail: m.detail.slice(0, 120),
-                evidence: m.evidence.slice(-4),
-              })),
-            },
-          ];
-        }),
+        carried: carried.map((prior) => ({
+          ...prior,
+          observations: prior.observations.map((o) => ({
+            ...o,
+            text: o.text.slice(0, 80),
+            evidence: o.evidence.slice(-4),
+          })),
+          matters: prior.matters.map((m) => ({
+            ...m,
+            title: m.title.slice(0, 80),
+            detail: m.detail.slice(0, 120),
+            evidence: m.evidence.slice(-4),
+          })),
+        })),
       },
       authorize: async () => {
         for (const channel of new Set(threads.map((t) => t.channel))) {
@@ -417,8 +400,8 @@ export class InitiativeService {
       return;
     }
     const previous = this.store.threadMatters(source.channel, source.thread);
-    const carried = new Map<string, ThreadFindings>();
-    const supplied = new Map<string, Set<number>>();
+    let carried: ThreadFindings[] = [];
+    const supplied = new Set<number>();
     const buildRequest = (threads: ThreadSnapshot[]) =>
       this.extractionRequest(threads, snapshots, previous, carried);
     const remaining = [
@@ -442,11 +425,8 @@ export class InitiativeService {
         });
         const request = buildRequest(batch);
         if (!(await request.authorize())) return;
-        for (const thread of batch) {
-          const seen = supplied.get(sourceKey(thread)) ?? new Set<number>();
-          for (const evidence of thread.evidence) seen.add(evidence.id);
-          supplied.set(sourceKey(thread), seen);
-        }
+        for (const thread of batch)
+          for (const evidence of thread.evidence) supplied.add(evidence.id);
         const key = createHash('sha256')
           .update(
             JSON.stringify([
@@ -467,14 +447,14 @@ export class InitiativeService {
         const part = cached
           ? Findings.parse(cached)
           : await this.model.complete({ ...request, scope: `extract:${key}` }, signal);
-        validateExtractionPart(part.threads, batch, snapshots, supplied);
-        for (const thread of part.threads) carried.set(sourceKey(thread), thread);
+        validateExtractionPart(part.threads, source, supplied);
+        carried = part.threads;
         if (!cached) this.store.attention.cacheExtraction(key, now, part);
         consumeExtractionBatch(remaining, batch);
       }
       signal.throwIfAborted();
       applying = true;
-      const { observations, matters } = this.reconcileFindings(carried.values(), previous, now);
+      const { observations, matters } = this.reconcileFindings(carried, previous, now);
       if (this.store.apply(snapshots, observations, matters, job)) {
         for (const matter of matters)
           if (matter.state === 'open')
