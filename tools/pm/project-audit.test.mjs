@@ -157,7 +157,7 @@ test('finds explicit stage, ownership, flag, and repository contradictions', () 
 
 test('keeps deferred classification and PR intake as coverage notes, with safe output', () => {
   const tracked = issue(1, { initiative: null });
-  tracked.content.title = '<script>|[link]\nnew';
+  tracked.content.title = '<script><SCRIPT><ScRiPt>|[link]\nnew';
   const report = renderProjectAudit({
     project: project([tracked]),
     repository: config.repository,
@@ -171,8 +171,8 @@ test('keeps deferred classification and PR intake as coverage notes, with safe o
   assert.match(report, /1 open issues and 1 open PRs are outside/);
   assert.match(report, /coverage notes, not automatic intake requests/);
   assert.match(report, /No rule mismatches/);
-  assert.match(report, /\\<script\\>\\\|\\\[link\\\] new/);
-  assert.doesNotMatch(report, /<script>/);
+  assert.match(report, /\\<script\\>\\<SCRIPT\\>\\<ScRiPt\\>\\\|\\\[link\\\] new/);
+  assert.doesNotMatch(report, /<script>/i);
 });
 
 test('exposes hidden-content limits and excludes drafts and archived records from stage review', () => {
