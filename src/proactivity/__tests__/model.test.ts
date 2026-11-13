@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { InitiativeStore } from '../store.js';
 import { AdmissionDeferred, ModelGateway } from '../model.js';
+import { InitiativeService } from '../service.js';
+import type { ObservationSlack } from '../slack.js';
 
 const NOW = Date.parse('2026-10-20T10:00:00Z');
 const schema = z.object({ answer: z.string().max(10) });
@@ -34,6 +36,113 @@ afterEach(() => {
 });
 
 describe('paid model admission and accounting', () => {
+  it.each(['max_tokens', 'citations'])(
+    'bounds repeated %s extraction failures across restarts and retries new evidence',
+    async (failure) => {
+      const thread = (NOW / 1000 + 1).toFixed(6);
+      const message = {
+        channel: 'C1',
+        thread,
+        ts: thread,
+        version: thread,
+        author: 'U1',
+        text: 'Please review the brief.',
+      };
+      store.channel('C1', true, false);
+      store.record(message, NOW);
+      const slack: ObservationSlack = {
+        inspect: async () => ({ shared: false, recipientCanRead: true }),
+        channels: async () => [],
+        page: async () => ({ messages: [] }),
+        dm: async () => {
+          throw new Error('Unexpected DM');
+        },
+        recipient: async () => null,
+        verifyDm: async () => false,
+        send: async () => {
+          throw new Error('Unexpected send');
+        },
+        find: async () => undefined,
+        active: () => false,
+        link: () => '',
+      };
+      const config = {
+        mode: 'shadow' as const,
+        extractionModel: request.model,
+        investigationModel: 'claude-sonnet-5-5',
+      };
+      let service = new InitiativeService(store, slack, gateway, config);
+      create.mockResolvedValue({
+        ...result(),
+        stop_reason: failure === 'max_tokens' ? 'max_tokens' : 'end_turn',
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              threads: [
+                {
+                  channel: 'C1',
+                  thread,
+                  observations: [
+                    { key: 'review', text: 'Review', kind: 'question', evidence: [999] },
+                  ],
+                  matters: [],
+                },
+              ],
+            }),
+          },
+        ],
+        usage: { ...result().usage, output_tokens: 4000 },
+      });
+      try {
+        for (const minute of [0, 5, 10]) {
+          vi.setSystemTime(NOW + minute * 60_000);
+          store.schedule('extract', 'global', Date.now());
+          await service.tick();
+        }
+        service.stop();
+        service.release();
+        service = new InitiativeService(store, slack, gateway, config);
+        for (const minute of [15, 75]) {
+          vi.setSystemTime(NOW + minute * 60_000);
+          store.schedule('extract', 'global', Date.now());
+          await service.tick();
+        }
+        expect(create).toHaveBeenCalledTimes(3);
+        expect(store.dirty()).toHaveLength(1);
+        expect(store['row']('SELECT count(*) n FROM charges WHERE settled IS NULL')?.n).toBe(0);
+
+        vi.setSystemTime(NOW + 76 * 60_000);
+        store.record(
+          {
+            ...message,
+            version: (Date.now() / 1000).toFixed(6),
+            text: 'The brief has been reviewed.',
+          },
+          Date.now(),
+        );
+        create.mockResolvedValue({
+          ...result(),
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                threads: [{ channel: 'C1', thread, observations: [], matters: [] }],
+              }),
+            },
+          ],
+        });
+        store.schedule('extract', 'global', Date.now());
+        await service.tick();
+        expect(create).toHaveBeenCalledTimes(4);
+        expect(store.dirty()).toEqual([]);
+      } finally {
+        service.stop();
+        service.release();
+      }
+    },
+  );
+
   it('uses the provider schema adapter, validates locally, and settles complete usage', async () => {
     expect(await gateway.complete(request, new AbortController().signal)).toEqual({ answer: 'ok' });
     const params = create.mock.calls[0][0] as {

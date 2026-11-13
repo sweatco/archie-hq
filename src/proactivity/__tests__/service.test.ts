@@ -107,6 +107,99 @@ async function investigate(
 }
 
 describe('initiative flow', () => {
+  it('applies healthy discussions even when another extraction has invalid citations', async () => {
+    for (let i = 0; i < 3; i++) {
+      const ts = (Number(TS) + i).toFixed(6);
+      store.record(
+        {
+          channel: 'C1',
+          thread: ts,
+          ts,
+          version: ts,
+          author: 'U1',
+          text: i === 1 ? 'Bad citations' : 'I will review the brief.',
+        },
+        NOW,
+      );
+    }
+    vi.mocked(model.complete).mockImplementation(async (req) => {
+      const input = req.input as {
+        threads: Array<{
+          channel: string;
+          thread: string;
+          evidence: Array<{ id: number; text: string }>;
+        }>;
+      };
+      return {
+        threads: input.threads.map((thread) => ({
+          channel: thread.channel,
+          thread: thread.thread,
+          observations: [
+            {
+              key: 'review',
+              kind: 'commitment',
+              text: 'Review the brief',
+              evidence: thread.evidence.map((e) => (e.text === 'Bad citations' ? 999 : e.id)),
+            },
+          ],
+          matters: [],
+        })),
+      } as never;
+    });
+    store.schedule('extract', 'global', NOW);
+    await service.tick(NOW);
+    expect(store.search('brief', ['C1'])).toHaveLength(2);
+    expect(store.dirty()).toHaveLength(1);
+    expect(store['rows']('SELECT id FROM extractions')).toHaveLength(2);
+    expect(
+      vi
+        .mocked(model.complete)
+        .mock.calls.every(([req]) => (req.input as { threads: unknown[] }).threads.length === 1),
+    ).toBe(true);
+  });
+
+  it('processes bot-only context without buying extraction or inventing a commitment', async () => {
+    store.record(
+      {
+        channel: 'C1',
+        thread: TS,
+        ts: TS,
+        version: TS,
+        author: 'BOT',
+        text: '7 bookings need attention',
+        bot: true,
+      },
+      NOW,
+    );
+    vi.mocked(model.complete).mockResolvedValueOnce({
+      threads: [{ channel: 'C1', thread: TS, observations: [], matters: [] }],
+    });
+    store.schedule('extract', 'global', NOW);
+    await service.tick(NOW);
+    expect(model.complete).not.toHaveBeenCalled();
+    expect(store.dirty()).toEqual([]);
+    expect(store.matters()).toEqual([]);
+  });
+
+  it('keeps internal extraction wording out of daily digests without another model call', async () => {
+    const id = await extract();
+    const matter = expectDefined(store.matter(id));
+    store.attention.saveMatter({
+      ...matter,
+      title: 'Choose the image tool',
+      detail: 'U1 committed to Plan C today; no established date or timezone. Evidence (13).',
+    });
+    vi.mocked(model.complete).mockClear();
+    store.schedule('digest', 'global', NOW);
+    await service.tick(NOW);
+    const digest = expectDefined(store.deliveries('pending').find((d) => d.digest));
+    expect(digest.text).toBe(
+      `Open items for you:\n\n• Choose the image tool\nhttps://slack.test/C1/${TS}`,
+    );
+    expect(model.complete).not.toHaveBeenCalled();
+    expect(slack.send).not.toHaveBeenCalled();
+  });
+
   it('permits new delivery only in live mode', async () => {
     await investigate();
     expect(model.complete).toHaveBeenCalledTimes(3);
