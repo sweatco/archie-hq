@@ -87,7 +87,6 @@ Future work and unimplemented features. These are ideas that have been designed 
 | [LLM Guard Integration](proposals/llm-guard-integration.md) | Full DLP scanning service |
 | [Analytics Plugin Gaps](proposals/analytics-plugin-gaps.md) | Roadmap for analytics plugin (MVP shipped) |
 | [Architecture Simplification](proposals/architecture-simplification.md) | Ideas to reduce complexity in core flows |
-| [Memory](proposals/memory.md) | Memory initiative, evaluation baseline, and D4 human source review/calibration |
 
 ## Quick Reference
 
