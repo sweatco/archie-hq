@@ -43,6 +43,8 @@ Two bounded read-only scouts supplied issue/source evidence and current GitHub a
 
 ## Next process steps
 
+On 2026-11-13, the user approved applying stricter intake, committing/pushing the rules, and updating PR #375. The revision requires explicit upstream maintainer intake approval for every PR. Native automatic intake was changed to canonical open issues only: GitHub displays `is:issue,pr is:issue is:open`, with its query preview restricted to `is:issue is:open` in sweatco/archie-hq. The saved workflow remains enabled, and unfiltered sub-issue intake remains disabled. GitHub's native filters cannot distinguish fork head repositories, so same-repository PRs also use explicit intake; approved canonical agents can add them in batches. Existing Project items and the declined issue classification remain untouched. Saved-setting verification covers the filter and scope; no new issue or PR was created to test an intake event during this revision.
+
 Keep classification as a proposal until the user chooses to revisit it; do not retry it without a new instruction. Review the draft PR and decide whether to merge before expecting scheduled Actions runs. Inspect the first hosted health report after merge. For Memory, select a reviewer with access to the current private evaluation packet; choosing a reviewer does not authorize new model calls or production enablement. Resolve the existing supersession/acceptance candidates only after the evidence checks in the disposition review.
 
 ## Technical evidence

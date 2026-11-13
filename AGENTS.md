@@ -54,6 +54,8 @@ When research yields a substantive implementation idea, create or update its pro
 
 Before accessing upstream PM records or making a PM write, run `node tools/pm/check-repository.mjs`. It must verify this checkout's `origin` and GitHub identity as canonical. Forks and unknown repository contexts must not write to Archie's Project, issues, milestones, or labels, even if they have an upstream remote or a copied project config. Verify each issue or PR belongs to the canonical repository before adding it; follow the guide's scope rules.
 
+PR intake is maintainer-controlled: add a PR to the Project only after explicit upstream maintainer approval for that intake. Fork-origin PRs remain external submissions until admitted; opening, reviewing, or passing checks does not admit them. Native automatic intake is restricted to canonical issues, so same-repository PRs also use the explicit intake step.
+
 Prepare concrete, reviewable changes before requesting approval. Require explicit approval in the current chat for each GitHub mutation, Git remote write, or release. An approved automation may run within its defined scope.
 
 ## Git workflow
