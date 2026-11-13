@@ -1,6 +1,10 @@
 # Completion as Quiescence
 
-**Status:** Proposed (design verified — 2 subagent rounds, implementation-ready; under review; not yet implemented)
+> **Historical record — filing review 2026-11-11.** Current documentation: [Task runtime](../architecture/orchestration.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
+**Status at design:** Proposed (design verified — 2 subagent rounds; not yet implemented at the time).
+
+**Filing update, 2026-11-11:** Completion intent and quiescence are implemented in the current [task runtime](../../src/tasks/task.ts) and [idle decision](../../src/tasks/recovery.ts). The peer-agent design below is historical; this source check does not revalidate every original acceptance condition.
 **Supersedes the coordination half of:** the `activePeers` completion guard in `report_completion`.
 
 ---

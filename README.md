@@ -158,7 +158,7 @@ Workers run inside the PM's own session and report back to it; only their final 
 A task runs in a sandboxed environment with defense-in-depth. **The task, not an agent, is the isolation boundary:** workers run inside the PM's session and share its credentials, network allowlist and filesystem grants, so per-call approval tiers — not per-agent credential scoping — are what gate critical writes.
 
 - **Filesystem isolation** — a task can only read/write its own session folder and clones, via bubblewrap (Bash) and PreToolUse hooks (Read/Write/Edit); base clones are read-only
-- **Network deny-all** — Bash cannot reach the internet beyond an explicit allowlist (one union for the whole session, from `archie.json`); web access only through the controlled research pipeline
+- **Network deny-all** — Bash cannot reach the internet beyond an explicit allowlist (one union for the whole session, from `archie.json`); research uses the controlled pipeline, while configured MCP integrations retain their own policies
 - **Tool denylists** — WebSearch/WebFetch always blocked; repo writes, pushes and PRs withheld until edit mode is approved
 - **Human gates** — edit mode requires Slack approval; critical MCP calls pause for per-call approval; PRs require review before merge
 - **Git safety** — branch protection server-side; no force push; git push blocked from Bash (no network)
@@ -167,35 +167,9 @@ See [Security Architecture](docs/architecture/security.md) for the full threat m
 
 ## Documentation
 
-**Architecture:**
+Start with the [documentation index](docs/README.md) and [system module map](docs/architecture/overview.md). They route architecture, operating guides, plans, proposals and historical specifications to their owning documents.
 
-- [Overview](docs/architecture/overview.md) — system design and concepts
-- [Agents](docs/architecture/agents.md) — the PM, its workers, models and effort
-- [Orchestration](docs/architecture/orchestration.md) — task lifecycle, activation and recovery
-- [Tool Approvals](docs/architecture/tool-approvals.md) — per-call human approval for critical MCP tools
-- [Security](docs/architecture/security.md) — sandbox, threat model, defense layers, deployment
-- [Plugin System](docs/architecture/plugin-system.md) — plugin structure and agent registration
-- [Edit Mode](docs/architecture/edit-mode.md) — approval flow, shared clones, git workflow
-- [Persistence](docs/architecture/persistence.md) — session storage and recovery
-- [Slack Integration](docs/architecture/slack-integration.md) — UX layer
-- [GitHub Integration](docs/architecture/github-integration.md) — PR workflow
-- [Web Research](docs/architecture/web-research.md) — the controlled `web_research` pipeline
-
-**Guides:**
-
-- [Migrating to the flat PM](docs/guides/migrating-to-flat-pm.md) — the 0.2.0 breaking change: what to convert in your plugins repo, and what happens to existing tasks
-- [Local Development](docs/guides/local-development.md) — full setup with Slack, GitHub App, ngrok
-- [GitHub App Setup](docs/guides/github-setup.md) — create the App, required permissions & webhook events, env vars
-- [Plugin System](docs/architecture/plugin-system.md) — how plugins are structured and loaded (plus the bundled `writing-plugins` skill under `examples/plugins/.claude/skills/`)
-- [Docker Setup](DOCKER.md) — container configuration and troubleshooting
-- [Deployment](docs/guides/deployment.md) — production deployment and operations
-
-**Project:**
-
-- [Contributing](CONTRIBUTING.md) — how to set up, the dev loop, and PR expectations
-- [Security Policy](SECURITY.md) — how to report a vulnerability
-- [Code of Conduct](CODE_OF_CONDUCT.md) — community standards
-- [Changelog](CHANGELOG.md) — notable changes by version
+Contributors should follow the [coding guidelines](docs/guides/coding-guidelines.md) and [documentation filing rules](docs/guides/documentation.md). For project policies, see [Contributing](CONTRIBUTING.md), [Security](SECURITY.md), [Code of Conduct](CODE_OF_CONDUCT.md) and the generated [Changelog](CHANGELOG.md).
 
 ## Technology Stack
 

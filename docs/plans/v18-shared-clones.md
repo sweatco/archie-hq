@@ -1,5 +1,7 @@
 # Replace Git Worktrees with Shared Clones
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [Repository workspace](../architecture/edit-mode.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 ## Context
 
 Git worktrees share `.git/objects/`, `.git/refs/`, and `.git/worktrees/` with the base repo. This makes true filesystem isolation impossible — sandboxing an agent's worktree requires granting read (and write in RW mode) access to the entire base repo, allowing one agent to interfere with another's state. Additionally, worktrees can't check out the same branch concurrently, forcing a `detached HEAD` workaround for visiting existing branches.

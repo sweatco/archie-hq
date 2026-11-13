@@ -1,5 +1,7 @@
 # pr-merge-policy Specification
 
+> **Historical specification snapshot — filing review 2026-11-11.** The repo-agent frontmatter and unanimous-agent policy below were superseded by root `archie.json` configuration; see the [GitHub module map](../../../docs/architecture/github-integration.md). Original normative wording is retained as acceptance history, not asserted as the current implementation. See the [OpenSpec index](../../README.md).
+
 ## Purpose
 TBD - created by archiving change pr-merge-policy. Update Purpose after archive.
 ## Requirements

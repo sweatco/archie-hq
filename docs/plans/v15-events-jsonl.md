@@ -1,5 +1,7 @@
 # Persistent JSONL Event Log + Event-Based CLI Rendering
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [Persistence](../architecture/persistence.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 ## Context
 
 System events flow through a volatile in-memory EventEmitter → SSE → CLI. If the CLI disconnects, events are lost. The CLI currently re-fetches the full task detail (metadata + knowledge.log text) on every SSE event — inefficient and lossy.

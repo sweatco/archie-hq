@@ -1,5 +1,7 @@
 # Architecture Simplification Proposal
 
+> **Historical rationale — filing review 2026-11-11.** The structural change was adopted and later evolved into the flat PM. Preserve the reasons; the old track and triage mechanics are not a current design. Current contract: [System map](../architecture/overview.md).
+
 > **Status (2026-05-01): Largely implemented.** The structural reorganization described below has been adopted. `connectors/slack/` and `connectors/github/` exist and absorb the old slack/github modules; `agents/registry.ts`, `agents/spawn.ts` (track-branching), and co-located `agents/tools.ts` replace the old per-track spawners and split tool defs/impls; `tasks/task.ts` (the `Task` class with `sendMessage`) replaces the `task-runtime.ts` god module; `tasks/persistence.ts` consolidates persistence; `index.ts` owns the HTTP server and mounts connectors. The "Problem" section below describes the *historical* pre-refactor codebase and is preserved for context. Note: the triage agent referenced throughout is currently disabled — Slack messages route directly to the PM (see commented-out call in `src/connectors/slack/events.ts`). Also note that the proposed `connectors/github/worktree.ts` module did not survive: worktrees were later replaced by shared clones in `connectors/github/repo-clone.ts` (see [v18-shared-clones](../plans/v18-shared-clones.md)).
 
 ## Problem (historical)

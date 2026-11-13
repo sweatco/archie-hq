@@ -1,5 +1,7 @@
 # OAuth + Encrypted Secrets Vault for Agent MCPs (MVP)
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [Secrets and OAuth](../architecture/secrets.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 ## Context
 
 Today, every secret used by an MCP comes from `process.env` and is substituted into `plugins/.mcp.json` once at boot (`src/system/plugin-loader.ts:46`). That works for static API keys but cannot support OAuth: tokens expire, refresh tokens must be persisted somewhere safe, and re-auth must not happen mid-conversation in a user-facing channel.

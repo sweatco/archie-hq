@@ -21,7 +21,7 @@ const agentQuery = query({
       Stop: [{
         hooks: [async () => {
           // Agent turn completed — mark inactive so the supervisor can detect idle
-          task.updateAgentState(def.id, false);
+          task.updateAgentState(false);
           return { continue: true };  // Keep alive for next message
         }]
       }]
@@ -30,16 +30,16 @@ const agentQuery = query({
 });
 ```
 
-This is how Archie marks agents inactive when their turn ends in `src/agents/spawn.ts`. The flag is paired with `task.updateAgentState(def.id, true)` on `system`/`init` events, which together drive idle detection and the recovery system.
+This is how Archie marks agents inactive when their turn ends in `src/agents/spawn.ts`. The flag is paired with `task.updateAgentState(true)` on `system`/`init` events, which together drive idle detection and the recovery system.
 
 ### Alternative Methods
 
-| Hook | Fires On | Use For | Timing |
-|------|----------|---------|--------|
-| `Stop` | Agent finishes turn | Turn completion detection | End of turn |
-| `PostToolUse` | After each tool | Tool-level monitoring | After each tool |
-| `UserPromptSubmit` | New message arrives | Next turn detection | Start of next turn |
-| `SessionEnd` | Session ends | Cleanup | End of session |
+| Hook               | Fires On            | Use For                   | Timing             |
+| ------------------ | ------------------- | ------------------------- | ------------------ |
+| `Stop`             | Agent finishes turn | Turn completion detection | End of turn        |
+| `PostToolUse`      | After each tool     | Tool-level monitoring     | After each tool    |
+| `UserPromptSubmit` | New message arrives | Next turn detection       | Start of next turn |
+| `SessionEnd`       | Session ends        | Cleanup                   | End of session     |
 
 ## Hook Configuration
 
@@ -90,9 +90,7 @@ hooks: {
 
 ## Hook Return Values
 
-`HookJSONOutput` and `HookCallbackMatcher` are exported from
-`@anthropic-ai/claude-agent-sdk` — import them rather than redefining the
-shape locally:
+`HookJSONOutput` and `HookCallbackMatcher` are exported from `@anthropic-ai/claude-agent-sdk` — import them rather than redefining the shape locally:
 
 ```typescript
 import type { HookCallbackMatcher, HookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
@@ -135,6 +133,7 @@ const handle = query({
 ```
 
 The `MessageQueue` class (`src/agents/message-queue.ts`) supports:
+
 - `addMessage()` — enqueue (resolves any waiting `nextMessage()`)
 - `nextMessage()` — dequeue (returns promise, resolves when available)
 - `prependMessage()` — for message replay on session retry
@@ -161,10 +160,7 @@ The SDK restores full agent state: conversation history, files read, tool calls 
 
 ## Sandwich Defense Pattern
 
-Wrap untrusted web content in defensive framing using PostToolUse hooks. In
-Archie, web access is provided by the `web_research` MCP tool (built-in
-`WebFetch`/`WebSearch` are denied per agent), so the hook matches that tool by
-name and injects the wrapped result via `additionalContext`:
+Wrap untrusted web content in defensive framing using PostToolUse hooks. In Archie, web access is provided by the `web_research` MCP tool (built-in `WebFetch`/`WebSearch` are denied per agent), so the hook matches that tool by name and injects the wrapped result via `additionalContext`:
 
 ```typescript
 import type { HookCallbackMatcher, HookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
@@ -192,15 +188,11 @@ const defenseTagHook: HookCallbackMatcher = {
 };
 ```
 
-See `createResearchDefenseTagHook` in `src/mcp/research-tools.ts` for the
-production implementation (paired with `createResearchPostToolHook`, which
-also persists the report to `shared/researches/` and logs to `knowledge.log`).
+See `createResearchDefenseTagHook` in `src/mcp/research-tools.ts` for the production implementation (paired with `createResearchPostToolHook`, which also persists the report to `shared/researches/` and logs to `knowledge.log`).
 
 ## Structured Output with Zod
 
-Force agents to produce structured JSON output using Zod schemas. Archie uses
-`outputFormat: { type: 'json_schema', schema }` and reads the parsed value from
-the `result` event's `structured_output` field:
+Force agents to produce structured JSON output using Zod schemas. Archie uses `outputFormat: { type: 'json_schema', schema }` and reads the parsed value from the `result` event's `structured_output` field:
 
 ```typescript
 import { z } from 'zod';
@@ -228,11 +220,7 @@ for await (const event of query({
 }
 ```
 
-Archie uses this for triage classification (`src/system/triage.ts`, with
-`zod-to-json-schema`) and research preset classification
-(`src/mcp/research-tools.ts`, which uses Zod's built-in `toJSONSchema`). Watch
-for `subtype === 'error_max_structured_output_retries'` to detect repeated
-schema-validation failures.
+Archie uses structured output for [task title generation](../../src/tasks/title-generator.ts) and [research preset classification](../../src/mcp/research-tools.ts), using Zod's built-in `toJSONSchema`. Watch for `subtype === 'error_max_structured_output_retries'` to detect repeated schema-validation failures.
 
 ## Best Practices
 
@@ -249,4 +237,4 @@ schema-validation failures.
 - Agent spawner & hook wiring: `src/agents/spawn.ts` (Stop hook + PostToolUse hooks)
 - Sandbox / filesystem-guard hooks: `src/agents/sandbox.ts`
 - MCP servers: `src/agents/tools.ts` (PM/repo tools) and `src/mcp/research-tools.ts` (research + defense hooks)
-- Structured output examples: `src/system/triage.ts`, `src/tasks/title-generator.ts`, `src/mcp/research-tools.ts`
+- Structured output examples: `src/tasks/title-generator.ts`, `src/mcp/research-tools.ts`

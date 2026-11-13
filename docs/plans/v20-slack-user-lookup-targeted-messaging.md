@@ -1,5 +1,7 @@
 # Plan: Slack User Lookup & Targeted Messaging
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [Slack](../architecture/slack-integration.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 ## Context
 
 The PM agent currently can only post messages to the originating Slack thread (or broadcasts to all linked threads). There's no way to:

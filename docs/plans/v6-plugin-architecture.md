@@ -1,5 +1,7 @@
 > **Status: Partially implemented** — Plugin loader, repo-config.json loading, three-layer prompt composition, and PM skills are implemented. Plugin discovery works for the engineering plugin. Full dynamic discovery for arbitrary plugins is partially complete.
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [Plugins](../architecture/plugin-system.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 # MVP v6: Plugin Architecture Migration (Steps 1-3)
 
 ## Goal

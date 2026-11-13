@@ -1,12 +1,106 @@
 # Memory Layer
 
+## Purpose and boundary
+
+Owns workspace-bound knowledge and authorized task recall. Proactivity owns observation and attention state; tasks own the fixed conversation destination.
+
 Public Slack observations and attention state belong to the separate [proactive observation subsystem](proactivity.md), with its own API, MCP tools and SQLite store. `search_memory` searches knowledge memory only. The flags, storage and reset lifecycle below do not enable, disable or reset initiative; either subsystem works independently.
 
 Archie stores durable knowledge under `WORKDIR/memory/`. The store is bound to one authenticated Slack workspace and separates organization-wide memory from exact private conversation history.
 
 The implementation lives in `src/memory/`. Slack audience classification is in `src/connectors/slack/client.ts`; fixed task-destination checks are in `src/tasks/`.
 
-## Safety model
+## Module map
+
+| Code or interface | Owns | Boundary |
+| --- | --- | --- |
+| [src/memory/index.ts](../../src/memory/index.ts) | Startup and workspace binding | Authenticated workspace → ready store and completion listener |
+| [src/memory/lifecycle.ts](../../src/memory/lifecycle.ts) | Serialized extraction lifecycle | Completed task → authorized extraction and persistence |
+| [src/memory/task-summaries.ts](../../src/memory/task-summaries.ts) | Canonical summaries | Task evidence → exact public/private conversation history |
+| [src/memory/paths.ts](../../src/memory/paths.ts) | Paths and flags | Validated identifiers → scoped storage |
+| [src/memory/tools.ts](../../src/memory/tools.ts) | Recall interface | Authorized task → bounded memory reads/writes |
+| [src/memory/explicit.ts](../../src/memory/explicit.ts) | Explicit memory changes | Human intent and approval → scoped updates |
+| [src/memory/context.ts](../../src/memory/context.ts) | Prompt enrichment | Authorized authors → bounded public knowledge |
+
+## Flow and lifecycle
+
+Bind the store to the workspace, authorize the task audience, attach permitted context/tools, and serialize post-task extraction with fresh authorization before persistence.
+
+### Workspace binding and startup
+
+After Slack `auth.test`, initialization validates `WORKDIR/memory/.scoped-v1.json` against the authenticated Slack team ID.
+
+- An absent or empty memory directory is initialized for that team.
+- A matching marker enables memory and registers the completion listener once.
+- A mismatched or malformed marker disables memory reads and writes.
+- A non-empty unmarked directory is reset in place and initialized as a fresh scoped store.
+- Missing team identity disables memory.
+
+Memory initialization failure does not stop Slack events, task recovery, or scheduled triggers. There is no automatic migration or old-layout reader.
+
+### Extraction flow
+
+```text
+task completion → authorize → extract → reauthorize → canonical task file → channel overview
+                                          ├─ public: profiles/entities/activity + housekeeping
+                                          └─ private: summary only
+```
+
+Public extraction loads profiles only for structured task authors plus the complete persisted entity index. It also sees existing observations on entities touched by the task, so it can avoid extracting paraphrases of facts already saved explicitly. It applies attributed profile updates, sanitized entity updates, and the existing activity/housekeeping behavior. Entity pages retain the last 30 stored observations. The persisted entity index remains complete, including archived entities.
+
+After the first authorization check, extraction reads the completed task's `knowledge.log` through `readKnowledgeLog()`. The log remains a write-only audit/extraction record for the running PM: inbound content is delivered to the PM inline, and neither extraction path depends on removed participant or task-owner metadata.
+
+Private-channel and DM extraction passes empty profile and entity context to the extractor and writes only the sanitized canonical task file and derived overview for its exact destination. It does not update public profiles, entities, activity, related tasks, or housekeeping projections.
+
+Rejected summaries produce no task file and no overview row. Tasks with no destination or denied live authorization return before transcript access.
+
+### Agent recall
+
+```text
+prompt → bounded active-entity catalogue ─┐
+                                         ├→ search_memory → read_entity/read_task_summary
+full authorized on-disk corpus ──────────┘
+```
+
+#### Prompt injection
+
+`ARCHIE_MEMORY_INJECT=true` enables public profile/activity context plus an active-entity catalogue. The catalogue uses the persisted entity reader, excludes archived records, sorts by latest observation touch descending then slug, and contains complete rows until its next row would exceed the limit. Its XML wrappers, table header, omission notice, and tool guidance are included in the 4,000-character JavaScript string-length limit.
+
+Each task runs one PM SDK session. `src/agents/spawn.ts` performs live task authorization once during that session's setup, appends authorized injection once, and attaches the task-bound memory MCP server once. Native workers run inside the same session and any memory-tool call is evaluated against the same task metadata and live destination; there are no worker-specific memory attachments or specialist spawn branches.
+
+Audience changes and flag changes affect the next authorization check. They do not remove memory already present in the SDK session's context, and the session is not replaced solely to revoke that context.
+
+No full entity page is injected, including `org` pages. Scope and repository metadata no longer drive automatic full-page selection. When memory tools are enabled, the catalogue tells agents to use `search_memory` for omitted knowledge and `read_entity` for details. No catalogue is emitted when there are no active entities.
+
+Private task files and channel overviews are never injected.
+
+#### Memory tools
+
+`ARCHIE_MEMORY_TOOLS=true` attaches five host-side MCP tools after live authorization. The read tools are:
+
+- `search_memory` performs deterministic lexical search across complete entity contents including archived entities, public activity, profiles for structured task authors, all canonical public task files, and canonical task files in the exact authorized private directory. It does not search overviews.
+- `read_entity` resolves a public entity by slug or alias, including archived records.
+- `read_task_summary` checks the exact authorized private directory first, then valid immediate public channel directories, and returns the canonical Markdown file.
+
+Task search scans full files and returns excerpts of at most 400 characters around the earliest matching term. Public task hits have weight 2 and private task hits retain weight 4. Existing tokenization, token-overlap scoring, source weights, recency ordering, task-ID deduplication, and result limits remain unchanged.
+
+The shared task reader accepts only valid immediate channel directories and regular canonical task Markdown files. It skips symlinks, temporary files, overviews, invalid identifiers, unrelated directories, and malformed or location-mismatched frontmatter. Missing directories are empty; other I/O errors surface. It never reads task transcripts or unrelated private destinations.
+
+All tool responses are XML-escaped, labelled as untrusted evidence, and limited to 8,000 characters.
+
+#### Explicit memory writes
+
+The same `ARCHIE_MEMORY_TOOLS` gate attaches `remember_preference` and `remember_fact`. Both require the originating Slack message timestamp; the host resolves its author from task metadata and checks the live audience again when the write runs on the existing memory lifecycle queue. Tool input cannot select another user or destination. `ARCHIE_MEMORY=false` disables writes too.
+
+`remember_preference` saves a descriptive bullet to that author's public workspace profile. In public channels it saves immediately. In DMs and private channels, the host posts the exact proposed bullet and saves only after the author clicks **Save across conversations**. The pending request stays in task metadata until resolved or replaced; approval expires after one hour. Approval checks the persisted request under a task lock, so a cancelled request cannot be approved from a stale task instance. Other viewers cannot approve it. The private extractor still writes only an exact-conversation task summary; it does not publish private facts or surrounding DM context.
+
+`remember_fact` adds one observation to an existing public entity or creates an entity when given its type and summary. It accepts only authorized public conversations. The existing entity index is rebuilt after a save. Both tools report a successful save only after their memory writer succeeds, and identical retries return unchanged.
+
+The SDK transcript is not consumed by extraction, `events.jsonl` has no memory consumer, and `knowledge.log` is extracted only after completion with a bounded transcript. The originating message is already in the task log; explicit saves use the existing memory writers directly.
+
+## Contracts and failure behavior
+
+### Safety model
 
 Memory access comes from live Slack API metadata, never transcript text or model output.
 
@@ -28,19 +122,7 @@ Task messages, files, reactions, status updates, approval cards, PR cards, and `
 
 Trigger proposals and content edits must target the authoring task's destination. Existing user-bound triggers separately verify that the fixed destination is a DM with the exact recipient; this check does not depend on memory eligibility. Pausing, resuming, and deleting a visible trigger do not copy task context. A fired trigger creates a fresh task whose memory scope comes from its live Slack destination; no creator-task memory state is propagated. Existing triggers need no migration.
 
-## Workspace binding and startup
-
-After Slack `auth.test`, initialization validates `WORKDIR/memory/.scoped-v1.json` against the authenticated Slack team ID.
-
-- An absent or empty memory directory is initialized for that team.
-- A matching marker enables memory and registers the completion listener once.
-- A mismatched or malformed marker disables memory reads and writes.
-- A non-empty unmarked directory is reset in place and initialized as a fresh scoped store.
-- Missing team identity disables memory.
-
-Memory initialization failure does not stop Slack events, task recovery, or scheduled triggers. There is no automatic migration or old-layout reader.
-
-## Storage layout
+### Storage layout
 
 ```text
 WORKDIR/memory/
@@ -71,81 +153,21 @@ Every public and private task has one canonical Markdown file with trusted task 
 
 Canonical task and overview writes use temporary files followed by rename in the destination directory. If canonical replacement succeeds but overview replacement fails, the extraction remains in `runtime/pending-extractions.md`; replay replaces the same task file and rebuilds a deduplicated overview. Canonical files, not overviews, are authoritative.
 
-## Extraction flow
+### Limits and flags
 
-```text
-task completion → authorize → extract → reauthorize → canonical task file → channel overview
-                                          ├─ public: profiles/entities/activity + housekeeping
-                                          └─ private: summary only
-```
-
-Public extraction loads profiles only for structured task authors plus the complete persisted entity index. It also sees existing observations on entities touched by the task, so it can avoid extracting paraphrases of facts already saved explicitly. It applies attributed profile updates, sanitized entity updates, and the existing activity/housekeeping behavior. Entity pages retain the last 30 stored observations. The persisted entity index remains complete, including archived entities.
-
-After the first authorization check, extraction reads the completed task's `knowledge.log` through `readKnowledgeLog()`. The log remains a write-only audit/extraction record for the running PM: inbound content is delivered to the PM inline, and neither extraction path depends on removed participant or task-owner metadata.
-
-Private-channel and DM extraction passes empty profile and entity context to the extractor and writes only the sanitized canonical task file and derived overview for its exact destination. It does not update public profiles, entities, activity, related tasks, or housekeeping projections.
-
-Rejected summaries produce no task file and no overview row. Tasks with no destination or denied live authorization return before transcript access.
-
-## Agent recall
-
-```text
-prompt → bounded active-entity catalogue ─┐
-                                         ├→ search_memory → read_entity/read_task_summary
-full authorized on-disk corpus ──────────┘
-```
-
-### Prompt injection
-
-`ARCHIE_MEMORY_INJECT=true` enables public profile/activity context plus an active-entity catalogue. The catalogue uses the persisted entity reader, excludes archived records, sorts by latest observation touch descending then slug, and contains complete rows until its next row would exceed the limit. Its XML wrappers, table header, omission notice, and tool guidance are included in the 4,000-character JavaScript string-length limit.
-
-Each task runs one PM SDK session. `src/agents/spawn.ts` performs live task authorization once during that session's setup, appends authorized injection once, and attaches the task-bound memory MCP server once. Native workers run inside the same session and any memory-tool call is evaluated against the same task metadata and live destination; there are no worker-specific memory attachments or specialist spawn branches.
-
-Audience changes and flag changes affect the next authorization check. They do not remove memory already present in the SDK session's context, and the session is not replaced solely to revoke that context.
-
-No full entity page is injected, including `org` pages. Scope and repository metadata no longer drive automatic full-page selection. When memory tools are enabled, the catalogue tells agents to use `search_memory` for omitted knowledge and `read_entity` for details. No catalogue is emitted when there are no active entities.
-
-Private task files and channel overviews are never injected.
-
-### Memory tools
-
-`ARCHIE_MEMORY_TOOLS=true` attaches five host-side MCP tools after live authorization. The read tools are:
-
-- `search_memory` performs deterministic lexical search across complete entity contents including archived entities, public activity, profiles for structured task authors, all canonical public task files, and canonical task files in the exact authorized private directory. It does not search overviews.
-- `read_entity` resolves a public entity by slug or alias, including archived records.
-- `read_task_summary` checks the exact authorized private directory first, then valid immediate public channel directories, and returns the canonical Markdown file.
-
-Task search scans full files and returns excerpts of at most 400 characters around the earliest matching term. Public task hits have weight 2 and private task hits retain weight 4. Existing tokenization, token-overlap scoring, source weights, recency ordering, task-ID deduplication, and result limits remain unchanged.
-
-The shared task reader accepts only valid immediate channel directories and regular canonical task Markdown files. It skips symlinks, temporary files, overviews, invalid identifiers, unrelated directories, and malformed or location-mismatched frontmatter. Missing directories are empty; other I/O errors surface. It never reads task transcripts or unrelated private destinations.
-
-All tool responses are XML-escaped, labelled as untrusted evidence, and limited to 8,000 characters.
-
-### Explicit memory writes
-
-The same `ARCHIE_MEMORY_TOOLS` gate attaches `remember_preference` and `remember_fact`. Both require the originating Slack message timestamp; the host resolves its author from task metadata and checks the live audience again when the write runs on the existing memory lifecycle queue. Tool input cannot select another user or destination. `ARCHIE_MEMORY=false` disables writes too.
-
-`remember_preference` saves a descriptive bullet to that author's public workspace profile. In public channels it saves immediately. In DMs and private channels, the host posts the exact proposed bullet and saves only after the author clicks **Save across conversations**. The pending request stays in task metadata until resolved or replaced; approval expires after one hour. Approval checks the persisted request under a task lock, so a cancelled request cannot be approved from a stale task instance. Other viewers cannot approve it. The private extractor still writes only an exact-conversation task summary; it does not publish private facts or surrounding DM context.
-
-`remember_fact` adds one observation to an existing public entity or creates an entity when given its type and summary. It accepts only authorized public conversations. The existing entity index is rebuilt after a save. Both tools report a successful save only after their memory writer succeeds, and identical retries return unchanged.
-
-The SDK transcript is not consumed by extraction, `events.jsonl` has no memory consumer, and `knowledge.log` is extracted only after completion with a bounded transcript. The originating message is already in the task log; explicit saves use the existing memory writers directly.
-
-## Limits and flags
-
-| Surface | Limit or behavior |
-|---|---|
-| Canonical task files | Retained indefinitely |
-| Channel overview | Newest 50 task records |
-| Overview excerpt | 200 characters |
-| Entity observations | Last 30 stored per entity |
-| Injected entity catalogue | 4,000 characters including wrappers/instructions/notices |
-| Injected full entity pages | None |
-| Tool response | 8,000 characters |
-| Search results | 10 by default, 20 maximum |
+| Surface                    | Limit or behavior                                        |
+| -------------------------- | -------------------------------------------------------- |
+| Canonical task files       | Retained indefinitely                                    |
+| Channel overview           | Newest 50 task records                                   |
+| Overview excerpt           | 200 characters                                           |
+| Entity observations        | Last 30 stored per entity                                |
+| Injected entity catalogue  | 4,000 characters including wrappers/instructions/notices |
+| Injected full entity pages | None                                                     |
+| Tool response              | 8,000 characters                                         |
+| Search results             | 10 by default, 20 maximum                                |
 
 | `ARCHIE_MEMORY_INJECT` | `ARCHIE_MEMORY_TOOLS` | Recall behavior |
-|---|---|---|
+| --- | --- | --- |
 | off | off | Collection only |
 | on | off | Public profiles/activity plus bounded entity catalogue |
 | off | on | Full authorized corpus through tools; no injected memory |
@@ -153,7 +175,17 @@ The SDK transcript is not consumed by extraction, `events.jsonl` has no memory c
 
 `ARCHIE_MEMORY` is the master switch and defaults enabled; exact `false` disables initialization, extraction, injection, and tools. Injection and memory tools default off independently. `ARCHIE_MEMORY_HOUSEKEEPING` defaults enabled. Existing profile, section, staleness, and entity soft-cap variables remain unchanged. The catalogue limit is fixed and applies only to each injected catalogue block, not the whole prompt or conversation.
 
-## Reset, rollout, and rollback
+## Change and verification
+
+Use the module map to find the owning operation before changing behavior. For focused regression checks with dependencies installed:
+
+```bash
+npx vitest run src/memory/__tests__/ src/tasks/__tests__/memory-scope.test.ts
+```
+
+These are suggested checks, not a test receipt. See the [local development guide](../guides/local-development.md) and [documentation rules](../guides/documentation.md). SDK, provider and deployment behavior requires the relevant live check when authorized.
+
+### Reset, rollout, and rollback
 
 This layout requires a fresh memory store.
 
@@ -166,3 +198,5 @@ This layout requires a fresh memory store.
 Never automatically erase an existing marked store. Current startup behavior still resets a non-empty unmarked store. Never copy private task files into `public/`, edit the workspace marker to bypass a mismatch, or reuse a scoped store with another Slack workspace.
 
 Rolling back to an older binary requires restoring its matching store backup. Setting `ARCHIE_MEMORY=false` stops memory use but leaves the new store on disk and does not restore the prior layout.
+
+Read the [scoped memory instructions](../../src/memory/CLAUDE.md) before changing this subsystem. The [historical memory specification](../../openspec/specs/memory-layer/spec.md) retains earlier acceptance intent.

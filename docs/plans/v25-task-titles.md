@@ -1,5 +1,7 @@
 # Task Titles — Implementation Plan
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [Task runtime](../architecture/orchestration.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 ## Context
 
 Tasks today are identified by `task_id` (timestamp + random) and `channel_name` (e.g. `DM with Dana`). Neither communicates what the task is about. Goal: generate a Haiku-authored one-line title at task creation, surface it via API + CLI, and push it to Slack DM thread titles via `assistant.threads.setTitle` for DM-originated tasks.

@@ -1,5 +1,7 @@
 # Plan — Per-Channel "Archie" Canvas as Project Context
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [Slack](../architecture/slack-integration.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 ## Context
 
 Today Archie's context is per-thread: each Slack thread becomes a task, and the only standing instructions an agent sees come from the PM prompt plus plugin skills. There is no way to give a *channel* durable, project-level instructions (a spec, conventions, a pin code, links to reference files).

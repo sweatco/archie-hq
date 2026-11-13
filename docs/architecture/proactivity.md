@@ -1,20 +1,29 @@
 # Proactive Slack assistance
 
+## Purpose and boundary
+
+Owns public-source observation, matter analysis, bounded proactive delivery and recipient-approved task handoff. Knowledge memory and ordinary task execution remain independent.
+
 Archie observes accessible public Slack activity, keeps track of open matters and offers useful help. It can suggest repository work, but only the responsible employee's **Start task** action creates a normal task. Observation uses its own database and works independently of knowledge memory. Reflection, evaluation and self-evolution are deferred to PR #361.
 
-## Sources and storage
+## Module map
 
-`ARCHIE_PROACTIVITY_MODE` alone controls new proactive behavior: `off` skips the subsystem, `shadow` collects and analyzes without new proactive messages, and `live` permits eligible delivery. Startup requires Node 24+, an authenticated Slack workspace and available, explicitly priced model routes. There is no administrator identity, startup DM or separate delivery switch. Extraction defaults to `claude-haiku-5-5`; investigation uses `claude-sonnet-5-5`.
+| Code or interface | Owns | Boundary |
+| --- | --- | --- |
+| [src/proactivity/index.ts](../../src/proactivity/index.ts) | Startup and mode selection | Deployment mode → optional subsystem lifecycle |
+| [src/proactivity/collection.ts](../../src/proactivity/collection.ts) | Source intake | Public Slack activity → versioned evidence |
+| [src/proactivity/service.ts](../../src/proactivity/service.ts) | Scheduling and analysis | Due jobs and fresh evidence → decisions |
+| [src/proactivity/store.ts](../../src/proactivity/store.ts) | Durable observation state | Validated operations → transactional SQLite records |
+| [src/proactivity/persistence/schema.ts](../../src/proactivity/persistence/schema.ts) | Schema ownership | Workspace identity → supported database |
+| [src/proactivity/persistence/attention.ts](../../src/proactivity/persistence/attention.ts) | Extraction checkpoints and retry accounting | Request ledger and validated parts → retry eligibility without rebuying unchanged failures |
+| [src/proactivity/handoff.ts](../../src/proactivity/handoff.ts) | Approved task handoff | Recipient approval → prepared task and recovery |
+| [src/proactivity/recall.ts](../../src/proactivity/recall.ts) | Task recall | Live audience/source checks → bounded evidence |
 
-Collection starts at the first successful enablement and preserves that watermark across restarts. There is no backfill, auto-joining, mailbox, private-channel or DM observation. A new public reply may fetch its older parent for context, without importing the older discussion. Bot messages cannot establish commitments or success by themselves. Slack content is evidence, never authorization.
+## Flow and lifecycle
 
-`WORKDIR/initiative/state.sqlite` holds source revisions, observations, matters, jobs, charges, deliveries, feedback and approved task handoffs. It is bound to the Slack workspace, outside the PM's filesystem sandbox and separate from the Markdown knowledge store. SQLite uses WAL and full durability. Back up with SQLite-aware tooling or after a clean stop; a live database copy without its WAL is incomplete.
+Collect eligible public events, extract and investigate matters, recheck sources/audience/budget before delivery, and create ordinary tasks only through the saved recipient's approval.
 
-Edits, deletions and access loss invalidate dependent evidence and unsent messages in a transaction. Processing generations reject stale model results. A process lease and fenced job leases prevent concurrent workers from applying the same work. Missing history, overflow and incomplete pagination remain visible coverage gaps until collection repairs them.
-
-Schema creation belongs to `persistence/schema.ts`. New installations create schema 12; restarts preserve evidence, watermark, approvals, deliveries and charges. There are no upgrade migrations. Older schemas, unknown nonempty databases, wrong workspaces and newer schemas are rejected without changing their data. Archived test databases belong with their original binaries and evidence.
-
-## Analysis and delivery
+### Analysis and delivery
 
 The scheduler drains at most 32 due jobs per minute within a 45-second drain window; a running analysis has a five-minute bound. Extraction runs hourly and drains pending work between those runs. It processes each thread independently, with at most 6,000 source characters per model request as well as the existing input limit. Findings carry across parts of a long thread; validated parts survive interruptions. Completed threads are applied immediately, so an invalid result cannot hold back unrelated discussions. Bot-only context needs no model call. Investigation refreshes sources before assessing resolution, useful help or one scoped task suggestion in the same model call.
 
@@ -34,13 +43,7 @@ Each employee can give feedback on their own matters and inspect their own propo
 
 Nudges are short Slack replies with a useful next step; numeric citations stay in structured evidence. Daily digests use matter titles and source links without copying internal analysis details or buying another model call. Existing pending drafts are not rewritten by a code update and still need review before enabling live delivery.
 
-## Background spending
-
-The ceiling is $200 per Lisbon calendar day: routine extraction can use $150; all matter investigations can use the existing priority reserve up to the shared $200 ceiling, regardless of responsibility. The allowance is workspace-wide, not per employee. Each attempt, including explicit retries, reserves a conservative maximum before dispatch. Complete usage settles the reservation; missing usage remains a liability across possible execution days. Old refunds do not accumulate allowance. A pricing overrun is charged in full and blocks further admission until pricing is checked. Exhaustion defers work without pausing the service. At most four background requests can run concurrently.
-
-The base uses direct model requests only. Complete usage settles charges; an interrupted call or incomplete usage keeps its reservation because the provider may have executed it. There is no refund by age. Persistent unknown usage may require external accounting evidence. The base does not store provider credential fingerprints. Prices were checked on 2026-10-20 against [Anthropic pricing](https://platform.claude.com/docs/en/about-claude/pricing).
-
-## Recipient-approved tasks and recall
+### Recipient-approved tasks and recall
 
 Investigation may suggest an allowed repository, intended result and current human evidence. Cards use the same outbox, interruption limits and freshness checks as nudges. Before approval they explain that normal task budgeting applies outside the $200 background allowance. A bounded presentation cursor prevents invalid or deferred history from blocking new suggestions.
 
@@ -57,3 +60,33 @@ After approval, the card replaces Start with **Starting…**, then **Task starte
 Task-bound observation tools check source access and audience independently of knowledge memory. Public tasks see only their own channel. DM tasks resolve the actual internal human recipient and recheck that person's membership for each public source. Matter explanations are limited to that recipient's own matters; approved tasks also verify that the recipient matches their saved actor. `read_matter` includes current sources, the last 20 distinct decision explanations, next checks, charges, deliveries, feedback and task handoffs. Reads check validity again after awaited authorization. Already-loaded PM context has the same revocation limitation as other evidence.
 
 See [verification and limits](../guides/initiative-verification.md). Local or simulated checks do not authorize activation or establish usefulness.
+
+## Contracts and failure behavior
+
+### Sources and storage
+
+`ARCHIE_PROACTIVITY_MODE` alone controls new proactive behavior: `off` skips the subsystem, `shadow` collects and analyzes without new proactive messages, and `live` permits eligible delivery. Startup requires Node 24+, an authenticated Slack workspace and available, explicitly priced model routes. There is no administrator identity, startup DM or separate delivery switch. Extraction defaults to `claude-haiku-5-5`; investigation uses `claude-sonnet-5-5`.
+
+Collection starts at the first successful enablement and preserves that watermark across restarts. There is no backfill, auto-joining, mailbox, private-channel or DM observation. A new public reply may fetch its older parent for context, without importing the older discussion. Bot messages cannot establish commitments or success by themselves. Slack content is evidence, never authorization.
+
+`WORKDIR/initiative/state.sqlite` holds source revisions, observations, matters, jobs, charges, deliveries, feedback and approved task handoffs. It is bound to the Slack workspace, outside the PM's filesystem sandbox and separate from the Markdown knowledge store. SQLite uses WAL and full durability. Back up with SQLite-aware tooling or after a clean stop; a live database copy without its WAL is incomplete.
+
+Edits, deletions and access loss invalidate dependent evidence and unsent messages in a transaction. Processing generations reject stale model results. A process lease and fenced job leases prevent concurrent workers from applying the same work. Missing history, overflow and incomplete pagination remain visible coverage gaps until collection repairs them.
+
+Schema creation belongs to `persistence/schema.ts`. New installations create schema 12; restarts preserve evidence, watermark, approvals, deliveries and charges. There are no upgrade migrations. Older schemas, unknown nonempty databases, wrong workspaces and newer schemas are rejected without changing their data. Archived test databases belong with their original binaries and evidence.
+
+### Background spending
+
+The ceiling is $200 per Lisbon calendar day: routine extraction can use $150; all matter investigations can use the existing priority reserve up to the shared $200 ceiling, regardless of responsibility. The allowance is workspace-wide, not per employee. Each attempt, including explicit retries, reserves a conservative maximum before dispatch. Complete usage settles the reservation; missing usage remains a liability across possible execution days. Old refunds do not accumulate allowance. A pricing overrun is charged in full and blocks further admission until pricing is checked. Exhaustion defers work without pausing the service. At most four background requests can run concurrently.
+
+The base uses direct model requests only. Complete usage settles charges; an interrupted call or incomplete usage keeps its reservation because the provider may have executed it. There is no refund by age. Persistent unknown usage may require external accounting evidence. The base does not store provider credential fingerprints. Prices were checked on 2026-10-20 against [Anthropic pricing](https://platform.claude.com/docs/en/about-claude/pricing).
+
+## Change and verification
+
+Use the module map to find the owning operation before changing behavior. For focused regression checks with dependencies installed:
+
+```bash
+npx vitest run src/proactivity/ src/tasks/__tests__/prepared-start.test.ts src/tasks/__tests__/prepared-restart.test.ts
+```
+
+These are suggested checks, not a test receipt. See the [operating guide](../guides/initiative-verification.md) and [documentation rules](../guides/documentation.md). SDK, provider and deployment behavior requires the relevant live check when authorized.

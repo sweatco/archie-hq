@@ -1,5 +1,7 @@
 # Historic reply scope pilot
 
+> **Experimental evidence; adoption unresolved — filing review 2026-11-11.** Current documentation: [Agents](../architecture/agents.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions. Preserve the failed or incomplete gates; this review does not establish rollout readiness or the current external PR state.
+
 **TL;DR:** The selected compression reduces the PM prompt and two skills from 7,390 to 3,887 whitespace-token words (47.4%). In a fresh 44-execution comparison against the current PR prompt, each version delivered 21 of 22 replies. Manual review retained all requested facts and found no unsupported factual claims in the 21 posted candidate replies. The shared long-report delivery failure remains; this is a draft, not a rollout-ready result.
 
 ## Historic evidence

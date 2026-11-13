@@ -1,5 +1,7 @@
 # Channel pinned messages as agent context
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [Slack](../architecture/slack-integration.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 **Date:** 2026-08-09 · **Status: Implemented (this PR).**
 
 ## Brief

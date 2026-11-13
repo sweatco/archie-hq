@@ -1,5 +1,7 @@
 # Unify core skill mounting
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [Plugins](../architecture/plugin-system.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 **Date:** 2026-08-17 · **Status: Implemented (this PR).**
 
 ## Acceptance criteria

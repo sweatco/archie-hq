@@ -1,49 +1,17 @@
-# Proposal: Distributed Queue Architecture
+# Distributed task delivery
 
-> **Status:** Not implemented — design only (from MVP v4)
+Status: Deferred design; reviewed for filing on 2026-11-11. No queue implementation or new infrastructure is authorized by this record.
 
-## Summary
+## Problem and revisit condition
 
-Replace the current in-memory message queues with a durable, Redis-backed queue system to enable zero-downtime deployments and horizontal scaling across multiple pods.
+Archie runs task sessions in one process, with a streaming input queue per PM and file-based task recovery. Revisit durable distributed delivery when measured restart loss, deployment interruption or task volume requires a multi-process ownership model. No current capacity measurement or delivery-loss reproduction is attached to this proposal.
 
-## Motivation
+## Options and recommendation
 
-The current system uses in-memory `MessageQueue` instances per agent per task (`src/agents/message-queue.ts`). This works well for single-pod deployment but has limitations:
+Keep the existing [task runtime and restart recovery](../architecture/orchestration.md) until a concrete failure justifies more infrastructure. If the requirement is durable inbound delivery, first test whether a persisted inbox plus the current single-process runtime suffices. A distributed broker is appropriate only when multiple processes must own and transfer work; it also requires claims, fencing, idempotency, shared state and recovery rules beyond replacing an in-memory queue.
 
-- **Task state lost on restart** — mitigated by v10's restart recovery, but messages in transit are lost
-- **No graceful deployment** — restarting the process interrupts all active tasks
-- **Single-pod bottleneck** — all tasks must run on one machine
+The [v4 design](../plans/v4-queue-architecture.md) records the original Redis/GroupMQ and two-queue proposal. It assumes a triage/peer-agent architecture that no longer exists. Preserve it as historical rationale, not an implementation specification. Task metadata and SDK sessions support recovery, but neither proves that every interrupted in-memory message is durably delivered.
 
-## Design
+## Decision needed
 
-### Two-Queue Architecture
-
-1. **Triage queue** (fast, ~2s per job): Webhook events → classification → routing
-2. **Spawn queue** (blocking, long-running): Agent spawning and task management
-
-Both backed by GroupMQ + Redis with FIFO ordering per group (task ID).
-
-### Key Features
-
-- Webhook preclassification and deterministic routing for most events
-- Graceful shutdown: active tasks handed off to new pod before old pod stops
-- Per-pod local state tracking (`pendingSpawns`, `activeTasks`)
-- Direct handlers for deterministic events (approvals, CI checks)
-
-## Current Mitigation
-
-The system achieves acceptable resilience without distributed queues through:
-- `recoverActiveTasks()` on server restart (re-spawns agents from persisted sessions)
-- SDK session resume capability (restores full agent context)
-- Shared knowledge log provides continuity across restarts
-
-## When to Build
-
-This becomes necessary when:
-- Deployment frequency requires zero-downtime updates
-- Task volume exceeds single-pod capacity
-- Multiple teams need independent scaling
-
-## Original Design Document
-
-The full design was captured in `plans/v4-queue-architecture.md`.
+Define the observed failure, required delivery guarantee and deployment topology, then compare the smallest durable-inbox change with a broker using a restart/concurrent-owner experiment. Until then, retain this as one deferred decision and keep queue implementation steps out of current architecture.

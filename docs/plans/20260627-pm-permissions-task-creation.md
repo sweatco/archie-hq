@@ -1,5 +1,7 @@
 # PM permissions & task-creation rework
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [Task runtime](../architecture/orchestration.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 > **Update (2026-07): `search_messages` descoped from this PR.** Real cross-channel search is not achievable with a bot token as originally planned — `search.messages` requires a user token, and the `search:read.public` bot scope only powers the Real-time Search API (`assistant.search.context`), which needs a short-lived `action_token` sourced from an inbound `@mention`/DM/message event. Rather than ship that plumbing here, `search_messages` (and the `search:read.public` scope) were dropped from this PR and deferred to a separate change. The shipped exploration surface is `list_channels`, `read_channel_history`, `read_thread`, and `post_to_channel`. The search-related sections below reflect the original plan and are retained for history.
 
 ## Context

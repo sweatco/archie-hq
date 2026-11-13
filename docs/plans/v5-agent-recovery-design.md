@@ -1,5 +1,7 @@
 > **Status: Partially implemented** — Idle detection via Stop hooks, progressive recovery (reinforcement then fresh context), and recovery counters are implemented. Some state persistence gaps remain. See v10 for the final implementation.
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [Agents](../architecture/agents.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 # MVP 5: Agent Recovery & Handoff Resilience
 
 **Status**: Planned

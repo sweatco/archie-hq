@@ -1,5 +1,7 @@
 # Sandbox Lockdown: OS-level + Hook-based Filesystem/Network Enforcement
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [Security](../architecture/security.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 ## Context
 
 Agents currently run with `permissionMode: 'dontAsk'` and rely on `allowedTools` allowlists to gate access. This has several weaknesses:

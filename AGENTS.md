@@ -2,9 +2,11 @@
 
 Read [the coding guidelines](docs/guides/coding-guidelines.md) before changing code and use their review rubric before handoff. Keep rules in that guide; do not duplicate them in tool-specific files.
 
+Follow [the documentation filing guide](docs/guides/documentation.md) when creating or changing docs. Update the owning module map and index, use the shared architecture template, and keep current contracts separate from historical plans and unresolved proposals.
+
 ## Project and architecture
 
-Archie uses Node.js, TypeScript and the Claude Agent SDK, with Slack and GitHub integrations and file-based task sessions. Use the owning architecture document in `docs/architecture/` to place changes. Those documents describe the current system; `docs/plans/` contains historical development plans and `docs/proposals/` contains unimplemented ideas. Domain capabilities belong in plugins.
+Archie uses Node.js, TypeScript and the Claude Agent SDK, with Slack and GitHub integrations and file-based task sessions. Use the [system module map](docs/architecture/overview.md) to find the owning architecture document. Plans and proposals carry explicit lifecycle labels; historical intent is not a current contract. Domain capabilities belong in plugins.
 
 Slack / CLI / GitHub → Task → PM agent → subagents it spawns
 

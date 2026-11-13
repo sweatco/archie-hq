@@ -1,5 +1,7 @@
 # Multi-repo agents and dynamic repo-agent spawning
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [Agents](../architecture/agents.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 > **Shipped scope (this PR): multi-repo agents, eager-mount only.**
 > A repo agent declares one or more repos in frontmatter and **all of them are
 > mounted at spawn**. There is no on-demand attach and no respawn machinery —

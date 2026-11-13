@@ -1,5 +1,7 @@
 # Proposal: Analytics Plugin — Gap Analysis & Roadmap
 
+> **Needs revalidation — filing review 2026-11-11.** The implementation/gap claims below describe an older plugin snapshot. Recheck the owning plugin repository and current native plugin boundary before accepting work. No external plugin audit was performed in this filing change. Current contract: [Plugins](../architecture/plugin-system.md).
+
 > **Status:** MVP implemented; partially advanced since — per-plugin persistent data directory (`workdir/plugins-data/<plugin>/`) is mounted read-only into plugin agents, and PM can now upload files to Slack via `post_files_to_user`. Remaining gaps documented below for future iterations.
 
 ## Summary

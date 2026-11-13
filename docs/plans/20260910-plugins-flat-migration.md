@@ -1,5 +1,7 @@
 # Migrating archie-plugins to the flat model
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [Plugins](../architecture/plugin-system.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 How to repeat the plugins-repo half of the flat-PM rework for real. This is a record of a first pass done end-to-end in one session against `sweatco/archie-plugins`, written so the next attempt can go faster and skip the wrong turns. It assumes the target model from the flat-PM discussion notes: one PM session per task, skills and agents loaded natively by the SDK, `plugin:skill` and `plugin:agent` namespacing, and root files owned by the engine.
 
 ## What the rewrite actually is

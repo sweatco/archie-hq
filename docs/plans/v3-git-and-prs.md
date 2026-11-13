@@ -1,5 +1,7 @@
 > **Status: Implemented** — Full GitHub App integration with PR creation, review handling, merge orchestration, webhook routing, and pattern-restricted Bash for local git operations.
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [GitHub](../architecture/github-integration.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 # MVP 3: Git Commits & Pull Requests
 
 **Status**: Planned

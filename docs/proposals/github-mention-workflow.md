@@ -1,5 +1,7 @@
 # Proposal: GitHub @mention Workflow
 
+> **Proposed; needs revalidation — filing review 2026-11-11.** The desired GitHub interaction remains a proposal. Its old repo-agent and context-log design must be updated for the flat PM before acceptance. This review does not decide its priority. Current contract: [GitHub](../architecture/github-integration.md).
+
 > **Status:** Not implemented — design only
 
 ## Summary

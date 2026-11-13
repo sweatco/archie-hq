@@ -1,5 +1,7 @@
 # CLI TUI + User Channel Abstraction
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [API and CLI](../architecture/api-cli.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 ## Context
 
 Archie currently only communicates with users via Slack. The goal is to:

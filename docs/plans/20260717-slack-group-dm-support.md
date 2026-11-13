@@ -1,5 +1,7 @@
 # Slack group DM (mpim) support
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [Slack](../architecture/slack-integration.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 Status: Implemented (this PR)
 
 ## Brief

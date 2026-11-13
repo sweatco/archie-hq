@@ -1,5 +1,7 @@
 > **Status: Implemented** — Generic plugin-agent spawner with three-layer prompts, skill discovery, stop hooks, and idle callbacks. Plugin agents are read-only by default with base MCP tools plus research.
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [Plugins](../architecture/plugin-system.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 # MVP v7: Plugin Agent Track (Steps 4-7)
 
 ## Context
