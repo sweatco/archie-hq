@@ -1,65 +1,46 @@
-# Working on Archie
+# Developing Archie
 
 Read [the coding guidelines](docs/guides/coding-guidelines.md) before changing code and use their review rubric before handoff. Keep rules in that guide; do not duplicate them in tool-specific files.
 
-## Project and architecture
+## Architecture and scope
 
-Archie uses Node.js, TypeScript and the Claude Agent SDK, with Slack and GitHub integrations and file-based task sessions. Use the owning architecture document in `docs/architecture/` to place changes. Those documents describe the current system; `docs/plans/` contains historical development plans and `docs/proposals/` contains unimplemented ideas. Domain capabilities belong in plugins.
+Archie uses Node.js, TypeScript and the Claude Agent SDK. Start with the [architecture overview](docs/architecture/overview.md), then read the owning document before changing a component. Domain capabilities belong in plugins. Use `docs/proposals/` for unimplemented ideas and `docs/plans/` for development plans and their historical records.
 
-Slack / CLI / GitHub → Task → PM agent → subagents it spawns
-
-- **One agent per task:** the PM is a single Claude Agent SDK session resumed across turns. It is the only agent Archie spawns itself and the only one that talks to users.
-- **Delegation:** the SDK's built-in `Agent` tool spawns a plugin-defined agent type or a general-purpose worker with a model selected per spawn. Subagents run inside the PM's process; only their final report reaches its context.
-- **Repositories:** `mount_repo("owner/repo")` clones a repository into the task on demand. Clones remain read-only until edit mode is approved, which makes them writable and resumes the PM's session.
-- **Wakes:** Slack messages and GitHub events reach the PM inline. `knowledge.log` is a write-only record for memory extraction and audit; the PM never reads it.
-- **Plugins:** skills and agent definitions load natively through the SDK. MCP servers, the network allowlist and the PM overlay stay engine-owned in the plugins repository's root `.mcp.json`, `archie.json` and `pm.md`.
-
-## Runtime state
-
-All runtime state (plugins, base clones, sessions, caches and triggers) lives under `ARCHIE_WORKDIR`, defaulting to `./workdir`. Startup clones plugins from the `ARCHIE_PLUGINS` Git URL and warms the repositories marked `warm: true` in the plugins repository's `archie.json`. Other repositories mount on demand. See `src/system/workdir.ts` for paths and `src/system/bootstrap-workdir.ts` for bootstrap behavior.
+See [local development](docs/guides/local-development.md) for setup and runtime layout, and the [plugin system](docs/architecture/plugin-system.md) for loading and bootstrap behavior.
 
 ## Development and verification
 
 ```bash
-npm ci                # Install locked dependencies
-npm run dev           # Development server with hot reload
-npm run lint          # Check lint rules without rewriting source
-npm run format:check  # Check formatting without rewriting source
-npm run typecheck     # Type checking only
-npm run build         # TypeScript compilation
-npm run check         # Format, lint, typecheck, build and tests
+npm ci         # Install locked dependencies
+npm run dev    # Development server with hot reload
+npm run check  # Format, lint, typecheck, build and tests
 ```
 
-Run `npm run lint` and focused tests during iteration. Run `npm run check` before handing off code changes. See the coding guide for the completion hooks, zero-debt lint policy, formatting and runtime verification, and [local development](docs/guides/local-development.md) for setup.
+Run `npm run lint` and focused tests during iteration, and `npm run check` before handing off code changes. The coding guide owns formatting, logging, lint policy, completion hooks, and verification requirements. Preserve prompts and skill text unless changing them is the task.
 
 When changing memory, also read [its scoped instructions](src/memory/CLAUDE.md) and [architecture](docs/architecture/memory.md); the scoped invariants still apply.
-
-Use the unified logger in application code (`src/system/logger.ts`). Standalone tools retain their intentional stdout/stderr contracts. Preserve prompts and skill text unless changing them is the task. Keep Markdown paragraphs and bullets on single source lines, as the coding guide requires.
 
 ## E2E harness
 
 For live verification, use the [archie-e2e skill](.claude/skills/archie-e2e/SKILL.md) and `tools/e2e/` instead of hand-rolling a boot. For a cloud sandbox behind a TLS-intercepting proxy, also follow [the cloud E2E runbook](docs/guides/e2e-in-cloud-sandbox.md). Preflight, Docker and TLS errors can indicate missing setup; load the skill before treating the harness as unavailable.
 
-In a fresh worktree, `.env`, `workdir`, `claude-data` and a real `secrets/` directory are untracked and initially absent. `npm run e2e:prepare` prepares them, and `boot.ts` invokes it automatically. Preparation is permitted for read-only probes: it writes only untracked files in the current worktree and touches no network.
+In fresh worktrees, `npm run e2e:prepare` prepares untracked prerequisites; `boot.ts` runs it automatically. Preparation writes only untracked files in the current worktree and touches no network, so it is permitted for read-only probes.
 
 ## Generated changelog
 
-`CHANGELOG.md` is generated by `.github/workflows/daily-changelog.yml`. Do not add, edit or remove entries by hand unless fixing that automation. Write clear PR descriptions because they supply the changelog's input. Quiet days are intentionally skipped; do not fill those gaps.
+`CHANGELOG.md` is generated by `.github/workflows/daily-changelog.yml` from PR descriptions. Do not edit entries or fill quiet-day gaps by hand unless fixing that automation.
 
-## Project management
+## Project management for Archie development
 
-For the canonical `sweatco/archie-hq` repository, follow the required [research → idea → implementation routine](docs/guides/project-management.md) and use the [Archie project](https://github.com/orgs/sweatco/projects/16). Repo-local `technical-project-management` and `github-issues` skills supply coordination and GitHub operations. Initiative membership does not imply an owner, priority, deadline, or implementation commitment.
+Read and follow the [mandatory research → idea → implementation → acceptance routine](docs/guides/project-management.md) for applicable research and implementation work, using the repo-local `technical-project-management` and `github-issues` skills. Maintain records as part of the task. Respect analysis-only requests, parked work, and the user's ownership of ideas, priorities, scope, and acceptance; keep simple fixes lightweight.
 
-When research yields a substantive implementation idea, create or update its proposal with sources, the user's conclusion, decisions, and the next step as part of the task. When the user chooses implementation, record the accepted scope and prepare actionable issues, dependencies, acceptance criteria, and any useful milestone. Reconcile progress and acceptance at execution checkpoints and handoff. Perform this routine without asking whether the user wants a process nudge. The user owns ideas and priorities; respect analysis-only requests, parked work, and declined changes, and keep unrelated coding tasks lightweight. A merged PR alone does not establish the delivered outcome.
+Before upstream PM access, run `node tools/pm/check-repository.mjs` and stop on failure. Only canonical `sweatco/archie-hq` checkouts qualify; forks and unknown contexts must not write upstream tracking records, even with an upstream remote or copied config. Verify each item's repository before Project intake.
 
-Before accessing upstream PM records or making a PM write, run `node tools/pm/check-repository.mjs`. It must verify this checkout's `origin` and GitHub identity as canonical. Forks and unknown repository contexts must not write to Archie's Project, issues, milestones, or labels, even if they have an upstream remote or a copied project config. Verify each issue or PR belongs to the canonical repository before adding it; follow the guide's scope rules.
+Every PR addition to the Project requires explicit upstream maintainer intake approval, including same-repository PRs. Native automatic intake is issues-only.
 
-PR intake is maintainer-controlled: add a PR to the Project only after explicit upstream maintainer approval for that intake. Fork-origin PRs remain external submissions until admitted; opening, reviewing, or passing checks does not admit them. Native automatic intake is restricted to canonical issues, so same-repository PRs also use the explicit intake step.
-
-Prepare concrete, reviewable changes before requesting approval. Require explicit approval in the current chat for each GitHub mutation, Git remote write, or release. An approved automation may run within its defined scope.
-
-## Git workflow
+## Git and publication
 
 - Never merge `main` into feature branches. When an update is needed, rebase onto freshly fetched `origin/main`. Get collaborators' agreement before rewriting commits they depend on.
 - Preserve unrelated working-tree changes. Stage only changes for the current task and inspect the staged diff before committing.
 - Create commits only when explicitly requested. Keep each commit focused on one logical change, group related files and use a descriptive message. Do not commit draft documentation or proposals unless specifically requested.
+- Prepare concrete, reviewable changes before requesting approval. Require explicit approval in the current chat for each GitHub mutation, Git remote write, or release. Approved automation may run within its defined scope.
