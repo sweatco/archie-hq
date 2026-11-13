@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { checkRepository } from './check-repository.mjs';
+import { readProject, renderProjectAudit } from './project-audit.mjs';
 
 const attentionLabels = ['pm:decision', 'pm:blocked', 'pm:parked'];
 
@@ -43,7 +44,7 @@ export function renderIssueHealth({ repository, projectUrl, issues, pulls, now =
     '',
     `Triage signals: ${unassigned.length} issues have no assignee, ${withoutMilestone.length} have no milestone, and ${aging.length} have not been updated for at least 30 days. Backlog items may legitimately have no owner or milestone; age alone does not mean abandoned.`,
     '',
-    'This report reads repository records only. It does not read private Project fields, infer acceptance or priorities, change records, or close stale issues. Project stages and initiative membership remain in the Project.',
+    'This inventory covers repository records. An on-demand Project audit is included only with --project. The report does not infer acceptance or priorities, change records, or close stale issues.',
     '',
     '## Decisions and blockers',
     '',
@@ -100,8 +101,28 @@ export function readRepositoryPages(repository, resource, run = execFileSync) {
   return pages.flat();
 }
 
+export function generateHealthReport(
+  config,
+  { includeProject = false, run = execFileSync, env = process.env } = {},
+) {
+  const project = includeProject ? readProject(config, { run, env }) : null;
+  const issues = readRepositoryPages(config.repository, 'issues', run);
+  const pulls = readRepositoryPages(config.repository, 'pulls', run);
+  const input = {
+    repository: config.repository,
+    projectUrl: config.url,
+    issues,
+    pulls,
+  };
+  let report = renderIssueHealth(input);
+  if (project) report += renderProjectAudit({ ...input, project });
+  return report;
+}
+
 function main() {
-  const { values } = parseArgs({ options: { output: { type: 'string' } } });
+  const { values } = parseArgs({
+    options: { output: { type: 'string' }, project: { type: 'boolean', default: false } },
+  });
   const repository = checkRepository();
   const config = JSON.parse(
     readFileSync(new URL('../../.github/project.json', import.meta.url), 'utf8'),
@@ -109,12 +130,7 @@ function main() {
   if (config.repository !== repository.full_name) {
     throw new Error('Project health target must match the verified canonical repository');
   }
-  const report = renderIssueHealth({
-    repository: config.repository,
-    projectUrl: config.url,
-    issues: readRepositoryPages(config.repository, 'issues'),
-    pulls: readRepositoryPages(config.repository, 'pulls'),
-  });
+  const report = generateHealthReport(config, { includeProject: values.project });
   if (values.output) writeFileSync(values.output, report);
   else process.stdout.write(report);
 }

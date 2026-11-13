@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { readRepositoryPages, renderIssueHealth } from './issue-health.mjs';
+import { generateHealthReport, readRepositoryPages, renderIssueHealth } from './issue-health.mjs';
 
 const now = new Date('2026-11-11T09:00:00Z');
 const issue = (overrides = {}) => ({
@@ -67,4 +67,42 @@ test('reads every GitHub page using argument arrays and fails on an API error ob
     () => readRepositoryPages('sweatco/archie-hq', 'issues', () => '{"message":"denied"}'),
     /Expected paginated/,
   );
+});
+
+test('the default Actions report reads repository records without accessing Project fields', () => {
+  const calls = [];
+  const report = generateHealthReport(
+    { repository: 'sweatco/archie-hq', url: 'https://github.com/orgs/sweatco/projects/16' },
+    {
+      env: { GITHUB_ACTIONS: 'true' },
+      run(command, args) {
+        calls.push(args);
+        assert.equal(command, 'gh');
+        assert.deepEqual(args.slice(0, 3), ['api', '--method', 'GET']);
+        return JSON.stringify([args[3].includes('/issues?') ? [issue()] : []]);
+      },
+    },
+  );
+  assert.equal(calls.length, 2);
+  assert.match(report, /1 open issues; 0 open PRs/);
+  assert.doesNotMatch(report, /## Project consistency audit/);
+});
+
+test('requesting a Project audit in Actions fails before any audit API calls', () => {
+  let called = false;
+  assert.throws(
+    () =>
+      generateHealthReport(
+        {},
+        {
+          includeProject: true,
+          env: { GITHUB_ACTIONS: 'true' },
+          run() {
+            called = true;
+          },
+        },
+      ),
+    /on-demand local checks/,
+  );
+  assert.equal(called, false);
 });
