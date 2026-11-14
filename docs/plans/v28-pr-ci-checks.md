@@ -1,5 +1,7 @@
 # GitHub CI Check Visibility — Phase 1
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [GitHub](../architecture/github-integration.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 ## Context
 
 When a repo agent creates a PR, it currently has no visibility into CI check results. The webhook layer subscribes to `workflow_run` but only forwards a thin `"workflow completed/failure"` line to PM, and `get_pr_status` exposes only `mergeable_state` (`unstable`/`blocked`/…) — not which specific checks failed. As a result the agent cannot diagnose or fix CI failures on its own PRs.

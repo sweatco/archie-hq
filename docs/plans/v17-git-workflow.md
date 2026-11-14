@@ -1,5 +1,7 @@
 # Plan: Git Workflow — Stable CWD, Branch Switching, Detached HEAD
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [GitHub](../architecture/github-integration.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 ## Context
 
 Three problems with the current repo agent git workflow:

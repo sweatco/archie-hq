@@ -1,6 +1,8 @@
 # Adopt Archie's coding guidelines and automated checks
 
-Status: Guidelines, checks and the verified suppression-free follow-up are prepared for publication in [draft PR #370](https://github.com/sweatco/archie-hq/pull/370). Approved 2026-11-09; publication of the zero-debt follow-up authorized 2026-11-10. Starting revision: `b3aae37033d166762db2adff7c95ae249307358c`; rebased onto `26821b177d3c20467559898f5dc0cf02f4322c97` on 2026-11-10. Verification results and remaining debt are recorded below; readability benefit remains unmeasured. No deployment was performed.
+> **Historical record — filing review 2026-11-11.** Current documentation: [Coding guidelines](../guides/coding-guidelines.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
+Status: Completed implementation; present on `main` at `4242842` (filing review 2026-11-11), following [PR #370](https://github.com/sweatco/archie-hq/pull/370). Approved 2026-11-09; publication of the zero-debt follow-up authorized 2026-11-10. Starting revision: `b3aae37033d166762db2adff7c95ae249307358c`; rebased onto `26821b177d3c20467559898f5dc0cf02f4322c97` on 2026-11-10. Verification results and remaining debt are recorded below; readability benefit remains unmeasured. No deployment was performed.
 
 ## Outcome and constraints
 

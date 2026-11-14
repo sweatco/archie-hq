@@ -1,5 +1,7 @@
 # Refactor: Task and Agent entities
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [Agents](../architecture/agents.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 ## Context
 
 First iteration of the architecture simplification. The goal is to make `Task` and `Agent` clean, self-contained entities before touching connectors, server, or anything else.

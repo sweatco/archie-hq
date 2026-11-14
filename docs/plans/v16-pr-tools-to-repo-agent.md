@@ -1,5 +1,7 @@
 # Plan: Move PR Tools from PM Agent to Repo Agent
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [GitHub](../architecture/github-integration.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 ## Context
 
 Currently all GitHub PR operations (push, create PR, get status, reviews, update, comment, resolve thread, re-review, merge check) live in the PM agent's MCP server. The PM should be a pure manager — it coordinates, communicates, and delegates. All hands-on work including PR lifecycle should belong to repo agents in edit mode.

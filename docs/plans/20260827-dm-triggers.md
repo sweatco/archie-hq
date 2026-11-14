@@ -1,5 +1,7 @@
 # DM delivered triggers
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [Triggers](../architecture/triggers.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 **Date:** 2026-08-27 · **Status: Implemented; AC12 (live DM run) not yet verified.**
 
 **Rebased 2026-10-12.** Main had since moved the triggers skill to `core-plugin/skills/triggers/SKILL.md` and added `Task.prepareTriggerDelivery`, which only lets a trigger deliver to the task's own conversation. So a DM user can no longer name a different channel, and the review fixes added after this plan was written (the `home_channel` visibility fallback, and refusing `propose_trigger` before a fired task's first post) apply on top of that. Line numbers below are from August.

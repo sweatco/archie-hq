@@ -1,5 +1,7 @@
 # Trigger task owns conversation
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [Triggers](../architecture/triggers.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 **Date:** 2026-08-19 · **Status: Implemented (this PR).**
 
 ## Brief

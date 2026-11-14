@@ -1,5 +1,7 @@
 > **Status: Partially implemented** — Task recovery on restart, Stop hook detection, idle detection scheduling, and progressive recovery are implemented. Shutdown guards and full state persistence have some gaps.
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [Agents](../architecture/agents.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 # MVP v10 — Agent Recovery & Idle Detection
 
 ## Problem

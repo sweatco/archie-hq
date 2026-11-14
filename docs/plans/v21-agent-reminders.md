@@ -1,5 +1,7 @@
 # Agent Reminders — Implementation Plan
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [Triggers](../architecture/triggers.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 ## Context
 
 Archie is purely reactive. We want agents to set their own reminders — "remind me at X to do Y" — like an employee. No cron, no new task states, no new persistence files. The agent decides when and why.

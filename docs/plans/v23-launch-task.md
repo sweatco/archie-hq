@@ -1,5 +1,7 @@
 # Fire-and-Forget (Autonomous) Tasks
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [Task runtime](../architecture/orchestration.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 ## Context
 
 Today, every task in Archie HQ is initiated by a user-facing event:

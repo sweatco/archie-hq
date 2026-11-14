@@ -1,10 +1,96 @@
 # Web Research Architecture
 
-Web research is available to all agents (PM, repo, and plugin) as an MCP tool called `web_research`. It classifies query complexity via Haiku, then delegates to the Perplexity Agent API with the appropriate preset. Results are returned as markdown.
+## Purpose and boundary
 
-The SDK's built-in `WebSearch` and `WebFetch` tools are explicitly disallowed on every session (see `disallowedTools` in `src/agents/spawn.ts`). All web access flows through `web_research` so that budget enforcement, isolation, and defense-tag wrapping always apply.
+Owns the controlled web_research tool and isolated report production. Tasks own its budget/approval state; security owns the wider external-data boundary.
 
-## Tool Registration
+Web research is attached to the PM session as the `web_research` MCP tool; native workers share the session subject to their tool restrictions. It classifies query complexity via Haiku, then delegates to the Perplexity Agent API with the appropriate preset. Results are returned as markdown.
+
+The SDK's built-in `WebSearch` and `WebFetch` tools are explicitly disallowed on every session (see `disallowedTools` in `src/agents/spawn.ts`). This tool applies the research budget, isolation and defense-tag wrapping. Configured MCP integrations and allowlisted Bash destinations are separate external-data paths; see [security](security.md).
+
+## Module map
+
+| Code or interface | Owns | Boundary |
+| --- | --- | --- |
+| [src/mcp/research-tools.ts](../../src/mcp/research-tools.ts) | Research tool and pipeline | Topic/context → bounded provider work and report |
+| [src/agents/spawn.ts](../../src/agents/spawn.ts) | Tool and defense hook attachment | Session setup → available research capability |
+| [src/tasks/task.ts](../../src/tasks/task.ts) | Task budget state | Research usage → allowance or approval stop |
+| [src/mcp/**tests**/research-tools.test.ts](../../src/mcp/__tests__/research-tools.test.ts) | Focused regressions | Fake provider boundaries → pipeline assertions |
+
+## Flow and lifecycle
+
+Check task budget, scan input when configured, choose the research preset, request research, scan output and persist an isolated report before returning its reference.
+
+### Research Pipeline
+
+When an agent calls `web_research`, the tool handler executes three steps:
+
+```
+Calling Agent
+  |
+  v
+web_research MCP tool
+  |
+  ├── 1. classifyPreset (Haiku) → fast / low / medium / high
+  |
+  ├── 2. callPerplexity (Agent API) → output_text + citations
+  |
+  └── 3. Save report.md, return markdown + source_urls
+```
+
+#### Step 1: Preset Classification
+
+A Haiku model classifies the query with a nested `query()` call using `outputFormat: json_schema` and `allowedTools: []`. The presets are a cost ladder, and the classifier is told to pick the cheapest rung that can answer the query:
+
+| Preset | Shape of the work | Model Perplexity selects | Observed cost on one research query |
+| --- | --- | --- | --- |
+| `fast` | One search, no follow-up reading | `openai/gpt-5.6-luna` | $0.003 |
+| `low` | A few searches, can open pages it finds | `openai/gpt-5.6-luna` | $0.003 |
+| `medium` | Many rounds of search and page reading | `openai/gpt-5.6-luna` | $0.035 |
+| `high` | Broadest coverage, strongest reasoning | `openai/gpt-5.6-sol` | $0.280 |
+
+Falls back to `low` on any classification failure. These are Perplexity's tier-based preset names, which replaced `fast-search`, `pro-search`, `deep-research`, `advanced-deep-research` and `ultra`. The legacy names still resolve as aliases, so they are not the reason a request fails.
+
+Two further presets exist and are deliberately not offered to the classifier. `xhigh` answers out of its own sandbox rather than the web, measured at zero citations and $1.54 for a single query, which defeats a tool whose output is a sourced report. `wide-research` is asynchronous: it returns a job handle to poll and delivers results as downloadable files rather than in the response body.
+
+#### Step 2: Perplexity Agent API
+
+A single `fetch()` call to `https://api.perplexity.ai/v1/agent` with:
+
+- `preset`: From step 1
+- `input`: The research topic + optional context
+- `stream: false`
+
+No `model` is sent. Each preset carries its own tuned model, step budget, reasoning effort, output ceiling and tool set, and any field sent alongside a preset overrides that default. Pinning a model is therefore actively harmful here: the `fast` tier rejects Anthropic models outright with HTTP 400 `invalid request`, and `high` differs from `medium` only in model, so pinning one collapses the two into the same request.
+
+The Agent API follows the OpenAI Responses API format: the response's `output` array is parsed for `message` items (extracting `output_text` blocks and `url_citation` annotations) and `search_results` items (extracting result URLs). Top-level `output_text` and `citations` fields are used as a fallback. Citations are deduped before being returned.
+
+#### Step 3: Output
+
+The Perplexity response is saved as `report.md` with citations appended as a Sources section. The tool returns JSON to the calling agent:
+
+```json
+{
+  "research_id": "a3f9k2b1",
+  "content": "... markdown ...",
+  "source_urls": ["https://..."]
+}
+```
+
+### Isolated Per-Call Storage
+
+Each `web_research` invocation gets its own isolated directory:
+
+```
+sessions/{task-id}/researches/
+  {uuid}/                     # UUID generated per research call
+    request.json              # Manifest: topic, context, caller, timestamp
+    report.md                 # Perplexity output with sources
+```
+
+## Contracts and failure behavior
+
+### Tool Registration
 
 The `web_research` tool is registered as an in-process MCP server on every `query()` call:
 
@@ -28,77 +114,11 @@ The tool is exposed as `mcp__research-tools__web_research` on every task's sessi
 
 **Source:** `src/mcp/research-tools.ts`
 
-## Research Pipeline
-
-When an agent calls `web_research`, the tool handler executes three steps:
-
-```
-Calling Agent
-  |
-  v
-web_research MCP tool
-  |
-  ├── 1. classifyPreset (Haiku) → fast / low / medium / high
-  |
-  ├── 2. callPerplexity (Agent API) → output_text + citations
-  |
-  └── 3. Save report.md, return markdown + source_urls
-```
-
-### Step 1: Preset Classification
-
-A Haiku model classifies the query with a nested `query()` call using `outputFormat: json_schema` and `allowedTools: []`. The presets are a cost ladder, and the classifier is told to pick the cheapest rung that can answer the query:
-
-| Preset | Shape of the work | Model Perplexity selects | Observed cost on one research query |
-|---|---|---|---|
-| `fast` | One search, no follow-up reading | `openai/gpt-5.6-luna` | $0.003 |
-| `low` | A few searches, can open pages it finds | `openai/gpt-5.6-luna` | $0.003 |
-| `medium` | Many rounds of search and page reading | `openai/gpt-5.6-luna` | $0.035 |
-| `high` | Broadest coverage, strongest reasoning | `openai/gpt-5.6-sol` | $0.280 |
-
-Falls back to `low` on any classification failure. These are Perplexity's tier-based preset names, which replaced `fast-search`, `pro-search`, `deep-research`, `advanced-deep-research` and `ultra`. The legacy names still resolve as aliases, so they are not the reason a request fails.
-
-Two further presets exist and are deliberately not offered to the classifier. `xhigh` answers out of its own sandbox rather than the web, measured at zero citations and $1.54 for a single query, which defeats a tool whose output is a sourced report. `wide-research` is asynchronous: it returns a job handle to poll and delivers results as downloadable files rather than in the response body.
-
-### Step 2: Perplexity Agent API
-
-A single `fetch()` call to `https://api.perplexity.ai/v1/agent` with:
-- `preset`: From step 1
-- `input`: The research topic + optional context
-- `stream: false`
-
-No `model` is sent. Each preset carries its own tuned model, step budget, reasoning effort, output ceiling and tool set, and any field sent alongside a preset overrides that default. Pinning a model is therefore actively harmful here: the `fast` tier rejects Anthropic models outright with HTTP 400 `invalid request`, and `high` differs from `medium` only in model, so pinning one collapses the two into the same request.
-
-The Agent API follows the OpenAI Responses API format: the response's `output` array is parsed for `message` items (extracting `output_text` blocks and `url_citation` annotations) and `search_results` items (extracting result URLs). Top-level `output_text` and `citations` fields are used as a fallback. Citations are deduped before being returned.
-
-### Step 3: Output
-
-The Perplexity response is saved as `report.md` with citations appended as a Sources section. The tool returns JSON to the calling agent:
-
-```json
-{
-  "research_id": "a3f9k2b1",
-  "content": "... markdown ...",
-  "source_urls": ["https://..."]
-}
-```
-
-## Isolated Per-Call Storage
-
-Each `web_research` invocation gets its own isolated directory:
-
-```
-sessions/{task-id}/researches/
-  {uuid}/                     # UUID generated per research call
-    request.json              # Manifest: topic, context, caller, timestamp
-    report.md                 # Perplexity output with sources
-```
-
-## Defense Tag Hooks (Outer Agent)
+### Defense Tag Hooks (Outer Agent)
 
 When research results return to the calling session, two PostToolUse hooks fire on the **outer** agent's `query()`:
 
-### 1. Persistence Hook (`createResearchPostToolHook`)
+#### 1. Persistence Hook (`createResearchPostToolHook`)
 
 Saves the markdown report to the task's shared directory and logs to `knowledge.log`:
 
@@ -106,7 +126,7 @@ Saves the markdown report to the task's shared directory and logs to `knowledge.
 sessions/{task-id}/shared/researches/research-{shortId}.md
 ```
 
-### 2. Defense Tag Hook (`createResearchDefenseTagHook`)
+#### 2. Defense Tag Hook (`createResearchDefenseTagHook`)
 
 Wraps the research result with defensive context before the calling agent processes it:
 
@@ -129,16 +149,16 @@ hooks: {
 },
 ```
 
-## Per-Task Research Budgets
+### Per-Task Research Budgets
 
 Each task has a research budget that limits how many `web_research` calls can be made. This prevents runaway research loops and resource exhaustion.
 
-### Budget Defaults
+#### Budget Defaults
 
 - **Default limit:** 5 research requests per task
 - **Extra budget:** Granted in increments of +5 via Slack approval buttons
 
-### Enforcement Flow
+#### Enforcement Flow
 
 1. Agent calls `web_research`
 2. Tool handler calls `checkResearchBudget()`
@@ -150,9 +170,10 @@ Each task has a research budget that limits how many `web_research` calls can be
    - Calls `incrementResearchCount()`
    - Proceeds with the Perplexity API call
 
-### Slack Approval
+#### Slack Approval
 
 When budget is exceeded, Slack interactive buttons are posted:
+
 - **Approve (+5):** Increases `research_budget_extra` in task metadata by 5, reactivates the task
 - **Deny:** Reactivates the task without extra budget; PM sees the denial and works with existing research
 
@@ -160,9 +181,10 @@ The budget count persists across task stop/reactivate cycles via `research_reque
 
 **Source:** `src/tasks/task.ts` (`handleResearchBudgetApproval`)
 
-## AWS Bedrock Guardrails (Optional)
+### AWS Bedrock Guardrails (Optional)
 
 When configured, the tool scans queries and results via AWS Bedrock Guardrails:
+
 - **Input scan**: Checks the research query for PII, secrets, and sensitive data before sending to Perplexity
 - **Output scan**: Checks Perplexity response for prompt injection attempts
 
@@ -170,7 +192,7 @@ Scanning is optional and fail-open. Without `BEDROCK_GUARDRAIL_ID` set, the tool
 
 See [Bedrock Guardrails Setup Guide](../guides/bedrock-guardrails-setup.md) for full configuration instructions.
 
-## Environment Variables
+### Environment Variables
 
 - `PERPLEXITY_API_KEY`: Required for the Perplexity Agent API
 - `ANTHROPIC_API_KEY`: Required for the Haiku preset classifier
@@ -178,7 +200,17 @@ See [Bedrock Guardrails Setup Guide](../guides/bedrock-guardrails-setup.md) for 
 - `BEDROCK_GUARDRAIL_VERSION`: Optional — defaults to `DRAFT`
 - `AWS_REGION`: Optional — defaults to `us-east-1`
 
-## Related Documentation
+## Change and verification
+
+Use the module map to find the owning operation before changing behavior. For focused regression checks with dependencies installed:
+
+```bash
+npx vitest run src/mcp/__tests__/research-tools.test.ts
+```
+
+These are suggested checks, not a test receipt. See the [operating guide](../guides/bedrock-guardrails-setup.md) and [documentation rules](../guides/documentation.md). SDK, provider and deployment behavior requires the relevant live check when authorized.
+
+### Related Documentation
 
 - [Plugin System Architecture](./plugin-system.md) -- how agents are defined and loaded
 - [Security Architecture](./security.md) -- full defense layer breakdown including research isolation

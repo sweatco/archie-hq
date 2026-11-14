@@ -1,5 +1,7 @@
 # Prompt-and-skill concise reply pilot
 
+> **Experimental evidence; adoption unresolved — filing review 2026-11-11.** Current documentation: [Agents](../architecture/agents.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions. Preserve the failed or incomplete gates; this review does not establish rollout readiness or the current external PR state.
+
 **TL;DR:** This draft changes Archie's PM prompt and two skills, with no output style, application code, dependency, or runtime setting change. The revised prompt-and-skills arm used 2,187 words across 26 replies versus 5,910 in the control, a 63% reduction and 231 words more than the first revision. It retained the requested facts in the reviewed fixtures but still made unsupported claims, so the PR remains a draft.
 
 ## Changes

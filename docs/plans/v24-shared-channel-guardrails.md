@@ -1,5 +1,7 @@
 # Shared-Channel Guardrails (External-Org Filtering)
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [Slack](../architecture/slack-integration.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 ## Context
 
 Archie operates in Slack channels that can be shared with external organisations (Slack Connect). Today the integration has no notion of "home org" vs "external org": every human message reaches the PM agent with full content, file attachments are downloaded to the task sandbox, external `@mentions` can create or unmute tasks, and there is no user-visible signal that a channel is externally visible. This is a prompt-injection surface (external text can steer an autonomous agent with code-edit and posting powers), a data-egress surface (Archie may post sensitive internal content on behalf of an internal user into a shared channel), and an attachment-exfil surface (files uploaded by externals get fetched into the task workspace).

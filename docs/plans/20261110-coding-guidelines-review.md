@@ -1,5 +1,7 @@
 # Coding guidelines review of PR #370
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [Coding guidelines](../guides/coding-guidelines.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 Status: review and repairs verified locally on 2026-11-10.
 
 ## Scope and method

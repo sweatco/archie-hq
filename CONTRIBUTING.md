@@ -75,3 +75,7 @@ Read the [coding guidelines](docs/guides/coding-guidelines.md) for ownership, re
 ## Reporting security issues
 
 Please do **not** open public issues for security vulnerabilities or include exploit details in issues or PRs. Follow the responsible-disclosure process in [SECURITY.md](SECURITY.md).
+
+## Documentation changes
+
+Follow the [documentation filing guide](docs/guides/documentation.md). Find the owning [module map](docs/architecture/overview.md), update current contracts or procedures with the change, and keep historical intent and verification in the existing plan or proposal. New module maps use the [shared template](docs/architecture/_template.md).

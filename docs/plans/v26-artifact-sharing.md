@@ -1,5 +1,7 @@
 # Artifact Sharing Between Agents and to User
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [Agents](../architecture/agents.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 ## Context
 
 Currently, when agents collaborate on documents (e.g. backend agent drafts a plan, mobile reviews, backend revises, sends to PM, PM relays to user), the full document body is inlined in every `send_message_to_agent` and `post_to_user` call. The shared `knowledge.log` accumulates many copies of the same evolving document, bloating context and burning tokens.

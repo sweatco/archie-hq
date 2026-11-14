@@ -1,52 +1,27 @@
 # GitHub Integration
 
+## Purpose and boundary
+
+Owns authenticated GitHub events, PR operations and merge coordination. Tasks own repository/branch state; edit mode owns local write access; deployment configuration owns per-repository merge policy.
+
 Archie integrates with GitHub as a GitHub App using `@octokit/app` for API operations and HMAC-SHA256 signature verification for incoming webhooks. The integration covers PR lifecycle management, automated merging, review handling, and bidirectional event flow between GitHub and task sessions.
 
-## GitHub App Authentication
+## Module map
 
-The `GitHubClient` class in `src/connectors/github/client.ts` wraps `@octokit/app`. It authenticates using three environment variables:
+| Code or interface | Owns | Boundary |
+| --- | --- | --- |
+| [src/connectors/github/events.ts](../../src/connectors/github/events.ts) | Webhook ingress and task delivery | Authenticated GitHub event → task wake or card refresh |
+| [src/connectors/github/webhooks.ts](../../src/connectors/github/webhooks.ts) | Routing decisions | PR/branch identity → owning task and action |
+| [src/connectors/github/client.ts](../../src/connectors/github/client.ts) | GitHub API and App identity | Typed operations → installation-authenticated requests |
+| [src/connectors/github/merge.ts](../../src/connectors/github/merge.ts) | Merge coordination | Webhook or approval → policy and readiness checks |
+| [src/connectors/github/mergeability.ts](../../src/connectors/github/mergeability.ts) | Readiness predicate | GitHub PR state → ready/held decision |
+| [src/agents/registry.ts](../../src/agents/registry.ts) | Merge policy lookup | Root engine config → per-repository opt-in |
 
-- `GITHUB_APP_ID` -- The GitHub App's numeric ID
-- `GITHUB_APP_PRIVATE_KEY_PATH` -- Path to the PEM private key file
-- `GITHUB_INSTALLATION_ID` -- The installation ID for the target GitHub organization
+## Flow and lifecycle
 
-The client lazily initializes an authenticated Octokit instance via `app.getInstallationOctokit(installationId)`. A factory function `createGitHubClient()` reads environment variables and returns `null` if not configured, allowing the system to run without GitHub integration.
+Authenticate and route the webhook, resolve its task, refresh relevant cards, then deliver feedback or evaluate linked PR readiness and approval.
 
-For git operations (push, fetch), authentication is handled by the `GIT_ASKPASS` environment variable rather than the Octokit client.
-
-### Identities: acting vs. being credited
-
-Two distinct identities, because GitHub treats them differently.
-
-**The identity Archie acts as** is the GitHub App installation -- what the API calls and the git transport authenticate with. `getGitHubAppIdentity()` builds it as name `{appSlug}[bot]` / email `{appId}+{appSlug}[bot]@users.noreply.github.com`. It is now only a fallback for the identity below; nothing credits the bot deliberately.
-
-**The identity Archie is credited as** is a real user account (`archie-hq`), built by `getArchieAttributionIdentity()` from `ARCHIE_GITHUB_LOGIN` + `ARCHIE_GITHUB_USER_ID` (+ optional `ARCHIE_GITHUB_NAME`). It lands in three places:
-
-- the **committer** on every commit made in a clone, written once per base repository at server startup by `configureGitIdentity()` (shared clones inherit it) -- and the **author** too on commits `buildCommitAuthorEnv` leaves unattributed, i.e. when no approver was recorded;
-- the **`Co-Authored-By` trailer** on commits, written into the workspace's `.claude/settings.json` as `attribution.commit` by `setupAgentWorkspace()`;
-- the **attribution footer** on PR bodies.
-
-A user account is required rather than merely nicer: a GitHub App bot cannot be `@mentioned` at all, and its profile is an app page rather than an account. Attribution needs no repository access, so the account can be credited without being granted anything.
-
-The committer and the acting identity are free to differ because git push authenticates with the installation token via `GIT_ASKPASS`, and GitHub does not require the committer to match the pusher. Self-event filtering is unaffected for the same reason: a webhook's `sender` comes from the credential that made the API call, not from any commit's identity, so it is still `{appSlug}[bot]`.
-
-`ARCHIE_GITHUB_USER_ID` must be the account's numeric **user** ID, not the App ID. GitHub resolves the `{id}+{login}@users.noreply.github.com` form by ID and silently drops the credit when the ID disagrees with the login -- it does not fall back to matching the login. The bot form above derives that prefix from `GITHUB_APP_ID`, which is not a user ID, so a trailer built from it resolves to no account at all. When the attribution vars are unset, `getArchieAttributionIdentity()` falls back to the App bot, preserving prior behaviour rather than dropping the trailer.
-
-### PR authorship and attribution
-
-GitHub sets a PR's author from the credential that creates it, and offers no field to override it -- an installation token always yields `{appSlug}[bot]`. So a PR Archie opens on someone's behalf can never *be* theirs on GitHub, and the only place the human can appear is the body.
-
-`create_pull_request` therefore stamps one line at the top of the body via `buildAttributedBody()` in `src/connectors/github/pr-attribution.ts`, rather than leaving it to the agent:
-
-```
-Opened by @archie-hq on behalf of Bandita Parida.
-```
-
-The human is the edit-mode approver (`edit_approved_by`), which is also who commits are authored as (`buildCommitAuthorEnv` in `src/agents/commit-author.ts`), so the PR names exactly whoever `git blame` will name -- by their Slack display name, with no GitHub-account lookup. GitHub auto-links the `@login` to Archie's profile.
-
-`update_pr` re-stamps the line when it rewrites a body, and both strip any prior copy (matched on the `<!-- archie-attribution -->` marker) so re-injection replaces rather than stacks.
-
-## Webhook Handling
+### Webhook Handling
 
 GitHub webhooks arrive at `POST /webhooks/github`, registered in `src/index.ts` via `mountGitHubWebhook()` from `src/connectors/github/events.ts`. The handler:
 
@@ -57,15 +32,15 @@ GitHub webhooks arrive at `POST /webhooks/github`, registered in `src/index.ts` 
 
 The webhook secret is read from `GITHUB_WEBHOOK_SECRET` (loaded into `AppConfig` in `src/index.ts`) -- if not provided, the GitHub webhook endpoint is not registered.
 
-### Self-Event Filtering
+#### Self-Event Filtering
 
 Before routing, the system checks if the event was triggered by its own bot user. It constructs the expected bot username from `GITHUB_APP_SLUG` (e.g., `archie-hq[bot]`) and discards events where the sender matches. This prevents infinite loops when the system creates PRs, adds comments, or pushes branches.
 
-## Webhook Router
+### Webhook Router
 
 The webhook router (`src/connectors/github/webhooks.ts`) uses purely deterministic routing -- every event type maps to one of: `merge_check`, `existing_task`, or `noop` (discard). There is no triage step.
 
-### Task Identification
+#### Task Identification
 
 The router identifies which task an event belongs to by:
 
@@ -75,33 +50,33 @@ The router identifies which task an event belongs to by:
 
 If no task ID is found, the event is discarded as "Not our branch pattern."
 
-### Deterministic Routing
+#### Deterministic Routing
 
 All GitHub events follow deterministic paths based on event type and action. The `determineRouteAction()` function maps events to one of three internal actions (`merge_check`, `existing_task`, `noop`):
 
-| Event Type | Action/State | Route |
-|---|---|---|
-| `pull_request_review` | `state=approved` | `merge_check` |
-| `pull_request_review` | `state=changes_requested` | `existing_task` |
-| `pull_request_review` | `state=commented` | `existing_task` |
-| `pull_request_review_comment` | any | `existing_task` |
-| `pull_request` | `opened` or `synchronize` | `merge_check` |
-| `pull_request` | `closed` | `existing_task` |
-| `push` | any | `merge_check` |
-| `workflow_run` | `completed` + `failure` | `existing_task` |
-| `workflow_run` | `completed` + success | `merge_check` |
-| `issue_comment` | `created` | `existing_task` |
+| Event Type                    | Action/State              | Route           |
+| ----------------------------- | ------------------------- | --------------- |
+| `pull_request_review`         | `state=approved`          | `merge_check`   |
+| `pull_request_review`         | `state=changes_requested` | `existing_task` |
+| `pull_request_review`         | `state=commented`         | `existing_task` |
+| `pull_request_review_comment` | any                       | `existing_task` |
+| `pull_request`                | `opened` or `synchronize` | `merge_check`   |
+| `pull_request`                | `closed`                  | `existing_task` |
+| `push`                        | any                       | `merge_check`   |
+| `workflow_run`                | `completed` + `failure`   | `existing_task` |
+| `workflow_run`                | `completed` + success     | `merge_check`   |
+| `issue_comment`               | `created`                 | `existing_task` |
 
 Route actions map to handler types:
 
 - **`merge_check`** -- Handled directly by the merge orchestrator (see below). Debounced.
 - **`existing_task`** -- Formatted as a structured event entry, appended to the task's knowledge log, and the same line is delivered to the PM inline as it is woken.
 
-### `issue_comment` Handling
+#### `issue_comment` Handling
 
 `issue_comment` events lack branch info, so the router resolves the task by PR number via `findTaskByPRNumber()`. Once routed as `existing_task`, `handleExistingTaskDirect()` walks the task's mounted repos for a branch state matching that PR and deduplicates by `last_processed_comment_id` before logging and waking the PM. There is no separate triage step -- every new comment reactivates the task.
 
-### Event Message Formatting
+#### Event Message Formatting
 
 `formatGitHubEvent()` in `src/connectors/github/webhooks.ts` converts an event context into a structured `{from, destination, message}` shape (matching Slack/CLI events) so the knowledge log renders uniformly. Examples:
 
@@ -112,60 +87,18 @@ Route actions map to handler types:
 
 These entries are written to the task's knowledge log for the record, and the same line is handed to the PM inline so it can act without reading the file.
 
-## GitHub MCP Tools
-
-GitHub and git tools live on the `repo-tools` MCP server, defined in `src/agents/tools.ts` (`createRepoToolsMcpServer`) and attached to every task's session. Each tool resolves its target out of `metadata.repositories` — what the task has mounted with `mount_repo` — so there is nothing per-agent to scope. Read tools are always available; the write side is withheld through `disallowedTools` until edit mode is approved.
-
-### Available Tools (via `repo-tools` MCP server)
-
-All tools below are registered on the same `repo-tools` MCP server. The write-side entries are listed in `REPO_WRITE_TOOLS` (`src/agents/spawn.ts`) and appended to `disallowedTools` unless `metadata.edit_allowed` is true, so the model does not see a tool it cannot use.
-
-**Always available (read-only and edit mode):**
-
-| Tool | Description |
-|---|---|
-| `fetch` | Fetch latest refs from origin. |
-| `switch_branch` | Switch to a different branch. Auto-stashes dirty work, auto-pops on return. |
-| `list_branches` | List branches created or visited by this agent in the current task. |
-| `list_prs` | List pull requests with optional filters (state, base, sort, limit). |
-| `get_pr` | Get full PR details: title, description, diff, state, and branches. |
-| `get_pr_status` | Get PR state, mergeable status, and approval status. Returns `state`, `mergeable`, `mergeableState`, `approved`. |
-| `get_pr_reviews` | Review-level summary for a PR (approvals, change requests, review bodies). |
-| `get_pr_comments` | Top-level PR conversation comments (issue comments). |
-| `get_review_threads` | Every review thread on a PR via GraphQL: `thread_id` (for `resolve_review_thread`) and per-comment `comment_id` (for `reply_to_review_comment`). |
-| `list_code_scanning_alerts` | List code scanning security alerts (e.g. CodeQL) from the repo's Security tab. Filter by state (default open), git ref/branch, or severity. Requires the App's "Code scanning alerts" read permission. |
-| `get_code_scanning_alert` | Full detail for one code scanning alert by number: rule description, severity, state, dismissal info, and the most recent instance (file, line range, ref, message). |
-
-**Edit mode only:**
-
-| Tool | Description |
-|---|---|
-| `push_branch` | Push commits from the local shared clone to origin via `git push -u origin HEAD:{branch}`. |
-| `create_pull_request` | Create a PR on GitHub. Stores the PR number in the current branch's `BranchState`. |
-| `create_branch` | Create a new branch (auto-named `archie/{taskId}` or `archie/{taskId}-N`) and switch to it. |
-| `update_pr` | Update the title, description, and/or base branch of an existing PR (all fields optional). |
-| `add_pr_comment` | Add a general comment to a PR (issue comment). |
-| `add_review_comment` | Start a NEW review thread on a specific file and line. |
-| `reply_to_review_comment` | Reply inside an existing review thread, given any `comment_id` from that thread. |
-| `resolve_review_thread` | Mark a review thread as resolved via the `resolveReviewThread` GraphQL mutation. Requires the GraphQL `thread_id` (e.g. `PRRT_...`). |
-| `request_re_review` | Request re-review from all previous reviewers. Fetches existing reviewers and sends review requests. |
-| `merge_pull_request` | Merge a pull request, subject to the repo's merge policy: on an auto-merge repo it merges directly when the PR is clean (returns the current status otherwise); on any other repo it posts an *auto-merge approval* request and pauses the task — once the user approves, the PR is armed to merge automatically as soon as all checks and required reviews pass. Works for any open PR; it does not require the PR to be mergeable yet. |
-| `close_pull_request` | Close a pull request without merging. |
-
-Every tool that targets a specific repository takes an optional `github: "owner/repo"` argument, resolved against the repos this task has mounted; with one repo mounted it can be omitted. PR numbers are stored per-branch in `BranchState.pr_number`.
-
-## Merge Orchestrator
+### Merge Orchestrator
 
 The merge orchestrator (`src/connectors/github/merge.ts`) is a system-level component (not part of any agent) that handles policy-gated automatic PR merging.
 
-### Trigger Points
+#### Trigger Points
 
 The merge orchestrator is triggered by:
 
 1. **Webhook events** -- Via `handleMergeCheckDirect()` on approving review, `pull_request opened/synchronize`, `push`, and successful `workflow_run`.
-2. **Tool call** -- The PM can merge an individual PR via the `merge_pull_request` tool, which operates on a single PR but enforces the same merge policy: in an auto-merge repo it calls `GitHubClient.mergePullRequest()` directly when the PR is clean; in any other repo it posts an auto-merge *approval* request instead of merging, and the actual merge is delegated to the orchestrator's armed bucket once the user approves and the PR turns clean (see [Merge Policy](#merge-policy-automerge)).
+2. **Tool call** -- The PM can merge an individual PR via the `merge_pull_request` tool, which operates on a single PR but enforces the same merge policy: in an auto-merge repo it calls `GitHubClient.mergePullRequest()` directly when the PR is clean; in any other repo it posts an auto-merge _approval_ request instead of merging, and the actual merge is delegated to the orchestrator's armed bucket once the user approves and the PR turns clean (see [Merge Policy](#merge-policy-automerge)).
 
-### Merge Policy (`autoMerge`)
+#### Merge Policy (`autoMerge`)
 
 Whether a repo may be merged automatically is a per-repo boolean, `autoMerge`, declared in the plugins repo's root `archie.json` under `repos["owner/repo"].autoMerge`. The flag defaults to **off** and parses strictly: only the boolean literal `true` enables it — absent, `false`, or any non-boolean value (e.g. the string `"true"`) resolves to `false`.
 
@@ -173,13 +106,13 @@ Policy is resolved at merge time by `isAutoMergeRepo(github)` (`src/agents/regis
 
 Both merge paths — the orchestrator and the tool — share one GitHub-mergeability predicate, `isMergeReadyPerGithub()` (`src/connectors/github/mergeability.ts`): `mergeableState === 'clean'`, or `mergeable === true` with `mergeableState === 'blocked'` (the GitHub Rulesets quirk, see below).
 
-**Non-auto repos: hold, notify once, merge on request.** A ready PR (open, approved, mergeable per GitHub) in a non-auto repo is never merged by the orchestrator. It lands in the `ready` bucket of `MergeCheckResult` (logged as `READY (merge on request)`), and `checkAndMergeLinkedPRs()` prompts the PM — via a decision finding plus reactivation — to tell the thread once that the PR is ready and will be merged on request. Once-ness is enforced by a persisted `BranchState.merge_ready_notified` marker: set on every matching branch state when the notification fires, cleared whenever a merge check observes the PR no longer ready (not ready while open, or closed without merging). The semantics are one notification per *continuous ready period* — webhook bursts and restarts never re-notify, while a PR that becomes un-ready and later ready again notifies again. A ready PR whose merge approval is currently pending (`task.metadata.pending_merge_approval` matches its `github` + `pr_number`) is skipped — the user already holds an actionable prompt for it. A ready PR that is already **armed** for auto-merge (`BranchState.merge_armed`) is skipped too — the user has already approved it, so a "ready — ask me to merge" nudge would be noise; the orchestrator merges it directly (see [Armed auto-merge](#armed-auto-merge) below).
+**Non-auto repos: hold, notify once, merge on request.** A ready PR (open, approved, mergeable per GitHub) in a non-auto repo is never merged by the orchestrator. It lands in the `ready` bucket of `MergeCheckResult` (logged as `READY (merge on request)`), and `checkAndMergeLinkedPRs()` prompts the PM — via a decision finding plus reactivation — to tell the thread once that the PR is ready and will be merged on request. Once-ness is enforced by a persisted `BranchState.merge_ready_notified` marker: set on every matching branch state when the notification fires, cleared whenever a merge check observes the PR no longer ready (not ready while open, or closed without merging). The semantics are one notification per _continuous ready period_ — webhook bursts and restarts never re-notify, while a PR that becomes un-ready and later ready again notifies again. A ready PR whose merge approval is currently pending (`task.metadata.pending_merge_approval` matches its `github` + `pr_number`) is skipped — the user already holds an actionable prompt for it. A ready PR that is already **armed** for auto-merge (`BranchState.merge_armed`) is skipped too — the user has already approved it, so a "ready — ask me to merge" nudge would be noise; the orchestrator merges it directly (see [Armed auto-merge](#armed-auto-merge) below).
 
-**Explicit-request path — approval arms auto-merge.** When the user asks to merge, the PM calls `merge_pull_request`. In a non-auto repo the tool never merges and never interprets the PR's mergeable state: for **any open PR** (it bails only on a closed/merged PR) it posts an interactive *auto-merge* approval prompt (approval type `merge`, action ids `approve_merge`/`deny_merge`), persists the request as `task.metadata.pending_merge_approval` (`github`, `pr_number`, requesting agent, timestamp), suspends the task status, and defers a task pause. Approving a not-yet-green PR is correct — that is the feature: approval means "merge this PR as soon as it is ready", not "merge it now". A repeat call while the parked pause is still armed reports the request as already pending; a pending request left unresolved after the task quiesced and was reactivated is superseded by a later call (slot rewritten, fresh prompt).
+**Explicit-request path — approval arms auto-merge.** When the user asks to merge, the PM calls `merge_pull_request`. In a non-auto repo the tool never merges and never interprets the PR's mergeable state: for **any open PR** (it bails only on a closed/merged PR) it posts an interactive _auto-merge_ approval prompt (approval type `merge`, action ids `approve_merge`/`deny_merge`), persists the request as `task.metadata.pending_merge_approval` (`github`, `pr_number`, requesting agent, timestamp), suspends the task status, and defers a task pause. Approving a not-yet-green PR is correct — that is the feature: approval means "merge this PR as soon as it is ready", not "merge it now". A repeat call while the parked pause is still armed reports the request as already pending; a pending request left unresolved after the task quiesced and was reactivated is superseded by a later call (slot rewritten, fresh prompt).
 
 Resolution converges from every surface — Slack buttons and `POST /api/tasks/:id/approve` with `type: "merge"` (which requires `github` + `pr_number` in the body) — on `Task.handleMergeApproval()` / `Task.handleMergeDenial()`, which verify the resolved PR's identity against the pending request atomically with clearing it (a synchronous read-compare-clear), so a stale, repeated, or mismatched resolution is a no-op. On a matching **approval** the engine re-checks the PR with GitHub, with no review-approval floor (GitHub branch protection is the sole authority): if GitHub already reports it **clean** it merges immediately (completion finding); if it is open but not yet clean, the PR is **armed** — its `BranchState.merge_armed` marker is set and persisted durably, a decision finding records "auto-merge armed — will merge once checks pass", and the orchestrator merges it on the next merge-triggering webhook once it turns clean; if it has been closed/merged in the meantime, nothing is armed and the real outcome is recorded. On **denial** no GitHub call is made and nothing is armed. Either way the PM is reactivated so the user learns the outcome. The debug MCP surfaces the gate (`wait_for_task` → `APPROVAL_TYPE=merge`) and resolves it via its `approve` tool with the pending PR's `github`/`pr_number`.
 
-#### Armed auto-merge
+##### Armed auto-merge
 
 The orchestrator's merge check maintains an **armed bucket** alongside the auto-merge bucket. A PR whose `BranchState.merge_armed` marker is set merges as soon as GitHub reports it `state: open` and `mergeableState: clean` — GitHub's authoritative "all required reviews + checks satisfied, no conflicts" signal — with **no** Archie `approved` floor (AC5) and **no** `blocked` tolerance (a `blocked` PR has an unsatisfied required gate, so it stays armed until it turns clean). The set of PRs the orchestrator merges is the union of the auto-merge-repo bucket and the armed bucket (deduped by reference). The `merge_armed` marker is cleared when the PR is observed merged or closed.
 
@@ -187,16 +120,16 @@ Because a branch's `pr_number` outlives any single PR (a closed-unmerged PR leav
 
 **Auto repos** (`autoMerge: true`) keep the pre-policy behavior byte-for-byte: the orchestrator squash-merges on approval + green, and `merge_pull_request` merges directly with no prompt.
 
-### Debouncing
+#### Debouncing
 
 Webhook-triggered merge checks are debounced per task with a 5-second delay (`MERGE_CHECK_DEBOUNCE_MS = 5000` in `src/connectors/github/webhooks.ts`). This prevents redundant API calls when multiple webhooks arrive in bursts (e.g., push + CI start + CI complete in rapid succession). Each new trigger cancels the previous pending timer.
 
-### Merge Logic
+#### Merge Logic
 
 `triggerMergeCheck()` collects all PRs linked to a task (from `branch_states` across all attached repos) and categorizes them:
 
 | Category | Criteria | Action |
-|---|---|---|
+| --- | --- | --- |
 | Already merged | `state === 'merged'` | Record in results |
 | Mergeable (auto repo) | `state === 'open'` AND `approved` AND `isMergeReadyPerGithub()` AND `isAutoMergeRepo()` | Attempt merge (squash by default) |
 | Armed (any repo) | `state === 'open'` AND `mergeableState === 'clean'` AND `BranchState.merge_armed` | Attempt merge — no `approved` floor, no `blocked` tolerance |
@@ -206,32 +139,13 @@ Webhook-triggered merge checks are debounced per task with a 5-second delay (`ME
 
 The auto-repo bucket's `blocked` + `mergeable=true` tolerance (via `isMergeReadyPerGithub()`) handles a known GitHub Rulesets issue where the API reports `blocked` even when the merge button is green in the UI; the merge API call itself fails gracefully if the PR is actually blocked. The armed bucket deliberately does **not** use that tolerance — it gates strictly on `mergeableState === 'clean'`, because it has no `approved` floor to make the looser condition safe.
 
-### Linked PR Checking
+#### Linked PR Checking
 
-A single task can have PRs across multiple repositories and multiple branches. `task.metadata.repositories` maps each agent ID to its list of `AttachedRepo` records, and the orchestrator walks every attachment's `branch_states`, deduplicating by `(github, prNumber)` since two agents can attach the same repo:
+A task can have PRs across multiple repositories and branches. `task.metadata.repositories` is a flat task-owned `AttachedRepo[]`. `checkAndMergeLinkedPRs` walks each attachment's `branch_states` and deduplicates by `(github, prNumber)`. See [the implementation](../../src/connectors/github/merge.ts) and [persisted repository shape](persistence.md#repositories-flat-one-entry-per-repo). Repository state is not keyed by agent.
 
-```typescript
-// From src/connectors/github/merge.ts
-const linkedPRSet = new Set<string>();
-const linkedPRs: Array<{ github: string; prNumber: number }> = [];
-for (const attachments of Object.values(task.metadata.repositories)) {
-  if (!Array.isArray(attachments)) continue;
-  for (const attached of attachments) {
-    if (!attached.branch_states) continue;
-    for (const state of Object.values(attached.branch_states)) {
-      if (!state.pr_number) continue;
-      const key = `${attached.github}#${state.pr_number}`;
-      if (linkedPRSet.has(key)) continue;
-      linkedPRSet.add(key);
-      linkedPRs.push({ github: attached.github, prNumber: state.pr_number });
-    }
-  }
-}
-```
+Linked PR references use `org/repo#123` in task findings.
 
-PR numbers are stored when `create_pull_request` is called and are referenced in log entries using the `org/repo#123` format.
-
-### PM Notification
+#### PM Notification
 
 After a merge check, the orchestrator notifies the PM agent only for noteworthy outcomes:
 
@@ -240,7 +154,7 @@ After a merge check, the orchestrator notifies the PM agent only for noteworthy 
 - **Newly ready PRs (non-auto repos)**: Logs a decision finding instructing the PM to tell the thread the PR is ready and will be merged on request, then reactivates PM. Fires once per continuous ready period (deduped by the `merge_ready_notified` marker) and skips PRs with a pending merge approval.
 - **Pending PRs**: No notification. The system waits silently for the next webhook trigger (approval, CI pass, etc.).
 
-## PR Cards
+### PR Cards
 
 A **PR card** is a compact, self-updating summary of a pull request (PR number + head branch, repo, state, and CI progress) rendered in the originating Slack thread and the CLI. It is driven by a channel-agnostic `pr_card` event on the event bus — one event, rendered by every surface (see [Slack Integration → PR Cards](slack-integration.md) for the Slack/CLI rendering).
 
@@ -250,7 +164,7 @@ A **PR card** is a compact, self-updating summary of a pull request (PR number +
 
   > For progressive `(1/2 → 2/2)` counts and the most reliable updates, the GitHub App should subscribe to **Check runs**, **Check suites**, and **Workflow runs**. Even without `check_run`, the final verdict updates when the suite/run completes.
 
-## GitHub Event Flow Into Task Sessions
+### GitHub Event Flow Into Task Sessions
 
 When a GitHub event arrives for an existing task:
 
@@ -269,16 +183,16 @@ GitHub webhook
   merge_check:
     -> webhooks.ts: handleMergeCheckDirect() [5s debounce per task]
     -> merge.ts: checkAndMergeLinkedPRs() -> triggerMergeCheck()
-    -> If conflicts/merges: appendAgentFinding() + task.sendMessage(pm-agent)
+    -> If conflicts/merges: appendAgentFinding() + task.sendMessage(finding)
 
   existing_task:
     -> events.ts: handleExistingTaskDirect()
     -> For issue_comment: dedup via last_processed_comment_id
     -> appendGitHubEvent() -> structured entry in knowledge.log
-    -> task.sendMessage(pm-agent, AGENT_PROMPTS.existingTask)
+    -> task.sendMessage(AGENT_PROMPTS.githubActivity(entry))
 ```
 
-## Agent Involvement for Blockers
+### Agent Involvement for Blockers
 
 The system is designed so that the PM agent is only reactivated for GitHub events that require human or agent attention:
 
@@ -288,19 +202,100 @@ The system is designed so that the PM agent is only reactivated for GitHub event
 - **PR closed/merged externally** (`pull_request closed`): Routed as `existing_task` so the PM is informed.
 - **Approvals and CI passes**: Trigger a debounced merge check via the orchestrator. PM is only notified if a merge actually happens, a conflict is detected, or a held PR in a non-auto repo just became ready.
 
-## Relevant Source Files
+## Contracts and failure behavior
 
-- `src/connectors/github/client.ts` -- `GitHubClient` class wrapping `@octokit/app`, `configureGitIdentity()`, `getGitHubAppIdentity()`, `getArchieAttributionIdentity()`, `fetchOrigin()`, `getGitHubClient()` singleton; PR ops (`listPRs`, `getPRDetails`, `getPRStatus`, `getPRCardData`, `getPRReviews`, `getReviewThreads`, `getPRComments`, `createPullRequest`, `updatePR`, `resolveCommitAuthor`, `addPRComment`, `addReviewComment`, `replyToReviewComment`, `resolveReviewThread` (GraphQL), `requestReReview`, `mergePullRequest`, `closePullRequest`)
-- `src/connectors/github/pr-attribution.ts` -- `buildAttributedBody()`, `stripAttribution()`, `ATTRIBUTION_MARKER`: composes the header/footer naming the human a PR was opened for, and strips prior copies plus Claude Code's default footer
-- `src/connectors/github/events.ts` -- `mountGitHubWebhook()` Express handler, `handleGitHubWebhook()`, `maybeRefreshPrCards()` (in-place PR-card updates), `handleExistingTaskDirect()` (with comment dedup)
-- `src/system/pr-card-format.ts` -- pure PR-card formatting shared by Slack + CLI: `summarizeCi`, `prCardFingerprint`, `prCardSubtitle`, `prCardTitlePlain`, `SLACK_PR_CARD_EMOJI`/`CLI_PR_CARD_EMOJI`
-- `src/connectors/github/webhooks.ts` -- HMAC-SHA256 signature verification, context extraction, deterministic routing (`routeGitHubEvent`, `determineRouteAction`), structured event formatting (`formatGitHubEvent`), merge check debouncing (`handleMergeCheckDirect`)
-- `src/connectors/github/merge.ts` -- Policy-gated auto-merge logic (`checkAndMergeLinkedPRs`, `triggerMergeCheck`), the auto-merge and `merge_armed` armed buckets, linked PR collection from `branch_states`, PM notification on conflicts/merges/ready PRs, `merge_ready_notified` bookkeeping
-- `src/connectors/github/mergeability.ts` -- `isMergeReadyPerGithub()`, the GitHub-mergeability predicate shared by the orchestrator and `merge_pull_request`
-- `src/agents/registry.ts` -- `isAutoMergeRepo()` policy lookup (AND semantics across declaring agents)
-- `src/tasks/task.ts` -- `handleMergeApproval()` (merge-now-if-clean, else arm) / `handleMergeDenial()` merge-approval resolution, `pending_merge_approval` slot
-- `src/connectors/slack/events.ts` -- `approve_merge` / `deny_merge` Bolt action handlers; `src/connectors/api/routes.ts` -- the equivalent `type: "merge"` approval route
-- `src/connectors/github/repo-clone.ts` -- Shared-clone lifecycle (`setupSharedClone`, `removeClone`, `CloneCheckout`); each agent gets its own `git clone --shared` from the base repo
-- `src/connectors/github/branch-state.ts` -- Per-branch state helpers (`assignPrNumber` — assigns the PR number and resets the per-PR `merge_armed`/`merge_ready_notified` markers on branch reuse, `hydrateBranchState`, `findBranchStateByPR`)
-- `src/agents/tools.ts` -- `createRepoToolsMcpServer` (`repo-tools` MCP: git workflow + PR tools), `createOrchestrationMcpServer` (`mount_repo`, `list_available_repos`)
-- `src/types/task.ts` -- `AttachedRepo` with `branch_states`, `BranchState` type with per-branch PR tracking
+### GitHub App Authentication
+
+The `GitHubClient` class in `src/connectors/github/client.ts` wraps `@octokit/app`. It authenticates using three environment variables:
+
+- `GITHUB_APP_ID` -- The GitHub App's numeric ID
+- `GITHUB_APP_PRIVATE_KEY_PATH` -- Path to the PEM private key file
+- `GITHUB_INSTALLATION_ID` -- The installation ID for the target GitHub organization
+
+The client lazily initializes an authenticated Octokit instance via `app.getInstallationOctokit(installationId)`. A factory function `createGitHubClient()` reads environment variables and returns `null` if not configured, allowing the system to run without GitHub integration.
+
+For git operations (push, fetch), authentication is handled by the `GIT_ASKPASS` environment variable rather than the Octokit client.
+
+#### Identities: acting vs. being credited
+
+Two distinct identities, because GitHub treats them differently.
+
+**The identity Archie acts as** is the GitHub App installation -- what the API calls and the git transport authenticate with. `getGitHubAppIdentity()` builds it as name `{appSlug}[bot]` / email `{appId}+{appSlug}[bot]@users.noreply.github.com`. It is now only a fallback for the identity below; nothing credits the bot deliberately.
+
+**The identity Archie is credited as** is a real user account (`archie-hq`), built by `getArchieAttributionIdentity()` from `ARCHIE_GITHUB_LOGIN` + `ARCHIE_GITHUB_USER_ID` (+ optional `ARCHIE_GITHUB_NAME`). It lands in three places:
+
+- the **committer** on every commit made in a clone, written once per base repository at server startup by `configureGitIdentity()` (shared clones inherit it) -- and the **author** too on commits `buildCommitAuthorEnv` leaves unattributed, i.e. when no approver was recorded;
+- the **`Co-Authored-By` trailer** on commits, written into the workspace's `.claude/settings.json` as `attribution.commit` by `setupAgentWorkspace()`;
+- the **attribution footer** on PR bodies.
+
+A user account is required rather than merely nicer: a GitHub App bot cannot be `@mentioned` at all, and its profile is an app page rather than an account. Attribution needs no repository access, so the account can be credited without being granted anything.
+
+The committer and the acting identity are free to differ because git push authenticates with the installation token via `GIT_ASKPASS`, and GitHub does not require the committer to match the pusher. Self-event filtering is unaffected for the same reason: a webhook's `sender` comes from the credential that made the API call, not from any commit's identity, so it is still `{appSlug}[bot]`.
+
+`ARCHIE_GITHUB_USER_ID` must be the account's numeric **user** ID, not the App ID. GitHub resolves the `{id}+{login}@users.noreply.github.com` form by ID and silently drops the credit when the ID disagrees with the login -- it does not fall back to matching the login. The bot form above derives that prefix from `GITHUB_APP_ID`, which is not a user ID, so a trailer built from it resolves to no account at all. When the attribution vars are unset, `getArchieAttributionIdentity()` falls back to the App bot, preserving prior behaviour rather than dropping the trailer.
+
+#### PR authorship and attribution
+
+GitHub sets a PR's author from the credential that creates it, and offers no field to override it -- an installation token always yields `{appSlug}[bot]`. So a PR Archie opens on someone's behalf can never _be_ theirs on GitHub, and the only place the human can appear is the body.
+
+`create_pull_request` therefore stamps one line at the top of the body via `buildAttributedBody()` in `src/connectors/github/pr-attribution.ts`, rather than leaving it to the agent:
+
+```
+Opened by @archie-hq on behalf of Bandita Parida.
+```
+
+The human is the edit-mode approver (`edit_approved_by`), which is also who commits are authored as (`buildCommitAuthorEnv` in `src/agents/commit-author.ts`), so the PR names exactly whoever `git blame` will name -- by their Slack display name, with no GitHub-account lookup. GitHub auto-links the `@login` to Archie's profile.
+
+`update_pr` re-stamps the line when it rewrites a body, and both strip any prior copy (matched on the `<!-- archie-attribution -->` marker) so re-injection replaces rather than stacks.
+
+### GitHub MCP Tools
+
+GitHub and git tools live on the `repo-tools` MCP server, defined in `src/agents/tools.ts` (`createRepoToolsMcpServer`) and attached to every task's session. Each tool resolves its target out of `metadata.repositories` — what the task has mounted with `mount_repo` — so there is nothing per-agent to scope. Read tools are always available; the write side is withheld through `disallowedTools` until edit mode is approved.
+
+#### Available Tools (via `repo-tools` MCP server)
+
+All tools below are registered on the same `repo-tools` MCP server. The write-side entries are listed in `REPO_WRITE_TOOLS` (`src/agents/spawn.ts`) and appended to `disallowedTools` unless `metadata.edit_allowed` is true, so the model does not see a tool it cannot use.
+
+**Always available (read-only and edit mode):**
+
+| Tool | Description |
+| --- | --- |
+| `fetch` | Fetch latest refs from origin. |
+| `switch_branch` | Switch to a different branch. Auto-stashes dirty work, auto-pops on return. |
+| `list_branches` | List branches created or visited by this agent in the current task. |
+| `list_prs` | List pull requests with optional filters (state, base, sort, limit). |
+| `get_pr` | Get full PR details: title, description, diff, state, and branches. |
+| `get_pr_status` | Get PR state, mergeable status, and approval status. Returns `state`, `mergeable`, `mergeableState`, `approved`. |
+| `get_pr_reviews` | Review-level summary for a PR (approvals, change requests, review bodies). |
+| `get_pr_comments` | Top-level PR conversation comments (issue comments). |
+| `get_review_threads` | Every review thread on a PR via GraphQL: `thread_id` (for `resolve_review_thread`) and per-comment `comment_id` (for `reply_to_review_comment`). |
+| `list_code_scanning_alerts` | List code scanning security alerts (e.g. CodeQL) from the repo's Security tab. Filter by state (default open), git ref/branch, or severity. Requires the App's "Code scanning alerts" read permission. |
+| `get_code_scanning_alert` | Full detail for one code scanning alert by number: rule description, severity, state, dismissal info, and the most recent instance (file, line range, ref, message). |
+
+**Edit mode only:**
+
+| Tool | Description |
+| --- | --- |
+| `push_branch` | Push commits from the local shared clone to origin via `git push -u origin HEAD:{branch}`. |
+| `create_pull_request` | Create a PR on GitHub. Stores the PR number in the current branch's `BranchState`. |
+| `create_branch` | Create a new branch (auto-named `archie/{taskId}` or `archie/{taskId}-N`) and switch to it. |
+| `update_pr` | Update the title, description, and/or base branch of an existing PR (all fields optional). |
+| `add_pr_comment` | Add a general comment to a PR (issue comment). |
+| `add_review_comment` | Start a NEW review thread on a specific file and line. |
+| `reply_to_review_comment` | Reply inside an existing review thread, given any `comment_id` from that thread. |
+| `resolve_review_thread` | Mark a review thread as resolved via the `resolveReviewThread` GraphQL mutation. Requires the GraphQL `thread_id` (e.g. `PRRT_...`). |
+| `request_re_review` | Request re-review from all previous reviewers. Fetches existing reviewers and sends review requests. |
+| `merge_pull_request` | Merge a pull request, subject to the repo's merge policy: on an auto-merge repo it merges directly when the PR is clean (returns the current status otherwise); on any other repo it posts an _auto-merge approval_ request and pauses the task — once the user approves, the PR is armed to merge automatically as soon as all checks and required reviews pass. Works for any open PR; it does not require the PR to be mergeable yet. |
+| `close_pull_request` | Close a pull request without merging. |
+
+Every tool that targets a specific repository takes an optional `github: "owner/repo"` argument, resolved against the repos this task has mounted; with one repo mounted it can be omitted. PR numbers are stored per-branch in `BranchState.pr_number`.
+
+## Change and verification
+
+Use the module map to find the owning operation before changing behavior. For focused regression checks with dependencies installed:
+
+```bash
+npx vitest run src/connectors/github/__tests__/ src/tasks/__tests__/merge-approval.test.ts src/connectors/__tests__/merge-approval-surfaces.test.ts
+```
+
+These are suggested checks, not a test receipt. See the [operating guide](../guides/github-setup.md) and [documentation rules](../guides/documentation.md). SDK, provider and deployment behavior requires the relevant live check when authorized.

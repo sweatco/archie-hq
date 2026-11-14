@@ -1,5 +1,7 @@
 > **Status: Implemented** — Sandwich defense, structured JSON schema, research budgets, and defense tag hooks are all implemented. LLM Guard Docker service is architecturally supported but not fully wired in production.
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [Security](../architecture/security.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 # MVP v9 — Prompt Injection Defense
 
 ## Context

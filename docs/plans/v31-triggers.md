@@ -1,5 +1,7 @@
 # Triggers — Implementation Plan
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [Triggers](../architecture/triggers.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 ## Context
 
 Archie is purely reactive: it acts only on an inbound Slack message or a GitHub webhook. The one piece of proactivity — the reminder scheduler (`src/system/reminder-scheduler.ts`) — can only re-wake an *existing* task; it cannot start work on its own.

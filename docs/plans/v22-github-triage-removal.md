@@ -1,5 +1,7 @@
 # Eliminate GitHub PR comment triage
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [GitHub](../architecture/github-integration.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 ## Context
 
 The GitHub webhook → agent flow has two defects the user noticed: PR comments and merge status aren't reliably reaching the agent or `shared-knowledge.log`.

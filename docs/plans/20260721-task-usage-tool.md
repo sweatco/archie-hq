@@ -1,5 +1,7 @@
 # Per-task usage & cost accounting (`get_task_usage`)
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [Persistence](../architecture/persistence.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 **Status:** Implemented (this PR)
 
 ## Summary

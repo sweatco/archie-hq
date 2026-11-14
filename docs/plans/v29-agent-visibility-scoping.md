@@ -1,5 +1,7 @@
 # Agent Visibility Scoping (global / local)
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [Agents](../architecture/agents.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 ## Context
 
 Today every agent loaded from any plugin is globally addressable. The registry holds a flat list keyed by agent id (`registry.ts:19`), and `send_message_to_agent` (`tools.ts:157`) builds a static enum from `['pm-agent', ...getAgentIds()]` — every agent appears in every other agent's peer list, regardless of which plugin they belong to.

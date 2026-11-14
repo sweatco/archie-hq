@@ -1,10 +1,28 @@
 # Edit Mode
 
+## Purpose and boundary
+
+Owns the task repository workspace and the read-to-write transition. GitHub owns remote PR operations; task lifecycle owns parking and resumption.
+
 A task is **read-only** until a human approves **edit mode**. The flag is per task, one-way, and persisted — a human-in-the-loop gate that stops Archie changing code without explicit consent.
 
 > A sibling gate, [max mode](max-mode.md), reuses the same request → approve → resume shape to upgrade the PM's model and effort. Another, [tool approvals](tool-approvals.md), gates individual MCP tool calls per call rather than for the task's lifetime. All three are independent.
 
-## Repositories are mounted, not declared
+## Module map
+
+| Code or interface | Owns | Boundary |
+| --- | --- | --- |
+| [src/agents/tools.ts](../../src/agents/tools.ts) | Mount and edit requests | PM tools → approved task operations |
+| [src/tasks/task.ts](../../src/tasks/task.ts) | Edit approval and mounted repo metadata | Approval → durable flag and PM restart |
+| [src/connectors/github/repo-clone.ts](../../src/connectors/github/repo-clone.ts) | Shared task clones | Base cache → task-owned checkout |
+| [src/connectors/github/branch-state.ts](../../src/connectors/github/branch-state.ts) | Branch bookkeeping | Checkout and PR actions → attached branch state |
+| [src/agents/sandbox.ts](../../src/agents/sandbox.ts) | Filesystem grants | Task edit state → SDK and hook policy |
+
+## Flow and lifecycle
+
+Mount a repository read-only, request edit mode, persist human approval, then recreate the PM with writable clone grants and a task branch.
+
+### Repositories are mounted, not declared
 
 Nothing is cloned when a task starts. Plugins declare no repositories; the GitHub App installation is the allowlist. The PM discovers what it can reach with `list_available_repos` and brings a repository into the task with:
 
@@ -19,35 +37,17 @@ One clone per repo per task — the task, not an agent, is the isolation boundar
 
 A repo mounted mid-session is immediately reachable because the sandbox grants the task's **repos directory**, not the clones that happened to exist at spawn (`buildRepoGrants` in `src/agents/sandbox.ts`).
 
-## The two modes
+### The approval flow
 
-### Read-only (default)
-
-The clone sits on the repository's base branch. `sessions/{taskId}/repos/` is in `allowReadPaths` and `denyWritePaths`, so `Write`, `Edit` and any write-touching `Bash` command against a clone is refused by both the OS sandbox and the `createFilesystemGuardHooks` PreToolUse hooks. The write side of `repo-tools` is in `disallowedTools`, so the model never sees it.
-
-Working: `Read`, read-only git via `Bash`, `fetch`, `switch_branch`, `list_branches`, and every PR/check/code-scanning read tool.
-
-When the task stops or completes, `cleanupClones()` removes the clones and clears `clone_path`, so the next mount creates a fresh one.
-
-### Edit mode (after approval)
-
-`sessions/{taskId}/repos/` moves into `allowWritePaths`, and the withheld `repo-tools` entries become available: `push_branch`, `create_pull_request`, `update_pr`, `add_pr_comment`, `add_review_comment`, `reply_to_review_comment`, `resolve_review_thread`, `request_re_review`, `merge_pull_request`, `close_pull_request`, `create_branch`. Clones for a task with `edit_allowed === true` are **not** removed on stop/complete — they hold local commits, branches and PR bookkeeping.
-
-`merge_pull_request` carries a second gate on top of edit mode: in a repo without `autoMerge: true` in `archie.json` it does not merge, it posts a `merge` approval request, and approving *arms* auto-merge rather than merging on the spot ([github-integration.md](github-integration.md#merge-policy-automerge)).
-
-Each clone's `.git/HEAD` stays in `denyWritePaths` even in edit mode, so branch movement must go through `switch_branch` / `create_branch` rather than a raw `git checkout`. **Known limitation:** that deny is enumerated per clone at spawn, so a repo mounted mid-session in edit mode has a writable `.git/HEAD` until the next respawn — the deny lists are prefix-matched and no directory expresses "`.git/HEAD` under any clone".
-
-## The approval flow
-
-### 1. The PM requests it
+#### 1. The PM requests it
 
 `request_edit_mode(reason, channel?)` — called after explaining the intended change to the user with `post_to_user`. It is idempotent: if `edit_allowed` is already true it returns a no-op message telling the PM to proceed, and if a teardown is already armed this turn it says the request is already out. An explicit `channel` is validated before posting, so a bad key surfaces as actionable feedback rather than a silently dropped prompt.
 
-### 2. Buttons posted, task parks
+#### 2. Buttons posted, task parks
 
 The tool writes a `decision` finding (`Edit mode requested: <reason>`), posts a Block Kit message with `approve_edit_mode` / `deny_edit_mode` buttons carrying the task id, suspends the live status indicator, and **defers** `task.stop()` to the end of the turn — stopping the queue inside the tool call would close the input stream under an in-flight hook.
 
-### 3. The user clicks
+#### 3. The user clicks
 
 **Approve** (`src/connectors/slack/events.ts`, with an equivalent path in `src/connectors/api/routes.ts`) resolves the clicking user and calls `handleEditModeApproval({ id, name, email })`, which:
 
@@ -60,13 +60,13 @@ The tool writes a `decision` finding (`Edit mode requested: <reason>`), posts a 
 
 **Deny** calls `handleEditModeDenial()`, which notifies the PM that edit mode was denied — nothing else changes.
 
-### Why the restart
+#### Why the restart
 
 Edit mode only flips the sandbox at spawn time: `editAllowed` is read once and the mount, the `disallowedTools` list and the repo grants are frozen from it. A process that is already running keeps its read-only mount and never re-reads the flag, so writes keep hitting a read-only filesystem after approval (observed live: EROFS persisted for ~20 minutes post-approval).
 
 There is a second window the restart cannot catch: an agent still **mid-boot** when approval lands has no live handle to abort, so it finishes booting read-only. `Agent.editModeAtSpawn` records the flag the current process booted under, and `Task.ensurePm()` compares it against the live flag the moment work is next delivered — tearing the agent down and respawning it writable.
 
-## Clone mechanics
+### Clone mechanics
 
 `ensureTaskClone` (`src/connectors/github/repo-clone.ts`) is the single entry point, shared by `mount_repo` and the approval path.
 
@@ -85,7 +85,7 @@ A clone parked on the base branch records that branch in `current_branch` with *
 
 `setupSharedClone` then fetches origin, syncs the base clone's ref, runs `git clone --shared --branch <branch>` from the base cache, initialises submodules best-effort, rewrites `origin` to the GitHub URL so pushes never go back to the base cache, and creates the feature branch for `new_branch`. `configureGitIdentity` runs afterwards on this path too.
 
-### Per-repo record
+#### Per-repo record
 
 ```typescript
 interface AttachedRepo {
@@ -99,7 +99,27 @@ interface AttachedRepo {
 
 `BranchState` tracks `base_branch`, `pr_number`, `last_processed_comment_id`, `stash_name`, `pr_card`, and the two per-PR merge markers `merge_armed` / `merge_ready_notified`. Those two are reset by `assignPrNumber()` whenever a branch's `pr_number` changes, so a new PR on a reused branch never inherits a prior PR's arm state. Helpers live in `src/connectors/github/branch-state.ts`.
 
-## Branch strategy
+## Contracts and failure behavior
+
+### The two modes
+
+#### Read-only (default)
+
+The clone sits on the repository's base branch. `sessions/{taskId}/repos/` is in `allowReadPaths` and `denyWritePaths`, so `Write`, `Edit` and any write-touching `Bash` command against a clone is refused by both the OS sandbox and the `createFilesystemGuardHooks` PreToolUse hooks. The write side of `repo-tools` is in `disallowedTools`, so the model never sees it.
+
+Working: `Read`, read-only git via `Bash`, `fetch`, `switch_branch`, `list_branches`, and every PR/check/code-scanning read tool.
+
+When the task stops or completes, `cleanupClones()` removes the clones and clears `clone_path`, so the next mount creates a fresh one.
+
+#### Edit mode (after approval)
+
+`sessions/{taskId}/repos/` moves into `allowWritePaths`, and the withheld `repo-tools` entries become available: `push_branch`, `create_pull_request`, `update_pr`, `add_pr_comment`, `add_review_comment`, `reply_to_review_comment`, `resolve_review_thread`, `request_re_review`, `merge_pull_request`, `close_pull_request`, `create_branch`. Clones for a task with `edit_allowed === true` are **not** removed on stop/complete — they hold local commits, branches and PR bookkeeping.
+
+`merge_pull_request` carries a second gate on top of edit mode: in a repo without `autoMerge: true` in `archie.json` it does not merge, it posts a `merge` approval request, and approving _arms_ auto-merge rather than merging on the spot ([github-integration.md](github-integration.md#merge-policy-automerge)).
+
+Each clone's `.git/HEAD` stays in `denyWritePaths` even in edit mode, so branch movement must go through `switch_branch` / `create_branch` rather than a raw `git checkout`. **Known limitation:** that deny is enumerated per clone at spawn, so a repo mounted mid-session in edit mode has a writable `.git/HEAD` until the next respawn — the deny lists are prefix-matched and no directory expresses "`.git/HEAD` under any clone".
+
+### Branch strategy
 
 The first feature branch is `archie/{taskId}` (the task id already begins with `task-`). Further `create_branch` calls in the same task auto-number as `archie/{taskId}-2`, `-3`, … (`taskBranchName()` in `src/connectors/github/branch-naming.ts`). The naming serves double duty:
 
@@ -108,7 +128,7 @@ The first feature branch is `archie/{taskId}` (the task id already begins with `
 
 Tasks can also be resolved by branch name or PR number over `metadata.repositories` (`findTaskByBranch`, `findTaskByPRNumber`), which is what handles a branch that does not follow the pattern.
 
-## Commit authorship
+### Commit authorship
 
 By default a commit is both authored and committed by the GitHub App bot, because `configureGitIdentity()` writes that identity into the clone's `user.name`/`user.email`. To make `git blame` point at the person who asked for the work, the **author** is set to the edit-mode approver while the **committer** stays the bot:
 
@@ -119,14 +139,12 @@ By default a commit is both authored and committed by the GitHub App bot, becaus
 
 Because `edit_allowed` is one-way, there is a single author per task.
 
-## Relevant source files
+## Change and verification
 
-- `src/agents/tools.ts` — `mount_repo`, `list_available_repos`, `request_edit_mode`, `createRepoToolsMcpServer`
-- `src/connectors/github/repo-clone.ts` — `ensureTaskClone()`, `decideCloneCheckout()`, `setupSharedClone()`, `removeClone()`, `recordedBaseBranch()`
-- `src/connectors/github/branch-state.ts` — `assignPrNumber()`, `hydrateBranchState()`, `findBranchStateByPR()`
-- `src/agents/spawn.ts` — `REPO_WRITE_TOOLS` gating, sandbox config, `editModeAtSpawn`, `GIT_AUTHOR_*` injection
-- `src/agents/sandbox.ts` — `buildRepoGrants()`, `buildSandboxConfig()`, `createFilesystemGuardHooks()`
-- `src/tasks/task.ts` — `handleEditModeApproval()`, `handleEditModeDenial()`, `recheckoutClonesForEditMode()`, `restartAgent()`, `ensurePm()`, `cleanupClones()`
-- `src/tasks/persistence.ts` — `getTaskClonePath()`, `getReposPath()`
-- `src/connectors/slack/events.ts` / `src/connectors/api/routes.ts` — the two approval surfaces
-- `src/types/task.ts` — `edit_allowed`, `edit_approved_by`, `AttachedRepo`, `BranchState`
+Use the module map to find the owning operation before changing behavior. For focused regression checks with dependencies installed:
+
+```bash
+npx vitest run src/agents/__tests__/mount-repo.test.ts src/tasks/__tests__/edit-mode-restart.test.ts src/tasks/__tests__/edit-mode-boot-race.test.ts src/connectors/github/__tests__/task-clone.test.ts
+```
+
+These are suggested checks, not a test receipt. See the [operating guide](../guides/local-development.md) and [documentation rules](../guides/documentation.md). SDK, provider and deployment behavior requires the relevant live check when authorized.

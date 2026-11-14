@@ -1,5 +1,7 @@
 # Evidence for Archie's coding guidelines
 
+> **Adopted research evidence — filing review 2026-11-11.** The dated research supports an implemented guide. Later adoption decisions supersede the original ESLint/baseline recommendation; readability benefit remains unmeasured. Current contract: [Coding guidelines](../guides/coding-guidelines.md).
+
 Research date: 2026-11-09. Supports the [coding guidelines](../guides/coding-guidelines.md) and [adoption plan](../plans/20261109-coding-guidelines-and-checks.md). Repository practices below are observed instructions, not evidence that their projects are more readable or that agents obey every rule. The sample is purposive: three TypeScript agent projects, a Rust editor, a large TypeScript editor and an established service repository with explicit multi-tool guidance. It is not an adoption survey.
 
 ## What exists in Archie

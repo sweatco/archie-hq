@@ -1,5 +1,7 @@
 # Proposal: Full LLM Guard Integration
 
+> **Superseded option — filing review 2026-11-11.** Retain the rejected/trialed alternative and its rationale. Current source supports optional Bedrock scanning; that does not establish provider configuration or production effectiveness. Current contract: [Web research](../architecture/web-research.md).
+
 > **Status:** Previously trialed and removed; superseded in production by AWS Bedrock Guardrails. Retained as a reference design in case a self-hosted DLP layer is revisited.
 
 ## Summary

@@ -1,32 +1,63 @@
 # Agents Architecture
 
+## Purpose and boundary
+
+Owns PM definition, SDK execution, tool attachment and worker lifecycle. Tasks own activation and completion; plugins supply capabilities; security owns the containment contract.
+
 A task runs exactly **one** agent: the PM. Everything the PM does not do itself it delegates to a **subagent** spawned through the Claude Agent SDK's built-in `Agent` tool, inside the PM's own session and process. There are no peer agents, no message queues between agents, no task owner and no triage classifier.
 
 **Source:** `src/agents/spawn.ts`, `src/agents/registry.ts`, `src/agents/agent.ts`, `src/tasks/task.ts`, `prompts/pm-agent.md`
 
-## The PM
+## Module map
+
+| Code or interface | Owns | Boundary |
+| --- | --- | --- |
+| [src/agents/registry.ts](../../src/agents/registry.ts) | PM configuration | Plugin root configuration → one PM definition |
+| [src/agents/spawn.ts](../../src/agents/spawn.ts) | SDK process and hooks | Task context → SDK session, MCP attachments and activity |
+| [src/agents/agent.ts](../../src/agents/agent.ts) | Agent handle | Task lifecycle → queue and query ownership |
+| [src/agents/tools.ts](../../src/agents/tools.ts) | Engine MCP tools | Model requests → task and connector operations |
+| [src/agents/artifacts.ts](../../src/agents/artifacts.ts) | Artifact path checks | Granted paths → publishable task artifacts |
+| [src/agents/mcp-file-bridge.ts](../../src/agents/mcp-file-bridge.ts) | File transfer into MCP calls | Local bytes → configured MCP tool under approval policy |
+
+## Flow and lifecycle
+
+A task lazily creates its PM, builds authorized context and tools, resumes or starts the SDK query, and receives activity and completion signals. Workers report through that same session.
+
+### Session lifecycle
+
+**Streaming input.** The PM reads from a `MessageQueue` (`src/agents/message-queue.ts`) through `createRecoverableInputGenerator`, which tracks consumed messages so a failed session can replay them. Wakes carry their content: a Slack message, a GitHub event or a system notice arrives as the text itself, framed by a builder in `src/agents/prompts.ts`, not as a pointer to a file.
+
+**Resume.** `agent.session.session_id` is hydrated from `metadata.agent_sessions['pm-agent']` and passed as `resume`. On failure the loop clears the bad session, resets the generator and retries fresh exactly once.
+
+**Idle detection and recovery.** When the turn ends the SDK Stop hook calls `task.updateAgentState(false)`, which schedules an idle check 3 s later. `idleDecision` (`src/tasks/recovery.ts`) returns `wait` (not active, teardown pending, still busy, or a background task in flight), `complete` (quiescent and `report_completion` was called) or `recover` (quiescent with nobody parked). Recovery nudges the live agent with `AGENT_PROMPTS.reinforcePM` twice, then goes nuclear: stop the task, reload it from disk, re-send `AGENT_PROMPTS.recovery` (the reloaded spawn resumes the persisted session, it does not clear it). After three nuclear cycles in one activation the task is paused instead, with one notice to the user, so a PM that keeps going idle can't loop stop→resume until the wall-clock cap.
+
+**Interruption.** Stopping the queue rejects the pending `nextMessage()` and the generator exits. A mid-turn agent is also hard-aborted, because a closed stream otherwise loops it on "Stream closed" control requests until `maxTurns`.
+
+## Contracts and failure behavior
+
+### The PM
 
 One `Agent` instance per task (`Task.agent`), created lazily on the first message (`Task.ensurePm`) and torn down by `stop()` / `complete()`. Its definition is engine-owned and static apart from three things read from the plugins repo root — the MCP servers in `.mcp.json`, the network allowlist in `archie.json`, and the model/effort/max-mode overrides and body text in `pm.md` — and is rebuilt on every task start/reload so a plugins-repo change is picked up without a restart (`getPmDef()` / `scanPmDef()` in `src/agents/registry.ts`).
 
-| | Value | `pm.md` frontmatter | Env override |
-|---|---|---|---|
-| Agent id / key | `pm-agent` / `pm` | — | — |
-| Model | `opus` | `model` | `ARCHIE_PM_MODEL` |
-| Effort | `medium` | `effort` | `ARCHIE_PM_EFFORT` |
-| Max-mode model | `claude-fable-5-2` | `maxMode.model` | `ARCHIE_PM_MAX_MODEL` |
-| Max-mode effort | `high` | `maxMode.effort` | `ARCHIE_PM_MAX_EFFORT` |
-| Max turns per query | 100 | — | — |
+|                     | Value              | `pm.md` frontmatter | Env override           |
+| ------------------- | ------------------ | ------------------- | ---------------------- |
+| Agent id / key      | `pm-agent` / `pm`  | —                   | —                      |
+| Model               | `opus`             | `model`             | `ARCHIE_PM_MODEL`      |
+| Effort              | `medium`           | `effort`            | `ARCHIE_PM_EFFORT`     |
+| Max-mode model      | `claude-fable-5-2` | `maxMode.model`     | `ARCHIE_PM_MAX_MODEL`  |
+| Max-mode effort     | `high`             | `maxMode.effort`    | `ARCHIE_PM_MAX_EFFORT` |
+| Max turns per query | 100                | —                   | —                      |
 
 Precedence resolves narrowest-wins: an env var beats `pm.md`, which beats the built-in default. `pm.md`'s body text — everything after the frontmatter — is appended to the PM's system prompt under a `# Deployment context` heading regardless of which values it overrides; a missing file or malformed frontmatter falls back to the built-ins with no error (see [plugin-system.md](plugin-system.md#pm-overlay-pmmd)).
 
 The PM prompt states behavioral rules directly rather than requiring a generated reasoning transcript. Native thinking and effort remain SDK-controlled: asking for a structured scratchpad in response text can trigger Anthropic's `reasoning_extraction` classifier, even when that text is discarded before reaching Slack. Terminal refusal handling is described in [orchestration.md](orchestration.md#model-refusals).
 
-### Tools
+#### Tools
 
-Six in-process MCP servers are attached at spawn, plus every server in the plugins repo's root `.mcp.json` (see [plugin-system.md](plugin-system.md#the-root-mcp-config)).
+The base in-process MCP servers below are attached at spawn, plus every server in the plugins repo's root `.mcp.json` (see [plugin-system.md](plugin-system.md#the-root-mcp-config)).
 
 | Server | Tools |
-|---|---|
+| --- | --- |
 | `comms-tools` | `post_to_user`, `post_files_to_user`, `find_slack_user`, `find_slack_channel`, `list_channels`, `read_channel_history`, `read_thread`, `post_to_channel`, `mute_channel`, `react_to_message`, `unreact_from_message`, `get_message_reactions`, `fetch_slack_reference` |
 | `orchestration-tools` | `report_completion`, `request_edit_mode`, `request_max_mode`, `get_task_usage`, `list_available_repos`, `mount_repo`, and the five trigger tools |
 | `scheduling-tools` | `parse_datetime`, `set_reminder`, `cancel_reminder` |
@@ -34,19 +65,21 @@ Six in-process MCP servers are attached at spawn, plus every server in the plugi
 | `research-tools` | `web_research` |
 | `file-bridge` | forwards a local file's bytes into another MCP server's call without routing them through the model; always attached |
 
+`memory-tools` attaches only when memory authorization and flags permit it. `observation-tools` attaches when the task qualifies for observation recall; its reads enforce their own source and audience checks. See [Memory](memory.md) and [Proactivity](proactivity.md).
+
 `Agent`, `Skill`, `Read`, `Bash`, `Write` and `Edit` come from the SDK itself. `WebSearch`, `WebFetch` and `Cron*` are in `disallowedTools` on every spawn, as are the write-side `repo-tools` before edit mode and every `deny`-tiered MCP tool ([tool-approvals.md](tool-approvals.md)).
 
 > **Caveat on `Glob` and `Grep`, pre-existing and unverified.** The filesystem guard's read check covers `Read`, `Glob` and `Grep`, but `Glob` is not actually present in this runtime — a live agent asking for it gets `No such tool available: Glob`. Nothing disallows it: the SDK ships as a native build, and native builds omit the dedicated `Grep`/`Glob` tools in favour of Bash `find`/`grep` unless they are named in `tools`/`allowedTools`, which this app does not do. `Grep` is very likely absent for the same reason, though that was never confirmed. Use `Bash` to enumerate a directory.
 
-### Skills
+#### Skills
 
 Skills come from the SDK's own plugin loader — every plugin directory is passed through the `plugins` option, and the SDK reads its `skills/` itself. Names are namespaced `plugin:skill` (`core:thread-conduct`, `engineering:pr-workflow`), so same-named skills in different plugins no longer collide, and there is no symlinking and no per-track mount table. The engine's own skills ship as one more plugin directory, `core-plugin/`, inside this repository.
 
-### Prompt
+#### Prompt
 
 `prompts/pm-agent.md`, loaded with no template substitution — there is no team roster to inject, because the `Agent` tool lists the available agent types itself. Spawn appends, in order: the Current Task Context block (task id, status, channels, reminder, plugins-repo HEAD, mounted repos with their paths and branches, working directory, shared folder), the `<people_in_task>` section, a shared-channel notice when applicable, the channel pin index, the channel canvas brief, the trigger-data section on a trigger-fired task, and organizational memory. The layered `agent-core.md` / `repo-agent.md` / `plugin-agent.md` / `triage-agent.md` prompts are gone.
 
-## Workers
+### Workers
 
 The PM delegates with the SDK `Agent` tool. Two kinds of worker exist:
 
@@ -63,32 +96,32 @@ The PM delegates with the SDK `Agent` tool. Two kinds of worker exist:
 
 **Isolation.** There is none beyond the task. Subagents run in the PM's process and share its cwd, additional directories, sandbox, network allowlist and credentials — see [security.md](security.md#what-the-flat-model-gave-up). Two workers must never be pointed at the same clone at once; the PM keeps them apart by briefing, not by enforcement.
 
-## Max mode
+### Max mode
 
 Max mode is the PM's own upgrade — a per-task, human-approved switch to a stronger model and effort, requested with `request_max_mode` and approved from Slack or the API. It upgrades the PM because the PM now does the coding and investigation work the upgrade exists for. See [max-mode.md](max-mode.md).
 
-## Session lifecycle
-
-**Streaming input.** The PM reads from a `MessageQueue` (`src/agents/message-queue.ts`) through `createRecoverableInputGenerator`, which tracks consumed messages so a failed session can replay them. Wakes carry their content: a Slack message, a GitHub event or a system notice arrives as the text itself, framed by a builder in `src/agents/prompts.ts`, not as a pointer to a file.
-
-**Resume.** `agent.session.session_id` is hydrated from `metadata.agent_sessions['pm-agent']` and passed as `resume`. On failure the loop clears the bad session, resets the generator and retries fresh exactly once.
-
-**Idle detection and recovery.** When the turn ends the SDK Stop hook calls `task.updateAgentState(false)`, which schedules an idle check 3 s later. `idleDecision` (`src/tasks/recovery.ts`) returns `wait` (not active, teardown pending, still busy, or a background task in flight), `complete` (quiescent and `report_completion` was called) or `recover` (quiescent with nobody parked). Recovery nudges the live agent with `AGENT_PROMPTS.reinforcePM` twice, then goes nuclear: stop the task, reload it from disk, re-send `AGENT_PROMPTS.recovery` (the reloaded spawn resumes the persisted session, it does not clear it). After three nuclear cycles in one activation the task is paused instead, with one notice to the user, so a PM that keeps going idle can't loop stop→resume until the wall-clock cap.
-
-**Interruption.** Stopping the queue rejects the pending `nextMessage()` and the generator exits. A mid-turn agent is also hard-aborted, because a closed stream otherwise loops it on "Stream closed" control requests until `maxTurns`.
-
-## No persistent code memory (two exceptions)
+### No persistent code memory (two exceptions)
 
 Each task starts fresh. Context comes from the conversation delivered inline, `metadata.json`, the repository itself, the [memory layer](memory.md), and — on a trigger-fired task only — that trigger's persistent directory, shared by every fire of the same trigger ([triggers.md](triggers.md#persistent-per-trigger-directory)).
 
-## Budgets
+### Budgets
 
-| Budget | Default | Enforcement |
-|---|---|---|
-| Research requests | 5 per task | Hard stop, Slack approval for +5 |
-| Wall-clock | 60 minutes | Posts a pause message and parks the task |
+| Budget            | Default    | Enforcement                              |
+| ----------------- | ---------- | ---------------------------------------- |
+| Research requests | 5 per task | Hard stop, Slack approval for +5         |
+| Wall-clock        | 60 minutes | Posts a pause message and parks the task |
 
-## Related Documentation
+## Change and verification
+
+Use the module map to find the owning operation before changing behavior. For focused regression checks with dependencies installed:
+
+```bash
+npx vitest run src/agents/__tests__/
+```
+
+These are suggested checks, not a test receipt. See the [operating guide](../guides/sdk-patterns.md) and [documentation rules](../guides/documentation.md). SDK, provider and deployment behavior requires the relevant live check when authorized.
+
+### Related Documentation
 
 - [Architecture Overview](overview.md) — system-level architecture and technology stack
 - [Orchestration](orchestration.md) — task runtime, routing, and recovery

@@ -1,5 +1,7 @@
 # Memory Layer
 
+> **Historical specification snapshot — filing review 2026-11-11.** The scoped knowledge store and recall interfaces have evolved; see the [memory module map](../../../docs/architecture/memory.md). Original normative wording is retained as acceptance history, not asserted as the current implementation. See the [OpenSpec index](../../README.md).
+
 **Capability ID:** `memory-layer`
 **Status:** Target spec — reflects shipped behavior, including the entity layer and `org.md` retirement (see archived changes `harden-memory-layer`, `add-memory-entity-layer`)
 **Implementation:** `src/memory/` — see `docs/architecture/memory.md` for the architecture as-built

@@ -1,5 +1,7 @@
 # Stage 3: Create connectors/ and complete architecture simplification
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [System map](../architecture/overview.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 ## Context
 
 Stages 1-2 are complete. The codebase has clean `agents/`, `tasks/` directories but external integration code is still scattered: Slack files in `src/slack/`, GitHub files in `src/github/`, and HTTP/webhook handling in `src/system/`. This final stage creates the `connectors/` directory — one subdirectory per external system — completing the architecture simplification proposal.

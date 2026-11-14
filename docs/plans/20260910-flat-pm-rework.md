@@ -1,5 +1,7 @@
 # Flat PM rework: design notes and order of work
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [System map](../architecture/overview.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 Design notes agreed before the flat-PM rework was built (September 2026). Kept as the rationale record; the architecture docs describe the result. Companion: `20260910-plugins-flat-migration.md` for the plugins repository side.
 
 ## 1. The idea in one paragraph

@@ -1,5 +1,7 @@
 # PM on-demand repo-agent spawning
 
+> **Historical record — filing review 2026-11-11.** Current documentation: [Agents](../architecture/agents.md). Original design and verification claims below describe their recorded revision; they are not current implementation instructions.
+
 > **Status: implemented.** Follow-up to v30 (multi-repo agents, eager-mount).
 > This is the "deferred" half of the v30 plan, rebuilt on the eager-mount
 > foundation so it needs no respawn machinery.

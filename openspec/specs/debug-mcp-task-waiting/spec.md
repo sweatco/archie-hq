@@ -1,5 +1,7 @@
 # debug-mcp-task-waiting Specification
 
+> **Historical specification snapshot — filing review 2026-11-11.** Use the [API/CLI map](../../../docs/architecture/api-cli.md) and current tests for implementation; these original acceptance scenarios have not been fully requalified by the filing review. Original normative wording is retained as acceptance history, not asserted as the current implementation. See the [OpenSpec index](../../README.md).
+
 ## Purpose
 TBD - created by archiving change debug-mcp-wait-for-task. Update Purpose after archive.
 ## Requirements

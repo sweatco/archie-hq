@@ -1,5 +1,7 @@
 # archie-e2e-harness Specification
 
+> **Historical specification snapshot — filing review 2026-11-11.** Use the [current E2E skill](../../../.claude/skills/archie-e2e/SKILL.md) for execution; these original acceptance scenarios have not been fully requalified by the filing review. Original normative wording is retained as acceptance history, not asserted as the current implementation. See the [OpenSpec index](../../README.md).
+
 ## Purpose
 TBD - created by archiving change archie-e2e-harness. Update Purpose after archive.
 ## Requirements
