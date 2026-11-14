@@ -1,0 +1,30 @@
+name: Project health
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 9 * * 1'
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  report:
+    if: github.repository == 'sweatco/archie-hq' && github.repository_id == '1120227357'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Check the report behavior
+        run: node --test tools/pm/*.test.mjs
+      - name: Publish the issue health summary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node tools/pm/issue-health.mjs --output "$RUNNER_TEMP/project-health.md"
+          cat "$RUNNER_TEMP/project-health.md" >> "$GITHUB_STEP_SUMMARY"

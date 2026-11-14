@@ -20,6 +20,8 @@ rest. Setup and commands live in README.md / CONTRIBUTING.md.
 
 ## Verification
 
+<!-- Link the owning issue or explain why the PR is tracked directly. Separate merge from deployment and acceptance; use a closing keyword only when merging satisfies the issue's acceptance criteria. -->
+
 <!-- What you actually checked, honestly. The static checks (format, lint, typecheck, build,
      tests) and — the part CI can't see — that the running app still works end
      to end for the path you touched. If you couldn't run something (no API key,
