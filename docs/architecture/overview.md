@@ -54,7 +54,7 @@ Archie (Autonomous Responsive and Collaborative Hyper Intelligent Employee) is a
                                  │
         ┌────────────────┬───────┴────────┬────────────────┐
    metadata.json    knowledge.log    usage/events     task clones
-                    (write-only)        .jsonl        repos/<org>/<repo>
+                    (append-only)       .jsonl        repos/<org>/<repo>
 ```
 
 ## Technology Stack
@@ -86,7 +86,7 @@ Nothing is cloned when a task starts. The GitHub App installation is the allowli
 
 ### Wakes carry their content
 
-A Slack message, a GitHub event or a system notice reaches the PM as the text itself, framed by a builder in `src/agents/prompts.ts` — not as a pointer telling it to go and read a file. `knowledge.log` is still written, but as a record for offline consumers (memory extraction, the people section) and as the audit trail; the running PM never reads it. See [persistence.md](persistence.md#the-knowledge-log).
+Normal Slack, GitHub and system wakes reach the PM as inline text, framed by builders in `src/agents/prompts.ts`. `knowledge.log` records the same content for memory extraction, the people section and audit. Recovery and session-reset prompts can direct the PM to read the log to reconstruct missing context. See [persistence.md](persistence.md#the-knowledge-log).
 
 ### Per-task instances
 

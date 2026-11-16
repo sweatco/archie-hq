@@ -161,9 +161,11 @@ interface AgentSessionState {
 
 `shared/knowledge.log` is an append-only text record of the task: inbound Slack messages and edits, GitHub events, CLI messages, outgoing user-facing messages, and system findings.
 
-**It is write-only as far as the running agent is concerned.** Everything the PM needs is delivered **inline** into its stream (see [orchestration.md](orchestration.md#wakes-carry-their-content)), so nothing on the live path reads the file back, and the PM's prompt does not mention it. The append functions that feed the PM therefore **return the line they wrote**, and the caller hands that exact string to the PM — so the inline copy and the logged copy are identical by construction rather than by two renderers agreeing.
+Normal wakes deliver content **inline** into the PM's stream (see [orchestration.md](orchestration.md#wakes-carry-their-content)). The append functions that feed the PM **return the line they wrote**, and the caller hands that exact string to the PM, keeping the inline copy and the logged copy identical by construction.
 
-Two offline consumers read it after the fact, and they are the reason it is still written:
+The PM can also read the log to reconstruct missing context. In `src/agents/prompts.ts`, `AGENT_PROMPTS.recovery` directs it to check the log or Slack thread for unanswered messages absent from its transcript. `buildSessionResetNotice()` directs a fresh session to read its Slack thread when available, or `shared/knowledge.log` for tasks without one.
+
+Two other consumers read it:
 
 - **Memory extraction** (`src/memory/lifecycle.ts`) — the post-task pass that distils organizational facts and user preferences ([memory.md](memory.md)).
 - **The people section** built at spawn (`extractTaskUsernames` / `buildTaskPeopleSection` in `src/agents/spawn.ts`) — it scans the log for `<@UID:Name>` markers to build the `<people_in_task>` block.

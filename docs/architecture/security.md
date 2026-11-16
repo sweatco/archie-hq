@@ -162,7 +162,7 @@ The `repo-tools` MCP server is the only pathway to GitHub.
 
 All output goes through the unified logger (`src/system/logger.ts`); direct `console.*` is prohibited and agent stderr is captured.
 
-`shared/knowledge.log` is the per-task audit trail: Slack messages, GitHub events, user-facing replies, and system findings for every approval, denial, budget change, gated call requested and gated call actually spent. It is **write-only from the running agent's point of view** — the PM is fed inline and never reads it — so it cannot be used as an injection channel into the live session. See [persistence.md](persistence.md#the-knowledge-log).
+`shared/knowledge.log` is the per-task audit trail: Slack messages, GitHub events, user-facing replies, and system findings for every approval, denial, budget change, gated call requested and gated call actually spent. Normal wakes deliver content inline, while recovery and session-reset prompts can direct the PM to read the log. Its contents remain task input under the existing sandbox and approval rules; the log is not a write-only security boundary. See [persistence.md](persistence.md#the-knowledge-log).
 
 ## Enforcement Layers Summary
 
