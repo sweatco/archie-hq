@@ -1048,11 +1048,18 @@ function createUnreactFromMessageTool(agent: Agent, task: Task) {
     async (args) => {
       const agentName = agent.def.id;
       const emoji = args.emoji.replace(/:/g, '').trim();
-      const dispatched = await task.unreactFromMessage(args.message_id, emoji, args.channel);
-      if (!dispatched) {
-        return ok(
-          `Could not remove reaction: ${args.channel ? `channel ${args.channel} is not a linked Slack thread` : 'task has no default Slack channel'}.`,
-        );
+      try {
+        const dispatched = await task.unreactFromMessage(args.message_id, emoji, args.channel);
+        if (!dispatched) {
+          return {
+            ...err(
+              `Could not remove reaction: ${args.channel ? `channel ${args.channel} is not a linked Slack thread` : 'task has no default Slack channel'}.`,
+            ),
+            isError: true,
+          };
+        }
+      } catch (error) {
+        return { ...err(formatSlackReactionError(error, 'remove')), isError: true };
       }
       logger.agentAction(agentName, `Removed :${emoji}:`, args.message_id);
       return ok(`Removed :${emoji}: from message ${args.message_id}.`);

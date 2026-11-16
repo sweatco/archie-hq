@@ -14,8 +14,12 @@ import {
 import { slackErrorCode } from './api-errors.js';
 
 /** Reaction failure → guidance without exposing raw Slack or transport errors. */
-export function formatSlackReactionError(err: unknown): string {
-  return `Reaction was not confirmed (${slackErrorCode(err) ?? 'unknown_error'}).`;
+export function formatSlackReactionError(
+  err: unknown,
+  operation: 'add' | 'remove' = 'add',
+): string {
+  const action = operation === 'remove' ? 'Reaction removal' : 'Reaction';
+  return `${action} was not confirmed (${slackErrorCode(err) ?? 'unknown_error'}).`;
 }
 
 /** Generic outbound-post failure → guidance (markdown-limit aware). */

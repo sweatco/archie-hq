@@ -9,8 +9,10 @@ const fixture = await vi.hoisted(async () => {
   return {
     root: mkdtempSync(join(tmpdir(), 'archie-reaction-tools-')),
     add: vi.fn(),
+    remove: vi.fn(),
     post: vi.fn(),
     action: vi.fn(),
+    warn: vi.fn(),
   };
 });
 
@@ -18,7 +20,7 @@ vi.mock('@slack/web-api', () => ({
   WebClient: vi.fn(function () {
     return {
       auth: { test: vi.fn().mockResolvedValue({ user_id: 'UBOT', team_id: 'T1' }) },
-      reactions: { add: fixture.add },
+      reactions: { add: fixture.add, remove: fixture.remove },
       chat: { postMessage: fixture.post },
     };
   }),
@@ -45,7 +47,7 @@ vi.mock('../../system/logger.js', () => ({
     agentAction: fixture.action,
     system: vi.fn(),
     slack: vi.fn(),
-    warn: vi.fn(),
+    warn: fixture.warn,
     error: vi.fn(),
   },
 }));
@@ -63,6 +65,7 @@ const LINKED = 'slack:C1:1790000000.000002';
 beforeEach(async () => {
   vi.clearAllMocks();
   fixture.add.mockReset().mockResolvedValue({ ok: true });
+  fixture.remove.mockReset().mockResolvedValue({ ok: true });
   await mkdir(fixture.root, { recursive: true });
   setSlackDryRun(false);
   await initSlackClient('xoxb-test');
@@ -98,6 +101,10 @@ async function linkedTask(): Promise<Task> {
 
 function react(task: Task) {
   return mcpToolHandler(createCommsMcpServer(new Agent(task.pmDef), task), 'react_to_message');
+}
+
+function unreact(task: Task) {
+  return mcpToolHandler(createCommsMcpServer(new Agent(task.pmDef), task), 'unreact_from_message');
 }
 
 describe('react_to_message through Task and the Slack client', () => {
@@ -220,6 +227,40 @@ describe('react_to_message through Task and the Slack client', () => {
     expect(fixture.post).not.toHaveBeenCalled();
   });
 
+  it('clears temporary eyes on completion without removing the acknowledgment', async () => {
+    const task = await linkedTask();
+    task.isActive = true;
+    task.ackMessage(DEFAULT, MESSAGE);
+    await react(task)({ message_id: MESSAGE, emoji: 'thumbsup' });
+
+    await task.complete();
+
+    expect(fixture.remove).toHaveBeenCalledExactlyOnceWith({
+      channel: 'C1',
+      timestamp: MESSAGE,
+      name: 'eyes',
+    });
+    expect(fixture.add).toHaveBeenCalledExactlyOnceWith({
+      channel: 'C1',
+      timestamp: MESSAGE,
+      name: 'thumbsup',
+    });
+    expect(task.metadata.status).toBe('completed');
+  });
+
+  it('completes despite a failed receipt cleanup and logs the failure', async () => {
+    const task = await linkedTask();
+    task.isActive = true;
+    task.ackMessage(DEFAULT, MESSAGE);
+    const failure = { data: { error: 'missing_scope' } };
+    fixture.remove.mockRejectedValue(failure);
+
+    await task.complete();
+
+    expect(task.metadata.status).toBe('completed');
+    expect(fixture.warn).toHaveBeenCalledWith('task', 'Could not remove acknowledgement', failure);
+  });
+
   it('does not let a reaction satisfy a proactive task owner reply', async () => {
     const task = await Task.prepare({
       taskId: 'task-20261116-1200-reaction',
@@ -243,4 +284,50 @@ describe('react_to_message through Task and the Slack client', () => {
     expect(task.completionIntent).toBe(false);
     expect(fixture.post).not.toHaveBeenCalled();
   });
+});
+
+describe('unreact_from_message through Task and the Slack client', () => {
+  it.each([undefined, 'no_reaction'])('confirms removal when Slack returns %s', async (code) => {
+    const task = await linkedTask();
+    if (code) fixture.remove.mockRejectedValue({ data: { error: code } });
+
+    const result = await unreact(task)({ message_id: MESSAGE, emoji: ' :loading: ' });
+
+    expect(result.isError).not.toBe(true);
+    expect(fixture.remove).toHaveBeenCalledExactlyOnceWith({
+      channel: 'C1',
+      timestamp: MESSAGE,
+      name: 'loading',
+    });
+    expect(fixture.action).toHaveBeenCalledWith('pm-agent', 'Removed :loading:', MESSAGE);
+  });
+
+  it.each([
+    { failure: { data: { error: 'missing_scope' } }, code: 'missing_scope' },
+    { failure: new Error('private transport details'), code: 'unknown_error' },
+  ])('reports $code without logging success or exposing raw details', async ({ failure, code }) => {
+    const task = await linkedTask();
+    fixture.remove.mockRejectedValue(failure);
+
+    const result = await unreact(task)({ message_id: MESSAGE, emoji: 'loading' });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe(`Error: Reaction removal was not confirmed (${code}).`);
+    expect(fixture.action).not.toHaveBeenCalled();
+    expect(fixture.post).not.toHaveBeenCalled();
+    expect(task.completionIntent).toBe(false);
+  });
+
+  it.each([undefined, 'slack:CUNKNOWN:1.0'])(
+    'refuses an unresolved channel %s',
+    async (channel) => {
+      const task = await Task.create();
+
+      const result = await unreact(task)({ message_id: MESSAGE, emoji: 'loading', channel });
+
+      expect(result.isError).toBe(true);
+      expect(fixture.remove).not.toHaveBeenCalled();
+      expect(fixture.action).not.toHaveBeenCalled();
+    },
+  );
 });

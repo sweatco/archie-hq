@@ -193,6 +193,17 @@ export function getSlackClient(): WebClient {
   return slackClient;
 }
 
+/** Keep brief feedback off the shared queue and bound failures without retries. */
+function createBoundedSlackClient(): WebClient {
+  const client = getSlackClient();
+  return new WebClient(client.token, {
+    slackApiUrl: client.slackApiUrl,
+    timeout: 5000,
+    retryConfig: { retries: 0 },
+    rejectRateLimitedCalls: true,
+  });
+}
+
 /**
  * Post a Slack message as a `markdown` block.
  *
@@ -229,16 +240,7 @@ export async function postSlackMessage(
   }
   const renderedText = restoreMentions(text);
   assertSlackMarkdownLength(renderedText);
-  const sharedClient = getSlackClient();
-  // A separate client also avoids waiting behind the shared client's retries.
-  const client = notice
-    ? new WebClient(sharedClient.token, {
-        slackApiUrl: sharedClient.slackApiUrl,
-        timeout: 5000,
-        retryConfig: { retries: 0 },
-        rejectRateLimitedCalls: true,
-      })
-    : sharedClient;
+  const client = notice ? createBoundedSlackClient() : getSlackClient();
   const blocks: Array<Block & Record<string, unknown>> = markdownBlock(renderedText);
   if (footer) {
     blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: footer }] });
@@ -362,7 +364,7 @@ export async function addReaction(
 ): Promise<void> {
   if (dryRun) return;
   try {
-    const client = getSlackClient();
+    const client = createBoundedSlackClient();
     await client.reactions.add({ channel, timestamp, name: emoji });
   } catch (error) {
     if (slackErrorCode(error) !== 'already_reacted') throw error;
@@ -371,7 +373,7 @@ export async function addReaction(
 
 /**
  * Remove an emoji reaction from a message.
- * Failures are silently ignored (not_reacted, missing scope, etc.).
+ * An absent reaction already satisfies the request; other failures propagate.
  */
 export async function removeReaction(
   channel: string,
@@ -380,10 +382,10 @@ export async function removeReaction(
 ): Promise<void> {
   if (dryRun) return;
   try {
-    const client = getSlackClient();
+    const client = createBoundedSlackClient();
     await client.reactions.remove({ channel, timestamp, name: emoji });
-  } catch {
-    // Silently ignore — not_reacted, missing scope, etc.
+  } catch (error) {
+    if (slackErrorCode(error) !== 'no_reaction') throw error;
   }
 }
 
