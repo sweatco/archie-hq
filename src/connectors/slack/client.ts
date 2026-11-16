@@ -22,6 +22,7 @@ import type { PrCardData, SlackMemoryClassification } from '../../types/task.js'
 import { prCardSubtitle, SLACK_PR_CARD_EMOJI } from '../../system/pr-card-format.js';
 import { isMemoryReady } from '../../memory/paths.js';
 import { formatConversationLabel } from './channel-ids.js';
+import { slackErrorCode } from './api-errors.js';
 
 /**
  * Internal raw shape produced by `fetchThreadHistory`. Carries the unresolved
@@ -352,7 +353,7 @@ export async function postInteractiveToThreads(
 
 /**
  * Add an emoji reaction to a message.
- * Failures are silently ignored (duplicate reactions, missing scopes, etc.).
+ * An existing reaction already satisfies the request; other failures propagate.
  */
 export async function addReaction(
   channel: string,
@@ -363,8 +364,8 @@ export async function addReaction(
   try {
     const client = getSlackClient();
     await client.reactions.add({ channel, timestamp, name: emoji });
-  } catch {
-    // Silently ignore — already_reacted, missing scope, etc.
+  } catch (error) {
+    if (slackErrorCode(error) !== 'already_reacted') throw error;
   }
 }
 
@@ -434,8 +435,7 @@ export async function getMessageReactions(
   } catch (error) {
     // message_not_found, missing_scope, channel_not_found… — surfaced, never
     // flattened into an empty list. The code only, never the token.
-    const code =
-      (error as { data?: { error?: string } } | undefined)?.data?.error ?? 'unknown_error';
+    const code = slackErrorCode(error) ?? 'unknown_error';
     logger.warn('Slack', `reactions.get failed for ${channel}:${timestamp} — ${code}`);
     return { ok: false, error: code };
   }
@@ -552,7 +552,7 @@ async function fetchMentionInfo(
           const info = await getUserInfo(userId);
           userInfoMap.set(userId, info);
         } catch (error) {
-          const code = (error as { data?: { error?: string } } | undefined)?.data?.error;
+          const code = slackErrorCode(error);
           if (code === 'user_not_found') {
             unresolvableUserIds.add(userId);
             logger.debug(
@@ -2432,7 +2432,7 @@ export async function listChannelPins(channelId: string): Promise<PinnedItem[] |
     channelPinsCache.set(channelId, { items, fetchedAt: Date.now() });
     return items;
   } catch (error) {
-    const code = (error as { data?: { error?: string } } | undefined)?.data?.error;
+    const code = slackErrorCode(error);
     if (code === 'missing_scope' || String(error).includes('missing_scope')) {
       pinsScopeMissing = true;
       logger.warn(

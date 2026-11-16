@@ -1,10 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import {
-  slackErrorCode,
+  formatSlackReactionError,
   formatSlackSendError,
   formatSlackPostError,
   formatSlackReadError,
 } from '../format-errors.js';
+import { slackErrorCode } from '../api-errors.js';
 import { SlackMarkdownLimitError, PrivateChannelError, DmPostError } from '../client.js';
 
 /** A fake Slack WebAPI error carries its code under `.data.error`. */
@@ -14,9 +15,52 @@ describe('slackErrorCode', () => {
   it('extracts the Slack WebAPI error code', () => {
     expect(slackErrorCode(apiErr('not_in_channel'))).toBe('not_in_channel');
   });
-  it('returns undefined for non-WebAPI errors', () => {
-    expect(slackErrorCode(new Error('boom'))).toBeUndefined();
-    expect(slackErrorCode(null)).toBeUndefined();
+  it('extracts codes from Slack Error instances and accepts the existing safe-code limits', () => {
+    expect(
+      slackErrorCode(Object.assign(new Error('private details'), apiErr('already_reacted'))),
+    ).toBe('already_reacted');
+    expect(slackErrorCode(apiErr('a'))).toBe('a');
+    expect(slackErrorCode(apiErr('a'.repeat(64)))).toBe('a'.repeat(64));
+  });
+  it.each([
+    new Error('boom'),
+    null,
+    undefined,
+    'missing_scope',
+    123,
+    {},
+    { data: null },
+    { data: 'missing_scope' },
+    { data: 123 },
+    { data: {} },
+    { data: { error: 123 } },
+    { data: { error: null } },
+    apiErr(''),
+    apiErr('missing_\nscope'),
+    apiErr('MISSING_SCOPE'),
+    apiErr('_missing_scope'),
+    apiErr('xoxb-private-token'),
+    apiErr('private details'),
+    apiErr('a'.repeat(65)),
+  ])('returns undefined for malformed or unsafe errors: %j', (error) => {
+    expect(slackErrorCode(error)).toBeUndefined();
+  });
+});
+
+describe('formatSlackReactionError', () => {
+  it.each(['missing_scope', 'invalid_name', 'message_not_found'])(
+    'reports the safe %s code',
+    (code) => {
+      expect(formatSlackReactionError(apiErr(code))).toBe(`Reaction was not confirmed (${code}).`);
+    },
+  );
+  it.each([
+    new Error('socket hang up: xoxb-private-token'),
+    apiErr('xoxb-private-token'),
+    { data: { error: 123 } },
+    null,
+  ])('falls back without exposing raw details: %j', (error) => {
+    expect(formatSlackReactionError(error)).toBe('Reaction was not confirmed (unknown_error).');
   });
 });
 

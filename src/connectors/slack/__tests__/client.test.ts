@@ -21,7 +21,7 @@ const slackApi = {
   users: { info: vi.fn(), conversations: vi.fn(), list: vi.fn() },
   usergroups: { list: vi.fn() },
   pins: { list: vi.fn() },
-  reactions: { get: vi.fn() },
+  reactions: { get: vi.fn(), add: vi.fn() },
   chat: { update: vi.fn() },
 };
 
@@ -90,11 +90,52 @@ beforeEach(async () => {
     },
   });
   slackApi.conversations.members.mockResolvedValue({ members: [BOT_USER, 'UINTERNAL'] });
+  slackApi.reactions.add.mockReset().mockResolvedValue({ ok: true });
 
   const memoryPaths = await import('../../../memory/paths.js');
   memoryPaths.setMemoryReady(true);
   client = await import('../client.js');
   await client.initSlackClient('xoxb-test');
+});
+
+describe('addReaction', () => {
+  it('awaits Slack confirmation with the requested message and emoji', async () => {
+    await expect(client.addReaction('C1', '1.0', 'thumbsup')).resolves.toBeUndefined();
+    expect(slackApi.reactions.add).toHaveBeenCalledExactlyOnceWith({
+      channel: 'C1',
+      timestamp: '1.0',
+      name: 'thumbsup',
+    });
+  });
+
+  it('treats already_reacted as satisfied without retrying', async () => {
+    slackApi.reactions.add.mockRejectedValue({ data: { error: 'already_reacted' } });
+
+    await expect(client.addReaction('C1', '1.0', 'thumbsup')).resolves.toBeUndefined();
+    expect(slackApi.reactions.add).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['missing_scope', 'invalid_name', 'message_not_found'])('propagates %s', async (code) => {
+    const failure = { data: { error: code } };
+    slackApi.reactions.add.mockRejectedValue(failure);
+
+    await expect(client.addReaction('C1', '1.0', 'thumbsup')).rejects.toBe(failure);
+    expect(slackApi.reactions.add).toHaveBeenCalledTimes(1);
+  });
+
+  it('propagates transport failures', async () => {
+    const failure = new Error('connection reset');
+    slackApi.reactions.add.mockRejectedValue(failure);
+
+    await expect(client.addReaction('C1', '1.0', 'thumbsup')).rejects.toBe(failure);
+  });
+
+  it('preserves dry-run suppression', async () => {
+    client.setSlackDryRun(true);
+
+    await expect(client.addReaction('C1', '1.0', 'thumbsup')).resolves.toBeUndefined();
+    expect(slackApi.reactions.add).not.toHaveBeenCalled();
+  });
 });
 
 describe('updateMessage', () => {
@@ -1720,12 +1761,24 @@ describe('getMessageReactions — failure is not emptiness', () => {
     });
   });
 
-  it('falls back to unknown_error when the thrown value carries no Slack code', async () => {
-    slackApi.reactions.get.mockRejectedValue(new Error('socket hang up'));
+  it.each([
+    new Error('socket hang up'),
+    { data: { error: 123 } },
+    { data: { error: 'xoxb-private-token / diagnostic' } },
+    { data: null },
+  ])(
+    'falls back to unknown_error when the thrown value carries no safe Slack code: %j',
+    async (error) => {
+      slackApi.reactions.get.mockRejectedValue(error);
 
-    expect(await client.getMessageReactions('C1', '100.0')).toEqual({
-      ok: false,
-      error: 'unknown_error',
-    });
-  });
+      expect(await client.getMessageReactions('C1', '100.0')).toEqual({
+        ok: false,
+        error: 'unknown_error',
+      });
+      expect(loggerWarn).toHaveBeenCalledWith(
+        'Slack',
+        'reactions.get failed for C1:100.0 — unknown_error',
+      );
+    },
+  );
 });
