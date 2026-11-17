@@ -11,10 +11,15 @@ import {
   PrivateChannelError,
   DmPostError,
 } from './client.js';
+import { slackErrorCode } from './api-errors.js';
 
-/** Pull Slack's error code (e.g. "not_in_channel") off a WebAPI error. */
-export function slackErrorCode(err: unknown): string | undefined {
-  return (err as { data?: { error?: string } })?.data?.error;
+/** Reaction failure → guidance without exposing raw Slack or transport errors. */
+export function formatSlackReactionError(
+  err: unknown,
+  operation: 'add' | 'remove' = 'add',
+): string {
+  const action = operation === 'remove' ? 'Reaction removal' : 'Reaction';
+  return `${action} was not confirmed (${slackErrorCode(err) ?? 'unknown_error'}).`;
 }
 
 /** Generic outbound-post failure → guidance (markdown-limit aware). */

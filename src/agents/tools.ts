@@ -71,6 +71,7 @@ import {
   formatSlackReadError,
   formatMutedTargetRefusal,
   formatCrossTaskMuteRefusal,
+  formatSlackReactionError,
 } from '../connectors/slack/format-errors.js';
 
 /**
@@ -396,6 +397,7 @@ function createPostToUserTool(agent: Agent, task: Task) {
   return tool(
     'post_to_user',
     'Send a message to the user in this task. Without target, posts to the default channel — wherever this task already lives (use that almost always). ' +
+      'Follow the Slack messaging rules for acknowledgments. Keep drafting/review updates private unless the user requests them, a blocker needs their action or a loaded skill requires them. ' +
       'Use target.channel only to reach another thread ALREADY linked to this task. ' +
       'If this task lives in a channel thread, bring someone in by @mentioning them in that thread. ' +
       'To say something in a channel that is NOT part of this task (exploration/outreach), use `post_to_channel` — it deliberately does not link to this task. ' +
@@ -1007,11 +1009,18 @@ function createReactToMessageTool(agent: Agent, task: Task) {
     async (args) => {
       const agentName = agent.def.id;
       const emoji = args.emoji.replace(/:/g, '').trim();
-      const dispatched = await task.reactToMessage(args.message_id, emoji, args.channel);
-      if (!dispatched) {
-        return ok(
-          `Could not react: ${args.channel ? `channel ${args.channel} is not a linked Slack thread` : 'task has no default Slack channel'}.`,
-        );
+      try {
+        const dispatched = await task.reactToMessage(args.message_id, emoji, args.channel);
+        if (!dispatched) {
+          return {
+            ...err(
+              `Could not react: ${args.channel ? `channel ${args.channel} is not a linked Slack thread` : 'task has no default Slack channel'}.`,
+            ),
+            isError: true,
+          };
+        }
+      } catch (error) {
+        return { ...err(formatSlackReactionError(error)), isError: true };
       }
       logger.agentAction(agentName, `Reacted :${emoji}:`, args.message_id);
       return ok(`Added :${emoji}: to message ${args.message_id}.`);
@@ -1040,11 +1049,18 @@ function createUnreactFromMessageTool(agent: Agent, task: Task) {
     async (args) => {
       const agentName = agent.def.id;
       const emoji = args.emoji.replace(/:/g, '').trim();
-      const dispatched = await task.unreactFromMessage(args.message_id, emoji, args.channel);
-      if (!dispatched) {
-        return ok(
-          `Could not remove reaction: ${args.channel ? `channel ${args.channel} is not a linked Slack thread` : 'task has no default Slack channel'}.`,
-        );
+      try {
+        const dispatched = await task.unreactFromMessage(args.message_id, emoji, args.channel);
+        if (!dispatched) {
+          return {
+            ...err(
+              `Could not remove reaction: ${args.channel ? `channel ${args.channel} is not a linked Slack thread` : 'task has no default Slack channel'}.`,
+            ),
+            isError: true,
+          };
+        }
+      } catch (error) {
+        return { ...err(formatSlackReactionError(error, 'remove')), isError: true };
       }
       logger.agentAction(agentName, `Removed :${emoji}:`, args.message_id);
       return ok(`Removed :${emoji}: from message ${args.message_id}.`);

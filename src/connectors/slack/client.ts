@@ -22,6 +22,7 @@ import type { PrCardData, SlackMemoryClassification } from '../../types/task.js'
 import { prCardSubtitle, SLACK_PR_CARD_EMOJI } from '../../system/pr-card-format.js';
 import { isMemoryReady } from '../../memory/paths.js';
 import { formatConversationLabel } from './channel-ids.js';
+import { slackErrorCode } from './api-errors.js';
 
 /**
  * Internal raw shape produced by `fetchThreadHistory`. Carries the unresolved
@@ -192,6 +193,17 @@ export function getSlackClient(): WebClient {
   return slackClient;
 }
 
+/** Keep brief feedback off the shared queue and bound failures without retries. */
+function createBoundedSlackClient(): WebClient {
+  const client = getSlackClient();
+  return new WebClient(client.token, {
+    slackApiUrl: client.slackApiUrl,
+    timeout: 5000,
+    retryConfig: { retries: 0 },
+    rejectRateLimitedCalls: true,
+  });
+}
+
 /**
  * Post a Slack message as a `markdown` block.
  *
@@ -228,16 +240,7 @@ export async function postSlackMessage(
   }
   const renderedText = restoreMentions(text);
   assertSlackMarkdownLength(renderedText);
-  const sharedClient = getSlackClient();
-  // A separate client also avoids waiting behind the shared client's retries.
-  const client = notice
-    ? new WebClient(sharedClient.token, {
-        slackApiUrl: sharedClient.slackApiUrl,
-        timeout: 5000,
-        retryConfig: { retries: 0 },
-        rejectRateLimitedCalls: true,
-      })
-    : sharedClient;
+  const client = notice ? createBoundedSlackClient() : getSlackClient();
   const blocks: Array<Block & Record<string, unknown>> = markdownBlock(renderedText);
   if (footer) {
     blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: footer }] });
@@ -352,7 +355,7 @@ export async function postInteractiveToThreads(
 
 /**
  * Add an emoji reaction to a message.
- * Failures are silently ignored (duplicate reactions, missing scopes, etc.).
+ * An existing reaction already satisfies the request; other failures propagate.
  */
 export async function addReaction(
   channel: string,
@@ -361,16 +364,16 @@ export async function addReaction(
 ): Promise<void> {
   if (dryRun) return;
   try {
-    const client = getSlackClient();
+    const client = createBoundedSlackClient();
     await client.reactions.add({ channel, timestamp, name: emoji });
-  } catch {
-    // Silently ignore — already_reacted, missing scope, etc.
+  } catch (error) {
+    if (slackErrorCode(error) !== 'already_reacted') throw error;
   }
 }
 
 /**
  * Remove an emoji reaction from a message.
- * Failures are silently ignored (not_reacted, missing scope, etc.).
+ * An absent reaction already satisfies the request; other failures propagate.
  */
 export async function removeReaction(
   channel: string,
@@ -379,10 +382,10 @@ export async function removeReaction(
 ): Promise<void> {
   if (dryRun) return;
   try {
-    const client = getSlackClient();
+    const client = createBoundedSlackClient();
     await client.reactions.remove({ channel, timestamp, name: emoji });
-  } catch {
-    // Silently ignore — not_reacted, missing scope, etc.
+  } catch (error) {
+    if (slackErrorCode(error) !== 'no_reaction') throw error;
   }
 }
 
@@ -434,8 +437,7 @@ export async function getMessageReactions(
   } catch (error) {
     // message_not_found, missing_scope, channel_not_found… — surfaced, never
     // flattened into an empty list. The code only, never the token.
-    const code =
-      (error as { data?: { error?: string } } | undefined)?.data?.error ?? 'unknown_error';
+    const code = slackErrorCode(error) ?? 'unknown_error';
     logger.warn('Slack', `reactions.get failed for ${channel}:${timestamp} — ${code}`);
     return { ok: false, error: code };
   }
@@ -552,7 +554,7 @@ async function fetchMentionInfo(
           const info = await getUserInfo(userId);
           userInfoMap.set(userId, info);
         } catch (error) {
-          const code = (error as { data?: { error?: string } } | undefined)?.data?.error;
+          const code = slackErrorCode(error);
           if (code === 'user_not_found') {
             unresolvableUserIds.add(userId);
             logger.debug(
@@ -2432,7 +2434,7 @@ export async function listChannelPins(channelId: string): Promise<PinnedItem[] |
     channelPinsCache.set(channelId, { items, fetchedAt: Date.now() });
     return items;
   } catch (error) {
-    const code = (error as { data?: { error?: string } } | undefined)?.data?.error;
+    const code = slackErrorCode(error);
     if (code === 'missing_scope' || String(error).includes('missing_scope')) {
       pinsScopeMissing = true;
       logger.warn(

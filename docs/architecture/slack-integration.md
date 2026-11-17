@@ -245,18 +245,7 @@ Button clicks are handled by Bolt action handlers in `src/connectors/slack/event
 
 ## Natural Language Guidelines for PM Responses
 
-The PM agent's prompt (`prompts/pm-agent.md`) establishes these communication rules:
-
-- Write as "I", not "my agent" or "the backend agent".
-- Never mention delegation or internal coordination to the user.
-- Keep messages natural, brief, and focused on what users care about.
-- Use simple markdown (bold, italic, lists) but avoid headers.
-- For social contexts (welcomes, celebrations, announcements), respond warmly as a team member would.
-
-Channel decision logic:
-- New work from Slack: acknowledge in Slack ("Looking into this...")
-- Milestone announcements: always post to Slack regardless of input source
-- Background system events: usually silent unless significant for the user
+The [PM prompt](../../prompts/pm-agent.md#threads-channels-and-silence) owns response style, acknowledgments and silence. Skills may override its messaging defaults for their workflow. The [thread-conduct skill](../../core-plugin/skills/thread-conduct/SKILL.md) covers routing, outreach and stop requests; it refers to the PM prompt for messaging rules. `post_to_user` retains a short reminder.
 
 ## Mention Resolution
 
@@ -274,14 +263,16 @@ The Slack client extracts file metadata from messages, including files shared di
 
 ## Acknowledgment, Muting, and Shared-Channel Awareness
 
-- **Acknowledgment (eyes reaction)** — `@mention` and DM messages are acknowledged with an `:eyes:` reaction (plain thread replies in an engaged channel are not, to avoid noise during inter-employee conversation). `task.ackMessage` records the acked message on `SlackChannel.ack_ts` and clears the previous one, so only one indicator is live per thread and it survives non-mention follow-ups. Cleaned up on task stop/complete by `clearAcks`.
+- **Acknowledgment (eyes reaction)** — `@mention` and DM messages are acknowledged with an `:eyes:` reaction. A reply that starts a new task under an Archie-authored post gets the same receipt; ordinary thread replies in an engaged channel do not, to avoid noise during inter-employee conversation. `task.ackMessage` records the acked message on `SlackChannel.ack_ts` and clears the previous one, so only one indicator is live per thread and it survives non-mention follow-ups. Cleaned up on task stop/complete by `clearAcks`.
 - **Agent-driven reactions** — the PM can react to *any* message in a linked thread via the `react_to_message` tool (and `unreact_from_message` / `get_message_reactions`). Messages are addressable because `appendSlackMessage` stamps each source line with a `msg:<ts>` id, and that same line is what reaches the PM inline; the PM passes that `ts` as `message_id`. Reactions present at ingest time are also captured as a `SlackReaction[]` snapshot (from `conversations.replies`) and rendered as a `[Reactions: …]` line in the log; `get_message_reactions` reads the live state via `reactions.get`.
+- **Reaction failures** — `addReaction` treats `already_reacted` as satisfied; `removeReaction` treats `no_reaction` as satisfied. Both propagate other errors and use an isolated client with a five-second timeout, no retries and immediate rate-limit rejection. Automatic receipts catch failures and continue; agent tools return sanitized errors. Receipt cleanup is best-effort. Dry-run suppression is unchanged.
 - **Muting** — the PM's `mute_channel` tool sets `SlackChannel.muted = true` on a single channel (the one named, or the task's `default_channel` if no `channel` arg is given), after which that thread is ignored until a new `@mention` toggles it back on. DM channels cannot be muted because there is no `@mention` re-engagement path in a DM.
 - **Shared channels (Slack Connect)** — `isChannelShared` (60s TTL cache) flags external-shared channels; `sendSharedChannelWarnings` posts ephemeral notices once per (thread × user): a general shared-channel heads-up to internal participants, and a forward-from-external notice to anyone who pastes content originally authored by an external user.
 
 ## Relevant Source Files
 
 - `src/connectors/slack/client.ts` — Slack WebClient wrapper: `postSlackMessage`, `postSlackFiles`, `postInteractiveToThread(s)`, thread history, mention resolution, file downloads, shared-channel detection, user/channel lookup caches
+- `src/connectors/slack/api-errors.ts` — dependency-free Slack error-code parsing shared by the client and agent-facing error formatters; only safe API codes cross this boundary, with `unknown_error` used where no safe code is available
 - `src/connectors/slack/events.ts` — Bolt app setup (`mountSlackApp`), `app_mention` / `message` handlers, `routeSlackEvent` + `handleSlackEvent`, button action handlers, title pipeline, shared-channel warnings
 - `src/connectors/slack/task-routing.ts` — pure inbound-routing decisions, import-free by design: `mayWakeTask` / `mayReachTriggers` (the two questions the gate answers separately) over the `MESSAGE_NOISE_SUBTYPES` denylist, `shouldForwardMessageEvent` (their disjunction — the single call site's entry point), `isAckableEvent` (does it earn an eyes reaction), `shouldCreateNewTask` (does it seed a task) — the channel-vs-DM predicates that keep group DMs channel-like
 - `src/connectors/slack/message-body.ts` — **the one place a Slack message becomes agent-facing text**: `renderMessageBody` plus the named entry points every path uses (`messageBody` for the title transcript, `exploreBody` for explore reads, `pinBody` for the pin index, `rawMessageBody` for a raw Bolt payload). Task ingestion calls `renderMessageBody` + `shouldRedact` directly rather than `messageBody`, because it must substitute the DOWNLOADED files into the parts — only those carry a `localPath`, and the `[Attachments: …]` suffix prints the path only when it is set, so rendering from the un-downloaded files would silently drop every path an agent needs to open the file and `shouldRedact`, the single answer to the redaction question

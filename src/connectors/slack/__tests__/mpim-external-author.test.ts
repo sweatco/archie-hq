@@ -87,6 +87,7 @@ import { handleSlackEvent } from '../events.js';
 import { Task } from '../../../tasks/task.js';
 import { getUserInfo, isExternalUser, addReaction, fetchSlackThread } from '../client.js';
 import { findTaskByThread } from '../../../tasks/persistence.js';
+import { logger } from '../../../system/logger.js';
 
 // Both id shapes Slack issues for an mpim. `G…` is the documented classic shape;
 // `C…` is what a live group DM in the Sweatcoin workspace actually resolves to
@@ -150,4 +151,79 @@ describe('mpim external-author bail-out (AC4)', () => {
       }
     }
   }
+});
+
+describe('automatic receipt failures', () => {
+  it.each([
+    { type: 'app_mention', channel: 'C_INTERNAL', botRoot: false },
+    { type: 'message', channel: 'D_INTERNAL', botRoot: false },
+    { type: 'message', channel: 'C_INTERNAL', botRoot: true },
+  ] as const)(
+    'still delivers $type on $channel (bot root: $botRoot)',
+    async ({ type, channel, botRoot }) => {
+      const timestamp = '1700000000.000100';
+      const failure = { data: { error: 'missing_scope' } };
+      vi.mocked(addReaction).mockRejectedValueOnce(failure);
+      vi.mocked(getUserInfo).mockResolvedValue({
+        name: 'dev',
+        realName: 'A Dev',
+        teamId: HOME_TEAM,
+      });
+      const thread = {
+        threadId: timestamp,
+        channel: { id: channel, name: 'internal' },
+        shared: false,
+        currentMessageTs: timestamp,
+        rootAuthorWasBot: botRoot,
+        messages: [
+          {
+            user: { id: 'U_INTERNAL', username: 'dev', realName: 'A Dev' },
+            ownText: 'Please investigate.',
+            ts: timestamp,
+          },
+        ],
+      };
+      vi.mocked(fetchSlackThread).mockResolvedValue(thread);
+      const task = {
+        metadata: {
+          task_id: 'task-20261116-1200-receipt',
+          title: 'Existing task',
+          channels: {},
+          default_channel: null,
+          agent_sessions: {},
+          repositories: [],
+          status: 'in_progress',
+          created_at: '2026-11-16T12:00:00Z',
+          updated_at: '2026-11-16T12:00:00Z',
+        },
+        append: vi
+          .fn<Task['append']>()
+          .mockResolvedValue({ linkedNewThread: false, entries: ['New message'] }),
+        ackMessage: vi.fn<Task['ackMessage']>(),
+        sendMessage: vi.fn<Task['sendMessage']>().mockResolvedValue(undefined),
+        debouncedSave: vi.fn<Task['debouncedSave']>(),
+      } satisfies Pick<
+        Task,
+        'metadata' | 'append' | 'ackMessage' | 'sendMessage' | 'debouncedSave'
+      >;
+      // Only the routing-facing Task surface is exercised by this event handler.
+      vi.mocked(Task.get, { partial: true }).mockResolvedValue(task);
+      vi.mocked(Task.create, { partial: true }).mockResolvedValue(task);
+      vi.mocked(findTaskByThread).mockResolvedValue(botRoot ? null : task.metadata.task_id);
+
+      await handleSlackEvent({
+        type,
+        channel,
+        user: 'U_INTERNAL',
+        ts: timestamp,
+        raw: { type, channel, user: 'U_INTERNAL', text: 'Please investigate.', ts: timestamp },
+      });
+
+      expect(addReaction).toHaveBeenCalledExactlyOnceWith(channel, timestamp, 'eyes');
+      expect(task.append).toHaveBeenCalledWith(thread);
+      expect(task.sendMessage).toHaveBeenCalledOnce();
+      expect(task.sendMessage).toHaveBeenCalledWith(expect.stringContaining('New message'));
+      expect(logger.warn).toHaveBeenCalledWith('Slack', 'Could not acknowledge message', failure);
+    },
+  );
 });
