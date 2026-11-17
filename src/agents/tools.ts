@@ -397,7 +397,7 @@ function createPostToUserTool(agent: Agent, task: Task) {
   return tool(
     'post_to_user',
     'Send a message to the user in this task. Without target, posts to the default channel — wherever this task already lives (use that almost always). ' +
-      'Follow loaded skill messaging instructions only for the stage they describe. Otherwise, acknowledge Slack follow-up details with a reaction under the messaging rules; keep drafting/review updates private unless the user requests them or a blocker needs action. ' +
+      'Follow loaded skill messaging instructions only for the stage they describe. Otherwise, use reactions for Slack follow-up details or questions awaiting the final result, under the messaging rules. Do not post receipt promises or drafting/review updates unless the user requests status or a blocker needs action. ' +
       'Use target.channel only to reach another thread ALREADY linked to this task. ' +
       'If this task lives in a channel thread, bring someone in by @mentioning them in that thread. ' +
       'To say something in a channel that is NOT part of this task (exploration/outreach), use `post_to_channel` — it deliberately does not link to this task. ' +
