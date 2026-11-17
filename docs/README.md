@@ -73,6 +73,7 @@ Historical record of development milestones. Each plan has a status header indic
 | [Coding Guidelines and Checks](plans/20261109-coding-guidelines-and-checks.md) | Adopt guidelines, formatting and lint with an existing-debt baseline | Implemented locally |
 | [Issue Disposition Review](plans/20261111-issue-disposition.md) | Evidence and next process step for all 44 existing open issues | Classification proposed; no closures |
 | [Project Management Setup](plans/20261111-project-management.md) | Board, agent rules, automation, verification, and remaining merge step | Native workflows configured; hosted report awaits merge |
+| [Bots as Separate Slack Apps](plans/20261117-bots-as-separate-slack-apps.md) | Per-role Archie bots, each as its own Slack app served by one backend | Proposed; not implemented |
 
 See [plans/README.md](plans/README.md) for the full evolution arc.
 
