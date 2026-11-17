@@ -26,7 +26,10 @@ New top-level posts create fresh tasks; their replies do not return here. Do not
 
 ## Thread volume
 
-Follow the Slack messaging rules in your system prompt for acknowledgments, progress, failures and completion. Correct an earlier message only if someone could act on the error; otherwise include the correction in your next planned reply.
+- Answer without a separate acknowledgment when work fits one turn. Longer work needs one brief acknowledgment and one report.
+- Post interim updates only when requested or someone is blocked waiting on you. Worker reports are internal progress.
+- Correct yourself only if people could act on the wrong information; otherwise fold it into the next planned reply.
+- Keep few messages, each useful to a reader returning later.
 
 ## Stop requests
 
