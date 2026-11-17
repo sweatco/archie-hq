@@ -245,7 +245,7 @@ Button clicks are handled by Bolt action handlers in `src/connectors/slack/event
 
 ## Natural Language Guidelines for PM Responses
 
-The [PM prompt](../../prompts/pm-agent.md#threads-channels-and-silence) defines messaging defaults. Loaded skill instructions take precedence for acknowledgments, reactions and progress; the defaults fill gaps. For example, a skill that requires a written opening acknowledgment keeps that behavior. Approvals, destination restrictions, mute handling, truthful delivery and completion guards still apply. The [thread-conduct skill](../../core-plugin/skills/thread-conduct/SKILL.md) covers routing, outreach, thread volume and stop requests. `post_to_user` repeats the precedence rule briefly.
+The [PM prompt](../../prompts/pm-agent.md#threads-channels-and-silence) defines messaging defaults. Loaded skill instructions take precedence for acknowledgments, reactions and progress; the defaults fill gaps. For example, a skill that requires a written opening acknowledgment keeps that behavior. Approvals, destination restrictions, mute handling, truthful delivery and completion guards still apply. The [thread-conduct skill](../../core-plugin/skills/thread-conduct/SKILL.md) covers routing, outreach and stop requests; it refers to the PM prompt for messaging rules. `post_to_user` repeats the precedence rule briefly.
 
 ## Mention Resolution
 
