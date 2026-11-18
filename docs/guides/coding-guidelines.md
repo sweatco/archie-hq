@@ -93,7 +93,7 @@ Use a self-review for routine changes and ordinary maintainer review for PRs. Se
 
 ## Automated checks
 
-Run `npm run check` before handing off a code change. It checks formatting, lint, types, the build and tests without rewriting source. During iteration, use `npm run lint`, `npm run format:check` and focused tests. `npm run lint:fix` applies the linter's safe fixes; `npm run format` rewrites formatting. Review both diffs before keeping them.
+Run `npm run check` before handing off a code change. It checks formatting, lint, types, the build and tests without rewriting source. During iteration, use `npm run lint`, `npm run format:check` and focused tests. `npm run test:coverage` writes a V8 coverage summary and an HTML report to `coverage/`; use it to find untested behavior, not as a target, and note that the `node --test` suites under `tools/pm` are outside it. `npm run lint:fix` applies the linter's safe fixes; `npm run format` rewrites formatting. Review both diffs before keeping them.
 
 The committed `.oxlintrc.json` owns the exact rule allowlist and scopes. Syntax checks cover owned source, tools, scripts, examples and root code configuration. Typed rules cover TypeScript in `src/`, `tools/` and `scripts/`, using their nearest TypeScript projects. React rules apply to the CLI; test rules apply to test/spec files. Application source uses the unified logger, whose implementation owns direct console access. Standalone tools and scripts retain their intentional stdout/stderr interfaces. The existing compiler and Docker helper build remain authoritative; lint does not replace type checking.
 
