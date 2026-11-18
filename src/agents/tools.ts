@@ -397,7 +397,6 @@ function createPostToUserTool(agent: Agent, task: Task) {
   return tool(
     'post_to_user',
     'Send a message to the user in this task. Without target, posts to the default channel — wherever this task already lives (use that almost always). ' +
-      'Follow loaded skill messaging instructions only for the stage they describe. Otherwise, acknowledge Slack follow-up details with a reaction under the messaging rules; keep drafting/review updates private unless the user requests them or a blocker needs action. ' +
       'Use target.channel only to reach another thread ALREADY linked to this task. ' +
       'If this task lives in a channel thread, bring someone in by @mentioning them in that thread. ' +
       'To say something in a channel that is NOT part of this task (exploration/outreach), use `post_to_channel` — it deliberately does not link to this task. ' +
@@ -831,7 +830,7 @@ function createRequestMaxModeTool(agent: Agent, task: Task) {
 function createReportCompletionTool(agent: Agent, task: Task) {
   return tool(
     'report_completion',
-    'Finish your turn: signal you have responded and are now waiting only on the user (not on any agent). If a message is provided, it is posted first.',
+    'Finish your turn when waiting only on the user (not on any agent). If a message is provided, it is posted first. Omit it to finish silently.',
     {
       message: z.string().optional().describe('Optional message to post to Slack before finishing'),
     },
@@ -984,8 +983,7 @@ function createMuteChannelTool(agent: Agent, task: Task) {
 function createReactToMessageTool(agent: Agent, task: Task) {
   return tool(
     'react_to_message',
-    'Add an emoji reaction to a message in a Slack thread. Use to acknowledge, ' +
-      'express sentiment, or signal status without sending a text message. ' +
+    'Add an emoji reaction to a message in a Slack thread. ' +
       'Reacts to ANY message in a linked thread — pass `message_id`, the `msg:<ts>` ' +
       'value shown next to each message that arrived in your conversation (e.g. "1716998400.123456"). ' +
       "Omit `channel` to target the task's default channel. " +
