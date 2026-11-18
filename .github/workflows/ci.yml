@@ -28,15 +28,10 @@ jobs:
       - run: npm run build
       - run: npm run test:coverage
       - name: Report coverage in the job summary
-        run: |
-          node -e '
-            const { total } = require("./coverage/coverage-summary.json");
-            console.log("### Test coverage\n\n| Metric | Covered | Total | % |\n|---|---|---|---|");
-            for (const metric of ["lines", "statements", "functions", "branches"]) {
-              const { covered, total: all, pct } = total[metric];
-              console.log(`| ${metric} | ${covered} | ${all} | ${pct}% |`);
-            }
-          ' >> "$GITHUB_STEP_SUMMARY"
+        uses: davelosert/vitest-coverage-report-action@74c2d9210b4fc44c84d8213f61d7ec99837b7aa0 # v2.13.2
+        with:
+          # Commenting needs pull-requests: write and fails on fork PRs.
+          comment-on: none
 
   gitleaks:
     name: Secret scan (gitleaks)

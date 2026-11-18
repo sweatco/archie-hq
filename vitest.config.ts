@@ -9,7 +9,7 @@ export default defineConfig({
       // tools/pm is exercised by `node --test`, which this provider cannot see.
       include: ['src/**/*.{ts,tsx}', 'tools/**/*.{ts,mjs}', 'scripts/**/*.ts'],
       exclude: ['**/*.test.*', '**/__tests__/**', 'src/test-support/**', 'tools/pm/**'],
-      reporter: ['text-summary', 'html', 'json-summary'],
+      reporter: ['text-summary', 'html', 'json-summary', 'json'],
     },
   },
   resolve: {
