@@ -93,7 +93,7 @@ Use a self-review for routine changes and ordinary maintainer review for PRs. Se
 
 ## Automated checks
 
-Run `npm run check` before handing off a code change. It checks formatting, lint, types, the build and tests without rewriting source. During iteration, use `npm run lint`, `npm run format:check` and focused tests. `npm run test:coverage` writes a V8 coverage summary and an HTML report to `coverage/`; use it to find untested behavior, not as a target, and note that the `node --test` suites under `tools/pm` are outside it. `npm run lint:fix` applies the linter's safe fixes; `npm run format` rewrites formatting. Review both diffs before keeping them.
+Run `npm run check` before handing off a code change. It checks formatting, lint, types, the build and tests without rewriting source. During iteration, use `npm run lint`, `npm run format:check` and focused tests. `npm run test:coverage` shows which code the tests reach; use it to find untested behavior, not as a target. `npm run lint:fix` applies the linter's safe fixes; `npm run format` rewrites formatting. Review both diffs before keeping them.
 
 The committed `.oxlintrc.json` owns the exact rule allowlist and scopes. Syntax checks cover owned source, tools, scripts, examples and root code configuration. Typed rules cover TypeScript in `src/`, `tools/` and `scripts/`, using their nearest TypeScript projects. React rules apply to the CLI; test rules apply to test/spec files. Application source uses the unified logger, whose implementation owns direct console access. Standalone tools and scripts retain their intentional stdout/stderr interfaces. The existing compiler and Docker helper build remain authoritative; lint does not replace type checking.
 
@@ -101,11 +101,11 @@ Prettier owns mechanical presentation: two spaces, single quotes, semicolons, tr
 
 ### Agent completion hooks
 
-Claude Code's `.claude/settings.json` and Codex's `.codex/hooks.json` call the same `tools/quality/agent-stop.mjs` script at `Stop`. After `npm ci`, every applicable Stop runs `npm run lint`, `npm run format:check`, `npm run typecheck` and `npm test` across the whole checkout, including unchanged work. The existing commands own file selection. There is no change detection, cache or hook-owned state. Plan-mode turns and ignored working directories such as Archie's runtime workdir are skipped.
+Claude Code's `.claude/settings.json` and Codex's `.codex/hooks.json` call the same `tools/quality/agent-stop.mjs` script at `Stop`. After `npm ci`, every applicable Stop runs lint, the format check, typecheck and the tests across the whole checkout, including unchanged work. The existing commands own file selection. There is no change detection, cache or hook-owned state. Plan-mode turns and ignored working directories such as Archie's runtime workdir are skipped.
 
-Every command runs even if an earlier one fails. The hook returns diagnostics and requests one correction pass. If `stop_hook_active` is already true, it reruns the checks but reports remaining failures as a warning and lets the agent stop. The checks do not rewrite source. Preserve unrelated work and report failures outside the task's scope. Missing dependencies and command timeouts are reported as check failures; malformed hook input produces a warning without continuing the agent. Lint, formatting and typecheck each have a 30-second limit and the tests have 90 seconds; diagnostic output is bounded. The tests need the Node version in `.tool-versions`, so a session started on an older Node reports that as a failure.
+Every command runs even if an earlier one fails. The hook returns diagnostics and requests one correction pass. If `stop_hook_active` is already true, it reruns the checks but reports remaining failures as a warning and lets the agent stop. The checks do not rewrite source. Preserve unrelated work and report failures outside the task's scope. Missing dependencies and command timeouts are reported as check failures; malformed hook input produces a warning without continuing the agent. Each command has a time limit and diagnostic output is bounded.
 
-These hooks provide local feedback and skip only the build. Run the full `npm run check` before handoff; CI remains the authoritative PR check. Readability still requires the review rubric above. See [local development](local-development.md#agent-completion-hooks) for activation and the native trust requirements.
+These hooks provide local feedback. Run the full `npm run check` before handoff; CI remains the authoritative PR check. Readability still requires the review rubric above. See [local development](local-development.md#agent-completion-hooks) for activation and the native trust requirements.
 
 ### Keeping lint clean
 
