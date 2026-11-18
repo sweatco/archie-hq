@@ -6,7 +6,7 @@
           {
             "type": "command",
             "command": "node \"$(git rev-parse --show-toplevel)/tools/quality/agent-stop.mjs\"",
-            "timeout": 90
+            "timeout": 200
           }
         ]
       }
