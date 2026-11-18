@@ -40,164 +40,12 @@ Add an incoming-event source adapter alongside Slack threads. Use it for imports
 
 Reuse existing analysis, budgets, feedback and delivery. **Off** skips proactive handoffs without a backlog. **Shadow** analyzes without sends. **Live** applies normal delivery checks. Suppress overlapping outreach while a routine handles the same entity and reassess its outcome. Commit `incoming:<receipt-id>` with the evidence, then acknowledge the inbox handoff. A retry after either commit must be safe. [Proactivity architecture](../architecture/proactivity.md) · [Schema migration](../../src/proactivity/persistence/schema.ts)
 
-## Milestones and issues
-
-Published on 2026-11-18 under [Feature #400 — Run routines and proactivity from incoming events](https://github.com/sweatco/archie-hq/issues/400). The three milestones below describe the completion criteria. Owners and dates are open.
-
-<details>
-<summary>Parent feature. Run routines and proactivity from incoming events</summary>
-
-**Objective.** Let an employee connect a generic webhook or MCP Events subscription in Slack and use the same input for a saved routine, proactivity or both.
-
-**Acceptance criteria**
-
-- [ ] An employee can review a routine, connect and test its source, inspect the outcome, then pause or revoke it in Slack.
-- [ ] A redelivered event with a stable key starts one Task per matching routine, and the inbox discards its body after the last handoff.
-- [ ] A relevant event can produce sourced help in an allowed conversation. Irrelevant events stay quiet and ambiguous ownership does not cause a DM.
-
-**Context.** The unified plan at `docs/plans/20261116-incoming-events-shared-receiver.md` owns the design.
-
-**Next step and dependencies.** Start the generic receiver and the MCP compatibility check independently.
-
-</details>
-
-### Incoming events: a webhook runs a routine in Slack
-
-An employee connects a generic sender in Slack, sees one Task in the approved conversation and can inspect, pause and resume the routine.
-
-[Milestone 6](https://github.com/sweatco/archie-hq/milestone/6) · Tasks [#401](https://github.com/sweatco/archie-hq/issues/401), [#402](https://github.com/sweatco/archie-hq/issues/402), [#403](https://github.com/sweatco/archie-hq/issues/403)
-
-<details>
-<summary>Task 1. Receive and deduplicate generic webhooks</summary>
-
-**Objective.** Accept a JSON webhook on one public route and hand matching work to a durable inbox before replying.
-
-**Acceptance criteria**
-
-- [ ] A correctly signed request or valid bearer request returns `202` after commit. Invalid authentication, malformed JSON, invalid UTF-8 and an oversized body start no work.
-- [ ] Retries with the same key return the same receipt even when the inbox is full. Changed event content under the same key is a visible conflict. Filtered and paused events retain no body.
-- [ ] Restart after commit and start a competing worker. Only the current lease holder may finish a handoff. When the last handoff ends, delete the payload in the same transaction.
-- [ ] The public callback works through ingress and the operator API stays private. Logs and event streams contain neither a test secret nor a raw-body marker.
-
-**Context.** Reuse the shared Express app, route-local raw parsing, Standard Webhooks and Archie's SQLite transaction and worker patterns. Generic bearer deliveries without a key are separate events.
-
-**Next step and dependencies.** No prerequisite. Start with a signed request against the mounted route and a commit/retry test.
-
-</details>
-
-<details>
-<summary>Task 2. Run a saved event routine once per matching receipt</summary>
-
-**Objective.** Turn each approved routine handoff into one ordinary Archie Task in its bound conversation.
-
-**Acceptance criteria**
-
-- [ ] Take a consistent snapshot of the routine at receipt time. A later prompt edit applies to future receipts. Pause, deletion or revoked access stops unstarted work. After access is revoked during a run, its next post, file share and memory write must respect the new scope.
-- [ ] Interrupt before preparation, after preparation and after activation. Recovery reuses the reserved Task and does not take another run slot for work already admitted.
-- [ ] A channel-bound Task opens its own thread. DM-only proactive approvals and existing schedule and message tests still pass. A skipped or uncertain run has a reason in history.
-
-**Context.** Extend the trigger condition and firing result. Share Task preparation and activation internals. Preserve the scheduler’s existing daily allowance and the separate DM approval contract.
-
-**Next step and dependencies.** Depends on task 1. Trace one receipt through the scheduler, durable preparation and recovery.
-
-</details>
-
-<details>
-<summary>Task 3. Connect, test and manage an event input in Slack</summary>
-
-**Objective.** Let an employee create a webhook routine in conversation, review it, connect a sender and inspect its result.
-
-**Acceptance criteria**
-
-- [ ] Review shows the source, filters, instructions and audience. A user can enable the routine, check the connection without a run, and run a clearly marked sample.
-- [ ] History distinguishes received, skipped, handed off and delivered. Inventory includes shared and proactivity-only inputs. A routine pause leaves other consumers active.
-- [ ] Only the owner or recovery operator can reveal or rotate a key or transfer input ownership. Stale controls, source revocation and changing a routine’s input cannot disclose private data or broaden its grant.
-
-**Context.** Use Bolt views, the existing vault and trigger approval.
-
-**Next step and dependencies.** Depends on task 2. Walk the review → connect → sample → history → pause/resume flow with a development sender.
-
-</details>
-
-### Incoming events: Archie subscribes to an MCP event
-
-An employee selects an advertised MCP event in Slack. Signed delivery, renewal, recovery and revocation work with a real publisher.
-
-[Milestone 7](https://github.com/sweatco/archie-hq/milestone/7) · Tasks [#404](https://github.com/sweatco/archie-hq/issues/404), [#405](https://github.com/sweatco/archie-hq/issues/405)
-
-<details>
-<summary>Task 4. Discover MCP Events on configured servers</summary>
-
-**Objective.** Show which events a permitted employee can subscribe to on a configured integration account.
-
-**Acceptance criteria**
-
-- [ ] Fixtures cover top-level Events over legacy initialize and modern discovery, plus the modern extension profile. Prefer the extension if both are present.
-- [ ] An explicit authorization header succeeds even when a stored OAuth record is stale. Without an explicit header, use the existing refresh path. Distinguish unsupported, unauthorized and unreachable.
-- [ ] Validate event arguments and payload schemas with the released SDK validator. The existing v1 tool clients still work.
-
-**Context.** Use the root `.mcp.json` loader and pinned v2 client. Keep any discovery adapter confined to the capability field the SDK strips.
-
-**Next step and dependencies.** No prerequisite. Exercise both released-client negotiation paths before building the Slack selector.
-
-</details>
-
-<details>
-<summary>Task 5. Manage signed MCP webhook subscriptions</summary>
-
-**Objective.** Let a user select an MCP event in Slack and keep the subscription working across renewal, restart and pause.
-
-**Acceptance criteria**
-
-- [ ] A real publisher’s signed challenge succeeds before the grant arrives. Early events run only after the grant matches. Challenge and termination controls never run a routine.
-- [ ] Retry a lost grant, renew a short grant and recover from the last committed cursor after a restart. An explicit resume after pause starts with new events. Repeat deliveries produce one receipt. Show truncated or unavailable coverage.
-- [ ] Pausing or replacing an input prevents stale grants from enabling it. Local revocation works during an outage and remote cleanup can finish later.
-
-**Context.** Use the existing receiver and input panels. Persist the secret reference, callback and binding before the first subscribe call.
-
-**Next step and dependencies.** Depends on tasks 3 and 4. Complete one subscribe → deliver → renew → unsubscribe cycle with a development publisher.
-
-</details>
-
-### Incoming events: reviewed proactive follow-up
-
-A shared input can produce useful, sourced help or a deliberate no-send. Routine output, privacy, restart and restore have been verified in the full Slack flow.
-
-[Milestone 8](https://github.com/sweatco/archie-hq/milestone/8) · Tasks [#406](https://github.com/sweatco/archie-hq/issues/406), [#407](https://github.com/sweatco/archie-hq/issues/407)
-
-<details>
-<summary>Task 6. Feed incoming evidence into Archie's proactivity</summary>
-
-**Objective.** Let one input feed a routine and proactivity while preserving source access, ownership and current Slack behavior.
-
-**Acceptance criteria**
-
-- [ ] Migrate a representative schema-12 database. Preserve Slack evidence IDs, budgets, feedback, approvals, leases and unresolved sends.
-- [ ] Crash between the evidence commit and inbox acknowledgment. The receipt imports once and the raw body disappears after both consumers finish. Off skips new evidence, shadow analyzes without sending, and live respects existing budgets.
-- [ ] Use source-aware citations and audience checks for recall, output and Start task. Unknown owners get no DM. While a routine handles the same entity, suppress overlapping outreach and reassess its result.
-
-**Context.** Extend the existing source-access, recall, handoff and delivery paths. Keep the incoming inbox usable with proactivity disabled.
-
-**Next step and dependencies.** Depends on task 2. Run a migration fixture and import the same receipt twice before exercising delivery.
-
-</details>
-
-<details>
-<summary>Task 7. Verify incoming event outcomes and recovery end to end</summary>
-
-**Objective.** Show that a real user can connect a source and get useful, correctly scoped help, and that interruption or rollback is recoverable.
-
-**Acceptance criteria**
-
-- [ ] Run `npm run check` on Node 24. Use an isolated E2E workdir, real Slack panels, a signed generic sender and an MCP publisher. Record revisions, receipt IDs and resulting Tasks or decisions.
-- [ ] Review an accurate meeting summary, an explicit report that the transcript is missing, a useful incident response and a deliberate no-send. Ambiguous ownership and instructions in an event cannot change the audience or permissions.
-- [ ] Restore a payload-free backup with its matching binary. Verify permissions, paused inputs and uncertain sends before enabling workers. Record observed results and the user’s acceptance.
-
-**Context.** Use the repository E2E harness and the unified plan’s rollout checks. The generic meeting example exercises delivery.
-
-**Next step and dependencies.** Depends on tasks 5 and 6. Prepare the test workspace and expected results, then run both sources through the real Slack flow.
-
-</details>
+## Implementation and verification
+
+1. **Deliver a generic webhook routine in Slack.** Connect the receiver and inbox to the trigger scheduler and Slack panels. Use a signed sample to exercise setup, delivery, history and pause. Redelivery after a restart must produce one Task in the approved conversation. Check that invalid requests start no work and that revocation restricts an active Task’s next disclosure.
+2. **Add MCP subscriptions.** Test discovery independently against both advertised profiles. Once the receiver is available, exercise a signed challenge before grant, a lost response, renewal, cursor recovery and pause with a real publisher.
+3. **Feed the same input into proactivity.** Migrate a copy of the schema-12 database to schema 13. Preserve Slack evidence, budgets, approvals and pending sends. Interrupt the handoff between stores and verify one evidence import, one routine Task and immediate payload deletion after both handoffs finish.
+4. **Verify user-visible outcomes.** Run `npm run check` on Node 24 and use the isolated E2E harness with real Slack panels. Review an accurate meeting summary, a missing transcript, a useful incident response and a deliberate no-send. Check that uncertain ownership cannot cause a DM and that logs contain neither raw event bodies nor credentials.
 
 ## Rollout and acceptance
 
@@ -207,7 +55,7 @@ For a planned restore point, pause admission, drain outstanding handoffs, stop w
 
 ## Research behind the choices
 
-Research on 2026-11-16 examined Archie revision `465a9cb2`, upstream code and published packages. A local v1.30.0 schema probe confirmed that top-level `events` is dropped. The 2026-11-18 review checked the HTTP, trigger, Task, OAuth and proactivity paths at `bdc01098`, verified both pinned npm releases and compared the work with open GitHub tracking. Live interoperability, crash recovery and output quality still need implementation evidence.
+Research on 2026-11-16 examined Archie revision `465a9cb2`, upstream code and published packages. A local v1.30.0 schema probe confirmed that top-level `events` is dropped. The 2026-11-18 review checked the HTTP, trigger, Task, OAuth and proactivity paths at `bdc01098` and verified both pinned npm releases. Live interoperability, crash recovery and output quality still need implementation evidence.
 
 | Source | What Archie can reuse |
 |---|---|
