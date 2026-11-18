@@ -6,6 +6,8 @@ import { mcpToolHandler } from '../../test-support/mcp.js';
  * Mock shape and handler extraction follow explore-tools.test.ts.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 // Heavy deps tools.ts pulls in — mock to import-safe stubs (same as explore-tools.test.ts).
 vi.mock('../../connectors/github/client.js', () => ({
@@ -293,6 +295,104 @@ describe('post_to_user reaches the open path on a trigger-fired task', () => {
 
     expect(task.postToUser).not.toHaveBeenCalled();
     expect(out).toBe(OLD_POST_TO_USER_REFUSAL);
+  });
+});
+
+describe('post_to_user message purposes', () => {
+  it.each(['acknowledgment', 'progress_update'])(
+    'refuses Slack %s without delivery or task activity',
+    async (purpose) => {
+      const task = makeTask({ originChannelId: 'C1' });
+      const out = textOf(
+        await getHandler(
+          'post_to_user',
+          task,
+        )({ purpose, message: 'Draft is written; reviewing now.' }),
+      );
+      expect(out).toContain('Not posted');
+      expect(task.postToUser).not.toHaveBeenCalled();
+      expect(task.touch).not.toHaveBeenCalled();
+      expect(task.setCompletionIntent).not.toHaveBeenCalled();
+    },
+  );
+
+  it('refuses process narration before opening a trigger home thread', async () => {
+    const task = makeTask({ home: true });
+    await getHandler(
+      'post_to_user',
+      task,
+    )({ purpose: 'progress_update', message: 'Starting now.' });
+    expect(task.postToUser).not.toHaveBeenCalled();
+  });
+
+  it.each(['answer', 'user_action', 'requested_status', 'skill_required', 'reaction_fallback'])(
+    'delivers an allowed %s message',
+    async (purpose) => {
+      const task = makeTask({ originChannelId: 'C1' });
+      const out = textOf(
+        await getHandler('post_to_user', task)({ purpose, message: 'Allowed reply.' }),
+      );
+      expect(task.postToUser).toHaveBeenCalledExactlyOnceWith(
+        'Allowed reply.',
+        'pm-agent',
+        undefined,
+      );
+      expect(out).toBe('Message posted.');
+    },
+  );
+
+  it('uses the explicit target rather than the default channel to decide', async () => {
+    const task = makeTask({ originChannelId: 'C1' });
+    task.metadata.channels['cli:local'] = { type: 'cli', id: 'cli:local' };
+    const post = getHandler('post_to_user', task);
+    await post({
+      purpose: 'progress_update',
+      message: 'Working.',
+      target: { channel: 'cli:local' },
+    });
+    expect(task.postToUser).toHaveBeenCalledOnce();
+    vi.mocked(task.postToUser).mockClear();
+    task.metadata.default_channel = 'cli:local';
+    await post({
+      purpose: 'progress_update',
+      message: 'Working.',
+      target: { channel: 'slack:C1:1.0' },
+    });
+    expect(task.postToUser).not.toHaveBeenCalled();
+  });
+
+  it.each(['cli', 'github'] as const)('preserves %s progress delivery', async (type) => {
+    const task = makeTask();
+    task.metadata.channels.local =
+      type === 'cli' ? { type, id: 'cli:local' } : { type, repo: 'org/repo', pr_number: 1 };
+    task.metadata.default_channel = 'local';
+    await getHandler('post_to_user', task)({ purpose: 'progress_update', message: 'Working.' });
+    expect(task.postToUser).toHaveBeenCalledOnce();
+  });
+
+  it('requires a recognized purpose at the MCP boundary', async () => {
+    const task = makeTask({ originChannelId: 'C1' });
+    const server = createCommsMcpServer(makeAgent(), task);
+    const client = new Client({ name: 'post-purpose-test', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.instance.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      for (const args of [{ message: 'Working.' }, { purpose: 'anything', message: 'Working.' }]) {
+        const result = await client.callTool({ name: 'post_to_user', arguments: args });
+        expect(result.isError).toBe(true);
+      }
+      expect(task.postToUser).not.toHaveBeenCalled();
+      const result = await client.callTool({
+        name: 'post_to_user',
+        arguments: { purpose: 'answer', message: 'The result.' },
+      });
+      expect(result.isError).not.toBe(true);
+      expect(task.postToUser).toHaveBeenCalledOnce();
+    } finally {
+      await client.close();
+      await server.instance.close();
+    }
   });
 });
 

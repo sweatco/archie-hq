@@ -366,11 +366,20 @@ describe('durable prepared task starts', () => {
     const reloaded = await Task.get(input.taskId);
     const tools = comms(reloaded);
     expect(tools.post_to_channel).toBeUndefined();
-    expect(tools.post_to_user.inputKeys).toEqual(['message']);
-    await call(tools.post_to_user, { message: 'ACK; source: https://slack.test/C_PUBLIC/10.0' });
+    expect(tools.post_to_user.inputKeys).toEqual(['purpose', 'message']);
+    await call(tools.post_to_user, {
+      purpose: 'answer',
+      message: 'Investigation result; source: https://slack.test/C_PUBLIC/10.0',
+    });
     expect(fixture.post).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ channel: 'D_OWNER', threadTs: input.destination.thread }),
     );
+    const status = await call(tools.post_to_user, {
+      purpose: 'progress_update',
+      message: 'Drafting the result.',
+    });
+    expect(status.content[0].text).toContain('Not posted');
+    expect(fixture.post).toHaveBeenCalledTimes(1);
     for (const args of [
       { message: 'forged', target: { channel: 'slack:C_PUBLIC:10.0' } },
       { message: 'forged', channel: 'C_PUBLIC', thread_ts: '10.0' },

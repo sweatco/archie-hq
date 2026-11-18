@@ -372,19 +372,51 @@ export interface PRChecksReport {
 
 // ---- PM tools ----
 
+const postPurpose = z
+  .enum([
+    'answer',
+    'user_action',
+    'requested_status',
+    'skill_required',
+    'reaction_fallback',
+    'acknowledgment',
+    'progress_update',
+  ])
+  .describe(
+    'Classify the message by its content: answer delivers requested substantive content now; user_action asks for needed input, approval or action; requested_status answers an explicit status request; skill_required is wording required by a loaded skill at this workflow stage; reaction_fallback is the brief fallback after a failed acknowledgment reaction. acknowledgment only confirms receipt; progress_update narrates unfinished work or promises a later answer. The last two are not delivered to Slack. Do not relabel them as answers or infer a status request from a task request.',
+  );
+
+function isSlackProcessPost(
+  task: Task,
+  purpose: z.infer<typeof postPurpose>,
+  targetChannel?: string,
+): boolean {
+  if (purpose !== 'acknowledgment' && purpose !== 'progress_update') return false;
+  if (targetChannel) return task.metadata.channels[targetChannel]?.type === 'slack';
+  const channel = task.metadata.default_channel
+    ? task.metadata.channels[task.metadata.default_channel]
+    : undefined;
+  return channel ? channel.type === 'slack' : !!task.metadata.home_channel;
+}
+
+const PROCESS_POST_REFUSAL =
+  'Not posted. Routine receipts and unrequested progress stay private in Slack. ' +
+  'Use a reaction only if useful; otherwise continue working silently. Do not relabel an unrequested update to bypass this refusal.';
+
 function createPostToUserTool(agent: Agent, task: Task) {
   if (task.metadata.approved_start)
     return tool(
       'post_to_user',
-      "Reply in this task's approved owner conversation. The destination is fixed by the task; only supply the message.",
-      { message: z.string().describe('The message to send') },
+      "Reply in this task's approved owner conversation. The destination is fixed by the task. Classify the message's actual purpose before posting.",
+      { purpose: postPurpose, message: z.string().describe('The message to send') },
       async (args) => {
-        if (Object.keys(args).some((key) => key !== 'message'))
+        if (Object.keys(args).some((key) => key !== 'message' && key !== 'purpose'))
           return err('Approved task replies do not accept a target.');
         const muted = task.metadata.default_channel
           ? findMutedTarget(task.metadata.channels, task.metadata.default_channel)
           : null;
         if (muted) return ok(formatMutedTargetRefusal(muted.channel_name));
+        if (isSlackProcessPost(task, args.purpose)) return ok(PROCESS_POST_REFUSAL);
         task.touch();
         try {
           await task.postToUser(args.message, agent.def.id);
@@ -397,13 +429,14 @@ function createPostToUserTool(agent: Agent, task: Task) {
   return tool(
     'post_to_user',
     'Send a message to the user in this task. Without target, posts to the default channel — wherever this task already lives (use that almost always). ' +
-      'Follow loaded skill messaging instructions only for the stage they describe. Otherwise, use reactions for Slack follow-up details or questions awaiting the final result, under the messaging rules. Do not post receipt promises or drafting/review updates unless the user requests status or a blocker needs action. ' +
+      "Classify the message's actual purpose before posting. A loaded skill may require a message at the current workflow stage; use skill_required only then. Follow the PM rules for optional reactions. " +
       'Use target.channel only to reach another thread ALREADY linked to this task. ' +
       'If this task lives in a channel thread, bring someone in by @mentioning them in that thread. ' +
       'To say something in a channel that is NOT part of this task (exploration/outreach), use `post_to_channel` — it deliberately does not link to this task. ' +
       'A muted channel is refused. ' +
       'To attach files, send the message first, then call `post_files_to_user` with the same target.',
     {
+      purpose: postPurpose,
       message: z.string().describe('The message to send'),
       target: z
         .object({
@@ -432,6 +465,8 @@ function createPostToUserTool(agent: Agent, task: Task) {
       const mutedKey = args.target?.channel ?? task.metadata.default_channel;
       const muted = mutedKey ? findMutedTarget(task.metadata.channels, mutedKey) : null;
       if (muted) return ok(formatMutedTargetRefusal(muted.channel_name));
+      if (isSlackProcessPost(task, args.purpose, args.target?.channel))
+        return ok(PROCESS_POST_REFUSAL);
       task.touch();
       let newChannelKey: string | null;
       try {
@@ -831,7 +866,7 @@ function createRequestMaxModeTool(agent: Agent, task: Task) {
 function createReportCompletionTool(agent: Agent, task: Task) {
   return tool(
     'report_completion',
-    'Finish your turn: signal you have responded and are now waiting only on the user (not on any agent). If a message is provided, it is posted first.',
+    'Finish your turn when waiting only on the user (not on any agent). If a message is provided, it is posted first. Omit it when the answer is already delivered or the input needs no response under the PM messaging rules.',
     {
       message: z.string().optional().describe('Optional message to post to Slack before finishing'),
     },
@@ -984,8 +1019,8 @@ function createMuteChannelTool(agent: Agent, task: Task) {
 function createReactToMessageTool(agent: Agent, task: Task) {
   return tool(
     'react_to_message',
-    'Add an emoji reaction to a message in a Slack thread. Use to acknowledge, ' +
-      'express sentiment, or signal status without sending a text message. ' +
+    'Add an emoji reaction to a message in a Slack thread when receipt or sentiment is useful. ' +
+      'Follow the PM messaging rules: skip routine closings and repeated or already answered input; acknowledge a burst of related follow-ups at most once. ' +
       'Reacts to ANY message in a linked thread — pass `message_id`, the `msg:<ts>` ' +
       'value shown next to each message that arrived in your conversation (e.g. "1716998400.123456"). ' +
       "Omit `channel` to target the task's default channel. " +
