@@ -87,6 +87,7 @@ Future work and unimplemented features. These are ideas that have been designed 
 | [LLM Guard Integration](proposals/llm-guard-integration.md) | Full DLP scanning service |
 | [Analytics Plugin Gaps](proposals/analytics-plugin-gaps.md) | Roadmap for analytics plugin (MVP shipped) |
 | [Architecture Simplification](proposals/architecture-simplification.md) | Ideas to reduce complexity in core flows |
+| [Behaviour Evals](proposals/behaviour-evals.md) | Regression checks for prompt and skill changes ([plan](plans/20261118-behaviour-evals.md)) |
 
 ## Quick Reference
 

@@ -33,6 +33,7 @@ Historical record of Archie's incremental development. Each plan represents a mi
 | [20261109](20261109-coding-guidelines-and-checks.md) | Coding guidelines, formatting and zero-debt lint checks | Implemented |
 | [20261110](20261110-coding-guidelines-review.md) | Guidelines review of PR #370 and targeted repairs | Implemented and verified locally |
 | [20261111](20261111-agent-completion-hooks.md) | Shared agent completion lint/format hooks | Simplified and verified live; Codex worktrees load primary-checkout configuration |
+| [20261118](20261118-behaviour-evals.md) | Behaviour evals: offline grading of real sessions, paired runs and approved PR runs | Approved plan; not implemented |
 
 ## Evolution Arc
 
