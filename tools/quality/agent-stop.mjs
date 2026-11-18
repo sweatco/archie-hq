@@ -2,6 +2,14 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
+// The limits sum to less than the hook timeout in the Claude and Codex configurations.
+const CHECKS = [
+  ['lint', 30_000],
+  ['format:check', 30_000],
+  ['typecheck', 30_000],
+  ['test', 90_000],
+];
+
 function main() {
   let input;
   try {
@@ -32,11 +40,11 @@ function main() {
     if (location.status !== 1) throw new Error('Could not check the hook working directory');
 
     const failures = [];
-    for (const script of ['lint', 'format:check']) {
+    for (const [script, timeout] of CHECKS) {
       const result = spawnSync('npm', ['run', script], {
         cwd: root,
         encoding: 'utf8',
-        timeout: 30_000,
+        timeout,
         maxBuffer: 2 * 1024 * 1024,
         env: { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0' },
       });
@@ -63,7 +71,7 @@ function main() {
   }
   return {
     decision: 'block',
-    reason: `Fix the lint/format failures before finishing. Preserve unrelated edits and report failures outside this task as blockers. Do not relax rules or add suppressions.\n${failure}`,
+    reason: `Fix the failing checks before finishing. Preserve unrelated edits and report failures outside this task as blockers. Do not relax rules or add suppressions.\n${failure}`,
   };
 }
 

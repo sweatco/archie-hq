@@ -34,7 +34,7 @@ npm run cli
 ## Prerequisites
 
 - Docker
-- Node.js 20+ (for CLI and local tooling)
+- Node.js at the version in `.tool-versions` (for CLI and local tooling)
 - Git with SSH key configured for GitHub
 - Anthropic API key ([console.anthropic.com](https://console.anthropic.com/settings/keys))
 
@@ -222,7 +222,7 @@ For Socket Mode you also need to flip `socket_mode_enabled: true` in `slack-mani
 
 ## Running Without Docker
 
-Use Node 24 to match CI. Its bundled Corepack selects the npm version from `package.json`'s `packageManager` field after enabling the npm shim. Corepack requires separate provisioning on Node 25 and later; see the [Corepack installation guide](https://github.com/nodejs/corepack#how-to-install) when upgrading.
+Use the Node version in `.tool-versions` to match CI. Its bundled Corepack selects the npm version from `package.json`'s `packageManager` field after enabling the npm shim. Corepack requires separate provisioning on Node 25 and later; see the [Corepack installation guide](https://github.com/nodejs/corepack#how-to-install) when upgrading.
 
 ```bash
 corepack enable npm
@@ -235,6 +235,7 @@ npm run format:check # Verify Prettier formatting
 npm run check        # Format check, lint, typecheck, build and tests
 npm test             # Run vitest suite
 npm run test:watch   # vitest in watch mode
+npm run test:coverage # All tests, with a coverage report in coverage/
 ```
 
 Use `npm run format` to apply formatting and `npm run lint:fix` for safe lint fixes, then review the diff. The [coding guidelines](coding-guidelines.md) explain rule scopes, the zero-debt policy, review expectations and runtime verification. Keep `tsconfig.scripts.json` for the Docker Git-helper build; the nearest projects under `tools/` and `scripts/` provide no-emit compiler and typed lint coverage.

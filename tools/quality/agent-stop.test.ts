@@ -42,6 +42,7 @@ const configSchema = z.object({
     ),
   }),
 });
+const CHECKS = ['lint', 'format:check', 'typecheck', 'test'];
 let workspace: string;
 let commands: string;
 
@@ -113,7 +114,12 @@ beforeEach(() => {
     'package.json',
     JSON.stringify({
       type: 'module',
-      scripts: { lint: 'oxlint .', 'format:check': 'prettier --check .' },
+      scripts: {
+        lint: 'oxlint .',
+        'format:check': 'prettier --check .',
+        typecheck: 'tsc --noEmit',
+        test: 'node --eval ""',
+      },
     }),
   );
   writeFixture(
@@ -141,15 +147,14 @@ afterEach(() => {
 });
 
 describe('agent completion quality hook', () => {
-  it('runs both project checks on every stop, including unchanged work, from the Git root', () => {
+  it('runs every project check on every stop, including unchanged work, from the Git root', () => {
     const env = recordingNpm();
     expect(runHook({ cwd: join(workspace, 'src') }, env)).toEqual({});
     expect(runHook({}, env)).toEqual({});
+    const once = CHECKS.map((script) => `${workspace} run ${script}`);
     expect(readFileSync(join(commands, 'calls'), 'utf8').split('\n').filter(Boolean)).toEqual([
-      `${workspace} run lint`,
-      `${workspace} run format:check`,
-      `${workspace} run lint`,
-      `${workspace} run format:check`,
+      ...once,
+      ...once,
     ]);
   });
 
@@ -162,12 +167,14 @@ describe('agent completion quality hook', () => {
     expect(() => readFileSync(join(commands, 'calls'))).toThrow();
   });
 
-  it.each(['lint', 'format:check'])('reports %s failures and still runs both checks', (script) => {
+  it.each(CHECKS)('reports %s failures and still runs every check', (script) => {
     const result = runHook({}, recordingNpm(script));
     expect(result.decision).toBe('block');
     expect(result.reason).toContain(`npm run ${script}\n`);
     expect(result.reason).toContain('fixture failure');
-    expect(readFileSync(join(commands, 'calls'), 'utf8').trim().split('\n')).toHaveLength(2);
+    expect(readFileSync(join(commands, 'calls'), 'utf8').trim().split('\n')).toHaveLength(
+      CHECKS.length,
+    );
   });
 
   it('reruns checks after a continuation and warns instead of continuing indefinitely', () => {
@@ -176,8 +183,32 @@ describe('agent completion quality hook', () => {
     const retry = runHook({ stop_hook_active: true }, env);
     expect(retry.decision).toBeUndefined();
     expect(retry.systemMessage).toContain('automatic retry is exhausted');
-    expect(readFileSync(join(commands, 'calls'), 'utf8').trim().split('\n')).toHaveLength(4);
+    expect(readFileSync(join(commands, 'calls'), 'utf8').trim().split('\n')).toHaveLength(
+      2 * CHECKS.length,
+    );
     expect(runHook({ stop_hook_active: true }, recordingNpm())).toEqual({});
+  });
+
+  it('returns real compiler and test diagnostics', () => {
+    writeFixture('src/bad.ts', 'export const count: number = "three";\n');
+    writeFixture(
+      'package.json',
+      JSON.stringify({
+        type: 'module',
+        scripts: {
+          lint: 'node --eval ""',
+          'format:check': 'node --eval ""',
+          typecheck: 'tsc --noEmit',
+          test: 'node --eval "console.error(\'1 test failed\'); process.exit(1)"',
+        },
+      }),
+    );
+    const result = runHook();
+    expect(result.decision).toBe('block');
+    expect(result.reason).toContain('npm run typecheck');
+    expect(result.reason).toContain('TS2322');
+    expect(result.reason).toContain('npm run test');
+    expect(result.reason).toContain('1 test failed');
   });
 
   it('returns real lint and formatter diagnostics without rewriting source', () => {
