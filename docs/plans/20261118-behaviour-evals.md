@@ -207,22 +207,12 @@ Depends on: Stage 1 for the proof; Stages 2 and 3 for the workflow.
 
 Simulated Slack, which unlocks thread conduct, multi-user cases and the memory arm; a full-plugin arm run from the plugins repository; repo-backed cases; scheduled runs on main for model and CLI drift. Each needs Stage 2.
 
-## Milestones and issues
+## Tracking
 
-**[Behaviour evals: repeatable prompt regression baseline](https://github.com/sweatco/archie-hq/milestone/4)** — Stages 0 to 3.
+- Stages 0 to 3: [Behaviour evals: repeatable prompt regression baseline](https://github.com/sweatco/archie-hq/milestone/4).
+- Stage 4: [Behaviour evals: approved runs on pull requests](https://github.com/sweatco/archie-hq/milestone/5).
 
-- [#393](https://github.com/sweatco/archie-hq/issues/393) Build session records and graders, run offline on real sessions (Stage 0)
-- [#394](https://github.com/sweatco/archie-hq/issues/394) Add a hermetic eval boot profile (Stage 1)
-- [#395](https://github.com/sweatco/archie-hq/issues/395) Add a scripted eval runner with paired refs and a case format (Stage 2)
-- [#396](https://github.com/sweatco/archie-hq/issues/396) Seed the baseline eval cases and record the noise floor (Stage 2)
-- [#397](https://github.com/sweatco/archie-hq/issues/397) Record a session manifest for attribution (Stage 3)
-
-**[Behaviour evals: approved runs on pull requests](https://github.com/sweatco/archie-hq/milestone/5)** — Stage 4.
-
-- [#398](https://github.com/sweatco/archie-hq/issues/398) Prove an eval instance runs a sandboxed task on a hosted runner
-- [#399](https://github.com/sweatco/archie-hq/issues/399) Add the approval-gated eval workflow for pull requests
-
-The later arms have no milestone or issue until accepted. No issue has an owner or a date.
+The milestones own their issues. The later arms have no milestone until accepted.
 
 ## Validation and rollout
 
@@ -253,8 +243,8 @@ Stage 0 alone, on a small pulled sample.
 
 ## Open questions
 
-1. Does sandboxed agent work run on a GitHub-hosted runner? Bubblewrap needs unprivileged user namespaces inside the container, which Ubuntu 24.04 restricts. Affects Stage 4; resolved by #398; blocking for Stage 4 only.
-2. Does a waiting eval job stop Archie's own armed merge on that PR? Affects Stage 4; resolved in #399; not blocking.
+1. Does sandboxed agent work run on a GitHub-hosted runner? Bubblewrap needs unprivileged user namespaces inside the container, which Ubuntu 24.04 restricts. Affects Stage 4; resolved by its hosted-runner proof; blocking for Stage 4 only.
+2. Does a waiting eval job stop Archie's own armed merge on that PR? Affects Stage 4; resolved while building the workflow; not blocking.
 3. Who reviews the judge calibration sample? Affects the Stage 0 exit; maintainer's ruling; not blocking to start.
 4. Who creates the dedicated, spend-limited model key and the environment? Affects Stage 4; maintainer action.
 
@@ -276,4 +266,4 @@ Stage 0 alone, on a small pulled sample.
 
 ## Status and next action
 
-Researched and partly exercised; approved as a plan; tracked by the two milestones above. Next action: start #393 and #394, which have no prerequisites.
+Researched and partly exercised; approved as a plan; tracked by the two milestones above. Next action: start Stages 0 and 1, which have no prerequisites.
