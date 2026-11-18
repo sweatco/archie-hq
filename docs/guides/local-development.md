@@ -222,7 +222,7 @@ For Socket Mode you also need to flip `socket_mode_enabled: true` in `slack-mani
 
 ## Running Without Docker
 
-Use the Node version in `.tool-versions`. CI, mise and asdf read that file; with another version manager, select it by hand. The tests refuse to start on an older version. Node's bundled Corepack selects the npm version from `package.json`'s `packageManager` field after enabling the npm shim. Corepack requires separate provisioning on Node 25 and later; see the [Corepack installation guide](https://github.com/nodejs/corepack#how-to-install) when upgrading.
+Use the Node version in `.tool-versions` to match CI. Its bundled Corepack selects the npm version from `package.json`'s `packageManager` field after enabling the npm shim. Corepack requires separate provisioning on Node 25 and later; see the [Corepack installation guide](https://github.com/nodejs/corepack#how-to-install) when upgrading.
 
 ```bash
 corepack enable npm

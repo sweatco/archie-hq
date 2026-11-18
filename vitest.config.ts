@@ -1,14 +1,5 @@
 import { defineConfig } from 'vitest/config';
 
-// Older runtimes lack the SQLite FTS5 build the proactivity store needs, which
-// surfaces as scores of unrelated-looking failures instead of one clear cause.
-const nodeMajor = Number(process.versions.node.split('.')[0]);
-if (nodeMajor < 24) {
-  throw new Error(
-    `Tests require Node 24 or later (see .tool-versions); running ${process.version}.`,
-  );
-}
-
 export default defineConfig({
   test: {
     environment: 'node',
