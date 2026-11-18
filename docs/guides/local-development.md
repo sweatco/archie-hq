@@ -235,7 +235,7 @@ npm run format:check # Verify Prettier formatting
 npm run check        # Format check, lint, typecheck, build and tests
 npm test             # Run vitest suite
 npm run test:watch   # vitest in watch mode
-npm run test:coverage # vitest with a coverage report in coverage/
+npm run test:coverage # All tests, with a coverage report in coverage/
 ```
 
 Use `npm run format` to apply formatting and `npm run lint:fix` for safe lint fixes, then review the diff. The [coding guidelines](coding-guidelines.md) explain rule scopes, the zero-debt policy, review expectations and runtime verification. Keep `tsconfig.scripts.json` for the Docker Git-helper build; the nearest projects under `tools/` and `scripts/` provide no-emit compiler and typed lint coverage.

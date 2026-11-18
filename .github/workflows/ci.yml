@@ -26,7 +26,17 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run build
-      - run: npm test
+      - run: npm run test:coverage
+      - name: Report coverage in the job summary
+        run: |
+          node -e '
+            const { total } = require("./coverage/coverage-summary.json");
+            console.log("### Test coverage\n\n| Metric | Covered | Total | % |\n|---|---|---|---|");
+            for (const metric of ["lines", "statements", "functions", "branches"]) {
+              const { covered, total: all, pct } = total[metric];
+              console.log(`| ${metric} | ${covered} | ${all} | ${pct}% |`);
+            }
+          ' >> "$GITHUB_STEP_SUMMARY"
 
   gitleaks:
     name: Secret scan (gitleaks)
