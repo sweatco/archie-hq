@@ -34,6 +34,7 @@ Historical record of Archie's incremental development. Each plan represents a mi
 | [20261110](20261110-coding-guidelines-review.md) | Guidelines review of PR #370 and targeted repairs | Implemented and verified locally |
 | [20261111](20261111-agent-completion-hooks.md) | Shared agent completion lint/format hooks | Simplified and verified live; Codex worktrees load primary-checkout configuration |
 | [20261116](20261116-incoming-events-shared-receiver.md) | Incoming events for Slack-managed routines and proactivity | Proposed |
+| [20261117](20261117-bots-as-separate-slack-apps.md) | Per-role Archie bots, each as its own Slack app served by one backend | Proposed; not implemented |
 | [20261118](20261118-behaviour-evals.md) | Behaviour evals: offline grading of real sessions, paired runs and approved PR runs | Approved plan; not implemented |
 
 ## Evolution Arc
