@@ -61,11 +61,8 @@ Read the [coding guidelines](docs/guides/coding-guidelines.md) for ownership, re
 
 Everything is tracked in GitHub issues. [Managing Archie development](docs/guides/project-management.md) explains issue types, milestones and status in a two-minute read.
 
-- **Idea or feature request:** open a [feature request](https://github.com/sweatco/archie-hq/issues/new?template=feature_request.yml). Rough ideas are welcome; this is the idea inbox.
+- **Idea or feature request:** open a [feature request](https://github.com/sweatco/archie-hq/issues/new?template=feature_request.yml). Rough ideas are welcome.
 - **Bug:** open a [bug report](https://github.com/sweatco/archie-hq/issues/new?template=bug_report.yml).
-- **Before a large PR:** agree the approach in the issue, then link the issue from the PR.
-
-Don't add files to `docs/plans/` or `docs/proposals/`; both are frozen archives.
 
 ## Branch & PR workflow
 
