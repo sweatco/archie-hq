@@ -1,6 +1,6 @@
 # Project access rules and automation
 
-Reference for maintainers and agents. [Managing Archie development](project-management.md) explains the process; this page covers who may write tracking records, what enters the board and what GitHub automates.
+Reference for maintainers and agents. [Managing Archie development](project-management.md) explains the process; this page covers who may write tracking records and how the board is fed.
 
 ## Who may write
 
@@ -10,44 +10,29 @@ Only the canonical repository, `sweatco/archie-hq` (GitHub repository ID `112022
 - **Forks:** a fork's records and agent sessions must not create or change upstream Project items, drafts, fields, views, issues, milestones, labels or assignments. A fork may keep local artifacts when requested and submit contributions for upstream review.
 - **Permissions are the boundary:** never give Project-write credentials to a fork or run fork-controlled code in a privileged upstream workflow.
 
-## What enters the board
+## The board
+
+The private [Archie project](https://github.com/orgs/sweatco/projects/16) is an optional maintainer view. The process reads state from issues, so nothing has to be set on the board by hand.
 
 | Item | How it enters |
 |---|---|
-| Open issue in the canonical repository | Automatically, into Backlog |
-| Sub-issue in the canonical repository | Through the same issue intake |
-| Pull request, including a same-repository one | Only with a maintainer's explicit approval for that PR |
+| Open issue in the canonical repository, including a sub-issue | Automatically, through `is:issue is:open` |
+| Pull request | Not added; it shows through its linked issue |
 | Issue from another repository | Never; link it as a reference |
 
-Verify an item's owning repository before adding it by hand. Keep unfiltered sub-issue auto-add disabled, because sub-issues can belong to other repositories.
+Keep unfiltered sub-issue auto-add disabled, because sub-issues can belong to other repositories.
 
-Pull requests are never added automatically. GitHub's [native intake filters](https://docs.github.com/en/issues/planning-and-tracking-with-projects/automating-your-project/adding-items-automatically) cannot tell head repositories apart, so automatic intake is limited to `is:issue is:open`. This gives a strict boundary without another credential or privileged workflow. For each PR:
+Native Project workflows keep Status in step. They run on the Project's own access, with no extra PAT or GitHub App secret.
 
-- Check the base and head repository metadata. A fork-origin PR stays an external submission until admitted, and an unknown or deleted head is not same-repository work.
-- Get approval from an upstream maintainer to add that PR. Approval to open or review it, a label or passing CI is not intake approval.
-- Record the decision in the owning record or the approved batch. A canonical agent may then add approved PRs in a batch; a fork session still may not.
-
-These rules cover new intake. Existing Project items stay unless a separate disposition is approved.
-
-## What GitHub automates
-
-Native Project workflows run on the Project's own access, with no extra PAT or GitHub App secret.
-
-| Event | Result |
+| Event | Status |
 |---|---|
-| Canonical issue opened | Added in Backlog |
-| Pull request linked to an issue | In progress |
-| Pull request merged | Review |
+| Issue opened | Backlog |
+| Pull request linked to the issue | In progress |
+| Issue closed | Done |
 | Issue reopened | Backlog |
-| Completed issue closed for one month | Archived |
+| Closed for one month | Archived |
 
-Three automations stay off:
-
-- **Item closed → Done:** a closure does not say why the item closed.
-- **Done → close issue:** a board edit must not close an issue.
-- **Archiving merged PRs:** they can still await rollout or acceptance.
-
-Record acceptance explicitly before setting Done or closing an issue as completed.
+A closed issue lands in Done whatever the reason; the close reason on the issue tells completed from not planned. "Done → close issue" stays off, because a board edit must not close an issue.
 
 After editing a native workflow, inspect the saved settings, read back the enabled states and exercise a relevant event. Record any transition you did not test.
 

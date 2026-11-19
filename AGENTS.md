@@ -36,7 +36,7 @@ Read and follow the [mandatory research → idea → implementation → acceptan
 
 Only canonical `sweatco/archie-hq` checkouts write upstream tracking records. Confirm `origin` before upstream PM access; forks and unknown contexts must not write them, even with an upstream remote. Verify each item's repository before Project intake.
 
-Every PR addition to the Project requires explicit upstream maintainer intake approval, including same-repository PRs. Native automatic intake is issues-only.
+Pull requests are not added to the Project; they show through their linked issue. Automatic intake is issues-only.
 
 ## Git and publication
 

@@ -4,26 +4,28 @@ Ideas, plans and status live in GitHub issues, not in the repository. This is de
 
 ## How work flows
 
-| Step | What happens | Status |
-|---|---|---|
-| 1. Propose | Anyone opens a Feature issue for an idea or request, or a Bug issue for a defect | Backlog |
-| 2. Decide | Maintainers discuss in the issue, then accept, park or close it. Accepting sets the scope, acceptance criteria, owner and next action | Ready |
-| 3. Build | A pull request implements the issue and links it | In progress |
-| 4. Verify | The work awaits review or acceptance checks. Merged code that is not yet verified stays here | Review |
-| 5. Accept | The acceptance criteria are met with evidence. Merging alone is not enough | Done |
+An issue's state is read from the issue itself, so anyone can see it and nobody has to maintain it.
 
-Backlog is the idea inbox: recorded, not committed. In progress means work has started, not that someone is on it right now.
+| State | Meaning | How to tell |
+|---|---|---|
+| Idea | Proposed, not committed. These issues are the idea inbox | Open, no milestone |
+| Planned | Accepted, with agreed scope and acceptance criteria | Has a milestone |
+| In progress | Someone is building it | Has an assignee or a linked pull request |
+| Done | The acceptance criteria are met | Closed as completed |
+
+Maintainers accept an idea by adding it to a milestone, or close it as not planned with a reason. A pull request implements an issue and links it. Close an issue only when its acceptance criteria are met; merging alone is not enough. Small work skips Planned: assign the issue or open the pull request.
 
 ## What is on an issue
 
 | Thing | Answers | Values |
 |---|---|---|
-| Type | What kind of item is it? | **Feature:** an idea, a request or an accepted feature. **Bug:** something broken. **Task:** one agreed piece of work, usually a sub-issue of a Feature |
-| Status | Where is it? | Its column on the [board](https://github.com/orgs/sweatco/projects/16), from the table above |
-| Milestone | Which outcome does it deliver? | A named result that several issues deliver together, such as "Incoming events: a webhook runs a routine in Slack". Optional, and dated only when agreed |
-| Labels | Does it need attention? | `pm:decision`: waiting for a human choice. `pm:blocked`: waiting for a named prerequisite. `pm:parked`: deliberately deferred. Each states its reason in the issue. `good first issue` and `help wanted`: open to contributors |
+| Type | What kind of item is it? | **Feature:** an idea, a request or an accepted feature. **Bug:** something broken. **Task:** one agreed piece of work |
+| Sub-issues | What does a Feature consist of? | Its Tasks. The Feature shows their progress |
+| Milestone | Which outcome does it deliver? | One shippable stage of a Feature, such as "Incoming events: a webhook runs a routine in Slack". Dated only when agreed |
+| Assignee | Who is doing it now? | Empty until someone starts |
+| Labels | Does it need attention? | `pm:decision`: waiting for a human choice, which the issue states. `good first issue` and `help wanted`: open to contributors |
 
-The board is private, so outside contributors read progress from the issue itself: its assignee, milestone, labels and linked pull requests. The board's views (Active, Decisions, Backlog, Memory) filter the same items. Its Initiative field is an optional theme for maintainers and implies no priority or commitment.
+When one issue waits on another, mark it as blocked by that issue instead of using a label.
 
 ## Where things live
 
@@ -44,27 +46,27 @@ Issues and PRs are public. Keep internal links, production data and private plug
 - Pick the matching issue form and search for duplicates first.
 - For a feature, agree the approach in the issue before a large PR.
 - Link the issue from the PR. Use a closing keyword only when merging meets the issue's acceptance criteria.
-- Leave milestones, labels and status to maintainers.
+- Leave milestones and labels to maintainers.
 
 ## Maintainers
 
-- **Triage the inbox:** accept an idea, park it with `pm:parked`, or close it with a reason. Age or a missing owner is a triage signal, not a reason to close.
+- **Triage the inbox:** accept an idea into a milestone, leave it in the inbox, or close it as not planned with a reason. Age alone is not a reason to close.
 - **Stay visible:** open a public issue before starting feature work a contributor could duplicate.
 - **Keep it light:** simple fixes and PR-only maintenance need no issue or milestone.
-- **Keep it honest:** leave unknown owners and dates unset. Link records instead of copying their status. Do not count an issue and its PR as two outcomes.
-- **Review weekly:** cover changes, blockers, decisions and the next milestone, and check for superseded items before adding to the backlog. No new meeting or scheduled monitor is implied.
+- **Keep it honest:** assign an issue only when someone starts, and leave dates unset until agreed. Link records instead of copying their state. Do not count an issue and its PR as two outcomes.
+- **Review weekly:** cover changes, blockers, decisions and the next milestone, and check for superseded items before adding new ones. No new meeting or scheduled monitor is implied.
 
-The [initial disposition review](../plans/20261111-issue-disposition.md) is a dated snapshot whose classification remains a proposal, not a second backlog.
+The private [board](https://github.com/orgs/sweatco/projects/16) is an optional view of the same issues; [how it is fed](project-access-and-automation.md#the-board) is automatic. The [initial disposition review](../plans/20261111-issue-disposition.md) is a dated snapshot whose classification remains a proposal, not a second backlog.
 
 ## Agents: required routine
 
 The user owns priorities, scope and acceptance. Agents keep the records; they do not decide technical direction through tracking or invent priorities, owners, dates, acceptance or permission to implement.
 
-1. **Resume:** find the owning issue, its status and next action.
-2. **Capture:** when research yields an implementation idea, prepare a Feature issue with source links. Keep parked ideas parked.
+1. **Resume:** find the owning issue, its state and next action.
+2. **Capture:** when research yields an implementation idea, prepare a Feature issue with source links. Keep declined ideas declined.
 3. **Decide:** record the user's decision to proceed and the agreed scope in that issue.
 4. **Track:** reuse existing issues; prepare missing ones with the [task form](../../.github/ISSUE_TEMPLATE/task.yml). Link dependencies and use milestones for agreed outcomes.
-5. **Maintain:** update status, decisions, blockers and next actions as work progresses.
+5. **Maintain:** update decisions, blockers and next actions in the issue as work progresses.
 6. **Accept:** link delivery evidence and record the user's acceptance before preparing closure. Keep remaining work visible.
 
 Rules that always apply:
@@ -74,4 +76,4 @@ Rules that always apply:
 - **Access:** follow [the access rules](project-access-and-automation.md#who-may-write) before any upstream access. Only a `sweatco/archie-hq` checkout writes tracking records.
 - **Restraint:** respect analysis-only and no-recording requests. Pending tracking approval must not block otherwise authorized work.
 - **Limits:** this routine creates no background monitoring and no authority for paid runs or deployments.
-- **Tools:** use the `github-issues` skill for issue operations. Prefer connected tools; use authenticated `gh` for missing Project capabilities and look up current field and option IDs.
+- **Tools:** use the `github-issues` skill for issue operations. Prefer connected tools; use authenticated `gh` for missing Project capabilities.
