@@ -33,4 +33,10 @@ regexes = [
   '''AKIAIOSFODNN7EXAMPLE''',
   '''sk-abcdefghijklmnopqrstuv''',
   '''sk-abc123def456ghi789jkl012''',
+  # src/incoming/__tests__/authenticate.test.ts: the example secret published in
+  # the Standard Webhooks specification, which the signature check is tested
+  # against, and a dummy bearer token (base64 of
+  # "foobar-token-with-enough-entropy"). Neither was ever a credential.
+  '''whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw''',
+  '''Zm9vYmFyLXRva2VuLXdpdGgtZW5vdWdoLWVudHJvcHk''',
 ]
