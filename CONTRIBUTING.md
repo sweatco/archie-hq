@@ -57,6 +57,16 @@ Read the [coding guidelines](docs/guides/coding-guidelines.md) for ownership, re
   ```
 - **Keep changes focused.** One logical change per PR makes review faster and history cleaner.
 
+## Ideas, bugs and how work is tracked
+
+Everything is tracked in GitHub issues. [Managing Archie development](docs/guides/project-management.md) explains issue types, milestones and status in a two-minute read.
+
+- **Idea or feature request:** open a [feature request](https://github.com/sweatco/archie-hq/issues/new?template=feature_request.yml). Rough ideas are welcome; this is the idea inbox.
+- **Bug:** open a [bug report](https://github.com/sweatco/archie-hq/issues/new?template=bug_report.yml).
+- **Before a large PR:** agree the approach in the issue, then link the issue from the PR.
+
+Don't add files to `docs/plans/` or `docs/proposals/`; both are frozen archives.
+
 ## Branch & PR workflow
 
 1. **Fork or branch** off the default branch (don't commit to it directly).
@@ -70,7 +80,7 @@ Read the [coding guidelines](docs/guides/coding-guidelines.md) for ownership, re
 ## Where to add things
 
 - **Domain behavior** — new agents, skills, or PM workflows — almost always belongs in a **plugin**, not in the engine. Plugins are how Archie gains new capabilities without changing core code. See the bundled **`writing-plugins`** skill at [`examples/plugins/.claude/skills/writing-plugins/SKILL.md`](examples/plugins/.claude/skills/writing-plugins/SKILL.md). Note that production domain plugins typically live in a separate (often private) repo; the engine ships only the example plugin set under `examples/plugins/`.
-- **Engine changes** — orchestration, agent runtime, integrations, CLI, session handling — go in `src/`. If you're adding a feature here, open a feature request first and agree the approach there before you invest in a PR. For a design too large for an issue, open a PR that adds a draft to `docs/proposals/`. Don't add files to `docs/plans/`; it is a frozen archive.
+- **Engine changes** — orchestration, agent runtime, integrations, CLI, session handling — go in `src/`. If you're adding a feature here, open a feature request first and agree the approach there before you invest in a PR.
 
 ## Reporting security issues
 

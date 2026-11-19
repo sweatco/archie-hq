@@ -2,7 +2,7 @@
 
 Frozen archive of Archie's incremental development. Each plan represents a milestone that was designed, reviewed, and (in most cases) implemented. Plans are preserved as-is for historical reference, with a status header indicating their implementation state.
 
-No new plans or status updates are added here. Working plans now live outside the repository, with issues and PR descriptions as the tracked record; see [the plans policy](../guides/project-management.md#plans).
+No new plans or status updates are added here. Working plans now live outside the repository, with issues and PR descriptions as the tracked record; see [where things live](../guides/project-management.md#where-things-live).
 
 ## Naming convention
 
