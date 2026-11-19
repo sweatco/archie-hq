@@ -1,0 +1,120 @@
+# Incoming Events
+
+Incoming events let a system other than Slack or GitHub tell Archie that something happened. A sender posts a JSON webhook to a callback URL. Archie authenticates it, records it durably, and later hands it to whatever acts on it.
+
+**Status:** the receiver, the inbox and the dispatcher are implemented behind `ARCHIE_INCOMING_EVENTS`, which is off by default. Nothing acts on an event yet. Until the routine consumer lands ([#402](https://github.com/sweatco/archie-hq/issues/402)), an authenticated delivery is recorded as ignored. The feature design is in the [incoming events plan](../plans/20261116-incoming-events-shared-receiver.md).
+
+All code is in `src/incoming/`.
+
+## How a delivery flows
+
+`POST /webhooks/incoming/:inputId` → authenticate → one transaction (duplicate check, receipt, body, handoffs) → reply → the dispatcher claims a handoff → the consumer handles it → finish. The finish that ends the last handoff deletes the body.
+
+No Task, trigger or model code runs on the request path.
+
+## Inputs
+
+An input is one callback URL with its own secret.
+
+- **State:** `enabled`, `paused` or `deleted`. A deleted input answers `410` and cannot be resumed.
+- **Authentication:** `signed` uses the [Standard Webhooks](https://www.standardwebhooks.com/) headers `webhook-id`, `webhook-timestamp` and `webhook-signature`, with a five-minute tolerance. `bearer` uses `Authorization: Bearer <secret>`, plus an optional `Idempotency-Key`.
+- **Filter:** a list of conditions on the event JSON, such as "`/type` equals `meeting.ended`". An event that fails one is recorded as ignored.
+
+The secret is generated on the host and sealed with the [secrets vault](secrets.md) under `SECRETS_DIR/incoming/`. The database holds only a reference to it.
+
+## Replies
+
+| Reply | Meaning |
+|---|---|
+| `202` | A new event was recorded with its body. Sent only after the commit. |
+| `200` `duplicate` | The same key and content again. Carries the original `receipt_id`. |
+| `200` `ignored` | The input is paused, the filter excludes the event, or no consumer wants it. No body is kept. |
+| `409` | The same key with different content. Counted on the original receipt. |
+| `429` | The inbox is full. Nothing was recorded, so the sender should retry. |
+| `401` | The signature or token did not verify. |
+| `400` | An empty body, invalid UTF-8, malformed JSON, a JSON value that is not an object, or an event key that is not 1–255 printable ASCII characters. |
+| `413` `415` | A body over 1 MiB, or a media type other than `application/json` or a compressed body. |
+| `404` `410` | Unknown or deleted input. |
+| `503` | Archie is shutting down or the inbox is unavailable. |
+
+Rules that hold on every path:
+
+- The event key is `webhook-id` for a signed delivery and `Idempotency-Key` for a bearer one. A bearer delivery without a key is always new.
+- The duplicate check comes first, so a retry gets its original receipt even when the inbox is full.
+- The signature covers the bytes as received. A bearer token is compared before the body is read.
+- Logs carry input and receipt ids and an error category. They never carry a body, a secret or a parser message.
+
+## Storage
+
+The inbox is its own SQLite file, `WORKDIR/incoming/state.sqlite`, in a directory only its owner can read. The agent sandbox cannot read `WORKDIR`, and a separate file keeps incoming events working when proactivity is off.
+
+| Table | Holds |
+|---|---|
+| `inputs` | State, authentication scheme, secret references, filter |
+| `receipts` | One row per event key: digest, outcome, conflict count |
+| `payloads` | The raw body, only while a handoff is pending |
+| `handoffs` | One row per receipt and consumer: state, lease, attempts |
+
+Deleting a body is logical. Erasing it from SQLite's free pages is [#407](https://github.com/sweatco/archie-hq/issues/407).
+
+## Handing off
+
+A consumer is the code that acts on an event. It implements two functions, defined in `types.ts`:
+
+- `match` runs on the request path, just before the receipt commits. It is synchronous and has no effects.
+- `handle` runs later, from the dispatcher. It may run more than once for one handoff, so the handoff id is its idempotency key.
+
+The dispatcher is one loop per process. It polls every second and delivers one handoff at a time.
+
+- **Lease:** a claim sets a token and a five-minute lease. Saving progress, releasing and finishing all require the token, so a holder that lost its lease records nothing.
+- **Time limit:** a handler still running when its lease ends counts as a failed attempt.
+- **Retry:** a failed attempt waits 1, 5, 15, then 30 minutes. The fifth failure is final, so a handoff is given up after 51 minutes of waiting plus the time its attempts took.
+- **Pause and delete:** handoffs nobody is working on are cancelled and their bodies deleted. One being worked on may finish its attempt. If that attempt fails while the input is still paused or deleted, it is cancelled too.
+- **Sweep:** hourly, handoffs older than seven days are failed and settled receipts older than 30 days are removed. A removed receipt's key is new again.
+
+## Operating it
+
+`ARCHIE_INCOMING_EVENTS=on` mounts the route and requires `ARCHIE_SECRETS_KEY`. With the flag off or blank, the route does not exist. Any other value, or a missing key while the flag is on, stops the boot before the slow startup steps.
+
+- **Startup:** the inbox opens and the route mounts before the server listens. The dispatcher starts after Task recovery.
+- **Shutdown:** the dispatcher stops first, waiting up to five seconds for an attempt in flight, and the inbox closes. Only then does the rest of Archie shut down.
+- **Unavailable inbox:** if the inbox cannot be opened, Archie still starts and the route answers `503`, so senders retry.
+
+Inputs are managed with the operator CLI. Run it where the daemon runs, as the same user, because both use the same inbox file and secrets directory. A change applies to the next delivery.
+
+```bash
+npm run incoming -- create [--auth signed|bearer] [--filter '<json>']
+npm run incoming -- list
+npm run incoming -- pause <input-id>
+npm run incoming -- resume <input-id>
+npm run incoming -- delete <input-id>
+```
+
+`create` prints the callback URL, built from `ARCHIE_PUBLIC_URL`, and the secret. The secret is shown only then.
+
+In the container images the daemon runs as `archie`, while `docker exec` defaults to root. A secret file created as root would be unreadable to the daemon, so the CLI refuses to run as root there. The production image also has no `tsx`. Run the built file as the daemon's user:
+
+```bash
+docker exec -u archie <container> node dist/cli/incoming.js create
+```
+
+The callback is public and authenticates every request itself. `/api` has no route for inputs, because it has no authentication of its own and would hand out secrets.
+
+## Limits
+
+These are starting defaults, named constants in `receiver.ts`, `store.ts` and `dispatcher.ts`.
+
+| Limit | Value |
+|---|---|
+| Request body | 1 MiB |
+| Bodies waiting for handoff | 100 MiB per input, 1 GiB in total |
+| Attempts per handoff | 5, each limited to 5 minutes |
+| Unfinished handoff | Failed after 7 days |
+| Settled receipt | Removed after 30 days |
+
+## Not built yet
+
+- Consumers: routines ([#402](https://github.com/sweatco/archie-hq/issues/402)) and proactivity ([#406](https://github.com/sweatco/archie-hq/issues/406)).
+- Setup, history, secret reveal and rotation in Slack ([#403](https://github.com/sweatco/archie-hq/issues/403)).
+- MCP event subscriptions ([#404](https://github.com/sweatco/archie-hq/issues/404), [#405](https://github.com/sweatco/archie-hq/issues/405)).
+- A per-input rate limit. Until then, the edge in front of Archie is the only defence against a flood.

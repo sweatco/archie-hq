@@ -19,6 +19,7 @@ How the system works today. Each doc describes the actual implementation, verifi
 | [Tool Approvals](architecture/tool-approvals.md) | Per-call human approval for critical MCP tools |
 | [Max Mode](architecture/max-mode.md) | The PM's per-task, human-approved model/effort upgrade |
 | [Triggers](architecture/triggers.md) | Persistent "do Y when X happens" rules |
+| [Incoming Events](architecture/incoming-events.md) | Webhook receiver, durable inbox and leased handoff, behind a flag |
 | [Web Research](architecture/web-research.md) | Research pipeline, multi-agent research tool |
 | [Security](architecture/security.md) | Threat model, defense layers, prompt injection defense |
 | [Secrets](architecture/secrets.md) | OAuth vault, encryption, secret handling |
@@ -76,6 +77,7 @@ Frozen archive of development milestones. Each plan has a status header indicati
 | [Issue Disposition Review](plans/20261111-issue-disposition.md) | Evidence and next process step for all 44 existing open issues | Classification proposed; no closures |
 | [Project Management Setup](plans/20261111-project-management.md) | Board, agent rules, automation, verification, and remaining merge step | Native workflows configured; hosted report awaits merge |
 | [Incoming Events](plans/20261116-incoming-events-shared-receiver.md) | Connect webhooks and MCP Events to routines and proactivity in Slack | Proposed |
+| [Generic Webhook Receiver](plans/20261119-generic-webhook-receiver.md) | Receive, deduplicate and durably hand off generic webhooks (#401) | Implemented |
 
 See [plans/README.md](plans/README.md) for the full evolution arc.
 
