@@ -1,6 +1,6 @@
 # Behaviour evals for Archie — implementation handoff
 
-**Status:** Approved by the maintainer on 2026-11-18. Stage 0's record builder, code graders and per-task pull are implemented ([guide](../guides/behaviour-evals.md)); nothing else is. Stage 0 is specified deeply enough to start; later stages are outlines. One independent review checked the claims about the current system, and its corrections are applied.
+**Status:** Approved by the maintainer on 2026-11-18; nothing is implemented. Stage 0 is specified deeply enough to start; later stages are outlines. One independent review checked the claims about the current system, and its corrections are applied.
 **Sources:** repository at `29290acc`; a live instance run on 2026-11-18 (six tasks); five production task folders read and deleted the same day; the production memory snapshot of 2026-11-18; the [proposal](../proposals/behaviour-evals.md).
 **First milestone:** [Behaviour evals: repeatable prompt regression baseline](https://github.com/sweatco/archie-hq/milestone/4).
 
@@ -266,4 +266,4 @@ Stage 0 alone, on a small pulled sample.
 
 ## Status and next action
 
-Researched and partly exercised; approved as a plan; tracked by the two milestones above. Stage 0's code-only part is in `tools/evals/` and `scripts/pull-tasks.sh`; the judge, the private data location and the first report wait on the spend cap and reviewer decisions in [issue #393](https://github.com/sweatco/archie-hq/issues/393). Next action: those decisions, and Stage 1, which has no prerequisite.
+Researched and partly exercised; approved as a plan; tracked by the two milestones above. Next action: start Stages 0 and 1, which have no prerequisites.

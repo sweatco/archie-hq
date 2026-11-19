@@ -36,7 +36,6 @@ describe('buildSessionRecord', () => {
       complete: true,
       terminalState: 'completed',
       manifest: 'unknown',
-      grades: [],
     });
     expect(record.turns).toEqual([
       {

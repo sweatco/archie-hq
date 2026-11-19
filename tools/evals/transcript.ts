@@ -18,6 +18,7 @@ import {
   listSubagents,
   type SessionMessage,
 } from '@anthropic-ai/claude-agent-sdk';
+import { createKeyedLock } from '../../src/system/keyed-lock.js';
 
 export interface ToolCall {
   /** `pm` (the agent key) for the PM's own calls, the subagent type for a delegated worker's. */
@@ -254,28 +255,35 @@ async function readSessionToolCalls(session: SessionFiles): Promise<IdentifiedCa
   return ordered;
 }
 
+const runExclusive = createKeyedLock();
+
 /**
  * The SDK reader resolves transcripts under CLAUDE_CONFIG_DIR at call time and
- * takes no option for it, so the variable is set around each read and reads
- * must not overlap.
+ * takes no option for it, so the variable is set around each read. Reads are
+ * serialized because promptfoo builds several records concurrently.
  */
 async function readSessionMessages(session: SessionFiles): Promise<{
   main: SessionMessage[];
   subagents: { agentId: string; messages: SessionMessage[] }[];
 }> {
-  const previous = process.env.CLAUDE_CONFIG_DIR;
-  process.env.CLAUDE_CONFIG_DIR = session.configDir;
-  try {
-    const main = await getSessionMessages(session.sessionId);
-    const subagents: { agentId: string; messages: SessionMessage[] }[] = [];
-    for (const agentId of await listSubagents(session.sessionId)) {
-      subagents.push({ agentId, messages: await getSubagentMessages(session.sessionId, agentId) });
+  return runExclusive('CLAUDE_CONFIG_DIR', async () => {
+    const previous = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = session.configDir;
+    try {
+      const main = await getSessionMessages(session.sessionId);
+      const subagents: { agentId: string; messages: SessionMessage[] }[] = [];
+      for (const agentId of await listSubagents(session.sessionId)) {
+        subagents.push({
+          agentId,
+          messages: await getSubagentMessages(session.sessionId, agentId),
+        });
+      }
+      return { main, subagents };
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = previous;
     }
-    return { main, subagents };
-  } finally {
-    if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
-    else process.env.CLAUDE_CONFIG_DIR = previous;
-  }
+  });
 }
 
 interface ToolUses {

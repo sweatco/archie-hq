@@ -1,0 +1,39 @@
+# Grades the synthetic fixture task end to end. Run it with:
+#   npx tsx tools/evals/promptfoo/run.ts --data-dir <private-dir> tools/evals/promptfoo/fixture.promptfooconfig.yaml
+# Paths are relative to this file.
+description: Session record graders on the synthetic fixture
+
+providers:
+  - id: file://replay-provider.ts
+    label: archie-replay
+    config:
+      source: eval
+
+prompts:
+  - '{{taskDir}}'
+
+tests:
+  - description: Trigger request with a delegated worker
+    vars:
+      taskDir: ../fixtures/task-20260101-0900-evalfx
+    assert:
+      - type: javascript
+        value: file://assertions.ts:terminalState
+        config: { state: completed }
+      - type: skill-used
+        value: core:triggers
+      - type: javascript
+        value: file://assertions.ts:called
+        config: { tool: 'Agent(helper:assistant)' }
+      - type: javascript
+        value: file://assertions.ts:notCalled
+        config: { tool: merge_pull_request }
+      - type: javascript
+        value: file://assertions.ts:order
+        config: { tools: ['Skill(core:triggers)', propose_trigger, report_completion] }
+      - type: javascript
+        value: file://assertions.ts:approvalBeforeMutation
+        config: { approval: propose_trigger, mutation: merge_pull_request }
+      # Illustrative cap: the provider reports the task's recorded cost.
+      - type: cost
+        threshold: 1

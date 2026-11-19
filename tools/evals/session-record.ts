@@ -2,6 +2,7 @@
  * Session record: one comparable unit per task, built only from files in the
  * task folder, so the same builder serves pulled production folders and eval
  * trials. Shape and rules: docs/plans/20261118-behaviour-evals.md (Design).
+ * Grades are not part of it: promptfoo keeps them with its results.
  */
 
 import { existsSync } from 'fs';
@@ -23,14 +24,6 @@ export interface Turn {
 /** The task's lifecycle status, or `approval_requested` while it waits on a human. */
 export type TerminalState = TaskStatus | 'approval_requested';
 
-/** A measurement (`value`), a verdict (`pass`), or both; `reason` explains a failed verdict. */
-export interface Grade {
-  grader: string;
-  pass?: boolean;
-  value?: number;
-  reason?: string;
-}
-
 export interface SessionRecord {
   source: 'production' | 'eval';
   taskId: string;
@@ -44,7 +37,6 @@ export interface SessionRecord {
   usage: { costUsd: number | null; models: string[] };
   /** Stage 3 adds a recorded manifest; until then nothing ties a session to its prompts and plugins. */
   manifest: 'unknown';
-  grades: Grade[];
 }
 
 export interface BuiltRecord {
@@ -106,7 +98,6 @@ export async function buildSessionRecord(
     terminalState: resolveTerminalState(metadata.status, events),
     usage: summarizeUsage(usageLines),
     manifest: 'unknown',
-    grades: [],
   };
   return { record, gaps };
 }
