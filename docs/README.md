@@ -83,12 +83,14 @@ Future work and unimplemented features. These are ideas that have been designed 
 
 | Document | Description |
 |----------|-------------|
+| [Main Discussion and Focused Bots](proposals/main-discussion-and-channel-roles.md) | Separate focused bots beside master Archie; continuous main discussion |
 | [GitHub @mention Workflow](proposals/github-mention-workflow.md) | @mention Archie in GitHub PRs |
 | [Distributed Queues](proposals/distributed-queues.md) | Redis/GroupMQ for multi-pod scaling |
 | [LLM Guard Integration](proposals/llm-guard-integration.md) | Full DLP scanning service |
 | [Analytics Plugin Gaps](proposals/analytics-plugin-gaps.md) | Roadmap for analytics plugin (MVP shipped) |
 | [Architecture Simplification](proposals/architecture-simplification.md) | Ideas to reduce complexity in core flows |
 | [Behaviour Evals](proposals/behaviour-evals.md) | Regression checks for prompt and skill changes ([plan](plans/20261118-behaviour-evals.md)) |
+| [Bot Capabilities and Routing](plans/20261119-bot-capabilities-and-routing.md) | Per-bot skills, MCP servers, workdir, memory tier and bot-to-bot routing | Proposed |
 
 ## Quick Reference
 
