@@ -6,6 +6,11 @@ import { buildPromptfooEnv, findFilesWrittenSince, isInside, parseInvocation } f
 
 const roots: string[] = [];
 
+/** Kernels stamp files from a clock coarser than Date.now(); this outlasts its tick. */
+function pauseLongerThanFileClock(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 50));
+}
+
 afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
@@ -59,20 +64,28 @@ describe('repository guards', () => {
     expect(isInside('/repo', '/private/evals')).toBe(false);
   });
 
-  it('finds files created or changed since a moment, outside .git', async () => {
+  it('finds files created, changed or backdated since a moment, outside .git', async () => {
     const root = await mkdtemp(join(tmpdir(), 'evals-run-'));
     roots.push(root);
     await mkdir(join(root, 'nested', 'deep'), { recursive: true });
     await mkdir(join(root, '.git'));
-    for (const path of ['old.txt', 'nested/changed.txt', '.git/index']) {
-      await writeFile(join(root, path), 'x');
+    for (const path of ['untouched.txt', 'nested/changed.txt', '.git/index']) {
+      await writeFile(join(root, path), 'before');
     }
-    const past = new Date(Date.now() - 60_000);
-    await utimes(join(root, 'old.txt'), past, past);
-    const since = Date.now() - 30_000;
+    await pauseLongerThanFileClock();
+    const since = Date.now();
+    await pauseLongerThanFileClock();
+
+    await writeFile(join(root, 'nested', 'changed.txt'), 'after');
     await writeFile(join(root, 'nested', 'deep', 'new.json'), '{}');
+    await writeFile(join(root, '.git', 'index'), 'after');
+    // A copy that keeps its source's timestamps is still a write.
+    await writeFile(join(root, 'copied.txt'), 'x');
+    const past = new Date(since - 60_000);
+    await utimes(join(root, 'copied.txt'), past, past);
 
     expect(await findFilesWrittenSince(root, since)).toEqual([
+      'copied.txt',
       'nested/changed.txt',
       'nested/deep/new.json',
     ]);

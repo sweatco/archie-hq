@@ -32,6 +32,13 @@ const CLOSED_PROXY = 'http://127.0.0.1:9';
 /** Exit code when the run wrote inside the repository. */
 const EXIT_REPO_WRITE = 3;
 
+/**
+ * Kernels stamp files from a coarse clock that can trail Date.now() by a few
+ * milliseconds, so the scan starts a little before the run to keep an early
+ * write from being missed.
+ */
+const CLOCK_SLACK_MS = 100;
+
 interface Invocation {
   dataDir: string;
   configPath: string;
@@ -88,7 +95,12 @@ export function isInside(parent: string, child: string): boolean {
   return path === '' || (!path.startsWith('..') && !isAbsolute(path));
 }
 
-/** Files under `root` (outside .git) created or modified at or after `sinceMs`. */
+/**
+ * Files under `root` (outside .git) created, modified or re-stamped at or
+ * after `sinceMs`. It compares ctime, which every content or metadata change
+ * sets to now and `utimes` cannot move back: mtime can be backdated, and so
+ * can birth time on macOS, which follows a backdated mtime.
+ */
 export async function findFilesWrittenSince(root: string, sinceMs: number): Promise<string[]> {
   const written: string[] = [];
   const pending = [root];
@@ -99,8 +111,8 @@ export async function findFilesWrittenSince(root: string, sinceMs: number): Prom
         if (entry.name !== '.git') pending.push(path);
         continue;
       }
-      const { mtimeMs, birthtimeMs } = await lstat(path);
-      if (mtimeMs >= sinceMs || birthtimeMs >= sinceMs) written.push(relative(root, path));
+      const { ctimeMs } = await lstat(path);
+      if (ctimeMs >= sinceMs) written.push(relative(root, path));
     }
   }
   return written.sort();
@@ -150,7 +162,7 @@ async function main(): Promise<number> {
     { cwd: dirname(configPath), env: buildPromptfooEnv(process.env, dataDir) },
   );
 
-  const written = await findFilesWrittenSince(repoRoot, startedMs);
+  const written = await findFilesWrittenSince(repoRoot, startedMs - CLOCK_SLACK_MS);
   if (written.length > 0) {
     console.error('run: FAIL — the run wrote inside the repository:');
     for (const path of written) console.error(`  ${path}`);
