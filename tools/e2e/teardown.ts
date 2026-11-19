@@ -10,7 +10,9 @@
  *
  * `--profile eval` targets the eval instance's compose project
  * (tools/e2e/eval-profile.ts) and, only after a clean teardown, deletes
- * `eval-instance/` with its sessions. Copy out anything you need first.
+ * `eval-instance/` with its sessions. Copy out anything you need first. The
+ * directory never holds the model key, so keeping it after a failure is safe,
+ * and a rerun needs nothing from it.
  *
  * Pure core: parseComposePs, unit-tested against both output shapes of
  * `docker compose ps --format json` (a JSON array, or NDJSON — one object per line).
@@ -166,16 +168,20 @@ async function main(): Promise<void> {
 
   const code = await runTeardown(exec, io, evalComposeArgs(repoRoot));
   if (code !== 0) {
-    io.error(`${EVAL_DIR}/ kept: a container may still be using it.`);
+    io.error(
+      `${EVAL_DIR}/ kept: a container may still be using it. It holds no model key; rerun this teardown once Docker is reachable.`,
+    );
     process.exit(code);
   }
   try {
     const removed = removeEvalInstance(repoRoot);
     io.log(removed === 'removed' ? `Removed ${EVAL_DIR}/.` : `No ${EVAL_DIR}/ to remove.`);
   } catch (err) {
-    // On Linux, files the container wrote belong to its user (uid 1001), which the host user may not be.
+    // On native Linux, directories the container created belong to its user (uid 1001), so the
+    // host user cannot empty them.
     io.error(
-      `Could not remove ${join(repoRoot, EVAL_DIR)}: ${err instanceof Error ? err.message : String(err)}`,
+      `Could not remove ${join(repoRoot, EVAL_DIR)}: ${err instanceof Error ? err.message : String(err)}. ` +
+        'Files the container wrote may belong to uid 1001; delete the directory as root. Boot never writes the model key there.',
     );
     process.exit(1);
   }

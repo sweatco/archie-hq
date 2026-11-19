@@ -4,12 +4,12 @@
  * Usage: npx tsx tools/e2e/boot.ts [--timeout-seconds N] [--no-prepare | --profile eval]
  *
  * `--profile eval` boots a hermetic instance for behaviour evals instead
- * (tools/e2e/eval-profile.ts): step 0 creates a fresh `eval-instance/` in place
- * of the worktree preparation, the preflight reads that directory's `.env`,
- * compose runs with the eval overlay under its own project name, and the
- * resolved config is printed and checked for isolation before compose up.
- * ARCHIE_URL is ignored, because an eval instance always runs locally on the
- * port in its own `.env`.
+ * (tools/e2e/eval-profile.ts): step 0 creates a fresh `eval-instance/` and
+ * resolves the model key in place of the worktree preparation and the .env
+ * preflight, compose runs with the eval overlay under its own project name and
+ * gets the key through its environment, and the resolved config is printed and
+ * checked for isolation before compose up. ARCHIE_URL is ignored, because an
+ * eval instance always runs locally on the port step 0 picked.
  *
  * Strict fail-fast sequence (each step gates the next):
  *   0. Worktree prerequisites (tools/e2e/prepare-worktree.ts): in a git worktree,
@@ -490,32 +490,36 @@ async function main(): Promise<void> {
   const isEval = args.profile === 'eval';
   const composeArgs = isEval ? evalComposeArgs(repoRoot) : [];
   let keySource: string | undefined;
+  let evalPort: string | undefined;
+  let evalComposeEnv: Record<string, string> = {};
+  let dotenvText: string | undefined;
 
   // Prepare before the preflight reads .env: the eval instance directory, or a
   // fresh worktree's shared state (--no-prepare opts out of the latter).
   if (isEval) {
     const prepared = await runEvalPrepare(repoRoot, hostExec, process.env, io);
     if (prepared.code !== 0) process.exit(prepared.code);
-    keySource = prepared.keySource;
-  } else if (args.noPrepare) {
-    console.log('--no-prepare given — skipping the worktree prerequisite check.');
+    ({ keySource, port: evalPort, composeEnv: evalComposeEnv } = prepared);
   } else {
-    const prepared = await runPrepare(repoRoot, hostExec, io);
-    if (prepared.code !== 0) process.exit(prepared.code);
-  }
+    if (args.noPrepare) {
+      console.log('--no-prepare given — skipping the worktree prerequisite check.');
+    } else {
+      const prepared = await runPrepare(repoRoot, hostExec, io);
+      if (prepared.code !== 0) process.exit(prepared.code);
+    }
 
-  // Preflight — mandatory, before any compose invocation.
-  const dotenvPath = isEval ? join(repoRoot, EVAL_DIR, '.env') : join(repoRoot, '.env');
-  let dotenvText: string | undefined;
-  try {
-    dotenvText = readFileSync(dotenvPath, 'utf-8');
-  } catch {
-    dotenvText = undefined;
-  }
-  const errors = preflight(dotenvText);
-  if (errors.length > 0) {
-    for (const e of errors) console.error(`preflight failed: ${e}`);
-    process.exit(1);
+    // Preflight — mandatory, before any compose invocation. The eval profile
+    // resolved and checked its key in step 0.
+    try {
+      dotenvText = readFileSync(join(repoRoot, '.env'), 'utf-8');
+    } catch {
+      dotenvText = undefined;
+    }
+    const errors = preflight(dotenvText);
+    if (errors.length > 0) {
+      for (const e of errors) console.error(`preflight failed: ${e}`);
+      process.exit(1);
+    }
   }
 
   // Checkout attestation value: the compose environment carries it into the
@@ -535,9 +539,9 @@ async function main(): Promise<void> {
   // operator set ARCHIE_URL explicitly: that target (possibly remote) is
   // theirs to manage, and relocating away from it would test the wrong thing.
   if (isEval && process.env.ARCHIE_URL) {
-    console.log('ARCHIE_URL is ignored by the eval profile — it targets the port in its own .env.');
+    console.log('ARCHIE_URL is ignored by the eval profile — it targets the port boot picks.');
   }
-  let baseUrl = resolveBaseUrl(isEval ? {} : process.env, dotenvText);
+  let baseUrl = isEval ? `http://localhost:${evalPort}` : resolveBaseUrl(process.env, dotenvText);
   let port: string;
   try {
     port = new URL(baseUrl).port || '3000';
@@ -579,7 +583,8 @@ async function main(): Promise<void> {
 
   // PORT + GIT_SHA ride the compose environment: PORT drives both the mapping
   // and the app's listen port; GIT_SHA lands in /health for the attestation.
-  const composeEnv: Record<string, string> = { PORT: port };
+  // The eval profile adds its model key, which it never writes to disk.
+  const composeEnv: Record<string, string> = { ...evalComposeEnv, PORT: port };
   if (expectedSha) composeEnv.GIT_SHA = expectedSha;
 
   if (isEval) {

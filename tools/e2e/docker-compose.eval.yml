@@ -4,18 +4,17 @@
 # Relative paths resolve against the project directory (the repo root, where docker-compose.yml
 # lives), not this file's directory.
 #
-# `!override` replaces the base lists instead of merging into them: the base mounts the
-# checkout's workdir, claude-data, secrets and the host SSH agent, and loads the root .env,
-# none of which an eval instance may see.
+# `!reset` and `!override` drop or replace the base lists instead of merging into them: the
+# base loads the root .env and mounts the checkout's workdir, claude-data, secrets and the
+# host SSH agent, none of which an eval instance may see.
 
 services:
   archie:
-    env_file: !override
-      # Not required, so teardown can still resolve the project after the directory is gone.
-      # Boot writes this file and checks the key before it runs compose.
-      - path: ./eval-instance/.env
-        required: false
+    env_file: !reset []
     environment:
+      # No value: compose takes it from boot's process environment, so the key is never on
+      # disk. Unset during teardown, which needs no key.
+      ANTHROPIC_API_KEY:
       # The base points this at the host agent socket, which the volumes below no longer mount.
       SSH_AUTH_SOCK: ''
     volumes: !override

@@ -12,20 +12,24 @@ import {
   writeFileSync,
 } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
-import { parse as parseDotenv } from 'dotenv';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 import {
   EVAL_DIR,
   evalComposeArgs,
   evalProjectName,
   findIsolationViolations,
   isCredentialName,
+  needsOpenModes,
   prepareEvalInstance,
   readEffectiveSettings,
   removeEvalInstance,
   renderEffectiveSettings,
   resolveModelKey,
+  runEvalPrepare,
+  type EvalPrepareInput,
 } from './eval-profile.js';
+import type { ExecFn } from './exec.js';
 
 const MAIN_DOTENV = [
   'SLACK_BOT_TOKEN=xoxb-main-secret',
@@ -57,23 +61,54 @@ const SECRET_VALUES = [
 ];
 
 describe('evalProjectName', () => {
-  it('is the checkout’s default compose project name plus -eval', () => {
-    expect(evalProjectName('/repos/archie-hq')).toBe('archie-hq-eval');
-    expect(evalProjectName('/x/.claude/worktrees/festive-chatelet-62162a')).toBe(
-      'festive-chatelet-62162a-eval',
-    );
+  const asIs = (path: string) => path;
+  /** Compose's rule for project names. */
+  const VALID = /^[a-z0-9][a-z0-9_-]*$/;
+
+  it('is the checkout’s directory name, a hash of its path, and -eval', () => {
+    const name = evalProjectName('/x/.claude/worktrees/festive-chatelet-62162a', asIs);
+    expect(name).toMatch(/^festive-chatelet-62162a-[0-9a-f]{8}-eval$/);
+    expect(evalProjectName('/x/.claude/worktrees/festive-chatelet-62162a', asIs)).toBe(name);
   });
 
-  it('normalises characters compose rejects, so two checkouts never share a project', () => {
-    expect(evalProjectName('/x/Feature.Branch_2')).toBe('featurebranch_2-eval');
-    expect(evalProjectName('/x/_.hidden')).toBe('hidden-eval');
-    expect(evalProjectName('/x/...')).toBe('archie-eval');
+  it('gives same-named checkouts of a paired run different projects', () => {
+    const base = evalProjectName('/runs/base/archie-hq', asIs);
+    const candidate = evalProjectName('/runs/candidate/archie-hq', asIs);
+    expect(base).toMatch(/^archie-hq-[0-9a-f]{8}-eval$/);
+    expect(candidate).toMatch(/^archie-hq-[0-9a-f]{8}-eval$/);
+    expect(base).not.toBe(candidate);
+  });
+
+  it('normalises characters compose rejects', () => {
+    expect(evalProjectName('/x/Feature.Branch_2', asIs)).toMatch(
+      /^featurebranch_2-[0-9a-f]{8}-eval$/,
+    );
+    expect(evalProjectName('/x/_.hidden', asIs)).toMatch(/^hidden-[0-9a-f]{8}-eval$/);
+    expect(evalProjectName('/x/...', asIs)).toMatch(/^archie-[0-9a-f]{8}-eval$/);
+    for (const path of ['/x/Feature.Branch_2', '/x/_.hidden', '/x/...', '/runs/base/archie-hq']) {
+      expect(evalProjectName(path, asIs)).toMatch(VALID);
+    }
+  });
+
+  it('names one project however the checkout’s path is spelled, so boot and teardown agree', () => {
+    const base = mkdtempSync(join(tmpdir(), 'eval-name-'));
+    try {
+      const real = join(base, 'archie-hq');
+      mkdirSync(real);
+      symlinkSync(real, join(base, 'via-link'));
+      const name = evalProjectName(real);
+      expect(evalProjectName(join(base, 'via-link'))).toBe(name);
+      expect(evalProjectName(`${real}/`)).toBe(name);
+      expect(name).toMatch(/^archie-hq-[0-9a-f]{8}-eval$/);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
   });
 
   it('selects that project and the overlay on top of the base compose file', () => {
     expect(evalComposeArgs('/repos/archie-hq')).toEqual([
       '-p',
-      'archie-hq-eval',
+      evalProjectName('/repos/archie-hq'),
       '-f',
       'docker-compose.yml',
       '-f',
@@ -114,13 +149,23 @@ describe('resolveModelKey', () => {
     expect(!r.ok && r.error).toContain('E2E_ANTHROPIC_API_KEY');
   });
 
-  it('refuses a value that could smuggle another variable into the eval .env', () => {
+  it('refuses a mangled value without repeating it', () => {
     const r = resolveModelKey({
       env: {},
       checkoutDotenv: 'ANTHROPIC_API_KEY="sk-x\nSLACK_BOT_TOKEN=xoxb-smuggled"\n',
     });
     expect(r.ok).toBe(false);
     expect(JSON.stringify(r)).not.toContain('xoxb-smuggled');
+  });
+});
+
+describe('needsOpenModes', () => {
+  it('opens the directories only on Linux, for any host user but the container’s uid 1001', () => {
+    expect(needsOpenModes({ platform: 'linux', uid: 1000 })).toBe(true);
+    expect(needsOpenModes({ platform: 'linux', uid: 0 })).toBe(true);
+    expect(needsOpenModes({ platform: 'linux', uid: 1001 })).toBe(false);
+    expect(needsOpenModes({ platform: 'darwin', uid: 501 })).toBe(false);
+    expect(needsOpenModes({ platform: 'win32' })).toBe(false);
   });
 });
 
@@ -178,6 +223,21 @@ function snapshot(dir: string): string[] {
   return out;
 }
 
+/** Files under `dir` whose content contains `needle`. */
+function filesContaining(dir: string, needle: string): string[] {
+  const hits: string[] = [];
+  const walk = (path: string) => {
+    for (const name of readdirSync(path)) {
+      const full = join(path, name);
+      const st = lstatSync(full);
+      if (st.isDirectory()) walk(full);
+      else if (st.isFile() && readFileSync(full, 'utf-8').includes(needle)) hits.push(full);
+    }
+  };
+  walk(dir);
+  return hits;
+}
+
 function symlinksUnder(dir: string): string[] {
   const links: string[] = [];
   const walk = (path: string) => {
@@ -219,37 +279,32 @@ describe('prepareEvalInstance', () => {
     rmSync(base, { recursive: true, force: true });
   });
 
-  it('writes an .env holding only the model key and the port, though both source .env files carry Slack and GitHub credentials', () => {
-    const r = prepareEvalInstance({
-      repoRoot: worktree,
-      mainCheckout: main,
-      env: {},
-      port: '3042',
-    });
+  const prepare = (extra: Partial<EvalPrepareInput> = {}) =>
+    prepareEvalInstance({ repoRoot: worktree, mainCheckout: main, env: {}, ...extra });
 
-    expect(r).toEqual({ ok: true, keySource: 'this checkout’s .env' });
-    const written = readFileSync(join(worktree, EVAL_DIR, '.env'), 'utf-8');
-    expect(parseDotenv(written)).toEqual({ ANTHROPIC_API_KEY: 'sk-ant-main-key', PORT: '3042' });
-    for (const value of SECRET_VALUES) expect(written).not.toContain(value);
-    expect(statSync(join(worktree, EVAL_DIR, '.env')).mode & 0o777).toBe(0o600);
+  it('returns the model key for compose and writes no key or other credential to disk, though both source .env files carry Slack and GitHub credentials', () => {
+    const r = prepare();
+
+    expect(r).toEqual({ ok: true, key: 'sk-ant-main-key', keySource: 'this checkout’s .env' });
+    const root = join(worktree, EVAL_DIR);
+    expect(readdirSync(root).sort()).toEqual(['claude-data', 'secrets', 'workdir']);
+    for (const value of ['sk-ant-main-key', ...SECRET_VALUES]) {
+      expect(filesContaining(root, value), value).toEqual([]);
+    }
   });
 
-  it('takes the key from the main checkout’s .env, and nothing else from it, when this checkout has none', () => {
+  it('takes the key from the main checkout’s .env when this checkout has none', () => {
     rmSync(join(worktree, '.env'));
-    const r = prepareEvalInstance({
-      repoRoot: worktree,
-      mainCheckout: main,
-      env: {},
-      port: '3042',
+    expect(prepare()).toEqual({
+      ok: true,
+      key: 'sk-ant-main-key',
+      keySource: 'the main checkout’s .env',
     });
-
-    expect(r).toEqual({ ok: true, keySource: 'the main checkout’s .env' });
-    const written = readFileSync(join(worktree, EVAL_DIR, '.env'), 'utf-8');
-    expect(Object.keys(parseDotenv(written))).toEqual(['ANTHROPIC_API_KEY', 'PORT']);
+    expect(filesContaining(join(worktree, EVAL_DIR), 'sk-ant-main-key')).toEqual([]);
   });
 
   it('builds a fresh state of real directories — nothing links to the main checkout', () => {
-    prepareEvalInstance({ repoRoot: worktree, mainCheckout: main, env: {}, port: '3042' });
+    prepare();
     const root = join(worktree, EVAL_DIR);
 
     expect(symlinksUnder(root)).toEqual([]);
@@ -264,7 +319,7 @@ describe('prepareEvalInstance', () => {
       snapshot(main).filter((line) => !line.startsWith(join(worktree, EVAL_DIR)));
     const before = outsideEval();
 
-    prepareEvalInstance({ repoRoot: worktree, mainCheckout: main, env: {}, port: '3042' });
+    prepare();
 
     expect(outsideEval()).toEqual(before);
     expect(readlinkSync(join(worktree, 'workdir'))).toBe(join(main, 'workdir'));
@@ -274,12 +329,7 @@ describe('prepareEvalInstance', () => {
     mkdirSync(join(worktree, EVAL_DIR, 'workdir', 'sessions', 'task-9'), { recursive: true });
     const before = snapshot(main);
 
-    const r = prepareEvalInstance({
-      repoRoot: worktree,
-      mainCheckout: main,
-      env: {},
-      port: '3042',
-    });
+    const r = prepare();
 
     expect(r.ok).toBe(false);
     expect(!r.ok && r.error).toContain('teardown.ts --profile eval');
@@ -290,19 +340,47 @@ describe('prepareEvalInstance', () => {
     rmSync(join(worktree, '.env'));
     writeFileSync(join(main, '.env'), 'SLACK_BOT_TOKEN=xoxb-main-secret\n');
 
-    const r = prepareEvalInstance({
-      repoRoot: worktree,
-      mainCheckout: main,
-      env: {},
-      port: '3042',
-    });
+    const r = prepare();
 
     expect(r.ok).toBe(false);
     expect(readdirSync(worktree)).not.toContain(EVAL_DIR);
   });
 
+  it('opens the state to the container’s user on Linux, and closes eval-instance/ to other host users', () => {
+    prepare({ host: { platform: 'linux', uid: 1000 } });
+    const root = join(worktree, EVAL_DIR);
+    const mode = (path: string) => statSync(join(root, path)).mode & 0o777;
+
+    expect(mode('.')).toBe(0o700);
+    expect(mode('workdir')).toBe(0o777);
+    expect(mode('claude-data')).toBe(0o777);
+    expect(mode('secrets')).toBe(0o777);
+    expect(mode('claude-data/.claude.json')).toBe(0o666);
+  });
+
+  it('leaves default modes where Docker maps ownership itself or the host user is uid 1001', () => {
+    mkdirSync(join(base, 'reference-dir'));
+    writeFileSync(join(base, 'reference-file'), '');
+    const defaultDir = statSync(join(base, 'reference-dir')).mode & 0o777;
+    const defaultFile = statSync(join(base, 'reference-file')).mode & 0o777;
+
+    for (const host of [
+      { platform: 'darwin' as const, uid: 501 },
+      { platform: 'linux' as const, uid: 1001 },
+    ]) {
+      prepare({ host });
+      const root = join(worktree, EVAL_DIR);
+      const mode = (path: string) => statSync(join(root, path)).mode & 0o777;
+      for (const dir of ['.', 'workdir', 'claude-data', 'secrets']) {
+        expect(mode(dir), `${host.platform} ${dir}`).toBe(defaultDir);
+      }
+      expect(mode('claude-data/.claude.json')).toBe(defaultFile);
+      removeEvalInstance(worktree);
+    }
+  });
+
   it('teardown removes the instance directory, and only removes a symlink put in its place', () => {
-    prepareEvalInstance({ repoRoot: worktree, mainCheckout: main, env: {}, port: '3042' });
+    prepare();
     expect(removeEvalInstance(worktree)).toBe('removed');
     expect(readdirSync(worktree)).not.toContain(EVAL_DIR);
     expect(removeEvalInstance(worktree)).toBe('absent');
@@ -310,6 +388,61 @@ describe('prepareEvalInstance', () => {
     symlinkSync(join(main, 'workdir'), join(worktree, EVAL_DIR));
     expect(removeEvalInstance(worktree)).toBe('removed');
     expect(readdirSync(join(main, 'workdir', 'sessions'))).toEqual(['task-1']);
+  });
+});
+
+describe('runEvalPrepare', () => {
+  let base: string;
+  let main: string;
+  let worktree: string;
+
+  beforeEach(() => {
+    base = mkdtempSync(join(tmpdir(), 'eval-run-'));
+    main = join(base, 'main');
+    worktree = join(main, '.claude', 'worktrees', 'feat');
+    mkdirSync(worktree, { recursive: true });
+    writeFileSync(join(main, '.env'), MAIN_DOTENV);
+  });
+
+  afterEach(() => {
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  // Boot writes nothing after this step, so whatever fails next (compose config, build, up,
+  // health) leaves on disk only what this step wrote.
+  it('hands the key to the compose environment and leaves none on disk for a failed boot to strand', async () => {
+    const exec: ExecFn = async () => ({ code: 0, stdout: `${main}/.git\n`, stderr: '' });
+    const lines: string[] = [];
+    const io = { log: (l: string) => lines.push(l), error: (l: string) => lines.push(l) };
+
+    const r = await runEvalPrepare(worktree, exec, {}, io);
+
+    expect(r.code).toBe(0);
+    if (r.code !== 0) return;
+    expect(r.composeEnv).toEqual({ ANTHROPIC_API_KEY: 'sk-ant-main-key' });
+    expect(r.keySource).toBe('the main checkout’s .env');
+    expect(r.port).toMatch(/^\d+$/);
+    expect(filesContaining(join(worktree, EVAL_DIR), 'sk-ant-main-key')).toEqual([]);
+    expect(lines.join('\n')).not.toContain('sk-ant-main-key');
+  });
+});
+
+describe('docker-compose.eval.yml', () => {
+  const overlay = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), 'docker-compose.eval.yml'),
+    'utf-8',
+  )
+    .split('\n')
+    .map((line) => line.replace(/\s*#.*$/, ''))
+    .join('\n');
+
+  it('loads no env file, so teardown needs nothing from eval-instance/ and works again after a failure', () => {
+    expect(overlay).toMatch(/^ {4}env_file: !reset \[\]$/m);
+    expect(overlay).not.toContain('.env');
+  });
+
+  it('takes the model key from the compose environment, with no value of its own', () => {
+    expect(overlay).toMatch(/^ {6}ANTHROPIC_API_KEY:$/m);
   });
 });
 

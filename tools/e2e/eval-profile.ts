@@ -8,14 +8,17 @@
  * integrations, but an eval must start every run, on every ref, from the same
  * known state. An eval instance instead gets:
  *   - `eval-instance/` in this checkout, created fresh by boot and deleted by
- *     teardown: a `.env` holding only ANTHROPIC_API_KEY and PORT, an empty
- *     `workdir/`, `claude-data/.claude.json` containing `{}`, and an empty
- *     `secrets/`;
+ *     teardown: an empty `workdir/`, `claude-data/.claude.json` containing
+ *     `{}`, and an empty `secrets/`;
+ *   - ANTHROPIC_API_KEY and PORT, passed to compose through the process
+ *     environment and never written to disk, so a failed boot or teardown
+ *     leaves no key behind; every other setting is the engine default;
  *   - this checkout's `examples/plugins` mounted read-only as the plugins
  *     directory;
  *   - no host SSH agent;
- *   - its own compose project (`<checkout>-eval`), so it never replaces a
- *     default-profile instance of the same checkout.
+ *   - its own compose project (`<checkout>-<path hash>-eval`), so it never
+ *     replaces a default-profile instance, or the eval instance of another
+ *     checkout with the same directory name.
  *
  * `docker-compose.eval.yml` does the mounting. Before compose up, boot resolves
  * the merged config with `docker compose config` and refuses to start when a
@@ -23,12 +26,14 @@
  * workdir/claude-data/secrets, got through. The guarantee rests on what compose
  * will run, not on what the overlay intends.
  *
- * Pure cores (evalProjectName, resolveModelKey, renderEvalDotenv,
+ * Pure cores (evalProjectName, resolveModelKey, needsOpenModes,
  * readEffectiveSettings, findIsolationViolations, renderEffectiveSettings) are
  * unit-tested; prepareEvalInstance is tested against a temporary directory.
  */
 
+import { createHash } from 'crypto';
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -47,20 +52,30 @@ import { choosePort, mainCheckoutFrom } from './prepare-worktree.js';
 export const EVAL_DIR = 'eval-instance';
 const EVAL_COMPOSE_FILE = 'tools/e2e/docker-compose.eval.yml';
 const MODEL_KEY = 'ANTHROPIC_API_KEY';
+/** The container's user (Dockerfile.dev `useradd -u 1001`); the entrypoint drops to it. */
+const CONTAINER_UID = 1001;
 /** Claude Code strips ANTHROPIC_API_KEY from subprocess environments, so sandboxes and CI pass it under this name. */
 const MODEL_KEY_ENV = 'E2E_ANTHROPIC_API_KEY';
 
 /**
- * Compose's default project name for this checkout plus `-eval`, normalised the
- * way compose requires (lowercase letters, digits, `_` and `-`, starting with a
- * letter or digit). Two checkouts get two projects, so their instances coexist.
+ * The checkout's directory name, a hash of its real path, and `-eval`, normalised
+ * the way compose requires (lowercase letters, digits, `_` and `-`, starting with
+ * a letter or digit). The hash keeps `base/archie-hq` and `candidate/archie-hq`
+ * apart, so a paired run's second `compose up` cannot replace the first instance;
+ * the name keeps `docker ps` readable. Boot and teardown derive it the same way.
  */
-export function evalProjectName(repoRoot: string): string {
-  const base = basename(repoRoot)
+export function evalProjectName(
+  repoRoot: string,
+  realpath: (path: string) => string = hostRealpath,
+): string {
+  // Both parts come from the real path, so any spelling of the checkout's path gives one name.
+  const real = realpath(repoRoot);
+  const base = basename(real)
     .toLowerCase()
     .replace(/[^a-z0-9_-]/g, '')
     .replace(/^[_-]+/, '');
-  return `${base || 'archie'}-eval`;
+  const pathHash = createHash('sha256').update(real).digest('hex').slice(0, 8);
+  return `${base || 'archie'}-${pathHash}-eval`;
 }
 
 /** Global `docker compose` arguments that select the eval project and overlay; commands run from the repo root. */
@@ -99,11 +114,11 @@ export function resolveModelKey(sources: ModelKeySources): ModelKeyResult {
       error: `no ${MODEL_KEY} found — set ${MODEL_KEY_ENV}, or put ${MODEL_KEY} in this checkout's or the main checkout's .env`,
     };
   }
-  // A value that could carry a line break or quote could smuggle extra variables into the eval .env.
+  // Whitespace or quotes mean a mangled copy; failing here beats an auth error after a long build.
   if (!/^[A-Za-z0-9._-]+$/.test(found.value)) {
     return {
       ok: false,
-      error: `${MODEL_KEY} from ${found.source} has characters a model key never contains — refusing to write it`,
+      error: `${MODEL_KEY} from ${found.source} has characters a model key never contains — refusing to use it`,
     };
   }
   return { ok: true, key: found.value, source: found.source };
@@ -114,15 +129,22 @@ function dotenvValue(text: string | undefined, name: string): string | undefined
   return parseDotenv(text)[name]?.trim() || undefined;
 }
 
-/** The eval instance's whole `.env`: the model key and the port. Everything else is the ref's engine default. */
-export function renderEvalDotenv(key: string, port: string): string {
-  return [
-    '# Written by `tools/e2e/boot.ts --profile eval`; deleted by `teardown.ts --profile eval`.',
-    '# Only the model key and the port: every other setting is the engine default of the ref under test.',
-    `${MODEL_KEY}=${key}`,
-    `PORT=${port}`,
-    '',
-  ].join('\n');
+// ---- Host ownership (pure) ----
+
+export interface HostIdentity {
+  platform: NodeJS.Platform;
+  /** Undefined where the platform has no uids (Windows). */
+  uid?: number;
+}
+
+/**
+ * Must the instance directories be opened up for the container's user? On native
+ * Linux a bind mount keeps host ownership, so a directory the host user created
+ * is read-only to uid 1001 unless the two match. Docker Desktop on macOS maps
+ * ownership itself and needs nothing.
+ */
+export function needsOpenModes(host: HostIdentity): boolean {
+  return host.platform === 'linux' && host.uid !== CONTAINER_UID;
 }
 
 // ---- Instance directory (disk) ----
@@ -132,13 +154,16 @@ export interface EvalPrepareInput {
   /** Main checkout path when `repoRoot` is a worktree; its `.env` is read for the model key only. */
   mainCheckout?: string;
   env: EnvLike;
-  port: string;
+  /** Defaults to this process's platform and uid. */
+  host?: HostIdentity;
 }
 
-export type EvalPrepareResult = { ok: true; keySource: string } | { ok: false; error: string };
+export type EvalPrepareResult =
+  { ok: true; key: string; keySource: string } | { ok: false; error: string };
 
 /**
- * Create `eval-instance/` from nothing. Writes only inside it, creates no
+ * Create `eval-instance/` from nothing and return the model key for the compose
+ * environment. Writes only inside the directory, never the key, creates no
  * symlinks, and reads the main checkout's `.env` without changing anything
  * there. Refuses when the directory already exists: it may hold sessions from a
  * previous run, and deleting them is teardown's job, not boot's.
@@ -167,8 +192,17 @@ export function prepareEvalInstance(input: EvalPrepareInput): EvalPrepareResult 
   mkdirSync(join(root, 'claude-data'));
   mkdirSync(join(root, 'secrets'));
   writeFileSync(join(root, 'claude-data', '.claude.json'), '{}\n');
-  writeFileSync(join(root, '.env'), renderEvalDotenv(key.key, input.port), { mode: 0o600 });
-  return { ok: true, keySource: key.source };
+
+  const host = input.host ?? { platform: process.platform, uid: process.getuid?.() };
+  if (needsOpenModes(host)) {
+    // The container's user owns nothing here, so it writes through the "other" bits. Closing
+    // eval-instance/ itself keeps other host users out: the container reaches the inner
+    // directories through their bind mounts, never through this one.
+    for (const dir of ['workdir', 'claude-data', 'secrets']) chmodSync(join(root, dir), 0o777);
+    chmodSync(join(root, 'claude-data', '.claude.json'), 0o666);
+    chmodSync(root, 0o700);
+  }
+  return { ok: true, key: key.key, keySource: key.source };
 }
 
 /** Delete `eval-instance/`. A symlink in its place is removed, never followed. */
@@ -201,13 +235,24 @@ export interface EvalIo {
   error: (line: string) => void;
 }
 
+export type EvalPrepareOutcome =
+  | {
+      code: 0;
+      keySource: string;
+      port: string;
+      /** Variables boot adds to the compose environment: the model key, which is never on disk. */
+      composeEnv: Record<string, string>;
+    }
+  | { code: 1 };
+
 /** Boot step 0 for the eval profile: locate the main checkout, pick a port, create the instance directory. */
 export async function runEvalPrepare(
   repoRoot: string,
   exec: ExecFn,
   env: EnvLike,
   io: EvalIo,
-): Promise<{ code: number; keySource?: string }> {
+  host?: HostIdentity,
+): Promise<EvalPrepareOutcome> {
   const commonDir = await exec('git', ['rev-parse', '--path-format=absolute', '--git-common-dir']);
   if (commonDir.code !== 0) {
     io.error(
@@ -222,16 +267,21 @@ export async function runEvalPrepare(
     repoRoot,
     mainCheckout: where.kind === 'worktree' ? where.main : undefined,
     env,
-    port,
+    host,
   });
   if (!prepared.ok) {
     io.error(`Cannot prepare the eval instance: ${prepared.error}`);
     return { code: 1 };
   }
   io.log(
-    `Created ${EVAL_DIR}/ (fresh workdir, empty claude-data and secrets; .env with ${MODEL_KEY} and PORT=${port}).`,
+    `Created ${EVAL_DIR}/ (fresh workdir, empty claude-data and secrets); ${MODEL_KEY} and PORT=${port} go to compose through the environment.`,
   );
-  return { code: 0, keySource: prepared.keySource };
+  return {
+    code: 0,
+    keySource: prepared.keySource,
+    port,
+    composeEnv: { [MODEL_KEY]: prepared.key },
+  };
 }
 
 // ---- Resolved compose config (pure) ----
@@ -393,7 +443,7 @@ export function hostRealpath(path: string): string {
 /**
  * Boot step before compose up: resolve the merged config, print the effective
  * settings and refuse to start a non-hermetic instance. `exec` must carry the
- * compose environment (PORT, GIT_SHA) the boot will use.
+ * compose environment (PORT, GIT_SHA, the model key) the boot will use.
  */
 export async function checkEvalCompose(
   exec: ExecFn,

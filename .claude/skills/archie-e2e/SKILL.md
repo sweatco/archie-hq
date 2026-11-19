@@ -193,9 +193,10 @@ npx tsx tools/e2e/teardown.ts --profile eval
 
 In place of the worktree preparation, boot:
 
-- Creates `eval-instance/` in this checkout: a `.env` with only `ANTHROPIC_API_KEY` and a free `PORT`, an empty `workdir/`, `claude-data/.claude.json` containing `{}`, and an empty `secrets/`. Every other setting is the engine default of the ref under test. It refuses when `eval-instance/` already exists: tear down first.
-- Takes the key from `E2E_ANTHROPIC_API_KEY` in the environment, else `ANTHROPIC_API_KEY` from this checkout's `.env`, else from the main checkout's. Nothing else is read from either file.
-- Runs compose with the overlay `tools/e2e/docker-compose.eval.yml` under the project `<checkout>-eval`: this checkout's `examples/plugins` mounted read-only as the plugins directory, the `eval-instance/` directories in place of `workdir`, `claude-data` and `secrets`, and no host SSH agent. A default-profile instance of the same checkout is left running.
+- Creates `eval-instance/` in this checkout: an empty `workdir/`, `claude-data/.claude.json` containing `{}`, and an empty `secrets/`. It refuses when `eval-instance/` already exists: tear down first.
+- Takes the key from `E2E_ANTHROPIC_API_KEY` in the environment, else `ANTHROPIC_API_KEY` from this checkout's `.env`, else from the main checkout's. Nothing else is read from either file. The key and a free `PORT` reach compose through its process environment and are never written to disk, so a failed boot or teardown leaves no key behind. Every other setting is the engine default of the ref under test.
+- On native Linux with a host uid other than 1001, opens `workdir/`, `claude-data/` and `secrets/` (mode 0777) and `.claude.json` (0666) so the container's user can write them, and closes `eval-instance/` itself (0700) to other host users; the container reaches the inner directories through their bind mounts. macOS needs nothing: Docker Desktop maps ownership.
+- Runs compose with the overlay `tools/e2e/docker-compose.eval.yml` under the project `<checkout>-<hash>-eval`, where the hash comes from the checkout's real path, so same-named checkouts in different directories never share a project. The overlay loads no `.env`, mounts this checkout's `examples/plugins` read-only as the plugins directory and the `eval-instance/` directories in place of `workdir`, `claude-data` and `secrets`, and drops the host SSH agent. A default-profile instance of the same checkout is left running.
 - Resolves the merged config with `docker compose config`, prints the effective settings (credentials by name only, port, plugins and workdir mounts) and refuses to start if any credential-like variable other than the model key, or a bind mount outside the checkout or of its `workdir`, `claude-data`, `secrets` or `.env`, got through.
 - Ignores `ARCHIE_URL`. Drive the instance at the `ARCHIE_URL=` line the boot prints, through the HTTP API or a fresh `archie-debug` MCP client spawned with that URL.
 
@@ -209,4 +210,4 @@ In place of the worktree preparation, boot:
 - Slack tools fail, and triggers cannot be proposed.
 - No GitHub credentials and no SSH agent, so no repo work: `edit-mode-approval` and `merge-approval-deny` cannot run; `basic-nonce` can.
 - `tool-gate-check.ts` and `egress-check.ts` target the default profile's compose project and `workdir/`; run them on a default-profile instance.
-- On Linux, files the container wrote under `eval-instance/` belong to its user (uid 1001); teardown names the path when it cannot delete them.
+- On native Linux, directories the container created under `eval-instance/` belong to its user (uid 1001), so teardown cannot delete them as another host user; it names the path to delete as root. Nothing there holds the model key.
