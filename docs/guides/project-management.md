@@ -30,13 +30,38 @@ Use native assignees and milestones. Leave unknown owners and dates unset. Initi
 
 Use `pm:decision` for a concrete pending human choice, `pm:blocked` for an identified prerequisite, and `pm:parked` for explicitly deferred work. State the decision or unblocker in the issue. Missing ownership and age are triage signals, not proof of blockage or abandonment. Active, Decisions, Backlog, and Memory are views of the same items. The [initial disposition review](../plans/20261111-issue-disposition.md) is a dated snapshot, not another live backlog.
 
+## Plans
+
+Working plans are not committed. Each part of a plan has one home:
+
+| Content | Home |
+|---|---|
+| Draft plan, working notes, task breakdown in progress | Outside the repository: the author's own planning store or session |
+| Agreed scope, acceptance criteria, tasks, status, next action | The issue |
+| Final approach and verification evidence | The PR description |
+| Design and rationale that outlive the work | `docs/architecture/` or the owning guide, updated in the same PR |
+| Undecided ideas | `docs/proposals/` |
+
+The issue is the tracked plan once scope is agreed; a private draft is not a record others can rely on. Move anything a later reader needs out of the draft before the work is accepted. Keep machine-specific paths and private store contents out of repository documents.
+
+[docs/plans/](../plans/README.md) is a frozen archive. Add no plan files and no status updates there. Existing files stay in place because code comments and documents link to them.
+
+### Community contributions
+
+The repository is public and outside contributors see neither private drafts nor the Project, so public issues and PRs are the only shared record.
+
+- A feature starts as an issue from the feature request form. Agree the approach there before a large PR.
+- A design too large for an issue is a PR that adds a draft to `docs/proposals/`, so it gets line-by-line review before implementation.
+- Maintainers open a public issue before starting feature work a contributor could duplicate.
+- Keep internal links, production data and private plugin details out of issues and PRs.
+
 ## Required research → idea → implementation routine
 
 Apply this workflow during active tasks. Use `github-issues` for issue operations. The user owns priorities, scope and acceptance; PM organizes records and transitions, not technical decisions or plan content.
 
 1. **Resume:** Find the owning records, current stage and next action.
 2. **Capture:** When research yields an implementation idea, save or update its draft in `docs/proposals/` with source links. Keep parked ideas parked.
-3. **Decide:** Record the user's decision to proceed and agreed scope in the existing proposal or plan.
+3. **Decide:** Record the user's decision to proceed and agreed scope in the existing proposal or issue.
 4. **Track:** Reuse existing issues; prepare missing tasks with the [task form](../../.github/ISSUE_TEMPLATE/task.yml). Link related records and dependencies; use milestones for agreed outcomes.
 5. **Maintain:** Update status, decisions, blockers and next actions as work progresses. Scope changes require the user's decision.
 6. **Accept:** Link delivery evidence and record the user's acceptance before preparing closure. Keep remaining work visible.

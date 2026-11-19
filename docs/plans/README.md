@@ -1,11 +1,13 @@
 # Development Plans
 
-Historical record of Archie's incremental development. Each plan represents a milestone that was designed, reviewed, and (in most cases) implemented. Plans are preserved as-is for historical reference, with a status header indicating their implementation state.
+Frozen archive of Archie's incremental development. Each plan represents a milestone that was designed, reviewed, and (in most cases) implemented. Plans are preserved as-is for historical reference, with a status header indicating their implementation state.
+
+No new plans or status updates are added here. Working plans now live outside the repository, with issues and PR descriptions as the tracked record; see [the plans policy](../guides/project-management.md#plans).
 
 ## Naming convention
 
-- **New plans** are named `YYYYMMDD-{name}.md` (date the plan was written, e.g. `20260626-response-formatting.md`). Dates don't collide, so several plans can be drafted in parallel without coordinating a shared counter.
-- **Legacy plans** use the sequential `vN-{name}.md` scheme and are kept under their original names as a frozen historical record — they are not renamed.
+- **Dated plans** are named `YYYYMMDD-{name}.md` (date the plan was written, e.g. `20260626-response-formatting.md`).
+- **Legacy plans** use the sequential `vN-{name}.md` scheme. Neither set is renamed.
 
 ## Implementation Status
 

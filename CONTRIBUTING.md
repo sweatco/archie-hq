@@ -70,7 +70,7 @@ Read the [coding guidelines](docs/guides/coding-guidelines.md) for ownership, re
 ## Where to add things
 
 - **Domain behavior** — new agents, skills, or PM workflows — almost always belongs in a **plugin**, not in the engine. Plugins are how Archie gains new capabilities without changing core code. See the bundled **`writing-plugins`** skill at [`examples/plugins/.claude/skills/writing-plugins/SKILL.md`](examples/plugins/.claude/skills/writing-plugins/SKILL.md). Note that production domain plugins typically live in a separate (often private) repo; the engine ships only the example plugin set under `examples/plugins/`.
-- **Engine changes** — orchestration, agent runtime, integrations, CLI, session handling — go in `src/`. If you're adding a feature here, a quick issue or discussion first helps align on approach before you invest in a PR.
+- **Engine changes** — orchestration, agent runtime, integrations, CLI, session handling — go in `src/`. If you're adding a feature here, open a feature request first and agree the approach there before you invest in a PR. For a design too large for an issue, open a PR that adds a draft to `docs/proposals/`. Don't add files to `docs/plans/`; it is a frozen archive.
 
 ## Reporting security issues
 

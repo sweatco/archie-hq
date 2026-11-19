@@ -4,7 +4,7 @@ Read [the coding guidelines](docs/guides/coding-guidelines.md) before changing c
 
 ## Architecture and scope
 
-Archie uses Node.js, TypeScript and the Claude Agent SDK. Start with the [architecture overview](docs/architecture/overview.md), then read the owning document before changing a component. Domain capabilities belong in plugins. Use `docs/proposals/` for unimplemented ideas and `docs/plans/` for development plans and their historical records.
+Archie uses Node.js, TypeScript and the Claude Agent SDK. Start with the [architecture overview](docs/architecture/overview.md), then read the owning document before changing a component. Domain capabilities belong in plugins. Use `docs/proposals/` for unimplemented ideas. Keep working plans out of the repository: `docs/plans/` is a frozen archive, and [the plans policy](docs/guides/project-management.md#plans) says where each part of a plan lives.
 
 See [local development](docs/guides/local-development.md) for setup and runtime layout, and the [plugin system](docs/architecture/plugin-system.md) for loading and bootstrap behavior.
 

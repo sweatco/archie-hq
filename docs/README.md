@@ -39,7 +39,7 @@ How to work with the system. Setup, deployment, and development patterns.
 
 ## Plans
 
-Historical record of development milestones. Each plan has a status header indicating implementation state.
+Frozen archive of development milestones. Each plan has a status header indicating implementation state. New work is planned in issues and PR descriptions; see [the plans policy](guides/project-management.md#plans).
 
 | Plan | Feature | Status |
 |------|---------|--------|
