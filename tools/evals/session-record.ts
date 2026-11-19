@@ -157,10 +157,13 @@ function buildTurns(events: SystemEvent[]): Turn[] {
 
 /**
  * Metadata holds the lifecycle status; an approval wait shows only in events.
- * Same replay rules as `tools/debug-mcp/wait-for-task.ts`.
+ * The engine parks a task for approval by stopping it, so a pending approval
+ * outranks `stopped`. Same order and replay rules as
+ * `tools/debug-mcp/wait-for-task.ts`: completed, then awaiting approval, then
+ * the status.
  */
 function resolveTerminalState(status: TaskStatus, events: SystemEvent[]): TerminalState {
-  if (status === 'completed' || status === 'stopped') return status;
+  if (status === 'completed') return status;
   let awaitingApproval = false;
   for (const event of events) {
     if (event.type === 'approval:requested') awaitingApproval = true;

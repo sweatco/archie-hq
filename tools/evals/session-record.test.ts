@@ -103,26 +103,39 @@ describe('buildSessionRecord', () => {
     expect(gaps).toEqual([`session ${ORIGINAL_SESSION} (pm) is recorded but has no transcript`]);
   });
 
-  it('reports a task still waiting on an approval', async () => {
-    const taskDir = await copyFixture();
-    const metadataPath = join(taskDir, 'shared', 'metadata.json');
-    const metadata = JSON.parse(await readFile(metadataPath, 'utf8')) as Record<string, unknown>;
-    await writeFile(metadataPath, JSON.stringify({ ...metadata, status: 'in_progress' }));
-    const eventsPath = join(taskDir, 'shared', 'events.jsonl');
-    await appendFile(
-      eventsPath,
-      JSON.stringify({
-        type: 'approval:requested',
-        taskId: TASK_ID,
-        timestamp: '2026-01-01T09:00:30.000Z',
-        data: { text: 'Approve the trigger?', approvalType: 'trigger' },
-      }) + '\n',
-    );
+  // The engine parks a task for approval by stopping it, so `stopped` with a
+  // pending request is the real shape of an approval wait.
+  it.each([
+    { status: 'stopped', pending: true, expected: 'approval_requested' },
+    { status: 'stopped', pending: false, expected: 'stopped' },
+    { status: 'in_progress', pending: true, expected: 'approval_requested' },
+    { status: 'completed', pending: true, expected: 'completed' },
+  ])(
+    'reports $expected for a $status task (approval pending: $pending)',
+    async ({ status, pending, expected }) => {
+      const taskDir = await copyFixture();
+      const metadataPath = join(taskDir, 'shared', 'metadata.json');
+      const metadata = JSON.parse(await readFile(metadataPath, 'utf8')) as Record<string, unknown>;
+      await writeFile(metadataPath, JSON.stringify({ ...metadata, status }));
+      const event = (type: string, second: number, data: Record<string, unknown> = {}) =>
+        JSON.stringify({
+          type,
+          taskId: TASK_ID,
+          timestamp: `2026-01-01T09:00:${second}.000Z`,
+          data,
+        });
+      const parked = [
+        event('approval:requested', 30, { text: 'Approve the trigger?', approvalType: 'trigger' }),
+        event('task:stopped', 31),
+      ];
+      if (!pending) parked.push(event('approval:resolved', 40, { approvalType: 'trigger' }));
+      await appendFile(join(taskDir, 'shared', 'events.jsonl'), parked.join('\n') + '\n');
 
-    const { record } = await buildSessionRecord(taskDir, 'production');
+      const { record } = await buildSessionRecord(taskDir, 'production');
 
-    expect(record.terminalState).toBe('approval_requested');
-  });
+      expect(record.terminalState).toBe(expected);
+    },
+  );
 
   it('leaves cost unmeasured without usage records', async () => {
     const taskDir = await copyFixture();
