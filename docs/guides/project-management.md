@@ -52,7 +52,7 @@ Issues and PRs are public. Keep internal links, production data and private plug
 - **Stay visible:** open a public issue before starting feature work a contributor could duplicate.
 - **Keep it light:** simple fixes and PR-only maintenance need no issue or milestone.
 - **Keep it honest:** leave unknown owners and dates unset. Link records instead of copying their status. Do not count an issue and its PR as two outcomes.
-- **Review weekly:** cover changes, blockers, decisions and the next milestone, and check for superseded items before adding to the backlog. The [weekly report](project-access-and-automation.md#health-checks) is the input; agents summarize it when asked. No new meeting or scheduled monitor is implied.
+- **Review weekly:** cover changes, blockers, decisions and the next milestone, and check for superseded items before adding to the backlog. No new meeting or scheduled monitor is implied.
 
 The [initial disposition review](../plans/20261111-issue-disposition.md) is a dated snapshot whose classification remains a proposal, not a second backlog.
 
@@ -71,7 +71,7 @@ Rules that always apply:
 
 - **Approval:** each GitHub mutation, Git remote write or release needs explicit approval in the current chat. Prepare related edits as one concrete, reviewable batch. An approved automation may run its defined rules; its setup authorizes nothing broader.
 - **Human decisions:** issue closures and scope changes need a recorded human decision.
-- **Access:** follow [the access rules](project-access-and-automation.md#who-may-write) before any upstream access. They start with `node tools/pm/check-repository.mjs`.
+- **Access:** follow [the access rules](project-access-and-automation.md#who-may-write) before any upstream access. Only a `sweatco/archie-hq` checkout writes tracking records.
 - **Restraint:** respect analysis-only and no-recording requests. Pending tracking approval must not block otherwise authorized work.
 - **Limits:** this routine creates no background monitoring and no authority for paid runs or deployments.
 - **Tools:** use the `github-issues` skill for issue operations. Prefer connected tools; use authenticated `gh` for missing Project capabilities and look up current field and option IDs.

@@ -33,7 +33,7 @@ How to work with the system. Setup, deployment, and development patterns.
 | [Local Development](guides/local-development.md) | Prerequisites, setup, running, debugging |
 | [Coding Guidelines](guides/coding-guidelines.md) | Readability, ownership, review and automated checks |
 | [Project Management](guides/project-management.md) | How ideas, plans and status are tracked in issues: types, milestones, board status and the agent routine |
-| [Project Access and Automation](guides/project-access-and-automation.md) | Canonical-repository access boundary, GitHub automation and health checks |
+| [Project Access and Automation](guides/project-access-and-automation.md) | Canonical-repository access boundary and GitHub automation |
 | [Deployment](guides/deployment.md) | GCP deployment, CI/CD, monitoring, operations |
 | [SDK Patterns](guides/sdk-patterns.md) | Agent SDK hooks, turn detection, streaming input |
 | [Bedrock Guardrails Setup](guides/bedrock-guardrails-setup.md) | Configuring AWS Bedrock guardrails for prompt injection defense |

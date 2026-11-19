@@ -1,12 +1,12 @@
 # Project access rules and automation
 
-Reference for maintainers and agents. [Managing Archie development](project-management.md) explains the process; this page covers who may write tracking records, what enters the board, what GitHub automates and how to check the board.
+Reference for maintainers and agents. [Managing Archie development](project-management.md) explains the process; this page covers who may write tracking records, what enters the board and what GitHub automates.
 
 ## Who may write
 
-Only the canonical repository, `sweatco/archie-hq` (GitHub repository ID `1120227357`), writes to the shared Project and its tracking records. Any branch or worktree of that repository qualifies. A fork never does, even with an `upstream` remote pointing to Archie, credentials with Project access or a copied `.github/project.json`.
+Only the canonical repository, `sweatco/archie-hq` (GitHub repository ID `1120227357`), writes to the shared Project and its tracking records. Any branch or worktree of that repository qualifies. A fork never does, even with an `upstream` remote pointing to Archie or credentials with Project access.
 
-- **Check first:** run `node tools/pm/check-repository.mjs` before upstream access or an approved write batch, and again after changing repository context. It verifies the checkout's `origin`, GitHub's non-fork repository identity and, in Actions, the repository name and ID. Stop on failure or unknown identity. The check applies whichever tool makes the call, including a direct MCP call.
+- **Check first:** confirm the checkout's `origin` is `sweatco/archie-hq` before upstream access or an approved write batch, and again after changing repository context. Stop when it is a fork or unknown. This applies whichever tool makes the call, including a direct MCP call.
 - **Forks:** a fork's records and agent sessions must not create or change upstream Project items, drafts, fields, views, issues, milestones, labels or assignments. A fork may keep local artifacts when requested and submit contributions for upstream review.
 - **Permissions are the boundary:** never give Project-write credentials to a fork or run fork-controlled code in a privileged upstream workflow.
 
@@ -50,35 +50,6 @@ Three automations stay off:
 Record acceptance explicitly before setting Done or closing an issue as completed.
 
 After editing a native workflow, inspect the saved settings, read back the enabled states and exercise a relevant event. Record any transition you did not test.
-
-## Health checks
-
-Both checks only read. They make no model calls, post no comments and change no records.
-
-| | Weekly report | Board audit |
-|---|---|---|
-| Runs | [Project health workflow](../../.github/workflows/project-health.yml): Mondays 09:00 UTC or manual dispatch | On demand: `node tools/pm/issue-health.mjs --project` in an authorized local session |
-| Reads | Repository records: attention labels, owners, milestones and aging | The same, plus the board's Status, Initiative and membership |
-| Credentials | Repository-scoped, read-only `GITHUB_TOKEN` | The existing GitHub CLI login; refuses to run in Actions |
-| Scope guard | Canonical repository name and ID; fork copies skip the job | Checkout scope, then the Project ID, number and URL on every page |
-
-Without `--project` the command produces the weekly report locally. Add `--output <file>` to save either report.
-
-The board audit:
-
-- **Flags** contradictions between status, ownership and attention labels; issues whose open or closed state disagrees with their Status; merged or closed PRs in the wrong column; and non-canonical records.
-- **Notes, without flagging,** a missing Initiative or missing board membership. PR intake is maintainer-controlled, and the declined historical classification is not a repair request.
-- **Skips** archived items and Project drafts.
-- **Fails** on access errors, missing fields, identity mismatches and incomplete pagination, and reports hidden content as incomplete, rather than claiming consistency.
-
-Limits:
-
-- Findings are review input. They are not a gate and do not authorize changing records; every write keeps the [approval rules](project-management.md#agents-required-routine).
-- The audit cannot prove accepted scope, human acceptance, deployment or intake approval.
-- It does not narrow the login's permissions and is not a security sandbox. Do not copy an interactive CLI login into Actions.
-- No extra App, token, key or secret is configured, so unattended board checks wait for a new user decision.
-
-After changing the tooling, run `node --test tools/pm/*.test.mjs`, then `npm run check` before handoff.
 
 ## Installed skills
 
