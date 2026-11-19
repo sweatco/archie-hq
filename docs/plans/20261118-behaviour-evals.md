@@ -86,7 +86,8 @@ interface SessionRecord {
     failed: boolean;
   }[];
   complete: boolean;
-  usage: { costUsd: number; models: string[] };
+  terminalState: TaskStatus | 'approval_requested';
+  usage: { costUsd: number | null; models: string[] };
   manifest: SessionManifest | 'unknown';
 }
 ```
@@ -95,7 +96,8 @@ Rules:
 
 - The record carries no grades. A promptfoo provider returns it (replies as output, the rest as metadata) and grades live in promptfoo's results.
 - The builder reads every session recorded for the task. The SDK reader follows one message chain, while the PM session is forked after a refusal and replaced for max mode, so one read can miss calls.
-- `complete` is false when the transcript's raw tool-call count differs from what the reader returned. A "not called" assertion never passes on an incomplete record.
+- `complete` is false when the transcript's raw tool-call count differs from what the reader returned, or when a recorded session has no transcript. A "not called" assertion never passes on an incomplete record.
+- `costUsd` is null when the task has no usage records: unmeasured, not free.
 - `failed` is true when the result carries the error flag or matches known failure text. Archie's own tools do not always set the flag (`list_available_repos` returned an unflagged error in the live run).
 - A production record's text fields stay in a private location outside the repository. Reports carry counts and grades only.
 - `manifest: 'unknown'` never counts as a match in a comparison.
@@ -131,7 +133,7 @@ Rejected:
 
 Two kinds, applied identically to both sources.
 
-- **Code graders:** small functions over the record, exposed as promptfoo `javascript` assertions: reply count, word count, terminal state, and tool-use checks (called, not called, order, approval before mutation). Cost uses promptfoo's `cost` assertion.
+- **Code graders:** small functions over the record, exposed as promptfoo `javascript` assertions: terminal state and tool-use checks (called, not called, order, approval before mutation). Reply and word counts are measures in the replay provider's metadata, compared against base rather than passed or failed. Cost uses promptfoo's `cost` assertion.
 - **Judge:** a promptfoo `llm-rubric` assertion with a written rubric: requested facts present, unsupported claims, scope kept, result first. It runs under a spend cap and is trusted only as far as a human comparison supports. It may read pulled production sessions (decided 2026-11-18).
 
 Rules:
@@ -190,7 +192,7 @@ Rejected: a label trigger (anyone with triage rights can start a paid run) and a
 
 Deliverables:
 
-1. A record builder for a task folder, with unit tests on a trimmed synthetic folder from the 2026-11-18 live run.
+1. A record builder for a task folder, with unit tests on a hand-written synthetic folder modelled on the 2026-11-18 live run.
 2. The replay provider, code graders as promptfoo assertions, and the judge as an `llm-rubric` with its rubric and spend cap. The first step checks that promptfoo assertions can read a custom provider's record.
 3. A per-task pull from a container host, by id or day, without repos, attachments or artifacts.
 4. A private data location outside the repository, following the Memory evaluation's convention.
