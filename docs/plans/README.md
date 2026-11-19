@@ -37,6 +37,7 @@ No new plans or status updates are added here. Working plans now live outside th
 | [20261111](20261111-agent-completion-hooks.md) | Shared agent completion lint/format hooks | Simplified and verified live; Codex worktrees load primary-checkout configuration |
 | [20261116](20261116-incoming-events-shared-receiver.md) | Incoming events for Slack-managed routines and proactivity | Proposed |
 | [20261118](20261118-behaviour-evals.md) | Behaviour evals: offline grading of real sessions, paired runs and approved PR runs | Approved plan; not implemented |
+| [20261119](20261119-generic-webhook-receiver.md) | Generic webhook receiver and durable inbox for incoming events (#401) | Implemented |
 
 ## Evolution Arc
 
