@@ -1,6 +1,6 @@
 # Behaviour evals for Archie — implementation handoff
 
-**Status:** Approved by the maintainer on 2026-11-18; nothing is implemented. Stage 0 is specified deeply enough to start; later stages are outlines. One independent review checked the claims about the current system, and its corrections are applied.
+**Status:** Approved by the maintainer on 2026-11-18; revised on 2026-11-19 to use promptfoo for cases, trials, graders and reports. Stages 0 and 1 are in progress. Stage 0 is specified deeply enough to start; later stages are outlines. One independent review checked the claims about the current system, and its corrections are applied.
 **Sources:** repository at `29290acc`; a live instance run on 2026-11-18 (six tasks); five production task folders read and deleted the same day; the production memory snapshot of 2026-11-18; the [proposal](../proposals/behaviour-evals.md).
 **First milestone:** [Behaviour evals: repeatable prompt regression baseline](https://github.com/sweatco/archie-hq/milestone/4).
 
@@ -10,11 +10,13 @@ Build one **session record** and one set of **graders**, fed from two sources. P
 
 The decisive reason: production runs with memory injected, real plugins and Slack, none of which an API-driven test instance can reproduce today. One source cannot both be faithful and be controlled, so the design uses two and scores them the same way.
 
+Only the Archie-specific parts are built here. Case files, trials, assertions, the judge and the report come from [promptfoo](https://www.promptfoo.dev/) (see [Eval tooling](#eval-tooling)).
+
 ```
-production task folder ─┐
-                        ├─► session record ─► graders ─► report
-eval instance (base) ───┤                                  ▲
-eval instance (PR) ─────┘        paired comparison ────────┘
+production task folder ─┐                    promptfoo
+                        ├─► session record ─► assertions ─► report
+eval instance (base) ───┤                                     ▲
+eval instance (PR) ─────┘         paired comparison ──────────┘
 ```
 
 > A maintainer can see, for a prompt or agent change, how replies and tool use differ from main on a fixed case set, and can read the same measures over real production sessions.
@@ -46,6 +48,7 @@ eval instance (PR) ─────┘        paired comparison ─────�
 | Pull production data | `scripts/pull-remote-data.sh` takes all sessions | Extend with per-task selection |
 | Know what a session ran with | No manifest is persisted: `git_sha` on `/health` (`src/index.ts:157`), the model in `usage.jsonl`, the plugin list checked and logged at `src/agents/spawn.ts:953` | New |
 | Approval-gated CI run | None; the repository has no GitHub Environments | New |
+| Case files, trials, assertions, a judge and a side-by-side report | None in the repository; promptfoo provides them | Adopt, driving Archie through custom providers |
 
 Invariants to keep:
 
@@ -85,12 +88,12 @@ interface SessionRecord {
   complete: boolean;
   usage: { costUsd: number; models: string[] };
   manifest: SessionManifest | 'unknown';
-  grades: { grader: string; pass?: boolean; value?: number }[];
 }
 ```
 
 Rules:
 
+- The record carries no grades. A promptfoo provider returns it (replies as output, the rest as metadata) and grades live in promptfoo's results.
 - The builder reads every session recorded for the task. The SDK reader follows one message chain, while the PM session is forked after a refusal and replaced for max mode, so one read can miss calls.
 - `complete` is false when the transcript's raw tool-call count differs from what the reader returned. A "not called" assertion never passes on an incomplete record.
 - `failed` is true when the result carries the error flag or matches known failure text. Archie's own tools do not always set the flag (`list_available_repos` returned an unflagged error in the live run).
@@ -99,23 +102,49 @@ Rules:
 
 Rejected: structured tool-call events in the engine. Events carry only lossy traces of tool use (status lines and background tasks), but the SDK reader already returns tool calls for live and production folders, so an engine change buys nothing for evals. Accepted limitation: the record depends on the SDK's reader API.
 
+### Eval tooling
+
+Promptfoo is the runner, the assertion engine and the report. Archie plugs in through two custom providers that return a session record:
+
+- **Replay provider:** takes a task folder and builds its record. No model call. Used for pulled production sessions and for tests.
+- **Live provider:** takes an instance URL, plays a case's turns over the HTTP API, waits for the task to settle and builds the record from the instance's workdir.
+
+Built here: the record builder, the two providers, the grader functions, the hermetic boot, the session manifest, the comparison script and the approval gate.
+
+Rules:
+
+- The promptfoo version is pinned exactly, in its own package outside the root install. A full install is about 700 MB, so the root install, CI and the repository checks ignore it.
+- Promptfoo's config, results and cache directories point at the private data location whenever production sessions are graded. Telemetry, update checks and sharing are off.
+- Promptfoo runs behind a wrapper that blocks its outbound network, because it still posts one event with an install id when telemetry is disabled. The judge needs the model API host allowed explicitly.
+- The live provider enforces the spend cap itself.
+
+Accepted limitations: promptfoo has been owned by OpenAI since March 2026 (it remains MIT-licensed); it shows base and candidate side by side but computes no paired change or noise floor.
+
+Rejected:
+
+- **`claude plugin eval`.** It runs a plugin inside stock Claude Code and compares with-plugin against no-plugin. It cannot target the PM prompt or Archie's in-process tools, has no code graders and no version-to-version comparison.
+- **Promptfoo's built-in Claude Agent SDK provider, and Inspect's Claude Code solver.** Each launches its own agent, so it would test a reconstruction of Archie.
+- **A tracing platform over OpenTelemetry.** The CLI can export tool spans, but tracing is beta, session content would leave the task folder, and the SDK reader already works on disk.
+- **A hand-built runner, case format and report.** The first version of this plan; it duplicated promptfoo.
+
 ### Graders
 
 Two kinds, applied identically to both sources.
 
-- **Code graders:** reply count, word count, terminal state, cost, and trajectory assertions (called, not called, order, approval before mutation).
-- **Judge:** a model applies a written rubric: requested facts present, unsupported claims, scope kept, result first. It runs under a spend cap and is trusted only as far as a human comparison supports. It may read pulled production sessions (decided 2026-11-18).
+- **Code graders:** small functions over the record, exposed as promptfoo `javascript` assertions: reply count, word count, terminal state, and tool-use checks (called, not called, order, approval before mutation). Cost uses promptfoo's `cost` assertion.
+- **Judge:** a promptfoo `llm-rubric` assertion with a written rubric: requested facts present, unsupported claims, scope kept, result first. It runs under a spend cap and is trusted only as far as a human comparison supports. It may read pulled production sessions (decided 2026-11-18).
 
 Rules:
 
 - A grade is a measurement, not a verdict on the change. Only a paired comparison says whether a change moved it.
 - Hard invariants (for example, no merge without approval) must hold in every trial; everything else is reported as a change against base.
+- Tool-use checks read the record. Promptfoo's own `trajectory:*` assertions need OpenTelemetry traces and are not used.
 
 Rejected: an absolute pass mark per case. The pilot's control arm failed factuality, so it would block every change.
 
 ### Paired run
 
-The same cases run on a base instance and a candidate instance, several trials each, and the report gives the per-case change. A main-versus-main run comes first and sets the noise floor that later tolerances are read against.
+The same cases run on a base instance and a candidate instance, several trials each. The two instances are two live providers in one promptfoo run, and trials are promptfoo repeats. A script over promptfoo's JSON output gives the per-case change. A main-versus-main run comes first and sets the noise floor that later tolerances are read against.
 
 Rule: a comparison is valid only when the two manifests differ in the intended way and no other.
 
@@ -130,7 +159,7 @@ Rules:
 - Slack and GitHub credentials are never loaded, even when the main checkout has them.
 - The main checkout's workdir is never linked or written.
 
-Accepted limitation: without Slack the memory layer does not initialise (`src/memory/index.ts:53`), Slack tools fail, and triggers cannot be proposed. The profile measures engine conduct, not the production configuration.
+Accepted limitation: without Slack the memory layer does not initialise (`src/memory/index.ts:53`), Slack tools fail, and triggers cannot be proposed. The profile measures engine conduct, not the production configuration. Each ref needs its own checkout, and a ref older than the profile cannot use it.
 
 ### Session manifest
 
@@ -162,7 +191,7 @@ Rejected: a label trigger (anyone with triage rights can start a paid run) and a
 Deliverables:
 
 1. A record builder for a task folder, with unit tests on a trimmed synthetic folder from the 2026-11-18 live run.
-2. Code graders and the judge with its rubric and spend cap.
+2. The replay provider, code graders as promptfoo assertions, and the judge as an `llm-rubric` with its rubric and spend cap. The first step checks that promptfoo assertions can read a custom provider's record.
 3. A per-task pull from a container host, by id or day, without repos, attachments or artifacts.
 4. A private data location outside the repository, following the Memory evaluation's convention.
 5. A first report over a pulled production sample, and a human comparison of judge verdicts on part of it.
@@ -181,7 +210,7 @@ Depends on: nothing. Does not yet allow: comparisons.
 
 ### Stage 2 — A change can be compared against main on demand
 
-Deliverables: a documented case format and a scripted runner (multi-turn, concurrent, spend-capped); about 25 synthetic cases from the merged behaviour PRs, the API-reachable core skills and the pilot; a main-versus-main run; a saved baseline on main.
+Deliverables: the live provider (multi-turn, spend-capped) and the comparison script; about 25 synthetic cases, written as promptfoo tests, from the merged behaviour PRs, the API-reachable core skills and the pilot; a main-versus-main run; a saved baseline on main.
 
 Depends on: Stages 0 and 1.
 
@@ -189,9 +218,9 @@ Depends on: Stages 0 and 1.
 
 ### Stage 3 — Results are attributable
 
-Deliverables: the manifest event in the engine and CLI; the transcript fallback; the runner's manifest check.
+Deliverables: the manifest event in the engine and CLI; the transcript fallback; the comparison script's manifest check.
 
-Depends on: Stage 2 for the runner's check; the event itself has no prerequisite.
+Depends on: Stage 2 for the script's check; the event itself has no prerequisite.
 
 **Exit condition:** a paired run flags a pair whose manifests differ beyond the intended change.
 
@@ -205,7 +234,7 @@ Depends on: Stage 1 for the proof; Stages 2 and 3 for the workflow.
 
 ### Later — not designed here
 
-Simulated Slack, which unlocks thread conduct, multi-user cases and the memory arm; a full-plugin arm run from the plugins repository; repo-backed cases; scheduled runs on main for model and CLI drift. Each needs Stage 2.
+Simulated Slack, which unlocks thread conduct, multi-user cases and the memory arm; a full-plugin arm run from the plugins repository; repo-backed cases; scheduled runs on main for model and CLI drift. Each needs Stage 2. Separately, `claude plugin eval` may suit isolated skill-trigger checks in the plugins repository.
 
 ## Tracking
 
@@ -216,6 +245,7 @@ The milestones own their issues. The later arms have no milestone until accepted
 
 ## Validation and rollout
 
+- Promptfoo fits → the replay provider grades a task folder with real assertions before anything else is built on it.
 - The record is correct → the builder reproduces the known tool sequences of the six live tasks.
 - The judge can be trusted → agreement with a human review on a production sample, disagreements recorded.
 - The runner measures change, not noise → the main-versus-main run.
@@ -236,7 +266,7 @@ Stage 0 alone, on a small pulled sample.
 | Spend caps for the judge and for paired runs | Stages 0, 2 | Cost measured in the first report and first baseline |
 | Trials per case and tolerance | Stage 2 | The main-versus-main run |
 | Sample size and retention of pulled sessions | Stage 0 | First pull; default is delete after the report |
-| Case file format | Stage 2 | Implementer's choice |
+| How the judge reaches the model API through the wrapper's network block | Stage 0 | The judge work |
 | Concurrency above six | Stage 2 | A measured run on one instance |
 | PR path filter | Stage 4 | Files changed in past behaviour PRs |
 | Reuse of base results in CI | Stage 4 | Measured run time |
@@ -254,16 +284,17 @@ Stage 0 alone, on a small pulled sample.
 - The baseline arm does not resemble production → offline grading covers it descriptively; later arms close the gap.
 - Realistic cases cost dollars each → caps, and a small synthetic set to begin.
 - A CLI update drops the request-shape lines → the manifest event is the contract; the fallback degrades to `unknown`.
-- Private data leaks → offline only, outside the repository, aggregates only, pulled copies deleted.
+- Private data leaks → offline only, outside the repository, aggregates only, pulled copies deleted; promptfoo's local store sits in the same private location with telemetry and sharing off.
+- Promptfoo changes direction under its owner → a pinned version; cases and assertions are plain files, and the record builder stays ours.
 - A PR run exposes the key → an environment-scoped, spend-limited key; same-repository PRs; the approver reads the diff, workflow changes included.
 
 ## Evidence
 
-- **Run:** six concurrent API tasks on a live instance; the SDK reader on those six and on five production folders (CLI 2.1.321); timing analysis of 2,259 production memory records.
+- **Run:** six concurrent API tasks on a live instance; the SDK reader on those six and on five production folders (CLI 2.1.321); timing analysis of 2,259 production memory records; promptfoo 0.125.1 grading a synthetic task folder through the replay provider on 2026-11-19, with `javascript`, `cost` and `skill-used` assertions all reading the provider's record.
 - **Read in code:** the anchors cited inline, at `29290acc`, re-opened by the independent reviewer.
-- **Documented only:** GitHub's rules that environment secrets wait for approval and that fork and Dependabot PRs receive no secrets.
-- **Not verified or absent:** sandboxed work on a hosted runner; whether a waiting job affects armed merges; transcript completeness after compaction; concurrency above six; judge reliability; cost of realistic cases; a local source of task-level production archives.
+- **Documented only:** GitHub's rules that environment secrets wait for approval and that fork and Dependabot PRs receive no secrets; promptfoo's custom providers, assertions and repeats; the scope of `claude plugin eval`; the CLI's OpenTelemetry export.
+- **Not verified or absent:** promptfoo on production records and with the judge; a run-wide spend cap in promptfoo; sandboxed work on a hosted runner; whether a waiting job affects armed merges; transcript completeness after compaction; concurrency above six; judge reliability; cost of realistic cases; a local source of task-level production archives.
 
 ## Status and next action
 
-Researched and partly exercised; approved as a plan; tracked by the two milestones above. Next action: start Stages 0 and 1, which have no prerequisites.
+Researched and partly exercised; approved as a plan; tracked by the two milestones above. Stages 0 and 1 are in progress. Next action: finish Stage 0 with the judge, the private data location and the production report.
