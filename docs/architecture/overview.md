@@ -176,6 +176,7 @@ src/
 │   ├── trigger-*.ts             # Trigger store, scheduler, matching, visibility
 │   └── oauth/                   # OAuth flow helpers and header injection
 ├── memory/                      # Cross-task memory: extraction, index, injection
+├── incoming/                    # Webhook receiver, durable inbox, leased dispatcher (flagged)
 ├── mcp/research-tools.ts        # Web research pipeline
 ├── types/                       # TaskMetadata, AgentDef, channels, triggers
 └── utils/prompt-loader.ts       # Markdown prompt loader with variable substitution
