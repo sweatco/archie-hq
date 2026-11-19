@@ -50,7 +50,7 @@ Options after `--` go to `promptfoo eval`, for example `-- --repeat 3`. The wrap
 - sets `PROMPTFOO_CONFIG_DIR`, `PROMPTFOO_CACHE_PATH` and `PROMPTFOO_LOG_DIR` under `<private-dir>/promptfoo` and writes a JSON results file to `<private-dir>`;
 - sets `PROMPTFOO_DISABLE_TELEMETRY`, `PROMPTFOO_DISABLE_UPDATE` and `PROMPTFOO_DISABLE_SHARING`, passes `--no-share` and refuses `--share`;
 - points promptfoo's HTTP proxy at a closed local port, because promptfoo 0.125.1 still posts one "telemetry disabled" event with telemetry off, and the replay provider needs no network;
-- refuses a data directory inside the repository, and fails with exit code 3 if any file under the repository was created or changed during the run.
+- refuses a data directory inside the repository, and fails with exit code 3 if a file git sees in the checkout, tracked or untracked but not ignored, was created or changed during the run. Ignored paths such as `workdir/` and `node_modules/`, `.git`, nested repositories and deletions are not checked, because a running instance or another tool may write there at any time.
 
 [fixture.promptfooconfig.yaml](../../tools/evals/promptfoo/fixture.promptfooconfig.yaml) is the reference config. Paths in a config are relative to the config file.
 

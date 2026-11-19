@@ -1,8 +1,12 @@
+import { execFile } from 'child_process';
 import { mkdir, mkdtemp, rm, utimes, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
+import { promisify } from 'util';
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildPromptfooEnv, findFilesWrittenSince, isInside, parseInvocation } from './run.js';
+
+const execFileAsync = promisify(execFile);
 
 const roots: string[] = [];
 
@@ -64,25 +68,40 @@ describe('repository guards', () => {
     expect(isInside('/repo', '/private/evals')).toBe(false);
   });
 
-  it('finds files created, changed or backdated since a moment, outside .git', async () => {
+  it('finds checkout files created, changed or backdated since a moment, except ignored ones', async () => {
     const root = await mkdtemp(join(tmpdir(), 'evals-run-'));
     roots.push(root);
-    await mkdir(join(root, 'nested', 'deep'), { recursive: true });
-    await mkdir(join(root, '.git'));
-    for (const path of ['untouched.txt', 'nested/changed.txt', '.git/index']) {
-      await writeFile(join(root, path), 'before');
+    const write = async (path: string, text: string) => {
+      await mkdir(dirname(join(root, path)), { recursive: true });
+      await writeFile(join(root, path), text);
+    };
+    const git = (...args: string[]) => execFileAsync('git', args, { cwd: root });
+    await git('init', '-q');
+    await write('.gitignore', 'workdir/\n*.log\n');
+    for (const path of ['untouched.txt', 'nested/changed.txt', 'gone/file.txt']) {
+      await write(path, 'before');
     }
+    await git('add', '.');
+    await write('nested/untracked-untouched.txt', 'before');
+    await mkdir(join(root, 'embedded'));
+    await execFileAsync('git', ['init', '-q'], { cwd: join(root, 'embedded') });
     await pauseLongerThanFileClock();
     const since = Date.now();
     await pauseLongerThanFileClock();
 
-    await writeFile(join(root, 'nested', 'changed.txt'), 'after');
-    await writeFile(join(root, 'nested', 'deep', 'new.json'), '{}');
-    await writeFile(join(root, '.git', 'index'), 'after');
+    await write('nested/changed.txt', 'after');
+    await write('nested/deep/new.json', '{}');
     // A copy that keeps its source's timestamps is still a write.
-    await writeFile(join(root, 'copied.txt'), 'x');
+    await write('copied.txt', 'x');
     const past = new Date(since - 60_000);
     await utimes(join(root, 'copied.txt'), past, past);
+    // Ignored paths, .git and a nested repository are not part of this checkout's files.
+    await write('workdir/sessions/task/shared/events.jsonl', '{}');
+    await write('debug.log', 'x');
+    await write('.git/description', 'after');
+    await write('embedded/state.json', '{}');
+    // Listed by git as tracked, but gone with its directory by the time it is stat'ed.
+    await rm(join(root, 'gone'), { recursive: true });
 
     expect(await findFilesWrittenSince(root, since)).toEqual([
       'copied.txt',

@@ -8,16 +8,18 @@
  * Telemetry, update checks and sharing are off, and outbound HTTP from
  * promptfoo is sent to a closed local port: with telemetry disabled promptfoo
  * 0.125.1 still posts a "telemetry disabled" event, and the replay provider
- * needs no network. After the run, any file created or changed under the
- * repository fails it.
+ * needs no network. After the run, any file git would see in the checkout
+ * (tracked, or untracked and not ignored) that was created or changed during
+ * the run fails it. Ignored paths such as workdir/ and node_modules/ are not
+ * checked: a running instance or another tool may write there at any time.
  */
 
-import { spawn } from 'child_process';
-import { existsSync } from 'fs';
-import { lstat, mkdir, readdir, realpath } from 'fs/promises';
+import { execFile, spawn } from 'child_process';
+import { existsSync, type Stats } from 'fs';
+import { lstat, mkdir, realpath } from 'fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
-import { parseArgs } from 'util';
+import { parseArgs, promisify } from 'util';
 
 const USAGE =
   'Usage: npx tsx tools/evals/promptfoo/run.ts --data-dir <private-dir> <config.yaml> [-- <promptfoo eval options>]';
@@ -25,6 +27,8 @@ const USAGE =
 const PACKAGE_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(PACKAGE_DIR, '..', '..', '..');
 const PROMPTFOO_BIN = join(PACKAGE_DIR, 'node_modules', '.bin', 'promptfoo');
+
+const execFileAsync = promisify(execFile);
 
 /** Nothing listens here, so a proxied request fails at once. */
 const CLOSED_PROXY = 'http://127.0.0.1:9';
@@ -96,26 +100,43 @@ export function isInside(parent: string, child: string): boolean {
 }
 
 /**
- * Files under `root` (outside .git) created, modified or re-stamped at or
- * after `sinceMs`. It compares ctime, which every content or metadata change
- * sets to now and `utimes` cannot move back: mtime can be backdated, and so
- * can birth time on macOS, which follows a backdated mtime.
+ * Files in the git checkout at `root`, tracked or untracked but not ignored,
+ * whose ctime is at or after `sinceMs`. Ignored paths, `.git`, and nested
+ * repositories (which git lists as a directory) are not checked, nor are
+ * deletions; a file that vanishes before it can be stat'ed is skipped.
+ *
+ * It compares ctime, which every content or metadata change sets to now and
+ * `utimes` cannot move back: mtime can be backdated, and so can birth time on
+ * macOS, which follows a backdated mtime.
  */
 export async function findFilesWrittenSince(root: string, sinceMs: number): Promise<string[]> {
   const written: string[] = [];
-  const pending = [root];
-  for (let dir = pending.pop(); dir !== undefined; dir = pending.pop()) {
-    for (const entry of await readdir(dir, { withFileTypes: true })) {
-      const path = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (entry.name !== '.git') pending.push(path);
-        continue;
-      }
-      const { ctimeMs } = await lstat(path);
-      if (ctimeMs >= sinceMs) written.push(relative(root, path));
-    }
+  for (const path of await listCheckoutFiles(root)) {
+    const stats = await lstatIfPresent(join(root, path));
+    if (stats && stats.ctimeMs >= sinceMs) written.push(path);
   }
   return written.sort();
+}
+
+async function listCheckoutFiles(root: string): Promise<string[]> {
+  const { stdout } = await execFileAsync(
+    'git',
+    ['ls-files', '-z', '--cached', '--others', '--exclude-standard'],
+    { cwd: root, maxBuffer: 256 * 1024 * 1024 },
+  );
+  // An unmerged path is listed once per stage; a trailing slash marks a nested repository.
+  const paths = new Set(stdout.split('\0').filter((path) => path && !path.endsWith('/')));
+  return [...paths];
+}
+
+async function lstatIfPresent(path: string): Promise<Stats | undefined> {
+  try {
+    return await lstat(path);
+  } catch (error) {
+    const { code } = error as NodeJS.ErrnoException;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return undefined;
+    throw error;
+  }
 }
 
 async function main(): Promise<number> {
