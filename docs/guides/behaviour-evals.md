@@ -22,7 +22,7 @@ npx tsx tools/evals/record.ts <task-folder> [--source production|eval]
 
 The record holds:
 
-- `turns`: each inbound message and the PM's replies, from `shared/events.jsonl`.
+- `turns`: each inbound message and the PM's replies, from `shared/events.jsonl`. Messages the engine posts to the user itself, such as pause notices and reminders, are not replies.
 - `toolCalls`: every tool call in order, with the agent that made it, the skill or worker type, and whether it failed. Read from the transcripts under `claude/<agent>/session/` with the SDK's `getSessionMessages`, `listSubagents` and `getSubagentMessages`, and ordered by the timestamp of the transcript line that made each call, so a delegated worker's calls sit among the PM calls made at the same time.
 - `complete`: false when a call in the raw transcripts was not returned by the reader, or when a session named in `usage.jsonl` or `metadata.json` has no transcript. The reasons go to stderr.
 - `terminalState`: the task status from `metadata.json`, or `approval_requested` while an approval is pending. The engine stops a task to wait for an approval, so a stopped task with a pending request reports `approval_requested`.

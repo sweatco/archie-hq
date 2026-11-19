@@ -3,6 +3,7 @@ import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { afterEach, describe, expect, it } from 'vitest';
+import { measureRecord } from './graders.js';
 import { buildSessionRecord } from './session-record.js';
 
 const TASK_ID = 'task-20260101-0900-evalfx';
@@ -136,6 +137,29 @@ describe('buildSessionRecord', () => {
       expect(record.terminalState).toBe(expected);
     },
   );
+
+  it('counts only the PM as replying, not notices the engine posts', async () => {
+    const taskDir = await copyFixture();
+    const eventsPath = join(taskDir, 'shared', 'events.jsonl');
+    const lines = (await readFile(eventsPath, 'utf8')).trimEnd().split('\n');
+    const notice = {
+      type: 'message',
+      taskId: TASK_ID,
+      timestamp: '2026-01-01T09:00:14.000Z',
+      data: { from: 'system', to: 'user', destination: 'cli', message: 'Task paused.' },
+    };
+    // Between the PM's first reply and the next inbound message.
+    lines.splice(4, 0, JSON.stringify(notice));
+    await writeFile(eventsPath, lines.join('\n') + '\n');
+
+    const { record } = await buildSessionRecord(taskDir, 'production');
+
+    expect(record.turns.map((turn) => turn.replies)).toEqual([
+      ['Should the reminder go to this channel?'],
+      ['I proposed the reminder. Approve it to start.'],
+    ]);
+    expect(measureRecord(record)).toEqual({ replyCount: 2, wordCount: 15 });
+  });
 
   it('leaves cost unmeasured without usage records', async () => {
     const taskDir = await copyFixture();

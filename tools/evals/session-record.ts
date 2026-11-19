@@ -138,7 +138,11 @@ function recordedSessions(
   return [...sessions.values()];
 }
 
-/** Each inbound message opens a turn; the PM's replies belong to the latest one. */
+/**
+ * Each inbound message opens a turn; the PM's replies belong to the latest one.
+ * Messages the engine posts to the user itself (pause notices, reminders, file
+ * posts) carry `from: 'system'` and are not replies.
+ */
 function buildTurns(events: SystemEvent[]): Turn[] {
   const turns: Turn[] = [];
   for (const event of events) {
@@ -146,7 +150,7 @@ function buildTurns(events: SystemEvent[]): Turn[] {
     const text = typeof event.data.message === 'string' ? event.data.message : '';
     if (event.data.to === PM_AGENT_ID) {
       turns.push({ inbound: text, replies: [] });
-    } else if (event.data.to === 'user') {
+    } else if (event.data.to === 'user' && event.data.from === PM_AGENT_ID) {
       // A reply before any inbound message (none seen so far) still needs a turn to live in.
       if (turns.length === 0) turns.push({ inbound: '', replies: [] });
       turns[turns.length - 1]?.replies.push(text);
