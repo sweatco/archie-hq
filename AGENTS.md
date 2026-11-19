@@ -4,7 +4,7 @@ Read [the coding guidelines](docs/guides/coding-guidelines.md) before changing c
 
 ## Architecture and scope
 
-Archie uses Node.js, TypeScript and the Claude Agent SDK. Start with the [architecture overview](docs/architecture/overview.md), then read the owning document before changing a component. Domain capabilities belong in plugins. Use `docs/proposals/` for unimplemented ideas and `docs/plans/` for development plans and their historical records.
+Archie uses Node.js, TypeScript and the Claude Agent SDK. Start with the [architecture overview](docs/architecture/overview.md), then read the owning document before changing a component. Domain capabilities belong in plugins. Track ideas, plans and status in GitHub issues, not in the repository: `docs/proposals/` and `docs/plans/` are frozen archives, and [the guide](docs/guides/project-management.md#where-things-live) says where each part lives.
 
 See [local development](docs/guides/local-development.md) for setup and runtime layout, and the [plugin system](docs/architecture/plugin-system.md) for loading and bootstrap behavior.
 
@@ -34,9 +34,9 @@ In fresh worktrees, `npm run e2e:prepare` prepares untracked prerequisites; `boo
 
 Read and follow the [mandatory research → idea → implementation → acceptance routine](docs/guides/project-management.md) for applicable research and implementation work. Use the repo-local `github-issues` skill for issue operations. Maintain records as part of the task. Respect analysis-only requests, parked work, and the user's ownership of ideas, priorities, scope, and acceptance; keep simple fixes lightweight.
 
-Before upstream PM access, run `node tools/pm/check-repository.mjs` and stop on failure. Only canonical `sweatco/archie-hq` checkouts qualify; forks and unknown contexts must not write upstream tracking records, even with an upstream remote or copied config. Verify each item's repository before Project intake.
+Only canonical `sweatco/archie-hq` checkouts write upstream tracking records. Confirm `origin` before upstream PM access; forks and unknown contexts must not write them, even with an upstream remote. Verify each item's repository before Project intake.
 
-Every PR addition to the Project requires explicit upstream maintainer intake approval, including same-repository PRs. Native automatic intake is issues-only.
+Pull requests are not added to the Project; they show through their linked issue. Automatic intake is issues-only.
 
 ## Git and publication
 
