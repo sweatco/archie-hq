@@ -54,6 +54,12 @@ export const OAUTH_DIR = join(SECRETS_DIR, 'oauth');
 /** Pending OAuth attempts (short-lived state during an authorize flow). */
 export const OAUTH_PENDING_DIR = join(OAUTH_DIR, '.pending');
 
+/** Incoming events inbox. Under `WORKDIR`, which the agent sandbox cannot read. */
+export const INCOMING_DIR = join(WORKDIR, 'incoming');
+
+/** Sealed callback secrets of incoming event inputs, one file per secret. */
+export const INCOMING_SECRETS_DIR = join(SECRETS_DIR, 'incoming');
+
 /**
  * Base-cache path for a github repo on disk. Computed, not stored.
  */
