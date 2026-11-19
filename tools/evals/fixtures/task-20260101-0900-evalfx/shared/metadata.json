@@ -1,0 +1,12 @@
+{
+  "task_id": "task-20260101-0900-evalfx",
+  "agent_sessions": {
+    "pm-agent": {
+      "active": false,
+      "session_id": "22222222-2222-4222-8222-222222222222"
+    }
+  },
+  "repositories": [],
+  "status": "completed",
+  "runtime_version": 2
+}
