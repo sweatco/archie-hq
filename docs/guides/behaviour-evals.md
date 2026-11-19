@@ -23,7 +23,7 @@ npx tsx tools/evals/record.ts <task-folder> [--source production|eval]
 The record holds:
 
 - `turns`: each inbound message and the PM's replies, from `shared/events.jsonl`.
-- `toolCalls`: every tool call in order, with the agent that made it, the skill or worker type, and whether it failed. Read from the transcripts under `claude/<agent>/session/` with the SDK's `getSessionMessages`, `listSubagents` and `getSubagentMessages`. A delegated worker's calls follow the `Agent` call that started it.
+- `toolCalls`: every tool call in order, with the agent that made it, the skill or worker type, and whether it failed. Read from the transcripts under `claude/<agent>/session/` with the SDK's `getSessionMessages`, `listSubagents` and `getSubagentMessages`, and ordered by the timestamp of the transcript line that made each call, so a delegated worker's calls sit among the PM calls made at the same time.
 - `complete`: false when a call in the raw transcripts was not returned by the reader, or when a session named in `usage.jsonl` or `metadata.json` has no transcript. The reasons go to stderr.
 - `terminalState`: the task status from `metadata.json`, or `approval_requested` while an approval is pending.
 - `usage`: SDK-reported cost from `shared/usage.jsonl`, reduced per query as in `src/agents/task-usage.ts`, and the models used. Cost is `null` when no usage was recorded.
@@ -93,6 +93,6 @@ Run it with `-n` first to list what would be pulled. Always pass `-o` with a dir
 ## Limits
 
 - The record depends on the SDK's reader and the CLI's transcript layout. A layout change shows up as `complete: false`.
-- Worker calls are placed after the call that started the worker, so a background worker's calls may in fact overlap later PM calls.
+- Call order across sessions and workers comes from transcript timestamps, which have millisecond resolution. Calls stamped in the same millisecond are ordered by session and worker id.
 - Approval answers are not visible in the trajectory, because Slack approvals emit no resolution event.
 - The wrapper blocks all of promptfoo's network access, so a model-graded assertion such as `llm-rubric` cannot run through it yet.

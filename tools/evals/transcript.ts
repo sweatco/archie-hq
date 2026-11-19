@@ -6,6 +6,10 @@
  * So every session of the task is read, calls copied into a fork are counted
  * once by tool_use id, and the raw transcript lines are counted independently:
  * any call the reader did not return makes the read incomplete.
+ *
+ * Calls from all sessions and workers are merged by the timestamp of the
+ * transcript line that made each call, since a fork's copied history starts at
+ * the same moment as its original and a background worker runs alongside the PM.
  */
 
 import { existsSync } from 'fs';
@@ -48,7 +52,7 @@ export interface TranscriptRead {
  */
 const FAILURE_TEXT = /^Error:/;
 
-/** The Agent tool's result names the worker it started; this ties the worker's transcript to that call. */
+/** The Agent tool's result names the worker it started; this ties the worker's transcript to its type. */
 const AGENT_ID_IN_RESULT = /\bagentId: (\w+)/;
 
 const UNKNOWN_SUBAGENT = 'unknown-subagent';
@@ -92,7 +96,7 @@ interface SessionFiles {
   subagentPaths: string[];
 }
 
-/** Read the tool calls of every session in `taskDir`, oldest session first. */
+/** Read the tool calls of every session in `taskDir`, in the order they were made. */
 export async function readTaskToolCalls(
   taskDir: string,
   recorded: RecordedSession[],
@@ -105,28 +109,74 @@ export async function readTaskToolCalls(
     if (!found) gaps.push(`session ${sessionId} (${agentKey}) is recorded but has no transcript`);
   }
 
-  const ordered = await orderByFirstTimestamp(onDisk);
-  const toolCalls: ToolCall[] = [];
-  const seenToolUseIds = new Set<string>();
-  const rawToolUseIds = new Set<string>();
-
-  for (const session of ordered) {
+  const rawIds = new Set<string>();
+  // A call copied into a fork may be stamped later there; the earliest stamp is when it was made.
+  const madeAtMs = new Map<string, number>();
+  const sources: CallSource[] = [];
+  for (const session of onDisk) {
     for (const path of [session.transcriptPath, ...session.subagentPaths]) {
-      for (const id of await readRawToolUseIds(path)) rawToolUseIds.add(id);
+      for (const { id, atMs } of await readRawToolUses(path)) {
+        rawIds.add(id);
+        if (atMs !== undefined) madeAtMs.set(id, Math.min(atMs, madeAtMs.get(id) ?? Infinity));
+      }
     }
-    const calls = await readSessionToolCalls(session);
-    for (const { id, call } of calls) {
-      if (seenToolUseIds.has(id)) continue;
-      seenToolUseIds.add(id);
-      toolCalls.push(call);
-    }
+    sources.push(...(await readSessionToolCalls(session)));
   }
 
-  const missed = [...rawToolUseIds].filter((id) => !seenToolUseIds.has(id)).length;
+  const returnedIds = new Set(sources.flatMap((source) => source.calls.map((c) => c.id)));
+  const missed = [...rawIds].filter((id) => !returnedIds.has(id)).length;
   if (missed > 0) {
-    gaps.push(`${missed} of ${rawToolUseIds.size} raw tool calls were not returned by the reader`);
+    gaps.push(`${missed} of ${rawIds.size} raw tool calls were not returned by the reader`);
   }
-  return { toolCalls, gaps };
+  return { toolCalls: mergeByTime(sources, madeAtMs), gaps };
+}
+
+/** One transcript's calls, in the order the reader returned them. */
+export interface CallSource {
+  /** `<agentKey>/<sessionId>`, plus `/<agentId>` for a worker; unique within a task. */
+  key: string;
+  calls: IdentifiedCall[];
+}
+
+/**
+ * Merge sources into one sequence by when each call was made, keeping each
+ * source's own order and counting a call copied into a fork once. Calls made
+ * in the same millisecond go in source-key order, so the result does not
+ * depend on the order the sources were listed in. A call without a timestamp
+ * keeps the time of the call before it in its source.
+ */
+export function mergeByTime(sources: CallSource[], madeAtMs: Map<string, number>): ToolCall[] {
+  const queues = sources
+    .map((source) => {
+      let previousMs = -Infinity;
+      const calls = source.calls.map((entry) => {
+        previousMs = madeAtMs.get(entry.id) ?? previousMs;
+        return { ...entry, atMs: previousMs };
+      });
+      return { key: source.key, calls, next: 0 };
+    })
+    .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+
+  const merged: ToolCall[] = [];
+  const seen = new Set<string>();
+  for (;;) {
+    let earliest: (typeof queues)[number] | undefined;
+    let earliestMs = Infinity;
+    for (const queue of queues) {
+      const head = queue.calls[queue.next];
+      // Strictly earlier, so a tie goes to the queue with the lower key.
+      if (head && (earliest === undefined || head.atMs < earliestMs)) {
+        earliest = queue;
+        earliestMs = head.atMs;
+      }
+    }
+    if (!earliest) return merged;
+    const head = earliest.calls[earliest.next++];
+    if (head && !seen.has(head.id)) {
+      seen.add(head.id);
+      merged.push(head.call);
+    }
+  }
 }
 
 /** Main transcripts are `claude/<agentKey>/session/projects/<slug>/<sessionId>.jsonl`. */
@@ -168,33 +218,19 @@ async function findSubagentPaths(subagentsDir: string): Promise<string[]> {
     .map((e) => join(subagentsDir, e.name));
 }
 
-async function orderByFirstTimestamp(sessions: SessionFiles[]): Promise<SessionFiles[]> {
-  const keyed: { session: SessionFiles; firstTimestamp: string }[] = [];
-  for (const session of sessions) {
-    keyed.push({ session, firstTimestamp: await readFirstTimestamp(session.transcriptPath) });
-  }
-  keyed.sort((a, b) => a.firstTimestamp.localeCompare(b.firstTimestamp));
-  return keyed.map((k) => k.session);
-}
-
-async function readFirstTimestamp(path: string): Promise<string> {
-  for (const line of await readRawLines(path)) {
-    if (line.timestamp) return line.timestamp;
-  }
-  return '';
-}
-
-/** Tool_use ids written by the model, counted without the SDK's chain-following. */
-async function readRawToolUseIds(path: string): Promise<string[]> {
-  const ids: string[] = [];
+/** Tool calls written by the model, read without the SDK's chain-following. */
+async function readRawToolUses(path: string): Promise<{ id: string; atMs?: number }[]> {
+  const uses: { id: string; atMs?: number }[] = [];
   for (const line of await readRawLines(path)) {
     if (line.type !== 'assistant' || !line.message) continue;
+    const parsedMs = line.timestamp ? Date.parse(line.timestamp) : NaN;
+    const atMs = Number.isNaN(parsedMs) ? undefined : parsedMs;
     for (const block of line.message.content) {
       const toolUse = toolUseBlockSchema.safeParse(block);
-      if (toolUse.success) ids.push(toolUse.data.id);
+      if (toolUse.success) uses.push({ id: toolUse.data.id, atMs });
     }
   }
-  return ids;
+  return uses;
 }
 
 async function readRawLines(path: string): Promise<z.infer<typeof rawLineSchema>[]> {
@@ -213,46 +249,27 @@ async function readRawLines(path: string): Promise<z.infer<typeof rawLineSchema>
   return lines;
 }
 
-type IdentifiedCall = { id: string; call: ToolCall };
+export type IdentifiedCall = { id: string; call: ToolCall };
 
 /**
- * One session's calls in execution order, each worker's calls placed right
- * after the Agent call that started it. A worker that cannot be tied to its
- * Agent call goes last rather than being dropped.
+ * One session's calls as one source for the main transcript and one per
+ * worker, each worker labelled with the type its Agent call asked for. A
+ * worker that cannot be tied to its Agent call is kept as `unknown-subagent`.
  */
-async function readSessionToolCalls(session: SessionFiles): Promise<IdentifiedCall[]> {
+async function readSessionToolCalls(session: SessionFiles): Promise<CallSource[]> {
   const { main, subagents } = await readSessionMessages(session);
   const mainUses = extractToolUses(main);
   const workers = subagents.map((s) => ({ agentId: s.agentId, uses: extractToolUses(s.messages) }));
-  const placements = mapSubagentTypes([mainUses, ...workers.map((w) => w.uses)]);
+  const subagentTypes = mapSubagentTypes([mainUses, ...workers.map((w) => w.uses)]);
 
-  const workerCallsByToolUseId = new Map<string, IdentifiedCall[]>();
-  const unplacedWorkers: IdentifiedCall[][] = [];
-  for (const { agentId, uses } of workers) {
-    const placement = placements.get(agentId);
-    const calls = toToolCalls(uses, placement?.subagentType ?? UNKNOWN_SUBAGENT);
-    if (placement) workerCallsByToolUseId.set(placement.toolUseId, calls);
-    else unplacedWorkers.push(calls);
-  }
-
-  const ordered: IdentifiedCall[] = [];
-  const append = (entry: IdentifiedCall): void => {
-    ordered.push(entry);
-    const workerCalls = workerCallsByToolUseId.get(entry.id);
-    workerCallsByToolUseId.delete(entry.id);
-    for (const workerCall of workerCalls ?? []) append(workerCall);
-  };
-  for (const entry of toToolCalls(mainUses, session.agentKey)) append(entry);
-  // Workers whose Agent call the reader did not return, then those never tied to one.
-  // Deleting while iterating is safe for a Map: removed entries are not visited.
-  for (const [toolUseId, calls] of workerCallsByToolUseId) {
-    workerCallsByToolUseId.delete(toolUseId);
-    for (const entry of calls) append(entry);
-  }
-  for (const calls of unplacedWorkers) {
-    for (const entry of calls) append(entry);
-  }
-  return ordered;
+  const sessionKey = `${session.agentKey}/${session.sessionId}`;
+  return [
+    { key: sessionKey, calls: toToolCalls(mainUses, session.agentKey) },
+    ...workers.map(({ agentId, uses }) => ({
+      key: `${sessionKey}/${agentId}`,
+      calls: toToolCalls(uses, subagentTypes.get(agentId) ?? UNKNOWN_SUBAGENT),
+    })),
+  ];
 }
 
 const runExclusive = createKeyedLock();
@@ -329,11 +346,9 @@ function resultText(result: ToolResultBlock): string {
   return (result.content ?? []).map((block) => block.text ?? '').join('\n');
 }
 
-/** Worker agent id → the Agent call that started it and the worker's type. */
-function mapSubagentTypes(
-  sources: ToolUses[],
-): Map<string, { toolUseId: string; subagentType: string }> {
-  const byAgentId = new Map<string, { toolUseId: string; subagentType: string }>();
+/** Worker agent id → the worker type its Agent call asked for. */
+function mapSubagentTypes(sources: ToolUses[]): Map<string, string> {
+  const byAgentId = new Map<string, string>();
   for (const { uses, results } of sources) {
     for (const use of uses) {
       if (use.name !== 'Agent') continue;
@@ -341,10 +356,7 @@ function mapSubagentTypes(
       const agentId = result && AGENT_ID_IN_RESULT.exec(resultText(result))?.[1];
       if (!agentId) continue;
       const subagentType = use.input?.subagent_type;
-      byAgentId.set(agentId, {
-        toolUseId: use.id,
-        subagentType: typeof subagentType === 'string' ? subagentType : UNKNOWN_SUBAGENT,
-      });
+      byAgentId.set(agentId, typeof subagentType === 'string' ? subagentType : UNKNOWN_SUBAGENT);
     }
   }
   return byAgentId;

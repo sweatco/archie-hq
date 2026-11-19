@@ -45,7 +45,7 @@ describe('buildSessionRecord', () => {
       { inbound: 'Yes, post it here.', replies: ['I proposed the reminder. Approve it to start.'] },
     ]);
     // The fork repeats the first turn's calls; each appears once, and the
-    // worker's call sits right after the Agent call that started it.
+    // worker's call sits between the PM calls made before and after it.
     expect(record.toolCalls).toEqual([
       { agent: 'pm', name: 'Skill', skill: 'core:triggers', failed: false },
       { agent: 'pm', name: 'Agent', subagentType: 'helper:assistant', failed: false },
