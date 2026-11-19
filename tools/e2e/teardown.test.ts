@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseComposePs, runTeardown } from './teardown.js';
+import { parseArgs, parseComposePs, runTeardown } from './teardown.js';
 import type { ExecResult } from './exec.js';
 
 describe('parseComposePs', () => {
@@ -61,7 +61,27 @@ const io = () => {
   };
 };
 
+describe('parseArgs', () => {
+  it('accepts no arguments or --profile eval, and nothing else', () => {
+    expect(parseArgs([])).toEqual({});
+    expect(parseArgs(['--profile', 'eval'])).toEqual({ profile: 'eval' });
+    expect(parseArgs(['--profile=eval'])).toEqual({ profile: 'eval' });
+    expect(() => parseArgs(['--profile', 'prod'])).toThrow(/unknown arguments/);
+    expect(() => parseArgs(['--force'])).toThrow(/unknown arguments/);
+  });
+});
+
 describe('runTeardown', () => {
+  it('targets the given compose project and files for both down and the survivor check', async () => {
+    const { exec, calls } = fakeExec(() => ({ code: 0, stdout: '', stderr: '' }));
+    const code = await runTeardown(exec, io(), ['-p', 'feat-eval', '-f', 'a.yml']);
+    expect(code).toBe(0);
+    expect(calls.map((c) => c.join(' '))).toEqual([
+      'docker compose -p feat-eval -f a.yml down',
+      'docker compose -p feat-eval -f a.yml ps --all --format json',
+    ]);
+  });
+
   it('clean teardown prints an evidence-suitable confirmation and returns zero', async () => {
     const { exec, calls } = fakeExec((_cmd, args) =>
       args.includes('down')

@@ -25,6 +25,7 @@ Run from the repo root.
    printf 'PORT=3000\n' >> .env
    chmod 600 .env
    ```
+   The eval profile (`boot.ts --profile eval`) does not need this step: it reads `E2E_ANTHROPIC_API_KEY` directly and writes its own `.env` under `eval-instance/`.
 3. Stage the proxy CA where the dev image picks it up (the Dockerfile installs it before `npm ci` and sets `NODE_USE_SYSTEM_CA=1`; `.gitignore`/`.dockerignore` already handle this path):
    ```bash
    cp /root/.ccr/ca-bundle.crt secrets/extra-ca.crt

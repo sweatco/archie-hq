@@ -208,6 +208,22 @@ describe('parseArgs', () => {
     });
     expect(parseArgs([])).toEqual({});
   });
+
+  it('accepts --profile eval in both forms and rejects any other profile', () => {
+    expect(parseArgs(['--profile', 'eval'])).toEqual({ profile: 'eval' });
+    expect(parseArgs(['--profile=eval', '--timeout-seconds=90'])).toEqual({
+      profile: 'eval',
+      timeoutFlag: '90',
+    });
+    expect(() => parseArgs(['--profile', 'prod'])).toThrow(/unknown profile: prod/);
+    expect(() => parseArgs(['--profile'])).toThrow(/unknown profile: \(none\)/);
+  });
+
+  it('rejects --no-prepare with the eval profile, whose instance is always created fresh', () => {
+    expect(() => parseArgs(['--profile', 'eval', '--no-prepare'])).toThrow(
+      /--no-prepare does not apply to --profile eval/,
+    );
+  });
 });
 
 describe('preflight', () => {
@@ -381,6 +397,33 @@ describe('runBoot — orchestration ordering', () => {
     expect(commands[0]).toBe('docker compose up --build -d');
     expect(commands).toContain('docker compose ps');
     expect(commands.some((c) => c.includes('logs --no-color --tail=100 archie'))).toBe(true);
+  });
+
+  it('targets the given compose project and files in every compose call, diagnostics included', async () => {
+    const { exec, calls } = fakeExec((_cmd, args) =>
+      args.includes('up')
+        ? { code: 0, stdout: '', stderr: '' }
+        : { code: 0, stdout: EXITED_PS, stderr: '' },
+    );
+    const composeArgs = ['-p', 'feat-eval', '-f', 'docker-compose.yml', '-f', 'eval.yml'];
+
+    const deps = bootDeps({ exec, fetchHealth: async () => ({ status: 503, body: '' }) });
+
+    const code = await runBoot(deps, {
+      baseUrl: 'http://localhost:3042',
+      timeoutSeconds: 600,
+      composeArgs,
+    });
+
+    expect(code).toBe(1);
+    const prefix = ['docker', 'compose', ...composeArgs];
+    expect(calls.map((c) => c.slice(0, prefix.length))).toEqual(calls.map(() => prefix));
+    expect(calls.map((c) => c.slice(prefix.length).join(' '))).toEqual([
+      'up --build -d',
+      'ps --format json',
+      'ps',
+      'logs --no-color --tail=100 archie',
+    ]);
   });
 
   it('a successful compose-up proceeds to a healthy poll and returns zero', async () => {

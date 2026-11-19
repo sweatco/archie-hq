@@ -239,7 +239,7 @@ export const PORT_SCAN_RANGE = { from: 3001, to: 3099 } as const;
  * hands to some other process in the meantime. Falls back to an OS-picked port
  * if the whole range is busy (boot.ts relocates off a taken port anyway).
  */
-async function choosePort(): Promise<number> {
+export async function choosePort(): Promise<number> {
   for (let port = PORT_SCAN_RANGE.from; port <= PORT_SCAN_RANGE.to; port++) {
     if (await isPortFree(port)) return port;
   }

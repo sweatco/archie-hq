@@ -7,7 +7,7 @@ description: Boot a live Archie instance from the current branch, drive E2E scen
 
 Verify acceptance criteria against a live Archie instance booted from the branch under test. The lifecycle is four steps, each with one documented invocation:
 
-1. **Boot** — `npx tsx tools/e2e/boot.ts` prepares a worktree if needed, builds and starts the instance detached, waits for `/health`.
+1. **Boot** — `npx tsx tools/e2e/boot.ts` prepares a worktree if needed, builds and starts the instance detached, waits for `/health`. For behaviour evals, `--profile eval` boots a hermetic instance instead (see [5. Eval profile](#5-eval-profile--a-hermetic-instance-for-behaviour-evals)).
 2. **Drive** — execute scenario recipes through the `archie-debug` MCP (no scripts; you make the MCP calls).
 3. **Evidence** — pipe a per-scenario payload to `npx tsx tools/e2e/evidence.ts`, which validates and writes the JSON + markdown pair.
 4. **Teardown** — `npx tsx tools/e2e/teardown.ts` stops everything and verifies no project containers remain.
@@ -30,7 +30,7 @@ A worktree checkout is a fresh tree: `.env`, `workdir/`, `claude-data/` and a re
 npm run e2e:prepare        # tools/e2e/prepare-worktree.ts; --print-plan to inspect first
 ```
 
-It links `workdir` and `claude-data` to the main checkout's, copies `secrets/` for real, and writes `.env` from main's with a free `PORT`. It is idempotent, never overwrites existing local state, writes only untracked files in the current worktree (it never creates a worktree), and touches no network. `boot.ts --no-prepare` skips it.
+It links `workdir` and `claude-data` to the main checkout's, copies `secrets/` for real, and writes `.env` from main's with a free `PORT`. It is idempotent, never overwrites existing local state, writes only untracked files in the current worktree (it never creates a worktree), and touches no network. `boot.ts --no-prepare` skips it. `boot.ts --profile eval` never runs it: an eval instance shares none of this state (see [5. Eval profile](#5-eval-profile--a-hermetic-instance-for-behaviour-evals)).
 
 Why each part matters:
 
@@ -38,12 +38,12 @@ Why each part matters:
 - **`secrets/` must be a real directory.** `Dockerfile.dev` does `COPY secrets/ /tmp/ca-src/`, and Docker's build context does not follow symlinks at the context root: a symlinked `secrets` fails the build with `"/secrets": not found`. Bind mounts *do* follow host symlinks, which is why `workdir` and `claude-data` are fine as links (and why `docker-compose.yml` re-mounts `./workdir/plugins` explicitly).
 - **A free `PORT`**: main's 3000 is usually taken by another checkout's container, and the `archie-debug` MCP resolves its URL once at spawn.
 
-**Rollback:** delete `.claude/skills/archie-e2e/` and `tools/e2e/` — the harness has no side effects and nothing else references them (plus one `e2e-evidence/` line in `.gitignore`).
+**Rollback:** delete `.claude/skills/archie-e2e/` and `tools/e2e/` — the harness has no side effects and nothing else references them (plus the `e2e-evidence/` and `eval-instance/` ignore lines, and the eval fixture `examples/plugins/orders/` with its `.mcp.json` entry).
 
 ## 1. Boot
 
 ```bash
-npx tsx tools/e2e/boot.ts [--timeout-seconds N] [--no-prepare]
+npx tsx tools/e2e/boot.ts [--timeout-seconds N] [--no-prepare | --profile eval]
 ```
 
 The boot runs a strict ordered sequence; each step gates the next, so no failure ever falls through into the poll loop:
@@ -175,3 +175,38 @@ npx tsx tools/e2e/teardown.ts
 ```
 
 Runs `docker compose down`, then verifies via `docker compose ps --all --format json` that **no containers remain for the project** — survivors (including stopped-but-not-removed ones) are listed by name and the command exits non-zero. On success it prints a confirmation line suitable for pasting into evidence: `Teardown clean: docker compose ps --all reports no containers for this project.` Never end a scenario session without a clean teardown exit.
+
+With `--profile eval`, teardown targets the eval instance's project and, only after a clean `down`, deletes `eval-instance/` — sessions included, so copy out anything you need first:
+
+```bash
+npx tsx tools/e2e/teardown.ts --profile eval
+```
+
+## 5. Eval profile — a hermetic instance for behaviour evals
+
+Behaviour evals compare a base and a candidate instance, so each must start from the same known state and see nothing else on the machine. The default profile shares the main checkout's state, Slack tokens included; the eval profile shares none of it. Owner: `tools/e2e/eval-profile.ts`.
+
+```bash
+npx tsx tools/e2e/boot.ts --profile eval [--timeout-seconds N]
+npx tsx tools/e2e/teardown.ts --profile eval
+```
+
+In place of the worktree preparation, boot:
+
+- Creates `eval-instance/` in this checkout: a `.env` with only `ANTHROPIC_API_KEY` and a free `PORT`, an empty `workdir/`, `claude-data/.claude.json` containing `{}`, and an empty `secrets/`. Every other setting is the engine default of the ref under test. It refuses when `eval-instance/` already exists: tear down first.
+- Takes the key from `E2E_ANTHROPIC_API_KEY` in the environment, else `ANTHROPIC_API_KEY` from this checkout's `.env`, else from the main checkout's. Nothing else is read from either file.
+- Runs compose with the overlay `tools/e2e/docker-compose.eval.yml` under the project `<checkout>-eval`: this checkout's `examples/plugins` mounted read-only as the plugins directory, the `eval-instance/` directories in place of `workdir`, `claude-data` and `secrets`, and no host SSH agent. A default-profile instance of the same checkout is left running.
+- Resolves the merged config with `docker compose config`, prints the effective settings (credentials by name only, port, plugins and workdir mounts) and refuses to start if any credential-like variable other than the model key, or a bind mount outside the checkout or of its `workdir`, `claude-data`, `secrets` or `.env`, got through.
+- Ignores `ARCHIE_URL`. Drive the instance at the `ARCHIE_URL=` line the boot prints, through the HTTP API or a fresh `archie-debug` MCP client spawned with that URL.
+
+**Fixture plugins** are `examples/plugins`: `helper`, `gatecheck` and `orders`. `orders` is a stub MCP server for a fictional shop with canned, deterministic results that eval cases may assert on: `get_order`, `list_orders`, `get_shipping_status` (always fails with the error flag set) and `refund_order` (gated by the server's `ask` default; returns a canned confirmation and changes nothing). `tools/e2e/orders-stub.test.ts` pins that contract; change the data only together with the cases that rely on it.
+
+**Two refs side by side.** `docker-compose.yml` mounts paths relative to the checkout, so each ref needs its own checkout (a worktree or a clone). Boot each from its own checkout; each gets its own compose project, port and `eval-instance/`. Boot them one after another: two boots running at once can pick the same free port, and the second then fails at compose up. A ref that predates the eval profile cannot be booted with it.
+
+**Known limits.** The profile measures engine conduct, not the production configuration:
+
+- Without Slack the memory layer does not initialise (no team ID), so nothing is extracted or injected.
+- Slack tools fail, and triggers cannot be proposed.
+- No GitHub credentials and no SSH agent, so no repo work: `edit-mode-approval` and `merge-approval-deny` cannot run; `basic-nonce` can.
+- `tool-gate-check.ts` and `egress-check.ts` target the default profile's compose project and `workdir/`; run them on a default-profile instance.
+- On Linux, files the container wrote under `eval-instance/` belong to its user (uid 1001); teardown names the path when it cannot delete them.

@@ -10,6 +10,9 @@ sessions/
 # Repos (mounted as volume)
 repos/
 
+# Eval-profile instance state (mounted as volumes; its .env holds the model key)
+eval-instance/
+
 # Secrets (mounted as volume)
 secrets/
 *.pem
