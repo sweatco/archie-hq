@@ -6,6 +6,13 @@
   "trailingComma": "all",
   "printWidth": 100,
   "endOfLine": "lf",
-  "proseWrap": "never",
-  "embeddedLanguageFormatting": "off"
+  "embeddedLanguageFormatting": "off",
+  "overrides": [
+    {
+      "files": "*.md",
+      "options": {
+        "proseWrap": "never"
+      }
+    }
+  ]
 }
