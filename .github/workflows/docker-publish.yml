@@ -19,7 +19,7 @@ jobs:
     name: Build and publish image
     runs-on: ubuntu-latest
     # A pull request publishes only on the `build-image` label. Forks cannot push an image.
-    if: >-
+    if: |-
       github.event_name != 'pull_request' ||
       (github.event.label.name == 'build-image' &&
       github.event.pull_request.head.repo.full_name == github.repository)
