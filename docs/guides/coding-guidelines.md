@@ -97,7 +97,7 @@ Run `npm run check` before handing off a code change. It checks formatting, lint
 
 The committed `.oxlintrc.json` owns the exact rule allowlist and scopes. Syntax checks cover owned source, tools, scripts, examples and root code configuration. Typed rules cover TypeScript in `src/`, `tools/` and `scripts/`, using their nearest TypeScript projects. React rules apply to the CLI; test rules apply to test/spec files. Application source uses the unified logger, whose implementation owns direct console access. Standalone tools and scripts retain their intentional stdout/stderr interfaces. The existing compiler and Docker helper build remain authoritative; lint does not replace type checking.
 
-Prettier owns mechanical presentation: two spaces, single quotes, semicolons, trailing commas, 100-column code formatting and LF endings. Markdown prose stays on single lines; that rule is scoped to Markdown, and YAML follows Prettier's defaults. Import order is preserved and embedded-language formatting is disabled. The ignore file excludes runtime data, secrets, generated output and changelog, the lockfile, prompts, skills and historical documentation/evidence. Only active contributor/agent guidance is included in Markdown formatting.
+Prettier owns mechanical presentation: two spaces, single quotes, semicolons, trailing commas, 100-column code formatting and LF endings. Markdown prose stays on single lines. Import order is preserved and embedded-language formatting is disabled. The ignore file excludes runtime data, secrets, generated output and changelog, the lockfile, prompts, skills and historical documentation/evidence. Only active contributor/agent guidance is included in Markdown formatting.
 
 ### Agent completion hooks
 
