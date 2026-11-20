@@ -97,16 +97,9 @@ jobs:
           gh api --method DELETE --silent "${PR_PATH}/labels/build-image" ||
             echo "The label was already gone."
 
-      - name: Comment with the result
+      - name: Comment with the published image
+        if: needs.docker.result == 'success'
         shell: bash
         env:
-          RESULT: ${{ needs.docker.result }}
           TAG: ${{ needs.docker.outputs.tag }}
-        run: |
-          if [ "$RESULT" = success ]; then
-            body="Published \`${TAG}\`."
-          else
-            run="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-            body="The image was not published: ${run}"
-          fi
-          gh api --silent "${PR_PATH}/comments" -f body="$body"
+        run: gh api --silent "${PR_PATH}/comments" -f body="Published \`${TAG}\`."
