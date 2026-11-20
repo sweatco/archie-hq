@@ -4,6 +4,11 @@
 
 <!-- This file is generated automatically — do NOT edit it by hand. The `.github/workflows/daily-changelog.yml` workflow summarizes each day's merged PRs into a dated entry and commits it to `main` on its own. To shape how a change reads here, write a clear PR description — that is the source the automation reads. Quiet days with nothing merged are intentionally skipped (no entry), so gaps between dates are expected. Hand edits drift from the automation and may be overwritten; the only reason to touch this file directly is to repair a mistake the automation made. -->
 
+## 2026-11-19
+
+- _Technical: project tracking moves from a five-status GitHub Project board (29 of 32 items stuck in Backlog, 31 of 75 open issues on the private board) into the issues themselves — state is now read from milestone/assignee/linked-PR/close-reason, `docs/plans/` and `docs/proposals/` are frozen as archives instead of churning (58 commits since June, 39 of them status edits), pull requests are no longer added to the board, and `tools/pm/` (check-repository, issue-health, project-audit, ~800 lines) plus the weekly project-health workflow are removed in favor of GitHub permissions and issue filters. PR #410._
+- _Technical: published the unified incoming events plan (generic webhooks and MCP Events) covering the Slack experience, reuse of existing trigger/proactivity code, implementation order, acceptance checks and rollout, linked from both docs indexes; documentation only, with no issue or milestone references. PR #409._
+
 ## 2026-11-18
 
 - **Slack acknowledgments are simplified further: Archie now picks a reaction or a full reply by what a follow-up actually needs, with one shared rule covering both in-progress posts and completion replies** — routine thanks and repeated details stay silent, while questions, requested status and approval explanations still get full text; reactions are chosen by meaning (👌 noted, 🤔 considering, 👍 agreement, 🙏 appreciation, 🎉 good news), one per related burst. _Technical: change is limited to the PM prompt, tool descriptions and one architecture-doc paragraph — no runtime logic touched; verified via `npm run check` (2,439 tests) plus two live Slack E2E runs (skill-free and loaded-skill) over Archie Test/Hookdeck, 12/12 checks passing each. PR #391._
