@@ -60,9 +60,9 @@ The private [board](https://github.com/orgs/sweatco/projects/16) is an optional 
 
 ## Agents: required routine
 
-The user owns priorities, scope and acceptance. Agents keep the records; they do not decide technical direction through tracking or invent priorities, owners, dates, acceptance or permission to implement.
+Follow this routine unprompted. The user owns priorities, scope and acceptance. Agents keep the records; they do not decide technical direction through tracking or invent priorities, owners, dates, acceptance or permission to implement.
 
-1. **Resume:** find the owning issue, its state and next action.
+1. **Resume:** find the owning issue, its state and next action. Start with `gh issue develop <number>` so the branch is linked to the issue.
 2. **Capture:** when research yields an implementation idea, prepare a Feature issue with source links. Keep declined ideas declined.
 3. **Decide:** record the user's decision to proceed and the agreed scope in that issue.
 4. **Track:** reuse existing issues; prepare missing ones with the [task form](../../.github/ISSUE_TEMPLATE/task.yml). Link dependencies and use milestones for agreed outcomes.
