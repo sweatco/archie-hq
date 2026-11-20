@@ -60,7 +60,7 @@ Continuous integration runs via GitHub Actions: on every push and pull request i
 
 Building and publishing the production container image also runs via GitHub Actions. `.github/workflows/docker-publish.yml` builds `Dockerfile.prod` with Docker Buildx and publishes to GitHub Container Registry as `ghcr.io/<owner>/<repo>:<branch>-<commit-sha>`. A push to `main` publishes `main-<commit-sha>`.
 
-A pull request is never published on its own. To deploy one to staging before it merges, a maintainer adds the `build-image` label to it. That builds the pull request's head commit and publishes it under the branch's name. The label is removed when the build ends, so it works like a button: add it again to build newer commits or to retry. A pull request from a fork is skipped, because its run cannot push an image.
+A pull request is never published on its own. To deploy one to staging before it merges, a maintainer adds the `build-image` label to it. That builds the pull request's head commit and publishes it under the branch's name. When the build ends, a comment on the pull request names the published image and the label is removed, so it works like a button: add it again to build newer commits or to retry. A pull request from a fork is skipped, because its run cannot push an image.
 
 A branch without a pull request can be published with a manual run:
 
