@@ -32,7 +32,7 @@ In fresh worktrees, `npm run e2e:prepare` prepares untracked prerequisites; `boo
 
 ## Project management for Archie development
 
-Read and follow the [mandatory research → idea → implementation → acceptance routine](docs/guides/project-management.md) for applicable research and implementation work. Use the repo-local `github-issues` skill for issue operations. Maintain records as part of the task. Respect analysis-only requests, parked work, and the user's ownership of ideas, priorities, scope, and acceptance; keep simple fixes lightweight.
+Read and follow the [mandatory research → idea → implementation → acceptance routine](docs/guides/project-management.md) for applicable research and implementation work, without waiting to be asked. Use the repo-local `github-issues` skill for issue operations. Maintain records as part of the task. Respect analysis-only requests, parked work, and the user's ownership of ideas, priorities, scope, and acceptance; keep simple fixes lightweight.
 
 Only canonical `sweatco/archie-hq` checkouts write upstream tracking records. Confirm `origin` before upstream PM access; forks and unknown contexts must not write them, even with an upstream remote. Verify each item's repository before Project intake.
 
