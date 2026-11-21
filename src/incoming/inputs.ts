@@ -14,12 +14,7 @@ export interface NewInput {
   filter?: PointerCheck[];
 }
 
-/**
- * Creates an enabled input. The secret is returned here once and is otherwise only in the vault.
- *
- * The secret is sealed before the input row exists, so a callback can never reach an input
- * whose secret was not saved.
- */
+/** Seals the secret before the input row exists, so every reachable input has a readable secret. */
 export async function createInput(
   services: InputServices,
   spec: NewInput,
@@ -43,11 +38,7 @@ export async function createInput(
   return { input, secret };
 }
 
-/**
- * Revokes an input locally. The row is marked first so the callback answers 410 before the
- * secrets disappear. A crash in between leaves orphaned secret files, never a working callback,
- * and deleting again finishes the cleanup.
- */
+/** Marks the input deleted before removing its secrets; a repeated call finishes an interrupted cleanup. */
 export async function deleteInput(services: InputServices, id: string): Promise<Input | null> {
   const input = services.store.markInputDeleted(id);
   if (!input) return null;

@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-/**
- * The signature check is Archie's own, so the Standard Webhooks specification's published test
- * vector is what proves it interoperates with real senders.
- */
+/** The Standard Webhooks specification's published test vector proves interoperability with real senders. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { bearerTokenMatches, signatureMatches } from '../authenticate.js';
 

@@ -1,11 +1,6 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: AGPL-3.0-or-later
-/**
- * Incoming events operator CLI — create, list, pause, resume and delete inputs.
- *
- * Run on the daemon's host: both use the same inbox file and secrets directory. A change
- * applies to the next delivery; the daemon is not restarted.
- */
+/** Incoming events operator CLI. Run it where the daemon runs: both use the same inbox and secrets. */
 
 import 'dotenv/config';
 import {

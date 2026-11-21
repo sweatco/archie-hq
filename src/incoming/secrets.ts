@@ -11,9 +11,8 @@ import {
 } from '../system/secrets-vault.js';
 import type { InputAuth } from './types.js';
 
-/** Where an input's callback secrets are kept. The inbox database holds only references. */
+/** Stores callback secrets; the inbox database refers to them by reference. */
 export interface InputSecrets {
-  /** Generates a secret on the host and returns it once, with the reference to store. */
   create(auth: InputAuth): Promise<{ ref: string; secret: string }>;
   read(ref: string): Promise<string | null>;
   remove(ref: string): Promise<void>;
@@ -27,10 +26,9 @@ const recordSchema = z.object({
 });
 const sealedSchema = z.object({ secret: z.string().min(1) });
 
-/** Sealed secret files under `dir`, one per reference, encrypted with the vault master key. */
+/** One sealed file per secret under `dir`, encrypted with the vault master key. */
 export function vaultInputSecrets(dir: string): InputSecrets {
-  // References are generated here and read back from the inbox, never taken from a request.
-  // The shape check keeps a corrupted reference from naming a path outside `dir`.
+  // References are generated here; the shape check keeps a corrupted one inside `dir`.
   const pathFor = (ref: string): string => {
     if (!REF_PATTERN.test(ref)) throw new Error('Invalid input secret reference');
     return join(dir, `${ref}.json`);

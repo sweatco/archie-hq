@@ -180,8 +180,7 @@ async function main(): Promise<void> {
       logger.plain('GitHub App not configured — PR tools disabled');
     }
 
-    // Mount the incoming events callback (if enabled). It records deliveries as soon as the
-    // server listens; handing them to consumers starts after task recovery, below.
+    // Deliveries are recorded once the server listens; handoff starts after task recovery, below.
     const incomingEvents = mountIncomingEvents(app);
 
     // Mount Slack Bolt app (if configured).
@@ -227,7 +226,7 @@ async function main(): Promise<void> {
       logger.plain(`\nReceived ${signal} signal`);
       setShuttingDown(true);
       logger.system('Stopped accepting new webhooks');
-      // First, so no handoff starts new work while the rest shuts down.
+      // First, so that handoffs stop starting work while the rest shuts down.
       if (incomingEvents) {
         try {
           await incomingEvents.close();

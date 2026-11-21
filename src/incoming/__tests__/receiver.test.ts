@@ -1,9 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-/**
- * `POST /webhooks/incoming/:inputId` over a real Express app, a real SQLite file and real sealed
- * secrets. Only the logger and the shutdown flag are mocked. The inbox is read through a second
- * connection so assertions see only committed rows.
- */
+/** The callback route over a real Express app, SQLite file and sealed secrets; state is read through a second connection. */
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import type { Server } from 'node:http';
@@ -118,13 +114,12 @@ function deliverBearer(
   return post(sender.input.id, body, { authorization: `Bearer ${sender.secret}`, ...headers });
 }
 
-/** Sends a request exactly as written, for cases `fetch` cannot produce. */
+/** Sends a hand-written HTTP request, for cases beyond what `fetch` produces. */
 function rawRequest(lines: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     const socket = connect(Number(new URL(baseUrl).port), '127.0.0.1');
     let response = '';
-    // The server answers and closes because of `Connection: close`; ending the socket here
-    // first would make it drop the request.
+    // `Connection: close` makes the server answer and close; the socket stays open until then.
     socket.on('connect', () => socket.write(`${lines.join('\r\n')}\r\n\r\n`));
     socket.on('data', (chunk) => {
       response += String(chunk);
@@ -417,7 +412,7 @@ describe('a rejected delivery starts no work', () => {
         deliverBearer(bearer, EVENT, { 'idempotency-key': 'k'.repeat(256) }),
     },
     {
-      // The token is judged before the body is read, so the size is never looked at.
+      // The token is judged before the body is read, whatever its size.
       name: 'a wrong bearer token on an oversized body',
       status: 401,
       error: 'unauthorized',
@@ -504,8 +499,7 @@ describe('a rejected delivery starts no work', () => {
 
   it('answers 503 and rolls back every row when the receipt cannot be committed', async () => {
     const sender = await signedSender();
-    // The second identical handoff violates a constraint after the receipt, the payload and
-    // one handoff have been written inside the transaction.
+    // The duplicate handoff fails a constraint after the receipt, payload and first handoff are written.
     matched = { routine: [ROUTINE, ROUTINE], proactivity: [] };
 
     const failed = await deliverSigned(sender, EVENT, 'msg_a');

@@ -1,9 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-/**
- * The dispatcher and the lease rules over a real SQLite file. Time is a number the test moves,
- * except where a test says it uses real timers. The inbox is read through a second connection,
- * so assertions see only committed rows.
- */
+/** The dispatcher and lease rules over a real SQLite file; the test moves time and reads state through a second connection. */
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -31,7 +27,6 @@ const ROUTINE: ConsumerMatch & { kind: string } = {
   snapshot: '{"prompt":"summarize"}',
 };
 const PROACTIVITY = { kind: 'proactivity', consumerId: 'proactivity', snapshot: '{}' };
-/** Three attempts: retries after 100 ms and 200 ms. */
 const POLICY: DispatchPolicy = {
   leaseMs: 1000,
   retryDelaysMs: [100, 200],
@@ -41,7 +36,7 @@ const POLICY: DispatchPolicy = {
   receiptRetentionMs: 30 * DAY,
 };
 
-/** Run in a second process: on `go`, claims and finishes handoffs until none is due. */
+/** Runs in a second process: on `go`, claims and finishes every due handoff. */
 const CLAIM_LOOP = `
   import { IncomingStore } from ${JSON.stringify(new URL('../store.ts', import.meta.url).href)};
   const store = new IncomingStore(process.env.INBOX);
@@ -392,7 +387,7 @@ describe('a lease', () => {
     for (const worker of workers) worker.go();
     const [one = [], two = []] = await Promise.all(workers.map((worker) => worker.claimed));
 
-    // SQLite may let one process do most of the work; what matters is that none is done twice.
+    // SQLite may let one process do most of the work; each handoff is still claimed exactly once.
     expect(one.length + two.length).toBe(150);
     expect(new Set([...one, ...two]).size).toBe(150);
     expect(inbox().payloads).toEqual([]);

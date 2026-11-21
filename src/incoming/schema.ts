@@ -11,7 +11,6 @@ function schemaVersion(db: DatabaseSync): number {
   return Number(row.user_version);
 }
 
-/** Creates the inbox in an empty database and refuses any database it does not recognise. */
 export function initializeSchema(db: DatabaseSync): void {
   inTransaction(db, () => {
     const version = schemaVersion(db);
