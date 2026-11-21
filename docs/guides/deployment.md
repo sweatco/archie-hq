@@ -62,7 +62,7 @@ Building and publishing the production container image also runs via GitHub Acti
 
 A pull request is never published on its own. To deploy one to staging before it merges, a maintainer adds the `build-image` label to it. That builds the pull request's head commit and publishes it under the branch's name. A successful build leaves a comment on the pull request naming the published image. Either way the label is removed when the build ends, so it works like a button: add it again to build newer commits or to retry. A pull request from a fork is skipped, because its run cannot push an image.
 
-A branch without a pull request can be published with a manual run:
+A branch without a pull request can be published with a manual run. The run uses the workflow file on that branch, so the branch must include this version of it:
 
 ```bash
 gh workflow run docker-publish.yml --ref <branch>
