@@ -11,6 +11,7 @@ import {
 } from '../incoming/operator.js';
 import { incomingEventsEnabled, incomingSecrets, openIncomingStore } from '../incoming/runtime.js';
 import { validateMasterKey } from '../system/secrets-vault.js';
+import { loadMetadata } from '../tasks/persistence.js';
 import { loadTrigger } from '../system/trigger-store.js';
 import { SECRETS_DIR, WORKDIR } from '../system/workdir.js';
 
@@ -29,9 +30,14 @@ async function main(): Promise<void> {
 
   const store = openIncomingStore();
   try {
-    await runIncomingCommand(args, { store, secrets: incomingSecrets(), loadTrigger }, (line) => {
-      process.stdout.write(`${line}\n`);
-    });
+    const taskStatus = async (taskId: string) => (await loadMetadata(taskId))?.status ?? null;
+    await runIncomingCommand(
+      args,
+      { store, secrets: incomingSecrets(), loadTrigger, taskStatus },
+      (line) => {
+        process.stdout.write(`${line}\n`);
+      },
+    );
   } finally {
     store.close();
   }

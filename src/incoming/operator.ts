@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { statSync } from 'node:fs';
+import { z } from 'zod';
 import type { Trigger } from '../types/trigger.js';
 import { createInput, deleteInput, type InputServices } from './inputs.js';
 import { INCOMING_ROUTE } from './receiver.js';
@@ -7,6 +8,8 @@ import { inputFilterSchema, type Input, type InputAuth, type PointerCheck } from
 
 export interface OperatorServices extends InputServices {
   loadTrigger(id: string): Promise<Trigger | null>;
+  /** Null when the Task has no folder. */
+  taskStatus(taskId: string): Promise<string | null>;
 }
 
 export const USAGE = `archie incoming — manage inputs that receive webhooks
@@ -19,6 +22,7 @@ Usage:
   npm run incoming -- delete <input-id>
   npm run incoming -- link <input-id> <trigger-id>
   npm run incoming -- unlink <input-id> <trigger-id>
+  npm run incoming -- history [<input-id>]
 
   --auth    signed (default): Standard Webhooks signature. bearer: Authorization header.
   --filter  JSON list of conditions an event must meet, for example
@@ -26,6 +30,7 @@ Usage:
   link      Lets a trigger with a condition for the input receive its events.
             A trigger receives nothing until it is linked.
   unlink    Stops the trigger receiving the input's events.
+  history   The newest events handed to triggers: how each ended, why, and its Task.
 
 Environment:
   ARCHIE_SECRETS_KEY       32-byte master key (base64)                  (required)
@@ -45,6 +50,7 @@ const COMMANDS: readonly string[] = [
   'delete',
   'link',
   'unlink',
+  'history',
 ];
 
 export function isIncomingCommand(name: string | undefined): boolean {
@@ -90,6 +96,8 @@ export async function runIncomingCommand(
       return link(rest, services, print);
     case 'unlink':
       return unlink(rest, services, print);
+    case 'history':
+      return history(rest, services, print);
     default:
       throw new Error(`Unknown command: ${command ?? '(none)'}\n\n${USAGE}`);
   }
@@ -213,6 +221,57 @@ function unlink(
     throw new Error(`Trigger ${triggerId} is not linked to input ${inputId}`);
   services.store.unlinkRoutine(inputId, triggerId);
   print(`Unlinked trigger ${triggerId} from input ${inputId}.`);
+}
+
+const HISTORY_LIMIT = 50;
+const HISTORY_WIDTHS = [16, 26, 24, 9, 22] as const;
+const reservedTaskSchema = z.object({ task_id: z.string() });
+
+async function history(
+  args: readonly string[],
+  services: OperatorServices,
+  print: (line: string) => void,
+): Promise<void> {
+  const [inputId] = args;
+  if (args.length > 1) throw new Error('Usage: incoming history [<input-id>]');
+  if (inputId !== undefined && !services.store.input(inputId))
+    throw new Error(`No input ${inputId}`);
+  const records = services.store.handoffHistory(HISTORY_LIMIT, inputId);
+  if (records.length === 0) {
+    print('No event has been handed to a trigger yet.');
+    return;
+  }
+
+  const row = (cells: readonly string[]) =>
+    cells.map((cell, column) => cell.padEnd(HISTORY_WIDTHS[column] ?? 0)).join('  ');
+  print(row(['Received (UTC)', 'Input', 'Trigger', 'State', 'Reason', 'Task']));
+  for (const record of records) {
+    print(
+      row([
+        new Date(record.receivedAt).toISOString().slice(0, 16).replace('T', ' '),
+        record.inputId,
+        record.consumerId,
+        record.state,
+        record.reason ?? '-',
+        await reservedTask(services, record.state, record.reservation),
+      ]),
+    );
+  }
+  if (records.length === HISTORY_LIMIT) print(`Showing the newest ${HISTORY_LIMIT}.`);
+}
+
+/** A Task that outlived a cancelled or failed handoff started without the handoff recording it. */
+async function reservedTask(
+  services: OperatorServices,
+  state: string,
+  reservation: string | null,
+): Promise<string> {
+  const reserved = reservedTaskSchema.safeParse(reservation ? JSON.parse(reservation) : null);
+  if (!reserved.success) return '-';
+  const status = await services.taskStatus(reserved.data.task_id);
+  if (status === null) return '-';
+  const uncertain = state === 'cancelled' || state === 'failed';
+  return `${reserved.data.task_id} ${status}${uncertain ? ' (uncertain)' : ''}`;
 }
 
 function liveInput(services: InputServices, id: string): Input {

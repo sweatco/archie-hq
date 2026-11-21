@@ -9,7 +9,9 @@ import {
   inputFilterSchema,
   type ConsumerMatch,
   type Handoff,
+  type HandoffState,
   type IgnoredReason,
+  type InboxEndReason,
   type Input,
   type InputState,
   type Receipt,
@@ -56,6 +58,21 @@ export interface InputSummary {
   pendingHandoffs: number;
 }
 
+/** One ended or waiting handoff, for the operator. */
+export interface HandoffRecord {
+  id: string;
+  receiptId: string;
+  inputId: string;
+  receivedAt: number;
+  consumerKind: string;
+  consumerId: string;
+  state: HandoffState;
+  /** Set when the handoff ended any way other than `accepted`. */
+  reason: string | null;
+  attempts: number;
+  reservation: string | null;
+}
+
 export interface ClaimedHandoff {
   handoff: Handoff;
   /** Proves the lease on every later write for this attempt. */
@@ -97,6 +114,25 @@ const dueHandoffSchema = z.object({
   input_state: z.enum(['enabled', 'paused', 'deleted']),
   body: z.instanceof(Uint8Array),
 });
+
+const handoffStateSchema = z.enum(['pending', 'accepted', 'skipped', 'cancelled', 'failed']);
+
+const handoffRecordSchema = z.object({
+  id: z.string(),
+  receipt_id: z.string(),
+  input_id: z.string(),
+  received_at: z.number(),
+  consumer_kind: z.string(),
+  consumer_id: z.string(),
+  state: handoffStateSchema,
+  reason: z.string().nullable(),
+  attempts: z.number(),
+  reservation: z.string().nullable(),
+});
+
+function stoppedInput(state: 'paused' | 'deleted'): InboxEndReason {
+  return state === 'paused' ? 'input_paused' : 'input_deleted';
+}
 
 function toInput(row: Record<string, unknown>): Input {
   const stored = inputRowSchema.parse(row);
@@ -336,7 +372,7 @@ export class IncomingStore {
           continue;
         }
         if (due.input_state !== 'enabled') {
-          this.cancelHandoff(due.id, due.receipt_id);
+          this.cancelHandoff(due.id, due.receipt_id, stoppedInput(due.input_state));
           continue;
         }
 
@@ -387,8 +423,9 @@ export class IncomingStore {
         token,
       );
       if (!held) return 'lost';
-      if (held.input_state !== 'enabled') {
-        this.cancelHandoff(id, String(held.receipt_id));
+      const inputState = inputRowSchema.shape.state.parse(held.input_state);
+      if (inputState !== 'enabled') {
+        this.cancelHandoff(id, String(held.receipt_id), stoppedInput(inputState));
         return 'cancelled';
       }
       this.run('UPDATE handoffs SET token=NULL,lease_until=0,due_at=? WHERE id=?', dueAt, id);
@@ -397,11 +434,17 @@ export class IncomingStore {
   }
 
   /** Returns whether the lease was held. A receipt's last finish also deletes its body, atomically. */
-  finishHandoff(id: string, token: string, state: 'accepted' | 'skipped' | 'failed'): boolean {
+  finishHandoff(
+    id: string,
+    token: string,
+    state: 'accepted' | 'skipped' | 'failed',
+    reason: string | null = null,
+  ): boolean {
     return inTransaction(this.db, () => {
       const finished = this.row(
-        'UPDATE handoffs SET state=?,token=NULL,lease_until=0 WHERE id=? AND token=? RETURNING receipt_id',
+        'UPDATE handoffs SET state=?,reason=?,token=NULL,lease_until=0 WHERE id=? AND token=? RETURNING receipt_id',
         state,
+        reason,
         id,
         token,
       );
@@ -409,6 +452,45 @@ export class IncomingStore {
       this.settleReceipt(String(finished.receipt_id));
       return true;
     });
+  }
+
+  abandonedReservations(consumerKind: string): Array<{ handoffId: string; reservation: string }> {
+    return this.db
+      .prepare(
+        `SELECT id, reservation FROM handoffs
+          WHERE consumer_kind=? AND reservation IS NOT NULL
+            AND state IN ('skipped','cancelled','failed')`,
+      )
+      .all(consumerKind)
+      .map((row) => ({ handoffId: String(row.id), reservation: String(row.reservation) }));
+  }
+
+  /** The newest handoffs first, for one input or for all. */
+  handoffHistory(limit: number, inputId?: string): HandoffRecord[] {
+    return this.db
+      .prepare(
+        `SELECT h.id, h.receipt_id, r.input_id, r.received_at, h.consumer_kind, h.consumer_id,
+                h.state, h.reason, h.attempts, h.reservation
+           FROM handoffs h JOIN receipts r ON r.id=h.receipt_id
+          WHERE ?1 IS NULL OR r.input_id=?1
+          ORDER BY r.received_at DESC, h.rowid DESC LIMIT ?2`,
+      )
+      .all(inputId ?? null, limit)
+      .map((row) => {
+        const stored = handoffRecordSchema.parse(row);
+        return {
+          id: stored.id,
+          receiptId: stored.receipt_id,
+          inputId: stored.input_id,
+          receivedAt: stored.received_at,
+          consumerKind: stored.consumer_kind,
+          consumerId: stored.consumer_id,
+          state: stored.state,
+          reason: stored.reason,
+          attempts: stored.attempts,
+          reservation: stored.reservation,
+        };
+      });
   }
 
   /** Fails unleased handoffs of older deliveries and removes settled receipts, freeing their event keys. */
@@ -419,7 +501,7 @@ export class IncomingStore {
   ): { failed: number; purged: number } {
     return inTransaction(this.db, () => {
       const failed = this.endHandoffs(
-        `UPDATE handoffs SET state='failed',token=NULL,lease_until=0
+        `UPDATE handoffs SET state='failed',reason='expired',token=NULL,lease_until=0
           WHERE state='pending' AND lease_until<=?
             AND (SELECT received_at FROM receipts WHERE id=handoffs.receipt_id)<=?
           RETURNING receipt_id`,
@@ -445,10 +527,11 @@ export class IncomingStore {
       this.run('UPDATE inputs SET state=? WHERE id=?', next, id);
       if (next !== 'enabled')
         this.endHandoffs(
-          `UPDATE handoffs SET state='cancelled',token=NULL,lease_until=0
+          `UPDATE handoffs SET state='cancelled',reason=?,token=NULL,lease_until=0
             WHERE state='pending' AND lease_until<=?
               AND (SELECT input_id FROM receipts WHERE id=handoffs.receipt_id)=?
             RETURNING receipt_id`,
+          stoppedInput(next),
           now,
           id,
         );
@@ -505,7 +588,8 @@ export class IncomingStore {
   /** Left pending, it would stay first in line and hold back every later handoff. */
   private failUnreadableHandoff(id: string): void {
     this.endHandoffs(
-      "UPDATE handoffs SET state='failed',token=NULL,lease_until=0 WHERE id=? RETURNING receipt_id",
+      "UPDATE handoffs SET state='failed',reason=?,token=NULL,lease_until=0 WHERE id=? RETURNING receipt_id",
+      'unreadable' satisfies InboxEndReason,
       id,
     );
     logger.error(
@@ -514,8 +598,12 @@ export class IncomingStore {
     );
   }
 
-  private cancelHandoff(id: string, receiptId: string): void {
-    this.run("UPDATE handoffs SET state='cancelled',token=NULL,lease_until=0 WHERE id=?", id);
+  private cancelHandoff(id: string, receiptId: string, reason: InboxEndReason): void {
+    this.run(
+      "UPDATE handoffs SET state='cancelled',reason=?,token=NULL,lease_until=0 WHERE id=?",
+      reason,
+      id,
+    );
     this.settleReceipt(receiptId);
   }
 

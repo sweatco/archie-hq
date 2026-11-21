@@ -57,7 +57,7 @@ function consumer(kind: 'routine' | 'proactivity'): IncomingConsumer {
       whileMatching();
       return matched[kind];
     },
-    handle: () => Promise.resolve('accepted'),
+    handle: () => Promise.resolve({ state: 'accepted' }),
   };
 }
 

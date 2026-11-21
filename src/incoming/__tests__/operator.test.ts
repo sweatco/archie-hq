@@ -17,10 +17,14 @@ let store: IncomingStore;
 let secrets: InputSecrets;
 let printed: string[];
 let triggers: Map<string, Trigger>;
+let taskStatuses: Map<string, string>;
 
 function run(...args: string[]): Promise<void> {
   const loadTrigger = (id: string) => Promise.resolve(triggers.get(id) ?? null);
-  return runIncomingCommand(args, { store, secrets, loadTrigger }, (line) => printed.push(line));
+  const taskStatus = (id: string) => Promise.resolve(taskStatuses.get(id) ?? null);
+  return runIncomingCommand(args, { store, secrets, loadTrigger, taskStatus }, (line) =>
+    printed.push(line),
+  );
 }
 
 /** Stores a trigger record that names the input, as an approved proposal would. */
@@ -60,6 +64,7 @@ beforeEach(() => {
   secrets = vaultInputSecrets(secretsDir);
   printed = [];
   triggers = new Map();
+  taskStatuses = new Map();
 });
 afterEach(() => {
   store.close();
@@ -267,6 +272,77 @@ it('refuses a link that would deliver nothing, and changes no input', async () =
 
   for (const input of [id, other.id, deleted.id])
     expect(store.input(input)).toMatchObject({ routines: [], revision: 1 });
+});
+
+it('shows how each handed-off event ended, why, and the Task it reserved', async () => {
+  const { id } = await created();
+  const other = await created();
+  const at = Date.UTC(2026, 10, 21, 9, 30);
+  const receive = (inputId: string, eventKey: string, receivedAt: number) =>
+    store.receive(
+      {
+        inputId,
+        binding: 'generic',
+        eventKey,
+        digest: 'unused',
+        body: new Uint8Array(),
+        receivedAt,
+      },
+      [{ kind: 'routine', consumerId: ROUTINE_ID, snapshot: '{}' }],
+    );
+  const end = (
+    state: 'accepted' | 'skipped' | 'failed',
+    reason: string | null,
+    taskId?: string,
+  ) => {
+    const claimed = store.claimHandoff(at + 60_000, 1000);
+    if (!claimed) throw new Error('Expected a waiting handoff');
+    if (taskId)
+      store.saveReservation(claimed.handoff.id, claimed.token, JSON.stringify({ task_id: taskId }));
+    store.finishHandoff(claimed.handoff.id, claimed.token, state, reason);
+  };
+  receive(id, 'msg_1', at);
+  end('accepted', null, 'task-started');
+  receive(id, 'msg_2', at + 1);
+  end('skipped', 'routine_paused');
+  receive(id, 'msg_3', at + 2);
+  end('failed', 'attempts_exhausted', 'task-ran-anyway');
+  receive(id, 'msg_4', at + 3);
+  end('failed', 'interrupted', 'task-discarded');
+  receive(other.id, 'msg_5', at + 4);
+  taskStatuses.set('task-started', 'completed');
+  taskStatuses.set('task-ran-anyway', 'in_progress');
+  printed = [];
+
+  await run('history', id);
+
+  const cells = printed.map((line) => line.trim().split(/\s{2,}/));
+  expect(cells).toEqual([
+    ['Received (UTC)', 'Input', 'Trigger', 'State', 'Reason', 'Task'],
+    ['2026-11-21 09:30', id, ROUTINE_ID, 'failed', 'interrupted', '-'],
+    [
+      '2026-11-21 09:30',
+      id,
+      ROUTINE_ID,
+      'failed',
+      'attempts_exhausted',
+      'task-ran-anyway in_progress (uncertain)',
+    ],
+    ['2026-11-21 09:30', id, ROUTINE_ID, 'skipped', 'routine_paused', '-'],
+    ['2026-11-21 09:30', id, ROUTINE_ID, 'accepted', '-', 'task-started completed'],
+  ]);
+
+  printed = [];
+  await run('history');
+  expect(printed).toHaveLength(6);
+  expect(printed[1]).toMatch(new RegExp(`${other.id}\\s+${ROUTINE_ID}\\s+pending`));
+  await expect(run('history', 'inp-missing')).rejects.toThrow(/No input inp-missing/);
+});
+
+it('says so when no event has been handed off', async () => {
+  await run('history');
+
+  expect(printed).toEqual(['No event has been handed to a trigger yet.']);
 });
 
 it.each([
