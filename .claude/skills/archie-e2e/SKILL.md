@@ -176,7 +176,7 @@ npx tsx tools/e2e/teardown.ts
 
 Runs `docker compose down`, then verifies via `docker compose ps --all --format json` that **no containers remain for the project** — survivors (including stopped-but-not-removed ones) are listed by name and the command exits non-zero. On success it prints a confirmation line suitable for pasting into evidence: `Teardown clean: docker compose ps --all reports no containers for this project.` Never end a scenario session without a clean teardown exit.
 
-With `--profile eval`, teardown targets the eval instance's project and, only after a clean `down`, deletes `eval-instance/` — sessions included, so copy out anything you need first:
+With `--profile eval`, teardown targets the eval instance's project and runs `down --volumes`, which also removes the container's anonymous `node_modules` volume. Only after a clean `down` does it delete `eval-instance/` — sessions included, so copy out anything you need first:
 
 ```bash
 npx tsx tools/e2e/teardown.ts --profile eval

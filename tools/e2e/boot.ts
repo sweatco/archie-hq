@@ -50,7 +50,13 @@ import { createServer, type AddressInfo } from 'net';
 import { dirname, join } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { resolveBaseUrl, resolveTimeoutSeconds } from './config.js';
-import { checkEvalCompose, EVAL_DIR, evalComposeArgs, runEvalPrepare } from './eval-profile.js';
+import {
+  checkEvalCompose,
+  EVAL_DIR,
+  EVAL_DOWN_FLAGS,
+  evalComposeArgs,
+  runEvalPrepare,
+} from './eval-profile.js';
 import { runPrepare } from './prepare-worktree.js';
 import { makeExec, type ExecFn } from './exec.js';
 
@@ -563,7 +569,12 @@ async function main(): Promise<void> {
         console.log(
           `Port ${port} is held by this project's own archie — tearing it down to boot fresh from the current checkout ...`,
         );
-        const down = await hostExec('docker', ['compose', ...composeArgs, 'down']);
+        const down = await hostExec('docker', [
+          'compose',
+          ...composeArgs,
+          'down',
+          ...(isEval ? EVAL_DOWN_FLAGS : []),
+        ]);
         if (down.code !== 0) {
           console.error(`docker compose down failed (exit ${down.code}): ${down.stderr.trim()}`);
           process.exit(1);

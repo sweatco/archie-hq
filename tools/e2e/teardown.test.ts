@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { parseArgs, parseComposePs, runTeardown } from './teardown.js';
+import { evalComposeArgs } from './eval-profile.js';
+import { parseArgs, parseComposePs, runTeardown, teardownTarget } from './teardown.js';
 import type { ExecResult } from './exec.js';
 
 describe('parseComposePs', () => {
@@ -71,13 +72,38 @@ describe('parseArgs', () => {
   });
 });
 
+describe('teardownTarget', () => {
+  const repo = '/repos/archie-hq';
+  const downCall = async (profile: 'eval' | undefined) => {
+    const { exec, calls } = fakeExec(() => ({ code: 0, stdout: '', stderr: '' }));
+    const target = teardownTarget(profile, repo);
+    await runTeardown(exec, io(), target.composeArgs, target.downFlags);
+    return calls[0];
+  };
+
+  it('leaves the default profile’s teardown a plain `docker compose down`', async () => {
+    expect(teardownTarget(undefined, repo)).toEqual({ composeArgs: [], downFlags: [] });
+    expect(await downCall(undefined)).toEqual(['docker', 'compose', 'down']);
+  });
+
+  it('removes the eval project’s volumes with its containers', async () => {
+    expect(await downCall('eval')).toEqual([
+      'docker',
+      'compose',
+      ...evalComposeArgs(repo),
+      'down',
+      '--volumes',
+    ]);
+  });
+});
+
 describe('runTeardown', () => {
   it('targets the given compose project and files for both down and the survivor check', async () => {
     const { exec, calls } = fakeExec(() => ({ code: 0, stdout: '', stderr: '' }));
-    const code = await runTeardown(exec, io(), ['-p', 'feat-eval', '-f', 'a.yml']);
+    const code = await runTeardown(exec, io(), ['-p', 'feat-eval', '-f', 'a.yml'], ['--volumes']);
     expect(code).toBe(0);
     expect(calls.map((c) => c.join(' '))).toEqual([
-      'docker compose -p feat-eval -f a.yml down',
+      'docker compose -p feat-eval -f a.yml down --volumes',
       'docker compose -p feat-eval -f a.yml ps --all --format json',
     ]);
   });

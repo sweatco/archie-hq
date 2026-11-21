@@ -83,6 +83,13 @@ export function evalComposeArgs(repoRoot: string): string[] {
   return ['-p', evalProjectName(repoRoot), '-f', 'docker-compose.yml', '-f', EVAL_COMPOSE_FILE];
 }
 
+/**
+ * Extra `docker compose down` flags for the eval project. `--volumes` also removes the
+ * container's anonymous `/app/node_modules` volume, which nothing reuses once the container is
+ * gone; without it, every eval instance leaves one behind. The project declares no named volumes.
+ */
+export const EVAL_DOWN_FLAGS: readonly string[] = ['--volumes'];
+
 // ---- Model key (pure) ----
 
 export interface ModelKeySources {

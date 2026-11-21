@@ -9,7 +9,8 @@
  * pasting into evidence.
  *
  * `--profile eval` targets the eval instance's compose project
- * (tools/e2e/eval-profile.ts) and, only after a clean teardown, deletes
+ * (tools/e2e/eval-profile.ts), removes its anonymous volume with `down --volumes`,
+ * and, only after a clean teardown, deletes
  * `eval-instance/` with its sessions. Copy out anything you need first. The
  * directory never holds the model key, so keeping it after a failure is safe,
  * and a rerun needs nothing from it.
@@ -20,7 +21,7 @@
 
 import { dirname, join } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
-import { EVAL_DIR, evalComposeArgs, removeEvalInstance } from './eval-profile.js';
+import { EVAL_DIR, EVAL_DOWN_FLAGS, evalComposeArgs, removeEvalInstance } from './eval-profile.js';
 import { makeExec, type ExecFn } from './exec.js';
 
 // ---- ps parsing (pure) ----
@@ -98,17 +99,20 @@ export interface TeardownIo {
 
 /**
  * compose down, then verify emptiness via compose ps --all. Returns the process exit code.
- * `composeArgs` are global compose arguments selecting the project (the eval profile's); none by default.
+ * `composeArgs` are global compose arguments selecting the project and `downFlags` extra `down`
+ * flags (the eval profile's); none by default.
  */
 export async function runTeardown(
   exec: ExecFn,
   io: TeardownIo,
   composeArgs: string[] = [],
+  downFlags: readonly string[] = [],
 ): Promise<number> {
-  io.log('Tearing down via `docker compose down` ...');
-  const down = await exec('docker', ['compose', ...composeArgs, 'down']);
+  const downCommand = ['down', ...downFlags];
+  io.log(`Tearing down via \`docker compose ${downCommand.join(' ')}\` ...`);
+  const down = await exec('docker', ['compose', ...composeArgs, ...downCommand]);
   if (down.code !== 0) {
-    io.error(`docker compose down failed with exit code ${down.code}`);
+    io.error(`docker compose ${downCommand.join(' ')} failed with exit code ${down.code}`);
     if (down.stderr.trim()) io.error(down.stderr.trim());
     return 1;
   }
@@ -135,6 +139,16 @@ export async function runTeardown(
 
   io.log('Teardown clean: `docker compose ps --all` reports no containers for this project.');
   return 0;
+}
+
+/** What each profile tears down; exported for tests. The default profile passes nothing extra. */
+export function teardownTarget(
+  profile: 'eval' | undefined,
+  repoRoot: string,
+): { composeArgs: string[]; downFlags: readonly string[] } {
+  return profile === 'eval'
+    ? { composeArgs: evalComposeArgs(repoRoot), downFlags: EVAL_DOWN_FLAGS }
+    : { composeArgs: [], downFlags: [] };
 }
 
 // ---- CLI main ----
@@ -164,9 +178,10 @@ async function main(): Promise<void> {
   };
   const exec = makeExec({ cwd: repoRoot, echo: true });
 
-  if (profile !== 'eval') process.exit(await runTeardown(exec, io));
+  const target = teardownTarget(profile, repoRoot);
+  const code = await runTeardown(exec, io, target.composeArgs, target.downFlags);
+  if (profile !== 'eval') process.exit(code);
 
-  const code = await runTeardown(exec, io, evalComposeArgs(repoRoot));
   if (code !== 0) {
     io.error(
       `${EVAL_DIR}/ kept: a container may still be using it. It holds no model key; rerun this teardown once Docker is reachable.`,
