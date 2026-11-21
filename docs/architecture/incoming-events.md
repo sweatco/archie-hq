@@ -72,6 +72,15 @@ The dispatcher is one loop per process. It polls every second and delivers one h
 - **Pause and delete:** handoffs nobody is working on are cancelled and their bodies deleted. One being worked on may finish its attempt. If that attempt fails while the input is still paused or deleted, it is cancelled too.
 - **Sweep:** hourly, handoffs older than seven days are failed and settled receipts older than 30 days are removed. A removed receipt's key is new again.
 
+## Design choices
+
+- **Commit before replying.** A `202` means the event is on disk. Replying first and processing afterwards, as the GitHub route does, would lose an event on a crash.
+- **Its own SQLite file.** Proactivity's database opens only when proactivity is on and belongs to one Slack workspace; the inbox has to work without either. A later merge stays cheap, because only inputs and recent receipts would need to move.
+- **The body in its own table.** Whether a body is retained is then a row count, and history queries stay away from large blobs.
+- **Its own signature check.** Standard Webhooks verification is one HMAC comparison: about 30 lines of `node:crypto`, tested against the specification's published example, with no added dependency.
+- **Secrets as sealed files.** A database snapshot can then be restored or shared without its keys.
+- **One consumer interface.** Routines and proactivity plug in through the same two functions, so the inbox holds no Task or trigger code.
+
 ## Operating it
 
 `ARCHIE_INCOMING_EVENTS=on` mounts the route and requires `ARCHIE_SECRETS_KEY`. With the flag off or blank, the route does not exist. Any other value, or a missing key while the flag is on, stops the boot before the slow startup steps.

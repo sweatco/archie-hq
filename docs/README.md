@@ -77,7 +77,6 @@ Frozen archive of development milestones. Each plan has a status header indicati
 | [Issue Disposition Review](plans/20261111-issue-disposition.md) | Evidence and next process step for all 44 existing open issues | Classification proposed; no closures |
 | [Project Management Setup](plans/20261111-project-management.md) | Board, agent rules, automation, verification, and remaining merge step | Native workflows configured; hosted report awaits merge |
 | [Incoming Events](plans/20261116-incoming-events-shared-receiver.md) | Connect webhooks and MCP Events to routines and proactivity in Slack | Proposed |
-| [Generic Webhook Receiver](plans/20261119-generic-webhook-receiver.md) | Receive, deduplicate and durably hand off generic webhooks (#401) | Implemented |
 
 See [plans/README.md](plans/README.md) for the full evolution arc.
 
