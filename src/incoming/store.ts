@@ -69,6 +69,7 @@ const inputRowSchema = z.object({
   auth: z.enum(['standard_webhooks', 'bearer']),
   secret_refs: z.string(),
   filter: z.string(),
+  routines: z.string(),
   revision: z.number(),
 });
 
@@ -105,6 +106,7 @@ function toInput(row: Record<string, unknown>): Input {
     auth: stored.auth,
     secretRefs: z.array(z.string()).parse(JSON.parse(stored.secret_refs)),
     filter: inputFilterSchema.parse(JSON.parse(stored.filter)),
+    routines: z.array(z.string()).parse(JSON.parse(stored.routines)),
     revision: stored.revision,
   };
 }
@@ -133,12 +135,13 @@ export class IncomingStore {
 
   insertInput(input: Input, createdAt: number): void {
     this.run(
-      'INSERT INTO inputs(id,state,auth,secret_refs,filter,revision,created_at) VALUES (?,?,?,?,?,?,?)',
+      'INSERT INTO inputs(id,state,auth,secret_refs,filter,routines,revision,created_at) VALUES (?,?,?,?,?,?,?,?)',
       input.id,
       input.state,
       input.auth,
       JSON.stringify(input.secretRefs),
       JSON.stringify(input.filter),
+      JSON.stringify(input.routines),
       input.revision,
       createdAt,
     );
@@ -181,6 +184,18 @@ export class IncomingStore {
   /** Final. Cancels handoffs as pausing does. */
   markInputDeleted(id: string, now = Date.now()): Input | null {
     return this.moveInput(id, 'deleted', now);
+  }
+
+  /** Lets a trigger receive this input's events. A deleted input is returned unchanged. */
+  linkRoutine(id: string, triggerId: string): Input | null {
+    return this.changeRoutines(id, (linked) =>
+      linked.includes(triggerId) ? linked : [...linked, triggerId],
+    );
+  }
+
+  /** Applies from the next delivery. */
+  unlinkRoutine(id: string, triggerId: string): Input | null {
+    return this.changeRoutines(id, (linked) => linked.filter((routine) => routine !== triggerId));
   }
 
   receipt(id: string): Receipt | null {
@@ -438,6 +453,23 @@ export class IncomingStore {
           id,
         );
       return { ...input, state: next };
+    });
+  }
+
+  private changeRoutines(id: string, change: (linked: string[]) => string[]): Input | null {
+    return inTransaction(this.db, () => {
+      const input = this.input(id);
+      if (!input || input.state === 'deleted') return input;
+      const routines = change(input.routines);
+      if (routines.length === input.routines.length) return input;
+      const revision = input.revision + 1;
+      this.run(
+        'UPDATE inputs SET routines=?,revision=? WHERE id=?',
+        JSON.stringify(routines),
+        revision,
+        id,
+      );
+      return { ...input, routines, revision };
     });
   }
 

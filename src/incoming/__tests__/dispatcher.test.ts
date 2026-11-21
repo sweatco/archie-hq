@@ -173,7 +173,15 @@ beforeEach(() => {
   store = openStore();
   for (const id of ['inp-1', 'inp-2'])
     store.insertInput(
-      { id, state: 'enabled', auth: 'bearer', secretRefs: [], filter: [], revision: 1 },
+      {
+        id,
+        state: 'enabled',
+        auth: 'bearer',
+        secretRefs: [],
+        filter: [],
+        routines: [],
+        revision: 1,
+      },
       now,
     );
 });

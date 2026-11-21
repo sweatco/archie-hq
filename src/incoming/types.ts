@@ -31,6 +31,9 @@ export type PointerCheck = z.infer<typeof pointerCheckSchema>;
 export type InputAuth = 'standard_webhooks' | 'bearer';
 export type InputState = 'enabled' | 'paused' | 'deleted';
 
+/** The shape `createInput` mints. */
+export const INPUT_ID_PATTERN = /^inp-[A-Za-z0-9_-]{22}$/;
+
 export interface Input {
   /** Random and unguessable; public enough to appear in the callback URL and in logs. */
   id: string;
@@ -39,6 +42,9 @@ export interface Input {
   secretRefs: string[];
   /** Every check must pass before any consumer is asked to match. */
   filter: PointerCheck[];
+  /** Ids of the triggers the operator linked: the only routines that receive this input's events. */
+  routines: string[];
+  /** Counts changes to the links; a receipt records the one it was matched under. */
   revision: number;
 }
 

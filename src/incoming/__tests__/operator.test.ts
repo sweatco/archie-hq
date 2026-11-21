@@ -7,15 +7,37 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { assertNotRootBesideDaemon, runIncomingCommand } from '../operator.js';
 import { vaultInputSecrets, type InputSecrets } from '../secrets.js';
 import { IncomingStore } from '../store.js';
+import type { Trigger } from '../../types/trigger.js';
+
+const ROUTINE_ID = 'trg-20261121-0900-notes1';
 
 let root: string;
 let secretsDir: string;
 let store: IncomingStore;
 let secrets: InputSecrets;
 let printed: string[];
+let triggers: Map<string, Trigger>;
 
 function run(...args: string[]): Promise<void> {
-  return runIncomingCommand(args, { store, secrets }, (line) => printed.push(line));
+  const loadTrigger = (id: string) => Promise.resolve(triggers.get(id) ?? null);
+  return runIncomingCommand(args, { store, secrets, loadTrigger }, (line) => printed.push(line));
+}
+
+/** Stores a trigger record that names the input, as an approved proposal would. */
+function routineFor(inputId: string, over: Partial<Trigger> = {}): Trigger {
+  const trigger: Trigger = {
+    id: ROUTINE_ID,
+    status: 'enabled',
+    created_by: 'U0DANA',
+    created_at: '2026-11-21T09:00:00.000Z',
+    binding: { type: 'channel', channel_id: 'C0NOTES', channel_name: 'notes' },
+    conditions: [{ type: 'incoming_event', input_id: inputId }],
+    action: { prompt: 'Summarize the meeting.' },
+    summary: 'Meeting notes',
+    ...over,
+  };
+  triggers.set(trigger.id, trigger);
+  return trigger;
 }
 
 /** Creates an input through the command and returns what it printed about it. */
@@ -37,6 +59,7 @@ beforeEach(() => {
   store = new IncomingStore(join(root, 'state.sqlite'));
   secrets = vaultInputSecrets(secretsDir);
   printed = [];
+  triggers = new Map();
 });
 afterEach(() => {
   store.close();
@@ -162,6 +185,88 @@ it('says the input is already deleted when only the secret cleanup failed', asyn
 
   await run('delete', id);
   expect(readdirSync(secretsDir)).toEqual([]);
+});
+
+it('links a trigger to an input, shows what was allowed, and lists the link', async () => {
+  const { id } = await created();
+  routineFor(id);
+  printed = [];
+
+  await run('link', id, ROUTINE_ID);
+
+  expect(printed).toEqual([
+    `Linked trigger ${ROUTINE_ID} to input ${id}.`,
+    'Delivers to: #notes (C0NOTES)',
+    'Does:        Meeting notes',
+    'Status:      enabled',
+  ]);
+  expect(store.input(id)).toMatchObject({ routines: [ROUTINE_ID], revision: 2 });
+
+  printed = [];
+  await run('link', id, ROUTINE_ID);
+  expect(printed[0]).toBe(`Trigger ${ROUTINE_ID} is already linked to input ${id}.`);
+  expect(store.input(id)).toMatchObject({ routines: [ROUTINE_ID], revision: 2 });
+
+  printed = [];
+  await run('list');
+  expect(printed).toHaveLength(3);
+  expect(printed[2]).toBe(`  linked: ${ROUTINE_ID}`);
+});
+
+it('says when a linked trigger does not receive events yet', async () => {
+  const { id } = await created();
+  routineFor(id, {
+    status: 'pending',
+    binding: { type: 'user', user_id: 'U0DANA', channel_id: 'D0DANA', channel_name: 'Dana' },
+  });
+  printed = [];
+
+  await run('link', id, ROUTINE_ID);
+
+  expect(printed.slice(1)).toEqual([
+    'Delivers to: a DM with U0DANA (D0DANA)',
+    'Does:        Meeting notes',
+    'Status:      pending — it receives events once it is approved',
+  ]);
+});
+
+it('unlinks a trigger whose record is gone, and leaves other links in place', async () => {
+  const { id } = await created();
+  routineFor(id);
+  routineFor(id, { id: 'trg-20261121-0900-ticket' });
+  await run('link', id, ROUTINE_ID);
+  await run('link', id, 'trg-20261121-0900-ticket');
+  triggers.clear();
+
+  await run('unlink', id, ROUTINE_ID);
+
+  expect(printed.at(-1)).toBe(`Unlinked trigger ${ROUTINE_ID} from input ${id}.`);
+  expect(store.input(id)).toMatchObject({ routines: ['trg-20261121-0900-ticket'], revision: 4 });
+  await expect(run('unlink', id, ROUTINE_ID)).rejects.toThrow(/is not linked/);
+});
+
+it('refuses a link that would deliver nothing, and changes no input', async () => {
+  const { id } = await created();
+  const other = await created();
+  const deleted = await created();
+  await run('delete', deleted.id);
+  routineFor(other.id);
+  routineFor(deleted.id, { id: 'trg-20261121-0900-gone00' });
+  routineFor(id, {
+    id: 'trg-20261121-0900-sched0',
+    conditions: [{ type: 'schedule', tz: 'UTC', next_run_at: '2099-01-01T09:00:00.000Z' }],
+  });
+
+  await expect(run('link', id, ROUTINE_ID)).rejects.toThrow(/has no condition for input/);
+  await expect(run('link', id, 'trg-20261121-0900-sched0')).rejects.toThrow(/has no condition/);
+  await expect(run('link', id, 'trg-20261121-0900-absent')).rejects.toThrow(/No trigger/);
+  await expect(run('link', 'inp-missing', ROUTINE_ID)).rejects.toThrow(/No input inp-missing/);
+  await expect(run('link', deleted.id, 'trg-20261121-0900-gone00')).rejects.toThrow(/was deleted/);
+  await expect(run('link', id)).rejects.toThrow(/Usage/);
+  await expect(run('unlink', id)).rejects.toThrow(/Usage/);
+
+  for (const input of [id, other.id, deleted.id])
+    expect(store.input(input)).toMatchObject({ routines: [], revision: 1 });
 });
 
 it.each([

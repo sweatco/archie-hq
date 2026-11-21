@@ -15,6 +15,7 @@ import type { Task } from '../tasks/task.js';
 import { appendSlackMessage } from '../tasks/persistence.js';
 import type { SlackThread } from '../types/task.js';
 import type { Trigger, TriggerBinding, TriggerCondition } from '../types/trigger.js';
+import type { PointerCheck } from '../incoming/types.js';
 import { listTriggers, saveTrigger, deleteTrigger, countActiveTriggers } from './trigger-store.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { emitEvent } from './event-bus.js';
@@ -200,6 +201,11 @@ export function indexTrigger(trigger: Trigger): void {
 /** Remove a trigger from the index. */
 export function deindexTrigger(id: string): void {
   enabledTriggers.delete(id);
+}
+
+/** The enabled trigger as last indexed. An edit swaps in a new record, so its prompt and binding belong to one version. */
+export function getEnabledTrigger(id: string): Trigger | undefined {
+  return enabledTriggers.get(id);
 }
 
 /** All enabled channel-message triggers bound to / watching a given channel. */
@@ -678,6 +684,10 @@ function describeCondition(c: TriggerCondition, bindingChannelId?: string): stri
   if (c.type === 'schedule') {
     return c.cron ? describeSchedule(c.cron, c.tz) : describeOneOff(c.next_run_at, c.tz);
   }
+  if (c.type === 'incoming_event') {
+    const filter = c.filter?.length ? ` where ${describeEventFilter(c.filter)}` : '';
+    return `on an event from input \`${c.input_id}\`${filter}`;
+  }
   const where = c.channel_id === bindingChannelId ? '' : ` in <#${c.channel_id}>`;
   const filters: string[] = [];
   if (c.match?.contains) filters.push(`mentioning "${c.match.contains}"`);
@@ -689,6 +699,23 @@ function describeCondition(c: TriggerCondition, bindingChannelId?: string): stri
     );
   }
   return `on a new message${where}${filters.length ? ' ' + filters.join(' ') : ''}`;
+}
+
+// A filter may hold 16 checks of 64 values each, and a Slack card field holds 2000 characters.
+const EVENT_FILTER_LABEL_MAX = 300;
+
+function describeEventFilter(filter: readonly PointerCheck[]): string {
+  const label = filter.map(describeCheck).join(' and ');
+  return label.length > EVENT_FILTER_LABEL_MAX
+    ? `${label.slice(0, EVENT_FILTER_LABEL_MAX - 1)}…`
+    : label;
+}
+
+function describeCheck(check: PointerCheck): string {
+  const field = `\`${check.pointer || '/'}\``;
+  if (check.op === 'present') return `${field} is present`;
+  if (check.op === 'equals') return `${field} is ${JSON.stringify(check.value)}`;
+  return `${field} is one of ${check.values.map((value) => JSON.stringify(value)).join(', ')}`;
 }
 
 /** First sentence / clipped form of the internal prompt — fallback when no summary was set. */

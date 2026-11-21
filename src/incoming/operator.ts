@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { statSync } from 'node:fs';
+import type { Trigger } from '../types/trigger.js';
 import { createInput, deleteInput, type InputServices } from './inputs.js';
 import { INCOMING_ROUTE } from './receiver.js';
-import { inputFilterSchema, type InputAuth, type PointerCheck } from './types.js';
+import { inputFilterSchema, type Input, type InputAuth, type PointerCheck } from './types.js';
+
+export interface OperatorServices extends InputServices {
+  loadTrigger(id: string): Promise<Trigger | null>;
+}
 
 export const USAGE = `archie incoming — manage inputs that receive webhooks
 
@@ -12,10 +17,15 @@ Usage:
   npm run incoming -- pause <input-id>
   npm run incoming -- resume <input-id>
   npm run incoming -- delete <input-id>
+  npm run incoming -- link <input-id> <trigger-id>
+  npm run incoming -- unlink <input-id> <trigger-id>
 
   --auth    signed (default): Standard Webhooks signature. bearer: Authorization header.
   --filter  JSON list of conditions an event must meet, for example
             '[{"pointer":"/type","op":"equals","value":"meeting.ended"}]'
+  link      Lets a trigger with a condition for the input receive its events.
+            A trigger receives nothing until it is linked.
+  unlink    Stops the trigger receiving the input's events.
 
 Environment:
   ARCHIE_SECRETS_KEY       32-byte master key (base64)                  (required)
@@ -27,7 +37,15 @@ const AUTH_BY_FLAG = new Map<string, InputAuth>([
   ['signed', 'standard_webhooks'],
   ['bearer', 'bearer'],
 ]);
-const COMMANDS: readonly string[] = ['create', 'list', 'pause', 'resume', 'delete'];
+const COMMANDS: readonly string[] = [
+  'create',
+  'list',
+  'pause',
+  'resume',
+  'delete',
+  'link',
+  'unlink',
+];
 
 export function isIncomingCommand(name: string | undefined): boolean {
   return name !== undefined && COMMANDS.includes(name);
@@ -55,7 +73,7 @@ export function assertNotRootBesideDaemon(
 /** Errors thrown here carry a message written for the operator. */
 export async function runIncomingCommand(
   args: readonly string[],
-  services: InputServices,
+  services: OperatorServices,
   print: (line: string) => void,
 ): Promise<void> {
   const [command, ...rest] = args;
@@ -68,6 +86,10 @@ export async function runIncomingCommand(
     case 'resume':
     case 'delete':
       return changeState(command, rest, services, print);
+    case 'link':
+      return link(rest, services, print);
+    case 'unlink':
+      return unlink(rest, services, print);
     default:
       throw new Error(`Unknown command: ${command ?? '(none)'}\n\n${USAGE}`);
   }
@@ -136,7 +158,68 @@ function list(services: InputServices, print: (line: string) => void): void {
         String(pendingHandoffs),
       ]),
     );
+    if (input.routines.length > 0) print(`  linked: ${input.routines.join(', ')}`);
   }
+}
+
+const STATUS_NOTE: Record<Trigger['status'], string> = {
+  enabled: '',
+  pending: ' — it receives events once it is approved',
+  paused: ' — it receives events once it is resumed',
+};
+
+async function link(
+  args: readonly string[],
+  services: OperatorServices,
+  print: (line: string) => void,
+): Promise<void> {
+  const [inputId, triggerId] = args;
+  if (!inputId || !triggerId || args.length !== 2)
+    throw new Error('Usage: incoming link <input-id> <trigger-id>');
+  const input = liveInput(services, inputId);
+  const trigger = await services.loadTrigger(triggerId);
+  if (!trigger) throw new Error(`No trigger ${triggerId}`);
+  if (!trigger.conditions.some((c) => c.type === 'incoming_event' && c.input_id === inputId))
+    throw new Error(
+      `Trigger ${triggerId} has no condition for input ${inputId}, so a link would deliver nothing`,
+    );
+
+  if (input.routines.includes(triggerId)) {
+    print(`Trigger ${triggerId} is already linked to input ${inputId}.`);
+  } else {
+    services.store.linkRoutine(inputId, triggerId);
+    print(`Linked trigger ${triggerId} to input ${inputId}.`);
+  }
+  const { binding } = trigger;
+  print(
+    binding.type === 'channel'
+      ? `Delivers to: #${binding.channel_name} (${binding.channel_id})`
+      : `Delivers to: a DM with ${binding.user_id} (${binding.channel_id})`,
+  );
+  print(`Does:        ${trigger.summary?.trim() || '(no summary)'}`);
+  print(`Status:      ${trigger.status}${STATUS_NOTE[trigger.status]}`);
+}
+
+function unlink(
+  args: readonly string[],
+  services: OperatorServices,
+  print: (line: string) => void,
+): void {
+  const [inputId, triggerId] = args;
+  if (!inputId || !triggerId || args.length !== 2)
+    throw new Error('Usage: incoming unlink <input-id> <trigger-id>');
+  const input = liveInput(services, inputId);
+  if (!input.routines.includes(triggerId))
+    throw new Error(`Trigger ${triggerId} is not linked to input ${inputId}`);
+  services.store.unlinkRoutine(inputId, triggerId);
+  print(`Unlinked trigger ${triggerId} from input ${inputId}.`);
+}
+
+function liveInput(services: InputServices, id: string): Input {
+  const input = services.store.input(id);
+  if (!input) throw new Error(`No input ${id}`);
+  if (input.state === 'deleted') throw new Error(`Input ${id} was deleted`);
+  return input;
 }
 
 async function changeState(

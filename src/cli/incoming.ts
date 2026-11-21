@@ -11,6 +11,7 @@ import {
 } from '../incoming/operator.js';
 import { incomingEventsEnabled, incomingSecrets, openIncomingStore } from '../incoming/runtime.js';
 import { validateMasterKey } from '../system/secrets-vault.js';
+import { loadTrigger } from '../system/trigger-store.js';
 import { SECRETS_DIR, WORKDIR } from '../system/workdir.js';
 
 async function main(): Promise<void> {
@@ -28,7 +29,7 @@ async function main(): Promise<void> {
 
   const store = openIncomingStore();
   try {
-    await runIncomingCommand(args, { store, secrets: incomingSecrets() }, (line) => {
+    await runIncomingCommand(args, { store, secrets: incomingSecrets(), loadTrigger }, (line) => {
       process.stdout.write(`${line}\n`);
     });
   } finally {

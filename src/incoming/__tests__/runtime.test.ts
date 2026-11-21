@@ -71,7 +71,15 @@ async function newInput(): Promise<{ id: string; secret: string }> {
 function addWaitingHandoff(): void {
   const store = openIncomingStore();
   store.insertInput(
-    { id: 'inp-1', state: 'enabled', auth: 'bearer', secretRefs: [], filter: [], revision: 1 },
+    {
+      id: 'inp-1',
+      state: 'enabled',
+      auth: 'bearer',
+      secretRefs: [],
+      filter: [],
+      routines: [],
+      revision: 1,
+    },
     Date.now(),
   );
   store.receive(
