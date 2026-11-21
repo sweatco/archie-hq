@@ -12,11 +12,17 @@
 
 import { Cron } from 'croner';
 import type { Task } from '../tasks/task.js';
-import { appendSlackMessage } from '../tasks/persistence.js';
+import { appendSlackMessage, generateTaskId } from '../tasks/persistence.js';
 import type { SlackThread } from '../types/task.js';
 import type { Trigger, TriggerBinding, TriggerCondition } from '../types/trigger.js';
 import type { PointerCheck } from '../incoming/types.js';
-import { listTriggers, saveTrigger, deleteTrigger, countActiveTriggers } from './trigger-store.js';
+import {
+  listTriggers,
+  saveTrigger,
+  deleteTrigger,
+  countActiveTriggers,
+  updateLiveTrigger,
+} from './trigger-store.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { emitEvent } from './event-bus.js';
 import { logger } from './logger.js';
@@ -60,6 +66,11 @@ function withinDailyCap(): boolean {
   if (fireCount >= DAILY_FIRE_CAP) return false;
   fireCount++;
   return true;
+}
+
+/** Run slots taken today, across schedule, message and event fires. */
+export function dailyFireCount(): number {
+  return new Date().toISOString().slice(0, 10) === fireDay ? fireCount : 0;
 }
 
 // ---- Cron helpers (exported for tools + tests) ----
@@ -398,22 +409,12 @@ export async function fireTrigger(
   // Message-context fires skip this — we just received a message there, so it's
   // live — and DMs can't be deleted. Checked BEFORE the daily cap so a bail here
   // doesn't consume a cap slot (L2).
-  if (context.kind !== 'message' && trigger.binding.type === 'channel') {
-    if (!(await isChannelReachable(trigger.binding.channel_id))) {
-      logger.warn(
-        'trigger-scheduler',
-        `Trigger ${trigger.id} bound channel ${trigger.binding.channel_id} unreachable — pausing`,
-      );
+  if (context.kind !== 'message') {
+    const reachable = await boundChannelReachable(trigger, async () => {
       trigger.status = 'paused';
       await saveTrigger(trigger);
-      deindexTrigger(trigger.id);
-      emitEvent('trigger:paused', trigger.id, { reason: 'bound channel unreachable' });
-      await notifyCreator(
-        trigger,
-        `⚠️ A trigger you set up was paused — its channel (#${trigger.binding.channel_name}) is gone or archived. Recreate it elsewhere if you still need it.`,
-      );
-      return;
-    }
+    });
+    if (!reachable) return;
   }
 
   if (!withinDailyCap()) {
@@ -482,7 +483,7 @@ export async function fireTrigger(
       channel_id: trigger.binding.channel_id,
       channel_name: trigger.binding.channel_name,
     };
-    delivery = `You have no thread yet. Your first post_to_user opens this task's own thread in ${formatConversationLabel(trigger.binding.channel_name)}, and every message after that goes into that same thread. Until then you cannot post anywhere else.`;
+    delivery = homedDelivery(trigger.binding);
   }
   await task.save(true);
 
@@ -510,16 +511,7 @@ export async function fireTrigger(
   // The `.catch` is deliberate rather than defensive: a canvas or pins scan is context, and a failed scan
   // must never cost the fire itself — a scheduled run that silently does not happen is far worse than one
   // that runs with a stale brief.
-  if (scanChannelId) {
-    await Promise.all([ensureChannelCanvas(scanChannelId), ensureChannelPins(scanChannelId)]).catch(
-      (err) =>
-        logger.warn(
-          'trigger-scheduler',
-          `Failed to refresh standing context for home channel ${scanChannelId} on trigger ${trigger.id}`,
-          err,
-        ),
-    );
-  }
+  if (scanChannelId) await refreshHomeContext(scanChannelId, trigger.id);
 
   logger.system(`Trigger ${trigger.id} fired (${context.kind}) → task ${task.taskId}`);
   await task.sendMessage(AGENT_PROMPTS.triggered(seed, reason));
@@ -527,6 +519,128 @@ export async function fireTrigger(
   trigger.last_fired_at = new Date().toISOString();
   await saveTrigger(trigger);
   emitEvent('trigger:fired', task.taskId, { trigger_id: trigger.id });
+}
+
+/** True for a DM or a live channel. A channel that is gone pauses the trigger through `pause` and tells its creator. */
+async function boundChannelReachable(
+  trigger: Trigger,
+  pause: () => Promise<unknown>,
+): Promise<boolean> {
+  if (trigger.binding.type !== 'channel') return true;
+  if (await isChannelReachable(trigger.binding.channel_id)) return true;
+  logger.warn(
+    'trigger-scheduler',
+    `Trigger ${trigger.id} bound channel ${trigger.binding.channel_id} unreachable — pausing`,
+  );
+  await pause();
+  deindexTrigger(trigger.id);
+  emitEvent('trigger:paused', trigger.id, { reason: 'bound channel unreachable' });
+  await notifyCreator(
+    trigger,
+    `⚠️ A trigger you set up was paused — its channel (#${trigger.binding.channel_name}) is gone or archived. Recreate it elsewhere if you still need it.`,
+  );
+  return false;
+}
+
+function homedDelivery(binding: TriggerBinding): string {
+  return `You have no thread yet. Your first post_to_user opens this task's own thread in ${formatConversationLabel(binding.channel_name)}, and every message after that goes into that same thread. Until then you cannot post anywhere else.`;
+}
+
+async function refreshHomeContext(channelId: string, triggerId: string): Promise<void> {
+  await Promise.all([ensureChannelCanvas(channelId), ensureChannelPins(channelId)]).catch((err) =>
+    logger.warn(
+      'trigger-scheduler',
+      `Failed to refresh standing context for home channel ${channelId} on trigger ${triggerId}`,
+      err,
+    ),
+  );
+}
+
+// ---- Event firing ----
+
+type TriggeredTask = Pick<Task, 'taskId' | 'prepareTriggerDelivery' | 'startTriggered'>;
+
+/** What one incoming event's fire takes from its handoff and from Task. */
+export interface EventFire {
+  /** The handoff that owns this fire. */
+  origin: string;
+  inputId: string;
+  event: Uint8Array;
+  /** The Task an earlier attempt reserved. Its run slot is already taken. */
+  reservedTaskId?: string;
+  /** Makes the Task id durable. Throws when the handoff's lease was lost. */
+  reserve(taskId: string): void;
+  /** Asked again just before the Task starts: the reason to stop, or null. */
+  whyStop(): Promise<string | null>;
+  prepare(input: Parameters<typeof Task.prepareTriggered>[0]): Promise<TriggeredTask>;
+}
+
+export type FireResult =
+  { status: 'fired'; taskId: string } | { status: 'skipped'; reason: string };
+
+const skipped = (reason: string): FireResult => ({ status: 'skipped', reason });
+
+/**
+ * Fire a routine for one incoming event: reserve a Task, prepare it, then start it.
+ * `routine` carries the prompt and binding as they were at receipt. Each step can repeat, because the
+ * reservation names the Task from the first attempt on. A skip leaves any prepared Task to the caller.
+ */
+export async function fireEvent(routine: Trigger, fire: EventFire): Promise<FireResult> {
+  if (!triggersEnabled()) return skipped('triggers_disabled');
+  const reachable = await boundChannelReachable(routine, () =>
+    updateLiveTrigger(routine.id, (stored) => {
+      stored.status = 'paused';
+    }),
+  );
+  if (!reachable) return skipped('destination_unreachable');
+
+  let taskId = fire.reservedTaskId;
+  if (!taskId) {
+    if (!withinDailyCap()) {
+      logger.warn(
+        'trigger-scheduler',
+        `Daily fire cap (${DAILY_FIRE_CAP}) reached — skipping an event for trigger ${routine.id}`,
+      );
+      return skipped('daily_cap');
+    }
+    taskId = generateTaskId();
+    try {
+      fire.reserve(taskId);
+    } catch (error) {
+      // The slot belongs to the reservation, so a reservation that was not saved frees it.
+      fireCount--;
+      throw error;
+    }
+  }
+
+  const task = await fire.prepare({
+    taskId,
+    origin: fire.origin,
+    triggerId: routine.id,
+    inputId: fire.inputId,
+    binding: routine.binding,
+    event: fire.event,
+    brief: (eventPath) =>
+      AGENT_PROMPTS.triggered(
+        `${routine.action.prompt}\n\n${AGENT_PROMPTS.incomingEvent(eventPath)}\n\n${homedDelivery(routine.binding)}`,
+        'an incoming event',
+      ),
+  });
+  await task.prepareTriggerDelivery(routine.binding);
+  if (routine.binding.type === 'channel')
+    await refreshHomeContext(routine.binding.channel_id, routine.id);
+
+  const stop = await fire.whyStop();
+  if (stop) return skipped(stop);
+
+  if (await task.startTriggered()) {
+    logger.system(`Trigger ${routine.id} fired (event) → task ${taskId}`);
+    await updateLiveTrigger(routine.id, (stored) => {
+      stored.last_fired_at = new Date().toISOString();
+    });
+    emitEvent('trigger:fired', taskId, { trigger_id: routine.id });
+  }
+  return { status: 'fired', taskId };
 }
 
 // ---- Announcements (config changes only — never firing) ----

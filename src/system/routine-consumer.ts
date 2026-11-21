@@ -1,10 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-/** Event routines: triggers with `incoming_event` conditions, seen from the incoming events inbox. */
+/** Event routines: triggers with `incoming_event` conditions, as the consumer the incoming events inbox hands events to. */
 import { z } from 'zod';
+import { routineMayUseInput } from '../incoming/access.js';
 import { passesFilter } from '../incoming/filter.js';
-import type { ConsumerMatch, Input } from '../incoming/types.js';
+import type {
+  ConsumerMatch,
+  HandleResult,
+  HandoffWork,
+  InboxView,
+  IncomingConsumer,
+  Input,
+} from '../incoming/types.js';
+import { loadMetadata } from '../tasks/persistence.js';
+import { Task } from '../tasks/task.js';
 import type { Trigger, TriggerBinding } from '../types/trigger.js';
-import { getEnabledTrigger, triggersEnabled } from './trigger-scheduler.js';
+import { logger } from './logger.js';
+import { fireEvent, getEnabledTrigger, triggersEnabled } from './trigger-scheduler.js';
+import { loadTrigger } from './trigger-store.js';
 
 export const ROUTINE_CONSUMER_KIND = 'routine';
 
@@ -27,6 +39,18 @@ export const routineSnapshotSchema = z.object({
   binding: bindingSchema,
 });
 export type RoutineSnapshot = z.infer<typeof routineSnapshotSchema>;
+
+/** Exists once a run slot was taken; names the Task every later attempt continues. */
+export const routineReservationSchema = z.object({ task_id: z.string() });
+
+const ACCEPTED: HandleResult = { state: 'accepted' };
+
+export const routineConsumer: IncomingConsumer = {
+  kind: ROUTINE_CONSUMER_KIND,
+  match: matchRoutines,
+  handle: startRoutine,
+  reconcile: discardAbandoned,
+};
 
 /** One snapshot per routine that is linked, enabled, names this input and passes its own filter. */
 export function matchRoutines(input: Input, event: Record<string, unknown>): ConsumerMatch[] {
@@ -52,4 +76,83 @@ function listensTo(trigger: Trigger, inputId: string, event: Record<string, unkn
       condition.input_id === inputId &&
       passesFilter(condition.filter ?? [], event),
   );
+}
+
+/** Starts one Task for the handoff, however often it is retried. A skip leaves no prepared Task behind. */
+async function startRoutine(work: HandoffWork): Promise<HandleResult> {
+  const { handoff, inbox } = work;
+  const snapshot = routineSnapshotSchema.parse(JSON.parse(handoff.snapshot));
+  let taskId = handoff.reservation
+    ? routineReservationSchema.parse(JSON.parse(handoff.reservation)).task_id
+    : undefined;
+  if (taskId && (await startedFor(taskId, handoff.id))) return ACCEPTED;
+
+  const skip = async (reason: string): Promise<HandleResult> => {
+    if (taskId) await Task.discardPrepared(taskId, handoff.id);
+    return { state: 'skipped', reason };
+  };
+
+  const live = await liveRoutine(inbox, snapshot);
+  if ('stop' in live) return skip(live.stop);
+
+  const fired = await fireEvent(
+    { ...live.routine, action: { prompt: snapshot.prompt }, binding: snapshot.binding },
+    {
+      origin: handoff.id,
+      inputId: snapshot.input_id,
+      event: work.body,
+      reservedTaskId: taskId,
+      reserve: (reserved) => {
+        work.saveReservation(JSON.stringify({ task_id: reserved }));
+        taskId = reserved;
+      },
+      whyStop: async () => {
+        const again = await liveRoutine(inbox, snapshot);
+        return 'stop' in again ? again.stop : null;
+      },
+      prepare: (input) => Task.prepareTriggered(input),
+    },
+  );
+  return fired.status === 'fired' ? ACCEPTED : skip(fired.reason);
+}
+
+async function startedFor(taskId: string, origin: string): Promise<boolean> {
+  const start = (await loadMetadata(taskId))?.triggered_start;
+  if (start && start.origin !== origin)
+    throw new Error(`Task ${taskId} was started for another handoff`);
+  return start?.phase === 'ready';
+}
+
+/** The routine as it runs now, or why unstarted work for it stops. */
+async function liveRoutine(
+  inbox: InboxView,
+  snapshot: RoutineSnapshot,
+): Promise<{ routine: Trigger } | { stop: string }> {
+  const input = inbox.input(snapshot.input_id);
+  if (!input || input.state === 'deleted') return { stop: 'input_deleted' };
+  if (input.state === 'paused') return { stop: 'input_paused' };
+  if (!routineMayUseInput(input, snapshot.trigger_id)) return { stop: 'routine_unlinked' };
+
+  const routine = getEnabledTrigger(snapshot.trigger_id);
+  // The index holds enabled triggers only, so the record tells a paused routine from a deleted one.
+  if (!routine)
+    return {
+      stop: (await loadTrigger(snapshot.trigger_id)) ? 'routine_paused' : 'routine_deleted',
+    };
+  const namesInput = routine.conditions.some(
+    (condition) => condition.type === 'incoming_event' && condition.input_id === snapshot.input_id,
+  );
+  return namesInput ? { routine } : { stop: 'routine_changed' };
+}
+
+/** The inbox ends some handoffs without calling `handle`; a Task one of them prepared is removed here. */
+async function discardAbandoned(inbox: InboxView): Promise<void> {
+  for (const { handoffId, reservation } of inbox.abandonedReservations(ROUTINE_CONSUMER_KIND)) {
+    const reserved = routineReservationSchema.safeParse(JSON.parse(reservation));
+    if (!reserved.success) continue;
+    const { task_id: taskId } = reserved.data;
+    const prepared = (await loadMetadata(taskId))?.status === 'preparing';
+    if ((await Task.discardPrepared(taskId, handoffId)) && prepared)
+      logger.system(`Discarded task ${taskId}: its handoff ${handoffId} ended before it started`);
+  }
 }

@@ -449,6 +449,13 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
         `<approved_task_brief untrusted="true">${start.brief.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').slice(0, 8000)}</approved_task_brief>`,
       );
     }
+    if (metadata.triggered_start?.phase === 'ready') {
+      // A crash between the start and its first wake leaves only the recovery prompt, so the instruction rides here too.
+      contextLines.push(
+        `This task was started by an incoming event for trigger ${metadata.triggered_by}. Its instruction:`,
+        `<triggered_task_brief>${metadata.triggered_start.brief.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').slice(0, 8000)}</triggered_task_brief>`,
+      );
+    }
     if (channelEntries.length === 0 && metadata.home_channel) {
       // A trigger-fired task has no thread yet but does have a home channel, so telling it there is nowhere to reply would be exactly backwards: its first user-facing message is what opens the thread this task then lives in.
       contextLines.push(

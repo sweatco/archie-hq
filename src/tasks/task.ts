@@ -5,7 +5,7 @@
  * Created via Task.create(thread) or Task.get(taskId).
  */
 
-import { mkdir, writeFile } from 'fs/promises';
+import { mkdir, rm, writeFile } from 'fs/promises';
 import type {
   SlackAuthor,
   SlackChannel,
@@ -72,7 +72,9 @@ import {
   getMemoryPath,
   getKnowledgeLogPath,
   getTaskClonePath,
+  getTaskPath,
   persistTaskMetadata,
+  taskExistsOnDisk,
   reconcilePersistedMemoryMetadata,
 } from './persistence.js';
 import { getIsShuttingDown } from '../system/shutdown.js';
@@ -151,6 +153,8 @@ const cardLock = createKeyedLock();
  * onto it, so exactly one set of agents ever spawns.
  */
 const activationLock = createKeyedLock();
+
+const INCOMING_EVENT_FILE = 'incoming-event.json';
 
 /**
  * Per-task serialization for opening a task's own thread in its home channel.
@@ -337,8 +341,73 @@ export class Task {
             brief,
           },
         },
-        input.evidence,
+        input.evidence === undefined
+          ? undefined
+          : { file: 'proposal-evidence.md', content: input.evidence },
       );
+    });
+  }
+
+  /**
+   * Puts a Task for one incoming event on disk without starting it: the event as a file, then metadata homed in the routine's conversation.
+   * The same origin again returns the same Task, so a retried handoff prepares it once.
+   */
+  static async prepareTriggered(input: {
+    taskId: string;
+    /** The handoff that owns this start. */
+    origin: string;
+    triggerId: string;
+    inputId: string;
+    binding: TriggerBinding;
+    /** Receives the path of the event file and returns the first instruction. */
+    brief: (eventPath: string) => string;
+    event: Uint8Array;
+  }): Promise<Task> {
+    return activationLock(input.taskId, async () => {
+      const existing = await loadMetadata(input.taskId);
+      if (existing) {
+        if (existing.triggered_start?.origin !== input.origin)
+          throw new Error('Prepared task identity mismatch');
+        return this.get(input.taskId);
+      }
+      return this.createInternal(
+        {
+          task_id: input.taskId,
+          status: 'preparing',
+          channels: {},
+          default_channel: null,
+          home_channel: {
+            channel_id: input.binding.channel_id,
+            channel_name: input.binding.channel_name,
+          },
+          memory_destination: { channel_id: input.binding.channel_id },
+          triggered_by: input.triggerId,
+          triggered_start: {
+            origin: input.origin,
+            input_id: input.inputId,
+            phase: 'prepared',
+            brief: input.brief(join(getSharedPath(input.taskId), INCOMING_EVENT_FILE)),
+          },
+        },
+        { file: INCOMING_EVENT_FILE, content: input.event },
+      );
+    });
+  }
+
+  /**
+   * Removes a Task that was prepared for `origin` and never started, with the event it holds. Returns whether the folder is gone.
+   * A started Task, and one prepared for another origin, stay.
+   */
+  static async discardPrepared(taskId: string, origin: string): Promise<boolean> {
+    return activationLock(taskId, async () => {
+      const persisted = await loadMetadata(taskId);
+      // A folder without metadata is a preparation interrupted after its event file was written.
+      const neverStarted = persisted
+        ? persisted.status === 'preparing' && persisted.triggered_start?.origin === origin
+        : !taskExistsOnDisk(taskId);
+      if (!neverStarted) return false;
+      await rm(getTaskPath(taskId), { recursive: true, force: true });
+      return true;
     });
   }
 
@@ -349,10 +418,13 @@ export class Task {
       | 'status'
       | 'channels'
       | 'default_channel'
+      | 'home_channel'
       | 'memory_destination'
       | 'approved_start'
+      | 'triggered_by'
+      | 'triggered_start'
     >,
-    evidence?: string,
+    evidence?: { file: string; content: string | Uint8Array },
   ): Promise<Task> {
     await syncPlugins();
     await ensureSessionsDir();
@@ -382,7 +454,7 @@ export class Task {
     };
 
     // Publish preparation only after its complete evidence is on disk; retries can overwrite an interrupted write.
-    if (evidence !== undefined) await writeFile(join(sharedPath, 'proposal-evidence.md'), evidence);
+    if (evidence !== undefined) await writeFile(join(sharedPath, evidence.file), evidence.content);
     await persistTaskMetadata(taskId, metadata);
     await writeFile(getKnowledgeLogPath(taskId), '');
 
@@ -406,13 +478,31 @@ export class Task {
       )
         throw new Error('Task preparation incomplete');
       this.metadata.approved_start = { ...persisted.approved_start, phase: 'ready' };
-      this.metadata.status = 'in_progress';
-      // This durable transition makes startup recovery safe even if the process
-      // exits before deliver enqueues the first message. Spawn also carries the brief.
-      await persistTaskMetadata(this.taskId, this.metadata);
-      await this.deliver(persisted.approved_start.brief);
+      await this.startWith(persisted.approved_start.brief);
       return true;
     });
+  }
+
+  /** Starts a Task prepared for an incoming event. Returns false when it had already started. */
+  async startTriggered(): Promise<boolean> {
+    return activationLock(this.taskId, async () => {
+      const persisted = await loadMetadata(this.taskId);
+      const start = persisted?.triggered_start;
+      if (!start) throw new Error('Task has no prepared triggered start');
+      if (start.phase === 'ready') return false;
+      if (persisted.status !== 'preparing') throw new Error('Task preparation incomplete');
+      this.metadata.triggered_start = { ...start, phase: 'ready' };
+      await this.startWith(start.brief);
+      return true;
+    });
+  }
+
+  private async startWith(brief: string): Promise<void> {
+    this.metadata.status = 'in_progress';
+    // This durable transition makes startup recovery safe even if the process
+    // exits before deliver enqueues the first message. Spawn also carries the brief.
+    await persistTaskMetadata(this.taskId, this.metadata);
+    await this.deliver(brief);
   }
 
   /**
