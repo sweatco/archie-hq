@@ -1,0 +1,5 @@
+{
+  "name": "orders",
+  "version": "1.0.0",
+  "description": "Eval fixture — a stub order system for a fictional shop, with canned data that behaviour-eval cases rely on. Changing its tools or data changes eval baselines; tools/e2e/orders-stub.test.ts pins the contract. Harmless to leave installed."
+}

@@ -140,6 +140,8 @@ The `<key>` must match the `repoKey` declared by the plugin's repo-track agent.
 
 If `ARCHIE_PLUGINS` is set to a git URL, the app auto-clones the plugins repo on startup and refreshes it from `origin` periodically. If `ARCHIE_PLUGINS` is unset, `workdir/plugins` must already exist (e.g. via the symlink approach above).
 
+**Eval instances** keep their state apart. `npx tsx tools/e2e/boot.ts --profile eval` creates `eval-instance/` (an empty workdir, claude-data and secrets; the model key and port go to compose through the environment, never to disk) and mounts `examples/plugins` read-only as the plugins directory; it never uses `workdir/`, `claude-data/`, `secrets/` or the Slack and GitHub settings in `.env`. `teardown.ts --profile eval` removes its containers and their anonymous volume, then deletes it. See the [archie-e2e skill](../../.claude/skills/archie-e2e/SKILL.md#5-eval-profile--a-hermetic-instance-for-behaviour-evals) for the contract and its limits.
+
 ## Environment Variables
 
 ```bash
@@ -298,6 +300,7 @@ archie-hq/
 │   └── utils/            # Utilities
 ├── prompts/              # Agent system prompts
 ├── secrets/              # Local secrets dir (GitHub App key, OAuth vault)
+├── eval-instance/        # Eval-profile instance state (gitignored; deleted by teardown --profile eval)
 ├── workdir/              # Runtime state (gitignored)
 │   ├── plugins/          # Symlink to archie-plugins (or auto-cloned via ARCHIE_PLUGINS)
 │   ├── plugins-data/     # Persistent per-plugin data

@@ -1,0 +1,29 @@
+# Eval profile overlay for docker-compose.yml, applied by `npx tsx tools/e2e/boot.ts --profile eval`.
+# See tools/e2e/eval-profile.ts for the contract and the check that runs on the resolved config.
+#
+# Relative paths resolve against the project directory (the repo root, where docker-compose.yml
+# lives), not this file's directory.
+#
+# `!reset` and `!override` drop or replace the base lists instead of merging into them: the
+# base loads the root .env and mounts the checkout's workdir, claude-data, secrets and the
+# host SSH agent, none of which an eval instance may see.
+
+services:
+  archie:
+    env_file: !reset []
+    environment:
+      # No value: compose takes it from boot's process environment, so the key is never on
+      # disk. Unset during teardown, which needs no key.
+      ANTHROPIC_API_KEY:
+      # The base points this at the host agent socket, which the volumes below no longer mount.
+      SSH_AUTH_SOCK: ''
+    volumes: !override
+      - ./eval-instance/workdir:/workdir
+      - ./examples/plugins:/workdir/plugins:ro
+      - ./src:/app/src
+      - ./prompts:/app/prompts
+      - ./core-plugin:/app/core-plugin
+      - ./eval-instance/secrets:/app/secrets
+      - ./eval-instance/claude-data:/home/archie/.claude
+      - ./eval-instance/claude-data/.claude.json:/home/archie/.claude.json
+      - /app/node_modules

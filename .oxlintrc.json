@@ -32,6 +32,7 @@
     "openspec/",
     "docs/",
     "e2e-evidence/",
+    "eval-instance/",
     "qa-evidence/",
     "tmp/",
     "temp/",

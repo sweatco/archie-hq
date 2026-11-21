@@ -33,4 +33,8 @@ regexes = [
   '''AKIAIOSFODNN7EXAMPLE''',
   '''sk-abcdefghijklmnopqrstuv''',
   '''sk-abc123def456ghi789jkl012''',
+  # The environment variable the e2e eval profile reads the model key from
+  # (tools/e2e/eval-profile.ts): a variable name, not a value. Anchored so it
+  # cannot cover anything longer.
+  '''^E2E_ANTHROPIC_API_KEY$''',
 ]
