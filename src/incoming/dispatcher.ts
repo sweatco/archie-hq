@@ -1,10 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-/**
- * Incoming events dispatcher — hands committed deliveries to their consumers.
- *
- * Each handoff is worked on under a lease. A second process on the same file, or this one after
- * a restart, takes over a handoff whose holder stopped; the earlier holder can then record nothing.
- */
+/** Incoming events dispatcher: hands committed deliveries to consumers, each under a lease another process can take over. */
 import { logger } from '../system/logger.js';
 import type { ClaimedHandoff, IncomingStore } from './store.js';
 import type { IncomingConsumer } from './types.js';
@@ -14,23 +9,20 @@ const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 
-/** Starting defaults; see the incoming events plan. */
 export interface DispatchPolicy {
-  /** How long one attempt may take. A handler still running then counts as a failed attempt. */
+  /** How long one attempt may take before it counts as failed. */
   leaseMs: number;
-  /** The wait before each retry. A handoff fails after one more attempt than there are entries. */
+  /** The wait before each retry; the attempt after the last entry is final. */
   retryDelaysMs: readonly number[];
   pollMs: number;
   sweepEveryMs: number;
-  /** A handoff still unfinished this long after its delivery is failed. */
   handoffMaxAgeMs: number;
-  /** Settled receipts, and with them duplicate detection for their keys, are kept this long. */
+  /** Also the window in which a repeated event key is recognised. */
   receiptRetentionMs: number;
 }
 
 export const DEFAULT_DISPATCH_POLICY: DispatchPolicy = {
   leaseMs: 5 * MINUTE,
-  // Five attempts; the waits between them add up to 51 minutes.
   retryDelaysMs: [MINUTE, 5 * MINUTE, 15 * MINUTE, 30 * MINUTE],
   pollMs: 1000,
   sweepEveryMs: HOUR,
@@ -54,7 +46,7 @@ export class IncomingDispatcher {
   start(): void {
     if (this.timer || this.stopped) return;
     this.timer = setInterval(() => {
-      // A pass in flight already has a handler for its failure; another would report it twice.
+      // A pass in flight already reports its own failure.
       if (this.delivering) return;
       this.runOnce().catch((error: unknown) => {
         logger.error('incoming', 'Incoming dispatcher pass failed', error);
@@ -63,10 +55,7 @@ export class IncomingDispatcher {
     this.timer.unref();
   }
 
-  /**
-   * Stops polling for good. Resolves when the attempt in flight, if any, has ended; a caller
-   * that closes the store without waiting leaves that handoff to its lease.
-   */
+  /** Final. Resolves when the attempt in flight has ended. */
   async stop(): Promise<void> {
     this.stopped = true;
     clearInterval(this.timer);
@@ -74,7 +63,7 @@ export class IncomingDispatcher {
     await this.delivering?.catch(() => undefined);
   }
 
-  /** Delivers every handoff that is due now, sweeping when a sweep is due. Calls share one pass. */
+  /** Delivers every due handoff; concurrent calls share one pass. */
   runOnce(): Promise<void> {
     this.delivering ??= this.deliverDue().finally(() => {
       this.delivering = undefined;
@@ -88,7 +77,7 @@ export class IncomingDispatcher {
       const claimed = this.store.claimHandoff(this.clock(), this.policy.leaseMs);
       if (!claimed) return;
       await this.deliver(claimed);
-      // An attempt can end without any I/O; without this a backlog would starve the HTTP receiver.
+      // Yields to the event loop so the HTTP receiver keeps answering during a backlog.
       await new Promise((resolve) => setImmediate(resolve));
     }
   }
@@ -96,7 +85,7 @@ export class IncomingDispatcher {
   private sweepIfDue(): void {
     const now = this.clock();
     if (now - this.sweptAt < this.policy.sweepEveryMs) return;
-    // Marked before it runs, so a sweep that keeps failing is not retried on every pass.
+    // Marked before it runs, so a failing sweep waits for the next interval.
     this.sweptAt = now;
     try {
       const { failed, purged } = this.store.sweep(
@@ -107,7 +96,7 @@ export class IncomingDispatcher {
       if (failed + purged > 0)
         logger.system(`Incoming sweep: failed ${failed} stale handoffs, purged ${purged} receipts`);
     } catch (error) {
-      // Housekeeping must not hold up deliveries.
+      // Deliveries continue when housekeeping fails.
       logger.error('incoming', 'Incoming sweep failed', error);
     }
   }
@@ -145,7 +134,7 @@ export class IncomingDispatcher {
   }
 
   private async attempt({ handoff, token, body }: ClaimedHandoff): Promise<'accepted' | 'skipped'> {
-    // A crash during the last allowed attempt leaves a pending handoff with no attempt left.
+    // A crash during the last allowed attempt leaves the handoff pending with its attempts used up.
     if (handoff.attempts > this.policy.retryDelaysMs.length + 1)
       throw new Error('Interrupted during its last attempt');
     const consumer = this.consumers.find((candidate) => candidate.kind === handoff.consumerKind);
@@ -163,12 +152,12 @@ export class IncomingDispatcher {
   }
 }
 
-/** Rejects when `work` is still running after `ms`. The work itself is not interrupted. */
+/** Rejects when `work` is still running after `ms`; the work itself keeps running. */
 function endsWithin<T>(ms: number, work: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expired = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => reject(new Error(`Handler was still running after ${ms} ms`)), ms);
-    // A handler that hangs must not hold the process open at shutdown.
+    // Lets the process exit at shutdown while a handler hangs.
     timer.unref();
   });
   return Promise.race([work, expired]).finally(() => clearTimeout(timer));

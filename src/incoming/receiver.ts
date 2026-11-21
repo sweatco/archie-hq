@@ -1,10 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-/**
- * Incoming events receiver — `POST /webhooks/incoming/:inputId`.
- *
- * Authenticates a generic JSON webhook and commits its receipt before replying. No Task,
- * trigger or model code runs here; matching consumers are handed off from the inbox later.
- */
+/** Incoming events receiver: authenticates a JSON webhook and commits its receipt before replying. */
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import type { Application, Request, Response } from 'express';
@@ -21,7 +16,6 @@ const require = createRequire(import.meta.url);
 const express = require('express') as typeof import('express');
 
 export const INCOMING_ROUTE = '/webhooks/incoming/:inputId';
-/** Starting default; see the incoming events plan. */
 export const MAX_BODY_BYTES = 1024 * 1024;
 const GENERIC_BINDING = 'generic';
 
@@ -55,7 +49,7 @@ export function mountIncomingReceiver(app: Application, services: ReceiverServic
     try {
       reply = await receiveDelivery(req, res, services, parseRawJson);
     } catch (error) {
-      // Reached only by storage, vault and consumer failures, whose messages do not quote the body.
+      // Storage, vault and consumer failures arrive here; their messages are safe to log.
       logger.error('incoming', 'Delivery could not be recorded', error);
       reply = rejected(503, 'unavailable');
     }
@@ -103,7 +97,7 @@ async function receiveDelivery(
   // Shutdown may have begun while the body was still arriving.
   if (getIsShuttingDown()) return rejected(503, 'shutting_down');
 
-  // Nothing is awaited from here to the commit, so the matches cannot go stale in between.
+  // Matching and the commit run in the same tick, so the matches are current when recorded.
   const result = services.store.receive(
     {
       inputId: input.id,
@@ -136,7 +130,7 @@ function readBody(parseRawJson: RawBodyParser, req: Request, res: Response): Pro
       if (error !== undefined) return resolve({ ok: false, reply: bodyRejection(error) });
       const body: unknown = req.body;
       if (Buffer.isBuffer(body)) return resolve({ ok: true, body });
-      // The parser skips, without an error, a request with no body or another media type.
+      // The parser passes a request with no body or another media type through untouched.
       const reply =
         req.is('application/json') === null
           ? rejected(400, 'empty_body')
@@ -168,7 +162,7 @@ function parseJsonObject(text: string): Record<string, unknown> | null {
   try {
     value = JSON.parse(text);
   } catch {
-    // The parser's message can quote the body, so it is dropped rather than logged or returned.
+    // The parser's message can quote the body, so only the failure itself is reported.
     return null;
   }
   return isJsonObject(value) ? value : null;

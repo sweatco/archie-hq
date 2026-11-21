@@ -1,9 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-/**
- * What the Archie process gets from `ARCHIE_INCOMING_EVENTS`: no route when off, the route and
- * the dispatcher when on, and a 503 route when the inbox cannot be opened. Storage is real and
- * lives in a temporary directory.
- */
+/** What `ARCHIE_INCOMING_EVENTS` gives the Archie process, over real storage in a temporary directory. */
 import { createHmac, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import type { Server } from 'node:http';
@@ -71,7 +67,7 @@ async function newInput(): Promise<{ id: string; secret: string }> {
   }
 }
 
-/** Commits one delivery for `routine` without HTTP, for tests that control time. */
+/** Commits one delivery for `routine` straight through the store, for tests that control time. */
 function addWaitingHandoff(): void {
   const store = openIncomingStore();
   store.insertInput(

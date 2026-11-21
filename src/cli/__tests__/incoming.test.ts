@@ -1,9 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-/**
- * The `incoming` command as an operator runs it: a separate process with its own environment.
- * What each subcommand does is covered in `src/incoming/__tests__/operator.test.ts`; these cases
- * pin what the entry file adds: exit codes and the order of its checks.
- */
+/** The `incoming` command run as a separate process: the exit codes and check order its entry file adds. */
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';

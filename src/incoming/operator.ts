@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-/** Operator commands for incoming event inputs. The CLI is their only caller until #403. */
 import { statSync } from 'node:fs';
 import { createInput, deleteInput, type InputServices } from './inputs.js';
 import { INCOMING_ROUTE } from './receiver.js';
@@ -34,11 +33,7 @@ export function isIncomingCommand(name: string | undefined): boolean {
   return name !== undefined && COMMANDS.includes(name);
 }
 
-/**
- * Throws when this process is root and a directory it writes into belongs to another user.
- * The container images run the daemon as a non-root user while `docker exec` defaults to root,
- * and a secret or database file created as root there is unreadable to the daemon.
- */
+/** Files created as root are readable only by root, while the container's daemon runs as another user. */
 export function assertNotRootBesideDaemon(
   uid: number | undefined,
   directories: readonly string[],
@@ -57,7 +52,7 @@ export function assertNotRootBesideDaemon(
   }
 }
 
-/** Runs one operator command. Throws an Error whose message is meant for the operator. */
+/** Errors thrown here carry a message written for the operator. */
 export async function runIncomingCommand(
   args: readonly string[],
   services: InputServices,
@@ -164,7 +159,7 @@ async function changeState(
   print(`Input ${id} is ${input.state}.`);
 }
 
-/** Deletion is final once the row is marked; only removing secret files can still fail. */
+/** Once the row is marked the deletion is final; what can still fail is removing secret files. */
 async function deleteAndSayWhatIsLeft(services: InputServices, id: string) {
   try {
     return await deleteInput(services, id);

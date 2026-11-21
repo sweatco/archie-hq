@@ -14,7 +14,7 @@ import {
   type Receipt,
 } from './types.js';
 
-/** Bytes of bodies that may wait for handoff. Starting defaults; see the incoming events plan. */
+/** How many bytes of bodies may wait for handoff. */
 export interface InboxLimits {
   inputCapacityBytes: number;
   workspaceCapacityBytes: number;
@@ -28,7 +28,7 @@ export const DEFAULT_INBOX_LIMITS: InboxLimits = {
 export interface Delivery {
   inputId: string;
   binding: string;
-  /** Null when the sender supplied no key; the delivery is then always new. */
+  /** Null for a delivery without a key, which is always treated as new. */
   eventKey: string | null;
   digest: string;
   body: Uint8Array;
@@ -47,7 +47,6 @@ export type ReceiveResult =
   | { status: 'full' }
   | { status: 'unavailable'; reason: 'unknown' | 'deleted' };
 
-/** An input with the size of its kept history, for operators. */
 export interface InputSummary {
   input: Input;
   createdAt: number;
@@ -56,10 +55,9 @@ export interface InputSummary {
   pendingHandoffs: number;
 }
 
-/** A handoff this caller may work on until its lease ends or another caller claims it. */
 export interface ClaimedHandoff {
   handoff: Handoff;
-  /** Proves the lease. Every later write for this attempt must present it. */
+  /** Proves the lease on every later write for this attempt. */
   token: string;
   body: Uint8Array;
 }
@@ -170,10 +168,7 @@ export class IncomingStore {
       }));
   }
 
-  /**
-   * New deliveries are ignored until the input is resumed. Handoffs not being worked on are
-   * cancelled; one that is leased may still finish.
-   */
+  /** Later deliveries are recorded as ignored; waiting handoffs are cancelled and a leased one may finish. */
   pauseInput(id: string, now = Date.now()): Input | null {
     return this.moveInput(id, 'paused', now);
   }
@@ -182,7 +177,7 @@ export class IncomingStore {
     return this.moveInput(id, 'enabled', now);
   }
 
-  /** Final: a deleted input answers 410 and cannot be resumed. Cancels handoffs as pausing does. */
+  /** Final. Cancels handoffs as pausing does. */
   markInputDeleted(id: string, now = Date.now()): Input | null {
     return this.moveInput(id, 'deleted', now);
   }
@@ -205,13 +200,7 @@ export class IncomingStore {
     };
   }
 
-  /**
-   * Decides one authenticated delivery and records it in a single transaction.
-   *
-   * The order is the contract: a known key is answered before pause, filter and capacity
-   * are considered, so a sender's retry gets its original receipt even when the inbox is full.
-   * `consumers` are the consumers that want this event; none means it was filtered out.
-   */
+  /** A known key is answered first, so a retry gets its receipt even when the inbox is full. */
   receive(delivery: Delivery, consumers: readonly MatchedConsumer[]): ReceiveResult {
     return inTransaction(this.db, () => {
       const input = this.input(delivery.inputId);
@@ -264,7 +253,7 @@ export class IncomingStore {
     });
   }
 
-  /** An ignored receipt keeps the key and digest for retries and history, and never a body. */
+  /** An ignored receipt keeps only the key and digest, for retries and history. */
   private insertReceipt(
     receiptId: string,
     input: Input,
@@ -277,7 +266,7 @@ export class IncomingStore {
       input.id,
       input.revision,
       delivery.binding,
-      // NULL keys are distinct under the UNIQUE constraint, so unkeyed deliveries never collide.
+      // SQLite treats NULL keys as distinct, so each unkeyed delivery gets its own receipt.
       delivery.eventKey,
       delivery.digest,
       ignoredReason === null ? 'open' : 'ignored',
@@ -299,10 +288,7 @@ export class IncomingStore {
     );
   }
 
-  /**
-   * Leases the oldest due handoff to the caller and counts the attempt. A handoff whose input
-   * was paused or deleted after it was scheduled is cancelled here instead of being handed out.
-   */
+  /** Leases the oldest due handoff and counts the attempt; one whose input was stopped is cancelled instead. */
   claimHandoff(now: number, leaseMs: number): ClaimedHandoff | null {
     return inTransaction(this.db, () => {
       let due = this.dueHandoff(now);
@@ -336,7 +322,7 @@ export class IncomingStore {
     });
   }
 
-  /** False when the lease was lost; nothing was written. */
+  /** Returns whether the caller still held the lease. */
   saveReservation(id: string, token: string, reservation: string): boolean {
     return (
       this.run('UPDATE handoffs SET reservation=? WHERE id=? AND token=?', reservation, id, token) >
@@ -344,10 +330,7 @@ export class IncomingStore {
     );
   }
 
-  /**
-   * Gives the handoff back for another attempt at `dueAt`, or cancels it when its input was
-   * paused or deleted meanwhile. `lost` means the lease was lost and nothing was written.
-   */
+  /** Schedules another attempt at `dueAt`, or cancels the handoff when its input was stopped meanwhile. */
   releaseHandoff(id: string, token: string, dueAt: number): 'retry' | 'cancelled' | 'lost' {
     return inTransaction(this.db, () => {
       const held = this.row(
@@ -369,10 +352,7 @@ export class IncomingStore {
     });
   }
 
-  /**
-   * Ends the handoff. When it was the receipt's last pending one, the body is deleted and the
-   * receipt closed in the same transaction. False when the lease was lost; nothing was written.
-   */
+  /** Returns whether the lease was held. A receipt's last finish also deletes its body, atomically. */
   finishHandoff(id: string, token: string, state: 'accepted' | 'skipped' | 'failed'): boolean {
     return inTransaction(this.db, () => {
       const finished = this.row(
@@ -387,11 +367,7 @@ export class IncomingStore {
     });
   }
 
-  /**
-   * Fails unleased handoffs whose delivery arrived at or before `handoffsBefore`, then removes
-   * settled receipts that arrived at or before `receiptsBefore`. A removed receipt's event key
-   * is new again.
-   */
+  /** Fails unleased handoffs of older deliveries and removes settled receipts, freeing their event keys. */
   sweep(
     now: number,
     handoffsBefore: number,
@@ -437,7 +413,7 @@ export class IncomingStore {
   }
 
   private dueHandoff(now: number) {
-    // Picked from the due index alone and in its order, so no body is ever read to choose one.
+    // Chosen from the due index in its own order; the body is read only for the chosen handoff.
     const next = this.row(
       `SELECT id FROM handoffs
         WHERE state='pending' AND due_at<=? AND lease_until<=?
@@ -473,9 +449,9 @@ export class IncomingStore {
     return ended.length;
   }
 
-  /** Deletes the body and closes the receipt once none of its handoffs is pending. */
+  /** Deletes the body and closes the receipt when all its handoffs have ended. */
   private settleReceipt(receiptId: string): void {
-    // The unary plus makes SQLite look the receipt up instead of scanning every pending handoff.
+    // The unary plus steers SQLite to the receipt index.
     if (
       this.row("SELECT 1 FROM handoffs WHERE receipt_id=? AND +state='pending' LIMIT 1", receiptId)
     )

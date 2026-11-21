@@ -7,22 +7,20 @@ export interface SignatureHeaders {
   'webhook-signature': string;
 }
 
-/** Standard Webhooks: how far a delivery's timestamp may be from this host's clock. */
-const TOLERANCE_SECONDS = 5 * 60;
+const TIMESTAMP_TOLERANCE_SECONDS = 5 * 60;
 const SECRET_PREFIX = 'whsec_';
 
 function sha256(value: string): Buffer {
   return createHash('sha256').update(value).digest();
 }
 
-/** True when the `Authorization: Bearer` token equals one of the input's active secrets. */
 export function bearerTokenMatches(
   authorization: string | undefined,
   secrets: readonly string[],
 ): boolean {
   const token = /^Bearer +(\S+)$/i.exec(authorization ?? '')?.[1];
   if (!token) return false;
-  // Comparing digests keeps the comparison constant-time without revealing the secret's length.
+  // Digests have equal length, so the comparison takes the same time for any token.
   const presented = sha256(token);
   let matched = false;
   for (const secret of secrets) {
@@ -31,13 +29,7 @@ export function bearerTokenMatches(
   return matched;
 }
 
-/**
- * True when a Standard Webhooks `v1` signature over the received bytes verifies with one of the
- * input's active secrets and the timestamp is within tolerance.
- *
- * The signed content is `<id>.<timestamp>.<body>`, keyed with the base64 part of the secret:
- * https://github.com/standard-webhooks/standard-webhooks/blob/main/spec/standard-webhooks.md
- */
+/** Standard Webhooks `v1`: HMAC-SHA256 over `<id>.<timestamp>.<body>`, keyed with the base64 part of the secret. */
 export function signatureMatches(
   body: Uint8Array,
   headers: SignatureHeaders,
@@ -47,7 +39,7 @@ export function signatureMatches(
   const timestamp = headers['webhook-timestamp'];
   if (id === '' || !/^\d{1,15}$/.test(timestamp)) return false;
   const nowSeconds = Math.floor(Date.now() / 1000);
-  if (Math.abs(nowSeconds - Number(timestamp)) > TOLERANCE_SECONDS) return false;
+  if (Math.abs(nowSeconds - Number(timestamp)) > TIMESTAMP_TOLERANCE_SECONDS) return false;
 
   // A sender rotating its key sends several space-separated signatures.
   const presented = headers['webhook-signature']
@@ -71,7 +63,7 @@ export function signatureMatches(
 function signingKey(secret: string): Buffer {
   const encoded = secret.startsWith(SECRET_PREFIX) ? secret.slice(SECRET_PREFIX.length) : secret;
   const key = Buffer.from(encoded, 'base64');
-  // An empty key would still produce a signature, so a damaged secret must not verify anything.
+  // HMAC accepts an empty key, so an unreadable secret is rejected here.
   if (key.length === 0) throw new Error('Input signing secret holds no key material');
   return key;
 }

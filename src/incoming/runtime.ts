@@ -1,8 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-/**
- * Incoming events inside the Archie process: the inbox, the public callback route and the
- * dispatcher, all behind `ARCHIE_INCOMING_EVENTS`.
- */
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Application, Request, Response } from 'express';
@@ -16,16 +12,14 @@ import { vaultInputSecrets, type InputSecrets } from './secrets.js';
 import { IncomingStore } from './store.js';
 import type { IncomingConsumer } from './types.js';
 
-/** Shutdown waits this long for a handoff attempt in flight, then closes the inbox under it. */
-const STOP_WAIT_MS = 5000;
+const SHUTDOWN_GRACE_MS = 5000;
 
 export interface IncomingEvents {
-  /** Starts handing deliveries to consumers. Call after Task recovery. */
+  /** Call after Task recovery: it starts handing deliveries to consumers. */
   start(): void;
   close(): Promise<void>;
 }
 
-/** A blank value counts as unset, which is off. Any other unknown value is an error. */
 export function incomingEventsEnabled(): boolean {
   const mode = (process.env.ARCHIE_INCOMING_EVENTS ?? '').trim().toLowerCase() || 'off';
   if (mode !== 'off' && mode !== 'on')
@@ -33,10 +27,7 @@ export function incomingEventsEnabled(): boolean {
   return mode === 'on';
 }
 
-/**
- * Throws on an unknown flag value, or on a missing vault key while the feature is on. These are
- * configuration errors and stop the boot; startup calls this before its slow steps.
- */
+/** Configuration errors stop the boot; startup runs this before its slow steps. */
 export function validateIncomingEventsConfig(): void {
   if (incomingEventsEnabled()) validateMasterKey();
 }
@@ -52,10 +43,7 @@ export function incomingSecrets(): InputSecrets {
   return vaultInputSecrets(INCOMING_SECRETS_DIR);
 }
 
-/**
- * Mounts the callback route when the feature is on. Returns null when it is off, or when the
- * inbox cannot be opened. Throws on the configuration errors `validateIncomingEventsConfig` names.
- */
+/** Returns null when the feature is off or the inbox is unavailable. */
 export function mountIncomingEvents(
   app: Application,
   consumers: readonly IncomingConsumer[] = [],
@@ -69,7 +57,7 @@ export function mountIncomingEvents(
     // Created here so it belongs to the daemon's user, whoever runs the operator CLI later.
     mkdirSync(INCOMING_SECRETS_DIR, { recursive: true, mode: 0o700 });
   } catch (error) {
-    // A sender retries a 503. With no route it would get a 404 and give up.
+    // Senders retry a 503, which keeps their events alive until the inbox is back.
     logger.error('incoming', 'Incoming events inbox cannot be opened; deliveries get 503', error);
     app.post(INCOMING_ROUTE, (_req: Request, res: Response) => {
       res.status(503).json({ error: 'unavailable' });
@@ -84,7 +72,7 @@ export function mountIncomingEvents(
     async close() {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const waitedLongEnough = new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, STOP_WAIT_MS);
+        timer = setTimeout(resolve, SHUTDOWN_GRACE_MS);
       });
       await Promise.race([dispatcher.stop(), waitedLongEnough]);
       clearTimeout(timer);
