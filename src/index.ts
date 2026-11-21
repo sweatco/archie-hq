@@ -27,6 +27,7 @@ import { mountSlackApp, type SlackLifecycle } from './connectors/slack/events.js
 import { mountGitHubWebhook } from './connectors/github/events.js';
 import { mountApiRoutes } from './connectors/api/routes.js';
 import { mountOAuthRoutes } from './connectors/oauth/routes.js';
+import { mountIncomingEvents, validateIncomingEventsConfig } from './incoming/runtime.js';
 import { getIsShuttingDown, setShuttingDown } from './system/shutdown.js';
 import { Task, getActiveTaskIds } from './tasks/task.js';
 import { logger } from './system/logger.js';
@@ -72,6 +73,8 @@ function loadConfig(): AppConfig {
   if (!process.env.ANTHROPIC_API_KEY) {
     throw new Error('ANTHROPIC_API_KEY environment variable is required');
   }
+  // Checked here so a bad incoming events setting stops the boot before the slow steps.
+  validateIncomingEventsConfig();
 
   return {
     slackBotToken,
@@ -177,6 +180,9 @@ async function main(): Promise<void> {
       logger.plain('GitHub App not configured — PR tools disabled');
     }
 
+    // Deliveries are recorded once the server listens; handoff starts after task recovery, below.
+    const incomingEvents = mountIncomingEvents(app);
+
     // Mount Slack Bolt app (if configured).
     // Two modes: HTTP (bot token + signing secret) or Socket Mode (bot token + app token).
     // Mounting registers handlers but does NOT start accepting events — we defer
@@ -206,6 +212,7 @@ async function main(): Promise<void> {
     await initReminderScheduler((id) => Task.get(id));
     await initTriggerScheduler(() => Task.create());
     startInitiativeScheduler();
+    incomingEvents?.start();
 
     // Now accept events: start the HTTP server and open the Socket Mode WebSocket.
     await new Promise<void>((resolve) => server.listen(config.port, resolve));
@@ -219,6 +226,14 @@ async function main(): Promise<void> {
       logger.plain(`\nReceived ${signal} signal`);
       setShuttingDown(true);
       logger.system('Stopped accepting new webhooks');
+      // First, so that handoffs stop starting work while the rest shuts down.
+      if (incomingEvents) {
+        try {
+          await incomingEvents.close();
+        } catch (err) {
+          logger.error('index', 'Error closing incoming events', err);
+        }
+      }
       if (slackLifecycle) {
         try {
           await slackLifecycle.stop();

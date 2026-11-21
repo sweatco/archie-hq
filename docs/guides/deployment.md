@@ -39,7 +39,8 @@ Secrets are injected via the container's environment file plus the mounted
 - `ARCHIE_WORKDIR` — base working directory (defaults to `./workdir`; production mounts `/workdir`)
 - `ARCHIE_SECRETS_KEY` — base64 master key for the OAuth secrets vault. Required when any OAuth records exist; validated at startup
 - `ARCHIE_SECRETS_DIR` — overrides the secrets directory (defaults to `/app/secrets` in container)
-- `ARCHIE_PUBLIC_URL` — public HTTPS URL for OAuth provider redirects (`${url}/oauth/callback`)
+- `ARCHIE_PUBLIC_URL` — public HTTPS URL for OAuth provider redirects (`${url}/oauth/callback`) and incoming event callback URLs
+- `ARCHIE_INCOMING_EVENTS` — `on` mounts the public webhook receiver `POST /webhooks/incoming/:inputId` and requires `ARCHIE_SECRETS_KEY` (defaults to `off`). See [Incoming Events](../architecture/incoming-events.md)
 - `CLAUDE_PATH` — absolute path to the Claude Code `cli.js` (set to `/usr/local/bin/claude` in container)
 - `PORT` — HTTP port (defaults to `3000`)
 
@@ -49,7 +50,7 @@ GitHub access is via a GitHub App installation token (auto-rotating, through Oct
 
 ### Network Security
 
-- **Inbound:** public IP for webhooks, firewall restricted to Slack IPs on port 443. Not required when running Slack in Socket Mode — events arrive over the bot's outbound WebSocket.
+- **Inbound:** only the callback paths need to be reachable from outside: `/webhooks/*` (Slack in HTTP mode, GitHub, incoming events) and `/oauth/*`. Each authenticates its own requests. Every other path, including `/api`, has no authentication of its own and must stay behind your access layer: an authenticating proxy that exempts only those two prefixes, or a private network. A firewall limited to Slack's addresses is not enough once GitHub or another sender calls in. Slack in Socket Mode needs no inbound path for Slack — events arrive over the bot's outbound WebSocket.
 - **Outbound:** GitHub, Anthropic API, Slack API (all trusted). Socket Mode also relies on a long-lived outbound WebSocket to `wss-primary.slack.com`.
 - Slack webhook signature verification enforced (HTTP mode); Socket Mode events are authenticated by the app-level token used to open the connection.
 - GitHub webhook signature verification enforced
@@ -131,10 +132,10 @@ echo 'kernel.apparmor_restrict_unprivileged_userns=0' | sudo tee /etc/sysctl.d/9
 
 | Host Path | Container Path | Purpose |
 |-----------|---------------|---------|
-| `/workdir` | `/workdir` | Runtime state: `plugins/`, `repos/`, `sessions/`, `plugins-data/`, `triggers/`, `triggers-data/` (set via `ARCHIE_WORKDIR`) |
+| `/workdir` | `/workdir` | Runtime state: `plugins/`, `repos/`, `sessions/`, `plugins-data/`, `triggers/`, `triggers-data/`, and `incoming/` when incoming events are on (set via `ARCHIE_WORKDIR`) |
 | `/data/claude` | `/home/archie/.claude` | Claude CLI config and session logs |
 | `/data/claude/.claude.json` | `/home/archie/.claude.json` | Claude CLI feature flags |
-| `/app/secrets` | `/app/secrets` | GitHub App private key + encrypted OAuth vault (read-write — daemon persists refreshed tokens) |
+| `/app/secrets` | `/app/secrets` | GitHub App private key + encrypted OAuth vault + sealed incoming event secrets under `incoming/` (read-write — daemon persists refreshed tokens) |
 
 ### Non-Root User
 
