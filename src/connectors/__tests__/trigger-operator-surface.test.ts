@@ -108,6 +108,13 @@ vi.mock('../../system/trigger-store.js', () => ({
     await saveTrigger(t);
     return { outcome: 'updated', trigger: t };
   }),
+  updateLiveTrigger: vi.fn(async (id: string, mutate: (t: Trigger) => void) => {
+    const t = await loadTrigger(id);
+    if (!t || t.status === 'pending') return null;
+    mutate(t);
+    await saveTrigger(t);
+    return t;
+  }),
 }));
 
 const { announceTriggerChange, indexTrigger, deindexTrigger } = vi.hoisted(() => ({

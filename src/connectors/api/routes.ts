@@ -26,7 +26,7 @@ import { logger } from '../../system/logger.js';
 import {
   listTriggers,
   loadTrigger,
-  saveTrigger,
+  updateLiveTrigger,
   deleteTrigger,
   countActiveTriggers,
   updatePendingTrigger,
@@ -525,18 +525,26 @@ export function mountApiRoutes(app: Application): void {
         return;
       }
 
-      await saveTrigger(trigger);
-      if (trigger.status === 'enabled') indexTrigger(trigger);
-      else deindexTrigger(trigger.id);
+      // Re-read under the store's lock, so the write keeps what a fire recorded meanwhile.
+      const saved = await updateLiveTrigger(id, (stored) => {
+        if (editedContent) stored.action.prompt = action_prompt as string;
+        if (statusChange) stored.status = trigger.status;
+      });
+      if (!saved) {
+        res.status(404).json({ error: 'Trigger not found' });
+        return;
+      }
+      if (saved.status === 'enabled') indexTrigger(saved);
+      else deindexTrigger(saved.id);
 
       if (statusChange === 'paused')
-        emitEvent('trigger:paused', trigger.id, { trigger_id: trigger.id });
+        emitEvent('trigger:paused', saved.id, { trigger_id: saved.id });
       else if (statusChange === 'resumed')
-        emitEvent('trigger:resumed', trigger.id, { trigger_id: trigger.id });
+        emitEvent('trigger:resumed', saved.id, { trigger_id: saved.id });
       const change = editedContent ? 'edited' : statusChange;
-      if (change) await announceTriggerChange(trigger, change);
+      if (change) await announceTriggerChange(saved, change);
 
-      res.json({ ok: true, trigger: shapeTrigger(trigger) });
+      res.json({ ok: true, trigger: shapeTrigger(saved) });
     } catch (error) {
       logger.error('api', 'Failed to update trigger', error);
       res.status(500).json({ error: 'Failed to update trigger' });

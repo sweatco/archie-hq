@@ -131,6 +131,7 @@ import type { Trigger, TriggerBinding, TriggerCondition } from '../types/trigger
 import {
   generateTriggerId,
   saveTrigger,
+  updateLiveTrigger,
   updatePendingTrigger,
   withdrawPendingTrigger,
   loadTrigger,
@@ -3436,19 +3437,27 @@ function createUpdateTriggerTool(task: Task) {
       if (!editedContent && !statusChange)
         return ok('Nothing to update — pass status, action_prompt, summary, or conditions.');
 
+      const applyEdits = (target: Trigger) => {
+        if (args.action_prompt) target.action.prompt = args.action_prompt;
+        if (args.summary) target.summary = args.summary;
+        if (nextConditions) target.conditions = nextConditions;
+      };
+      // What the edit would produce, for the delivery check that runs before the record changes.
       const candidate: Trigger = {
         ...trigger,
         action: { ...trigger.action },
         conditions: [...trigger.conditions],
       };
-      if (args.action_prompt) candidate.action.prompt = args.action_prompt;
-      if (args.summary) candidate.summary = args.summary;
-      if (nextConditions) candidate.conditions = nextConditions;
+      applyEdits(candidate);
       if (plan.target !== 'unchanged') candidate.status = plan.target;
 
+      // Each write re-reads the record under the store's lock, so it keeps what a fire recorded meanwhile.
+      let updated: Trigger | null;
       if (statusChange === 'paused') {
-        trigger.status = 'paused';
-        await saveTrigger(trigger);
+        updated = await updateLiveTrigger(trigger.id, (stored) => {
+          stored.status = 'paused';
+        });
+        if (!updated) return ok(`No trigger ${args.id} found.`);
         deindexTrigger(trigger.id);
         emitEvent('trigger:paused', task.taskId, { trigger_id: trigger.id });
 
@@ -3458,25 +3467,23 @@ function createUpdateTriggerTool(task: Task) {
             `Trigger ${trigger.id} paused. Requested edits were rejected: ${deliveryError}`,
           );
         }
-        if (editedContent) {
-          await saveTrigger(candidate);
-          await announceTriggerChange(candidate, 'edited');
-        } else {
-          await announceTriggerChange(trigger, 'paused');
-        }
+        if (editedContent) updated = (await updateLiveTrigger(trigger.id, applyEdits)) ?? updated;
+        await announceTriggerChange(updated, editedContent ? 'edited' : 'paused');
       } else {
         const deliveryError = editedContent ? await authorizeTriggerChange(task, candidate) : null;
         if (deliveryError) return err(`Trigger not updated: ${deliveryError}`);
-        await saveTrigger(candidate);
-        if (candidate.status === 'enabled') indexTrigger(candidate);
-        else deindexTrigger(candidate.id);
+        updated = await updateLiveTrigger(trigger.id, (stored) => {
+          applyEdits(stored);
+          if (plan.target !== 'unchanged') stored.status = plan.target;
+        });
+        if (!updated) return ok(`No trigger ${args.id} found.`);
+        if (updated.status === 'enabled') indexTrigger(updated);
+        else deindexTrigger(updated.id);
         if (statusChange === 'resumed')
-          emitEvent('trigger:resumed', task.taskId, { trigger_id: candidate.id });
+          emitEvent('trigger:resumed', task.taskId, { trigger_id: updated.id });
         const change = editedContent ? 'edited' : statusChange;
-        if (change) await announceTriggerChange(candidate, change);
+        if (change) await announceTriggerChange(updated, change);
       }
-
-      const updated = statusChange === 'paused' && !editedContent ? trigger : candidate;
 
       // Report state back so the PM can relay it — especially the auto-resume,
       // which the user didn't explicitly ask for and should be told about.

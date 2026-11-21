@@ -38,6 +38,7 @@ const {
   loadTrigger,
   deleteTrigger,
   enableProposedTrigger,
+  updateLiveTrigger,
   updatePendingTrigger,
   withdrawPendingTrigger,
   getTriggerPath,
@@ -249,6 +250,42 @@ describe('a withdrawal racing the user’s Approve', () => {
 
   it('reports a proposal that was already gone', async () => {
     expect((await withdrawPendingTrigger('trg-20260824-1030-absent')).outcome).toBe('gone');
+  });
+});
+
+describe('writers of an approved trigger', () => {
+  it('keep each other’s changes, however the two writes interleave', async () => {
+    for (let i = 0; i < ITERATIONS; i++) {
+      await saveTrigger({ ...pending(), status: 'enabled' });
+
+      await Promise.all([
+        updateLiveTrigger(ID, (trigger) => {
+          trigger.action.prompt = LONG_PROMPT;
+        }),
+        updateLiveTrigger(ID, (trigger) => {
+          trigger.last_fired_at = '2026-08-24T11:00:00.000Z';
+        }),
+      ]);
+
+      expect(await loadTrigger(ID)).toMatchObject({
+        action: { prompt: LONG_PROMPT },
+        last_fired_at: '2026-08-24T11:00:00.000Z',
+      });
+    }
+  });
+
+  it('leave a proposal and a deleted trigger alone', async () => {
+    await saveTrigger(pending());
+    const mutate = (trigger: Trigger) => {
+      trigger.status = 'paused';
+    };
+
+    expect(await updateLiveTrigger(ID, mutate)).toBeNull();
+    expect((await loadTrigger(ID))?.status).toBe('pending');
+
+    await deleteTrigger(ID);
+    expect(await updateLiveTrigger(ID, mutate)).toBeNull();
+    expect(existsSync(getTriggerPath(ID))).toBe(false);
   });
 });
 
