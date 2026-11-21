@@ -4,6 +4,12 @@
 
 <!-- This file is generated automatically — do NOT edit it by hand. The `.github/workflows/daily-changelog.yml` workflow summarizes each day's merged PRs into a dated entry and commits it to `main` on its own. To shape how a change reads here, write a clear PR description — that is the source the automation reads. Quiet days with nothing merged are intentionally skipped (no entry), so gaps between dates are expected. Hand edits drift from the automation and may be overwritten; the only reason to touch this file directly is to repair a mistake the automation made. -->
 
+## 2026-11-20
+
+- _Technical: a labelled pull request's image is now published under the tag the deploy job looks up, with a comment posted to the PR naming the tag (or linking the run on failure) so staging can try it before merge, no longer only from `main`; the publish workflow's token now starts with no permissions and each job declares its own, and checkout no longer leaves the token in the checked-out repository. Commits 61d530c, 6cf95f3, 729225b, 056d3b4._
+- _Technical: agent instructions now state the issue-tracking routine applies without waiting to be asked, and point its first step at `gh issue develop` so the branch stays linked to its issue; a drafted session-start hook to repeat the reminder was dropped as redundant since `AGENTS.md` already loads into every session. PR #429 (commit 9235d99)._
+- _Technical: the single-line prose rule was scoped to Markdown only, after it was also joining wrapped YAML text into one long line; a Prettier workaround kept only to hold a workflow condition on several lines was dropped, and a docs note restating the formatter config was removed. Commits bccf9f1, ab8f099, 1212dd0._
+
 ## 2026-11-19
 
 - _Technical: project tracking moves from a five-status GitHub Project board (29 of 32 items stuck in Backlog, 31 of 75 open issues on the private board) into the issues themselves — state is now read from milestone/assignee/linked-PR/close-reason, `docs/plans/` and `docs/proposals/` are frozen as archives instead of churning (58 commits since June, 39 of them status edits), pull requests are no longer added to the board, and `tools/pm/` (check-repository, issue-health, project-audit, ~800 lines) plus the weekly project-health workflow are removed in favor of GitHub permissions and issue filters. PR #410._
