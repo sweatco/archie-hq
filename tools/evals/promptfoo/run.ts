@@ -5,13 +5,19 @@
  *   npx tsx tools/evals/promptfoo/run.ts --data-dir <private-dir> <config.yaml> [-- <eval options>]
  *
  * Results, the results database, cache and logs go under <private-dir>.
- * Telemetry, update checks and sharing are off, and outbound HTTP from
- * promptfoo is sent to a closed local port: with telemetry disabled promptfoo
- * 0.125.1 still posts a "telemetry disabled" event, and the replay provider
- * needs no network. After the run, any file git would see in the checkout
- * (tracked, or untracked and not ignored) that was created or changed during
- * the run fails it. Ignored paths such as workdir/ and node_modules/ are not
- * checked: a running instance or another tool may write there at any time.
+ * Telemetry, update checks and sharing are off, and HTTP(S) requests are sent
+ * to a closed local proxy: with telemetry disabled promptfoo 0.125.1 still
+ * posts a "telemetry disabled" event, and the replay provider needs no network.
+ * The proxy catches clients that honour the proxy variables and, through
+ * NODE_USE_ENV_PROXY, Node's own fetch, WebSocket and http/https default
+ * agents, in promptfoo and in Node processes it starts. It is not a sandbox:
+ * raw sockets, HTTP/2, a request with its own http.Agent, DNS lookups and
+ * child processes that ignore the proxy variables still reach the network.
+ *
+ * After the run, any file git would see in the checkout (tracked, or untracked
+ * and not ignored) that was created or changed during the run fails it.
+ * Ignored paths such as workdir/ and node_modules/ are not checked: a running
+ * instance or another tool may write there at any time.
  */
 
 import { execFile, spawn } from 'child_process';
@@ -83,6 +89,8 @@ export function buildPromptfooEnv(
     PROMPTFOO_DISABLE_TELEMETRY: '1',
     PROMPTFOO_DISABLE_UPDATE: '1',
     PROMPTFOO_DISABLE_SHARING: '1',
+    // Without it Node's built-in fetch and http/https ignore the proxy variables.
+    NODE_USE_ENV_PROXY: '1',
     HTTP_PROXY: CLOSED_PROXY,
     HTTPS_PROXY: CLOSED_PROXY,
     ALL_PROXY: CLOSED_PROXY,

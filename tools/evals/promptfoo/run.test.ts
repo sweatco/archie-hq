@@ -1,5 +1,7 @@
 import { execFile } from 'child_process';
 import { mkdir, mkdtemp, rm, utimes, writeFile } from 'fs/promises';
+import { createServer } from 'http';
+import type { AddressInfo } from 'net';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { promisify } from 'util';
@@ -54,11 +56,64 @@ describe('buildPromptfooEnv', () => {
       PROMPTFOO_DISABLE_TELEMETRY: '1',
       PROMPTFOO_DISABLE_UPDATE: '1',
       PROMPTFOO_DISABLE_SHARING: '1',
+      NODE_USE_ENV_PROXY: '1',
       HTTPS_PROXY: 'http://127.0.0.1:9',
       NO_PROXY: '',
     });
   });
+
+  it("sends Node's built-in fetch, http and https clients to the closed proxy", async () => {
+    let connections = 0;
+    const server = createServer((_request, response) => response.end('ok'));
+    server.on('connection', () => (connections += 1));
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+
+    try {
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        ['--eval', NETWORK_ATTEMPTS, String(port)],
+        { env: buildPromptfooEnv({}, '/private/evals') },
+      );
+
+      expect(JSON.parse(stdout)).toEqual({
+        fetch: 'ECONNREFUSED',
+        'http.get': 'ECONNREFUSED',
+        'https.get': 'ECONNREFUSED',
+      });
+      expect(connections).toBe(0);
+    } finally {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
 });
+
+/** Each client in turn against a local server, printing how each attempt ended. */
+const NETWORK_ATTEMPTS = `
+const http = require('node:http');
+const https = require('node:https');
+const target = '127.0.0.1:' + process.argv[1];
+const get = (client, url) =>
+  new Promise((resolve, reject) => {
+    client.get(url, { rejectUnauthorized: false }, (res) => { res.resume(); resolve(); }).on('error', reject);
+  });
+const attempts = {
+  fetch: () => fetch('http://' + target + '/'),
+  'http.get': () => get(http, 'http://' + target + '/'),
+  'https.get': () => get(https, 'https://' + target + '/'),
+};
+(async () => {
+  const outcome = {};
+  for (const [name, attempt] of Object.entries(attempts)) {
+    outcome[name] = await attempt().then(
+      () => 'connected',
+      (error) => error.code ?? error.cause?.code ?? String(error),
+    );
+  }
+  console.log(JSON.stringify(outcome));
+})();
+`;
 
 describe('repository guards', () => {
   it('treats the root and its descendants as inside', () => {

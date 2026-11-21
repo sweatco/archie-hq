@@ -49,7 +49,7 @@ Options after `--` go to `promptfoo eval`, for example `-- --repeat 3`. The wrap
 
 - sets `PROMPTFOO_CONFIG_DIR`, `PROMPTFOO_CACHE_PATH` and `PROMPTFOO_LOG_DIR` under `<private-dir>/promptfoo` and writes a JSON results file to `<private-dir>`;
 - sets `PROMPTFOO_DISABLE_TELEMETRY`, `PROMPTFOO_DISABLE_UPDATE` and `PROMPTFOO_DISABLE_SHARING`, passes `--no-share` and refuses `--share`;
-- points promptfoo's HTTP proxy at a closed local port, because promptfoo 0.125.1 still posts one "telemetry disabled" event with telemetry off, and the replay provider needs no network;
+- sends HTTP(S) requests to a closed local proxy, because promptfoo 0.125.1 still posts one "telemetry disabled" event with telemetry off, and the replay provider needs no network. It sets the proxy variables and `NODE_USE_ENV_PROXY`, which on Node 24 also routes Node's built-in `fetch`, `WebSocket` and `http`/`https` requests on the default agent, in promptfoo and in Node processes it starts;
 - refuses a data directory inside the repository, and fails with exit code 3 if a file git sees in the checkout, tracked or untracked but not ignored, was created or changed during the run. Ignored paths such as `workdir/` and `node_modules/`, `.git`, nested repositories and deletions are not checked, because a running instance or another tool may write there at any time.
 
 [fixture.promptfooconfig.yaml](../../tools/evals/promptfoo/fixture.promptfooconfig.yaml) is the reference config. Paths in a config are relative to the config file.
@@ -95,4 +95,5 @@ Run it with `-n` first to list what would be pulled. Always pass `-o` with a dir
 - The record depends on the SDK's reader and the CLI's transcript layout. A layout change shows up as `complete: false`.
 - Call order across sessions and workers comes from transcript timestamps, which have millisecond resolution. Calls stamped in the same millisecond are ordered by session and worker id.
 - Approval answers are not visible in the trajectory, because Slack approvals emit no resolution event.
-- The wrapper blocks all of promptfoo's network access, so a model-graded assertion such as `llm-rubric` cannot run through it yet.
+- The wrapper's proxy stops promptfoo's HTTP(S) requests, so a model-graded assertion such as `llm-rubric` cannot run through it yet.
+- The proxy is not a sandbox. Raw TCP and UDP sockets, HTTP/2, an `http`/`https` request with its own `Agent` (including `agent: false`), DNS lookups, and child processes that ignore the proxy variables still reach the network. Providers and assertion files must not open connections of their own.
