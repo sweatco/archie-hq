@@ -4,6 +4,10 @@
 
 <!-- This file is generated automatically — do NOT edit it by hand. The `.github/workflows/daily-changelog.yml` workflow summarizes each day's merged PRs into a dated entry and commits it to `main` on its own. To shape how a change reads here, write a clear PR description — that is the source the automation reads. Quiet days with nothing merged are intentionally skipped (no entry), so gaps between dates are expected. Hand edits drift from the automation and may be overwritten; the only reason to touch this file directly is to repair a mistake the automation made. -->
 
+## 2026-11-21
+
+- _Technical: three review findings fixed in the pull-request image publish workflow — only `main` writes the Docker layer cache so a labelled build can no longer evict it, a failed label removal now fails the job instead of printing a reassuring line, the success comment is posted before label removal so a successful build is still reported even if that step fails, and the deployment guide now notes a manual run needs the branch to contain this workflow. PR #430 (commit 61868d6)._
+
 ## 2026-11-20
 
 - _Technical: a labelled pull request's image is now published under the tag the deploy job looks up, with a comment posted to the PR naming the tag (or linking the run on failure) so staging can try it before merge, no longer only from `main`; the publish workflow's token now starts with no permissions and each job declares its own, and checkout no longer leaves the token in the checked-out repository. Commits 61d530c, 6cf95f3, 729225b, 056d3b4._
