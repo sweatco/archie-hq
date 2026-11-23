@@ -30,6 +30,7 @@ docs/proposals/
 docs/architecture/
 e2e-evidence/
 eval-instance/
+eval-reports/
 qa-evidence/
 archie-data-*/
 **/*.generated.*

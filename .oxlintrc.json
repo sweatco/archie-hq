@@ -33,6 +33,7 @@
     "docs/",
     "e2e-evidence/",
     "eval-instance/",
+    "eval-reports/",
     "qa-evidence/",
     "tmp/",
     "temp/",
