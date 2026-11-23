@@ -6,6 +6,7 @@ import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { promisify } from 'util';
 import { afterEach, describe, expect, it } from 'vitest';
+import { LIVE_SETTINGS_ENV, readLiveSettings, type LiveSettings } from './live-settings.js';
 import { buildPromptfooEnv, findFilesWrittenSince, isInside, parseInvocation } from './run.js';
 
 const execFileAsync = promisify(execFile);
@@ -40,6 +41,68 @@ describe('parseInvocation', () => {
       'sharing is not allowed',
     );
   });
+
+  it('is not a live run without instances', () => {
+    expect(parseInvocation(['--data-dir', '/d', 'config.yaml']).live).toBeUndefined();
+  });
+
+  it('reads the instances and the spend cap of a live run', () => {
+    const { live } = parseInvocation([
+      '--data-dir',
+      '/d',
+      '--instance',
+      'base=http://localhost:3001,/runs/base',
+      '--instance',
+      'candidate=http://127.0.0.1:3002/,/runs/candidate',
+      '--spend-cap-usd',
+      '2.5',
+      'config.yaml',
+    ]);
+    expect(live).toEqual({
+      instances: {
+        base: { url: 'http://localhost:3001', checkout: '/runs/base' },
+        candidate: { url: 'http://127.0.0.1:3002', checkout: '/runs/candidate' },
+      },
+      spendCapUsd: 2.5,
+    });
+  });
+
+  it('refuses a live run without a cap, a cap without a live run, and a repeated label', () => {
+    const live = (...options: string[]) =>
+      parseInvocation(['--data-dir', '/d', ...options, 'config.yaml']);
+    const base = ['--instance', 'base=http://localhost:3001,/runs/base'];
+
+    expect(() => live(...base)).toThrow('--instance needs --spend-cap-usd');
+    expect(() => live('--spend-cap-usd', '2')).toThrow(
+      '--spend-cap-usd needs at least one --instance',
+    );
+    expect(() => live(...base, ...base, '--spend-cap-usd', '2')).toThrow(
+      'instance "base" is given twice',
+    );
+    expect(() => live(...base, '--spend-cap-usd', '0')).toThrow('a positive number of dollars');
+  });
+
+  it.each([
+    'https://localhost:3001',
+    'http://localhost',
+    'http://example.com:3001',
+    'http://localhost.example.com:3001',
+    'http://user@localhost:3001',
+    'http://localhost:3001/api',
+    'localhost:3001',
+  ])('refuses %s as an instance URL', (url) => {
+    expect(() =>
+      parseInvocation([
+        '--data-dir',
+        '/d',
+        '--instance',
+        `base=${url},/runs/base`,
+        '--spend-cap-usd',
+        '2',
+        'config.yaml',
+      ]),
+    ).toThrow('instance URL must look like http://localhost:<port>');
+  });
 });
 
 describe('buildPromptfooEnv', () => {
@@ -60,6 +123,30 @@ describe('buildPromptfooEnv', () => {
       HTTPS_PROXY: 'http://127.0.0.1:9',
       NO_PROXY: '',
     });
+  });
+
+  it('exempts only the instances of a live run from the proxy and hands them to the providers', () => {
+    const live: LiveSettings = {
+      instances: {
+        base: { url: 'http://localhost:3001', checkout: '/runs/base' },
+        candidate: { url: 'http://127.0.0.1:3002', checkout: '/runs/candidate' },
+      },
+      spendCapUsd: 2,
+    };
+    const env = buildPromptfooEnv({ NO_PROXY: '*' }, '/private/evals', live);
+
+    expect(env).toMatchObject({
+      HTTP_PROXY: 'http://127.0.0.1:9',
+      NO_PROXY: 'localhost:3001,127.0.0.1:3002',
+      no_proxy: 'localhost:3001,127.0.0.1:3002',
+    });
+    expect(readLiveSettings(env)).toEqual(live);
+  });
+
+  it('does not inherit live settings from the calling environment', () => {
+    const env = buildPromptfooEnv({ [LIVE_SETTINGS_ENV]: '{"stale":true}' }, '/private/evals');
+    expect(env[LIVE_SETTINGS_ENV]).toBeUndefined();
+    expect(readLiveSettings(env)).toBeUndefined();
   });
 
   it("sends Node's built-in fetch, http and https clients to the closed proxy", async () => {
@@ -85,6 +172,53 @@ describe('buildPromptfooEnv', () => {
     } finally {
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  it('lets a live run reach its instance and nothing else on this machine', async () => {
+    const listen = async () => {
+      let connections = 0;
+      const server = createServer((_request, response) => response.end('ok'));
+      server.on('connection', () => (connections += 1));
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const { port } = server.address() as AddressInfo;
+      return { server, port, connections: () => connections };
+    };
+    const instance = await listen();
+    const other = await listen();
+    const live: LiveSettings = {
+      instances: {
+        base: { url: `http://127.0.0.1:${instance.port}`, checkout: '/runs/base' },
+      },
+      spendCapUsd: 1,
+    };
+
+    try {
+      const attempt = async (port: number) => {
+        const { stdout } = await execFileAsync(
+          process.execPath,
+          ['--eval', NETWORK_ATTEMPTS, String(port)],
+          { env: buildPromptfooEnv({}, '/private/evals', live) },
+        );
+        return JSON.parse(stdout) as Record<string, string>;
+      };
+
+      expect(await attempt(instance.port)).toMatchObject({
+        fetch: 'connected',
+        'http.get': 'connected',
+      });
+      expect(await attempt(other.port)).toEqual({
+        fetch: 'ECONNREFUSED',
+        'http.get': 'ECONNREFUSED',
+        'https.get': 'ECONNREFUSED',
+      });
+      expect(instance.connections()).toBeGreaterThan(0);
+      expect(other.connections()).toBe(0);
+    } finally {
+      for (const { server } of [instance, other]) {
+        server.closeAllConnections();
+        await new Promise((resolve) => server.close(resolve));
+      }
     }
   });
 });
