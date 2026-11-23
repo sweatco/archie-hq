@@ -2,14 +2,15 @@
 
 Triggers let a user say, in plain language, "do Y when X happens" and have Archie set up a persistent rule that spawns a fresh task when the condition fires. They are the one sanctioned form of self-initiated work — everything else is reactive (Slack messages, GitHub webhooks).
 
-Two condition types ship in v1:
+Three condition types exist:
 
 - **Schedule** — fires on a recurring cadence (hourly / daily / weekdays / weekly at a time) or once at a future time.
 - **Channel-message** — fires on a new **top-level** message in a watched channel matching an optional filter (substring and/or author).
+- **Incoming event** — fires on an event that an [incoming events](incoming-events.md#event-routines) input received. A trigger holds these conditions alone, never beside the other two, and receives nothing until the operator links it to the input.
 
 A trigger is **bound** to a delivery target: a **channel**, or a **user** (that person's 1:1 DM). Both variants carry `channel_id` and `channel_name` — for a `user` binding those are the DM conversation (`D…`) the trigger was configured in and Slack's label for it (`DM with <real name>`) — so delivery has one shape and one code path rather than two.
 
-A `user` binding can only be created from inside that person's own DM, and **every field of it comes from the conversation the request arrived in**: `propose_trigger` reads no id at all from its arguments for that type. That is what makes it structurally impossible to aim a DM trigger at anyone but the person asking, rather than something enforced by validating an id the model supplied. A DM trigger is also **schedule-only** — see the constraint under Conditions.
+A `user` binding can only be created from inside that person's own DM, and **every field of it comes from the conversation the request arrived in**: `propose_trigger` reads no id at all from its arguments for that type. That is what makes it structurally impossible to aim a DM trigger at anyone but the person asking, rather than something enforced by validating an id the model supplied. A DM trigger also cannot watch a channel for messages — see the constraint under Protections & limits. It may run on a schedule or on incoming events.
 
 > Design bias: reuse, no new scheduling engine. The firing loop is the reminder scheduler's index-and-tick pattern; creation reuses the edit-mode Approve/Deny flow; fired tasks are ordinary read-only tasks. The only added dependency is [`croner`](https://www.npmjs.com/package/croner) (a tiny, DST-correct cron parser) used solely to compute next-run times.
 
@@ -52,7 +53,7 @@ interface Trigger {
 - A **one-off** schedule condition has only `next_run_at` (no `cron`); it auto-pauses after firing once.
 - **Channel privacy is deliberately not stored** on the binding — it's resolved live at list time (see Visibility), so a public↔private conversion can't leak a now-private channel's triggers.
 
-Storage: one JSON file per trigger under `$ARCHIE_WORKDIR/triggers/` (`src/system/trigger-store.ts`), written **atomically** (temp file + `rename`) and with every read-modify-write **serialized per trigger id** by a keyed lock — [While a proposal is pending](#while-a-proposal-is-pending) explains why an editable proposal makes both necessary. Plus — for a trigger that has actually fired — one directory per trigger under `$ARCHIE_WORKDIR/triggers-data/` (see [Persistent per-trigger directory](#persistent-per-trigger-directory) below).
+Storage: one JSON file per trigger under `$ARCHIE_WORKDIR/triggers/` (`src/system/trigger-store.ts`), written **atomically** (temp file + `rename`) and with every read-modify-write **serialized per trigger id** by a keyed lock — [While a proposal is pending](#while-a-proposal-is-pending) explains why an editable proposal makes both necessary. Edits to an approved trigger and an event fire's writes re-read the record inside that lock (`updateLiveTrigger`), so neither overwrites the other. The scheduler tick's own writes are outside it, which is why event conditions never share a trigger with a schedule. Plus — for a trigger that has actually fired — one directory per trigger under `$ARCHIE_WORKDIR/triggers-data/` (see [Persistent per-trigger directory](#persistent-per-trigger-directory) below).
 
 ## Scheduling: cron, kept internal
 
@@ -94,6 +95,8 @@ A one-off schedule auto-pauses after it fires (its condition is consumed). **Res
 1. Create a fresh task; set `metadata.triggered_by = trigger.id`.
 2. Wire delivery, differently per mode (below).
 3. Seed the PM with `AGENT_PROMPTS.triggered(...)` and let it do the work.
+
+An incoming event does not go through `fireTrigger`. `fireEvent` in the same file uses the same kill switch, channel probe and daily cap, then reserves, prepares and starts the task in three durable steps, so a retried event continues the same task. [Incoming events](incoming-events.md#from-event-to-task) describes it.
 
 **Firing posts no preamble.** The spawned PM does the work and posts the result itself, so the first thing the channel sees is the actual output — not an "I was triggered" line. Nothing else posts on the fire path either, which is why the standing-context refresh below is told not to announce.
 
@@ -226,7 +229,8 @@ Every **configuration change** to a **channel**-bound trigger — created/enable
 - **Propose-then-confirm** — no agent enables a trigger from a model decision alone.
 - **Human approval is the loop guard** — a trigger-spawned task *may* call `propose_trigger`, but that only ever creates a `pending` trigger; nothing enables (or fires) without a human clicking Approve, and a task has no way to self-approve (approval comes only from the Slack button or the CLI `/approve` endpoint). So there is no autonomous amplification loop to gate against — the approval step already breaks it. (Runaway pending-proposal spam is bounded by the daily fire cap.)
 - **Read-only by default** — a fired task is an ordinary task; any write/push still needs in-the-moment edit-mode approval.
-- **Limits** — recurring schedules ≥1h apart; per-user and per-channel active-trigger caps; a per-account daily fired-run cap (in-memory, reset daily).
+- **Limits** — recurring schedules ≥1h apart; per-user and per-channel active-trigger caps; a per-account daily fired-run cap (in-memory, reset daily), which schedule, message and event fires share.
+- **An event routine needs the operator** — approval alone routes no event. The operator links the approved trigger to the input, and unlinking revokes it ([incoming events](incoming-events.md#event-routines)).
 - **Kill switch** — `ARCHIE_TRIGGERS_ENABLED=false` disables all firing and creation globally.
 - **A DM trigger can only be created from the DM it delivers to.** The refusal is not a validation of a supplied id — there is no id to validate, because the `user` branch of `propose_trigger` reads none. It is also the reason a DM trigger cannot carry a `channel_message` condition: a message fire ingests the watched thread and replies *there*, ignoring the binding entirely, so that pairing would deliver into the watched channel instead of the DM. `buildConditions` takes the binding type and refuses it, which covers `propose_trigger` and `update_trigger` with one implementation.
 - **A fired task's visibility tier is the conversation it is homed in.** `resolveTriggerOrigin` falls back to `home_channel` when the task has no Slack `default_channel` (yet), which is exactly a fired task's state on its first turn. Without that fallback the turn resolves to the operator tier, which sees every trigger in the workspace — including other people's DM triggers — and a fired task could read them out into whatever conversation it was homed in.
@@ -246,7 +250,8 @@ Every **configuration change** to a **channel**-bound trigger — created/enable
 | `src/types/trigger.ts` | `Trigger`, `TriggerBinding`, `TriggerCondition` |
 | `src/system/trigger-store.ts` | One-JSON-file-per-trigger persistence, plus the per-trigger data directory's lifecycle (`getTriggerDataPath`, `ensureTriggerDataDir`, `removeTriggerDataDir`) |
 | `src/agents/trigger-data.ts` | The two pure pieces of the persistent directory: the sandbox grant, and the prompt block that announces the path and lists its contents |
-| `src/system/trigger-scheduler.ts` | In-memory index, 60s tick, cron math, `fireTrigger`, announcements |
+| `src/system/trigger-scheduler.ts` | In-memory index, 60s tick, cron math, `fireTrigger`, `fireEvent`, announcements |
+| `src/system/routine-consumer.ts` | Event routines: the snapshot at receipt, and one Task per handoff |
 | `src/system/trigger-visibility.ts` | Pure visibility decision (privacy injected) |
 | `src/system/trigger-match.ts` | Pure channel-message match decision — author-id shape, the `contains`/`from_user` predicate |
 | `src/agents/tools.ts` | PM tools: `propose_trigger`, `list_triggers`, `get_trigger`, `update_trigger`, `delete_trigger` |
