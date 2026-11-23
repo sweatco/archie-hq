@@ -1,7 +1,15 @@
 /**
  * archie-e2e boot — start a live Archie instance from the current checkout and wait for health.
  *
- * Usage: npx tsx tools/e2e/boot.ts [--timeout-seconds N] [--no-prepare]
+ * Usage: npx tsx tools/e2e/boot.ts [--timeout-seconds N] [--no-prepare | --profile eval]
+ *
+ * `--profile eval` boots a hermetic instance for behaviour evals instead
+ * (tools/e2e/eval-profile.ts): step 0 creates a fresh `eval-instance/` and
+ * resolves the model key in place of the worktree preparation and the .env
+ * preflight, compose runs with the eval overlay under its own project name and
+ * gets the key through its environment, and the resolved config is printed and
+ * checked for isolation before compose up. ARCHIE_URL is ignored, because an
+ * eval instance always runs locally on the port step 0 picked.
  *
  * Strict fail-fast sequence (each step gates the next):
  *   0. Worktree prerequisites (tools/e2e/prepare-worktree.ts): in a git worktree,
@@ -42,6 +50,13 @@ import { createServer, type AddressInfo } from 'net';
 import { dirname, join } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { resolveBaseUrl, resolveTimeoutSeconds } from './config.js';
+import {
+  checkEvalCompose,
+  EVAL_DIR,
+  EVAL_DOWN_FLAGS,
+  evalComposeArgs,
+  runEvalPrepare,
+} from './eval-profile.js';
 import { runPrepare } from './prepare-worktree.js';
 import { makeExec, type ExecFn } from './exec.js';
 
@@ -290,11 +305,20 @@ export interface BootOpts {
    * wrong-checkout instances.
    */
   expectedSha?: string;
+  /** Global `docker compose` arguments selecting the project and files (the eval profile's); none by default. */
+  composeArgs?: string[];
 }
 
-async function collectDiagnostics(exec: ExecFn): Promise<string> {
-  const ps = await exec('docker', ['compose', 'ps']);
-  const logs = await exec('docker', ['compose', 'logs', '--no-color', '--tail=100', 'archie']);
+async function collectDiagnostics(exec: ExecFn, composeArgs: string[]): Promise<string> {
+  const ps = await exec('docker', ['compose', ...composeArgs, 'ps']);
+  const logs = await exec('docker', [
+    'compose',
+    ...composeArgs,
+    'logs',
+    '--no-color',
+    '--tail=100',
+    'archie',
+  ]);
   return renderDiagnostics(ps.stdout || ps.stderr, logs.stdout || logs.stderr);
 }
 
@@ -304,13 +328,14 @@ async function collectDiagnostics(exec: ExecFn): Promise<string> {
  */
 export async function runBoot(deps: BootDeps, opts: BootOpts): Promise<number> {
   const execBuild = deps.execBuild ?? deps.exec;
+  const composeArgs = opts.composeArgs ?? [];
 
   deps.log(`Booting archie via \`docker compose up --build -d\` (target ${opts.baseUrl}) ...`);
-  const up = await execBuild('docker', ['compose', 'up', '--build', '-d']);
+  const up = await execBuild('docker', ['compose', ...composeArgs, 'up', '--build', '-d']);
   if (up.code !== 0) {
     deps.error(`docker compose up --build -d failed with exit code ${up.code}`);
     if (up.stderr.trim()) deps.error(up.stderr.trim());
-    deps.error(await collectDiagnostics(deps.exec));
+    deps.error(await collectDiagnostics(deps.exec, composeArgs));
     return 1;
   }
 
@@ -324,7 +349,7 @@ export async function runBoot(deps: BootDeps, opts: BootOpts): Promise<number> {
         // The exec wrapper never rejects, so a failed ps must be surfaced as a rejection here:
         // waitForHealth then skips the container check that tick instead of misreading empty
         // stdout as "archie container gone" and aborting a boot that was about to succeed.
-        const ps = await deps.exec('docker', ['compose', 'ps', '--format', 'json']);
+        const ps = await deps.exec('docker', ['compose', ...composeArgs, 'ps', '--format', 'json']);
         if (ps.code !== 0) {
           throw new Error(
             `docker compose ps failed (exit ${ps.code}): ${ps.stderr.trim() || '(no stderr)'}`,
@@ -352,7 +377,7 @@ export async function runBoot(deps: BootDeps, opts: BootOpts): Promise<number> {
           `Boot failed (attestation): /health reports git_sha=${reported ?? '(none)'}, expected ${opts.expectedSha} — ` +
             'the healthy instance is not running the code under test (stale build or another checkout).',
         );
-        deps.error(await collectDiagnostics(deps.exec));
+        deps.error(await collectDiagnostics(deps.exec, composeArgs));
         return 1;
       }
       // "composed from", not "runs": /health echoes the env compose passed at
@@ -365,34 +390,52 @@ export async function runBoot(deps: BootDeps, opts: BootOpts): Promise<number> {
     return 0;
   }
   deps.error(`Boot failed (${outcome.kind}): ${outcome.detail}`);
-  deps.error(await collectDiagnostics(deps.exec));
+  deps.error(await collectDiagnostics(deps.exec, composeArgs));
   return 1;
 }
 
 // ---- CLI main ----
 
+const USAGE =
+  'usage: npx tsx tools/e2e/boot.ts [--timeout-seconds N] [--no-prepare | --profile eval]';
+
+export interface BootArgs {
+  timeoutFlag?: string;
+  noPrepare?: true;
+  profile?: 'eval';
+}
+
 /** Exported for tests. Throws on unknown arguments and on flags missing their value. */
-export function parseArgs(argv: string[]): { timeoutFlag?: string; noPrepare?: true } {
-  const result: { timeoutFlag?: string; noPrepare?: true } = {};
+export function parseArgs(argv: string[]): BootArgs {
+  const result: BootArgs = {};
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--timeout-seconds') {
       const value = argv[++i];
       if (value === undefined) {
-        throw new Error(
-          '--timeout-seconds requires a value (usage: npx tsx tools/e2e/boot.ts [--timeout-seconds N])',
-        );
+        throw new Error(`--timeout-seconds requires a value (${USAGE})`);
       }
       result.timeoutFlag = value;
     } else if (arg.startsWith('--timeout-seconds=')) {
       result.timeoutFlag = arg.slice('--timeout-seconds='.length);
     } else if (arg === '--no-prepare') {
       result.noPrepare = true;
+    } else if (arg === '--profile' || arg.startsWith('--profile=')) {
+      const value = arg === '--profile' ? argv[++i] : arg.slice('--profile='.length);
+      if (value !== 'eval') {
+        throw new Error(
+          `unknown profile: ${value ?? '(none)'} — only "eval" exists; omit --profile for the default (${USAGE})`,
+        );
+      }
+      result.profile = value;
     } else {
-      throw new Error(
-        `unknown argument: ${arg} (usage: npx tsx tools/e2e/boot.ts [--timeout-seconds N] [--no-prepare])`,
-      );
+      throw new Error(`unknown argument: ${arg} (${USAGE})`);
     }
+  }
+  if (result.profile === 'eval' && result.noPrepare) {
+    throw new Error(
+      '--no-prepare does not apply to --profile eval: the eval instance is always created fresh',
+    );
   }
   return result;
 }
@@ -426,18 +469,17 @@ function pickFreePort(): Promise<number> {
   });
 }
 
+const evalTeardownHint = `Tear down with \`npx tsx tools/e2e/teardown.ts --profile eval\` (deletes ${EVAL_DIR}/).`;
+
 async function main(): Promise<void> {
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-  let timeoutFlag: string | undefined;
-  let noPrepare = false;
+  let args: BootArgs;
   let timeoutSeconds: number;
   try {
-    const args = parseArgs(process.argv.slice(2));
-    timeoutFlag = args.timeoutFlag;
-    noPrepare = args.noPrepare === true;
+    args = parseArgs(process.argv.slice(2));
     timeoutSeconds = resolveTimeoutSeconds(
-      timeoutFlag,
+      args.timeoutFlag,
       process.env.E2E_BOOT_TIMEOUT_SECONDS,
       DEFAULT_BOOT_TIMEOUT_SECONDS,
     );
@@ -446,30 +488,44 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
+  const io = {
+    log: (line: string) => console.log(line),
+    error: (line: string) => console.error(line),
+  };
   const hostExec = makeExec({ cwd: repoRoot });
-
-  // Prepare a fresh worktree before the preflight reads .env; --no-prepare opts out.
-  if (noPrepare) {
-    console.log('--no-prepare given — skipping the worktree prerequisite check.');
-  } else {
-    const prepared = await runPrepare(repoRoot, hostExec, {
-      log: (line) => console.log(line),
-      error: (line) => console.error(line),
-    });
-    if (prepared.code !== 0) process.exit(prepared.code);
-  }
-
-  // Preflight — mandatory, before any compose invocation.
+  const isEval = args.profile === 'eval';
+  const composeArgs = isEval ? evalComposeArgs(repoRoot) : [];
+  let keySource: string | undefined;
+  let evalPort: string | undefined;
+  let evalComposeEnv: Record<string, string> = {};
   let dotenvText: string | undefined;
-  try {
-    dotenvText = readFileSync(join(repoRoot, '.env'), 'utf-8');
-  } catch {
-    dotenvText = undefined;
-  }
-  const errors = preflight(dotenvText);
-  if (errors.length > 0) {
-    for (const e of errors) console.error(`preflight failed: ${e}`);
-    process.exit(1);
+
+  // Prepare before the preflight reads .env: the eval instance directory, or a
+  // fresh worktree's shared state (--no-prepare opts out of the latter).
+  if (isEval) {
+    const prepared = await runEvalPrepare(repoRoot, hostExec, process.env, io);
+    if (prepared.code !== 0) process.exit(prepared.code);
+    ({ keySource, port: evalPort, composeEnv: evalComposeEnv } = prepared);
+  } else {
+    if (args.noPrepare) {
+      console.log('--no-prepare given — skipping the worktree prerequisite check.');
+    } else {
+      const prepared = await runPrepare(repoRoot, hostExec, io);
+      if (prepared.code !== 0) process.exit(prepared.code);
+    }
+
+    // Preflight — mandatory, before any compose invocation. The eval profile
+    // resolved and checked its key in step 0.
+    try {
+      dotenvText = readFileSync(join(repoRoot, '.env'), 'utf-8');
+    } catch {
+      dotenvText = undefined;
+    }
+    const errors = preflight(dotenvText);
+    if (errors.length > 0) {
+      for (const e of errors) console.error(`preflight failed: ${e}`);
+      process.exit(1);
+    }
   }
 
   // Checkout attestation value: the compose environment carries it into the
@@ -488,7 +544,10 @@ async function main(): Promise<void> {
   // Port preflight — before any compose invocation. Skipped entirely when the
   // operator set ARCHIE_URL explicitly: that target (possibly remote) is
   // theirs to manage, and relocating away from it would test the wrong thing.
-  let baseUrl = resolveBaseUrl(process.env, dotenvText);
+  if (isEval && process.env.ARCHIE_URL) {
+    console.log('ARCHIE_URL is ignored by the eval profile — it targets the port boot picks.');
+  }
+  let baseUrl = isEval ? `http://localhost:${evalPort}` : resolveBaseUrl(process.env, dotenvText);
   let port: string;
   try {
     port = new URL(baseUrl).port || '3000';
@@ -496,12 +555,12 @@ async function main(): Promise<void> {
     console.error(`ARCHIE_URL is not a valid URL: ${baseUrl}`);
     process.exit(2);
   }
-  if (process.env.ARCHIE_URL) {
+  if (!isEval && process.env.ARCHIE_URL) {
     console.log(`ARCHIE_URL is set — targeting ${baseUrl} as-is (port preflight skipped).`);
   } else {
     const probe = await probePort(baseUrl);
     if (probe.kind !== 'free') {
-      const ps = await hostExec('docker', ['compose', 'ps', '--format', 'json']);
+      const ps = await hostExec('docker', ['compose', ...composeArgs, 'ps', '--format', 'json']);
       const archie = ps.code === 0 ? archieContainerState(ps.stdout) : undefined;
       const ourArchieOnPort =
         archie !== undefined && archie.found && archie.publishedPorts.includes(Number(port));
@@ -510,7 +569,12 @@ async function main(): Promise<void> {
         console.log(
           `Port ${port} is held by this project's own archie — tearing it down to boot fresh from the current checkout ...`,
         );
-        const down = await hostExec('docker', ['compose', 'down']);
+        const down = await hostExec('docker', [
+          'compose',
+          ...composeArgs,
+          'down',
+          ...(isEval ? EVAL_DOWN_FLAGS : []),
+        ]);
         if (down.code !== 0) {
           console.error(`docker compose down failed (exit ${down.code}): ${down.stderr.trim()}`);
           process.exit(1);
@@ -530,8 +594,22 @@ async function main(): Promise<void> {
 
   // PORT + GIT_SHA ride the compose environment: PORT drives both the mapping
   // and the app's listen port; GIT_SHA lands in /health for the attestation.
-  const composeEnv: Record<string, string> = { PORT: port };
+  // The eval profile adds its model key, which it never writes to disk.
+  const composeEnv: Record<string, string> = { ...evalComposeEnv, PORT: port };
   if (expectedSha) composeEnv.GIT_SHA = expectedSha;
+
+  if (isEval) {
+    const checked = await checkEvalCompose(
+      makeExec({ cwd: repoRoot, env: composeEnv }),
+      repoRoot,
+      keySource,
+      io,
+    );
+    if (checked !== 0) {
+      console.error(evalTeardownHint);
+      process.exit(checked);
+    }
+  }
 
   const code = await runBoot(
     {
@@ -549,11 +627,12 @@ async function main(): Promise<void> {
       },
       now: Date.now,
       sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
-      log: (line) => console.log(line),
-      error: (line) => console.error(line),
+      log: io.log,
+      error: io.error,
     },
-    { baseUrl, timeoutSeconds, expectedSha },
+    { baseUrl, timeoutSeconds, expectedSha, composeArgs },
   );
+  if (isEval) console.log(evalTeardownHint);
   if (code === 0) {
     // Export line for the driver: the archie-debug MCP resolves ARCHIE_URL
     // first, so this keeps it on the same instance (mandatory when relocated).

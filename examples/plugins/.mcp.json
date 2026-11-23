@@ -11,6 +11,18 @@
           "write_marker": "Append a marker line to the shared e2e marker file"
         }
       }
+    },
+    "orders": {
+      "description": "Fernhill Supply orders — eval fixture for a fictional shop: canned orders, one always-failing read and one gated refund",
+      "command": "node",
+      "args": ["/workdir/plugins/orders/server.mjs"],
+      "archie": {
+        "default": "ask",
+        "allow": ["get_order", "list_orders", "get_shipping_status"],
+        "titles": {
+          "refund_order": "Refund a Fernhill Supply order"
+        }
+      }
     }
   }
 }

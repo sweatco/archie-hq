@@ -53,6 +53,9 @@ temp/
 # Git worktrees
 .worktrees/
 
+# Eval-profile instance state (tools/e2e/eval-profile.ts); teardown --profile eval deletes it
+eval-instance/
+
 # Local E2E evidence (Forge Stage 4 targets qa-evidence/ explicitly instead)
 e2e-evidence/
 
