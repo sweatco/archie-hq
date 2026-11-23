@@ -86,7 +86,7 @@ Every handoff that ends any way other than `accepted` records why:
 |---|---|---|
 | `skipped` | The consumer | Its own reason. Routines use the list under [What stops a routine](#what-stops-a-routine). |
 | `cancelled` | The inbox | `input_paused`, `input_deleted` |
-| `failed` | The dispatcher or the sweep | `attempts_exhausted`, `interrupted` (the process died during the last attempt), `expired` |
+| `failed` | The dispatcher or the sweep | `attempts_exhausted`, `interrupted` (the process died during the last attempt), `expired`, `unreadable` (its stored body or rows could not be loaded) |
 
 ## Event routines
 
