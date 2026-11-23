@@ -259,6 +259,32 @@ describe('a committed handoff', () => {
   });
 });
 
+describe('a handoff whose stored delivery is unreadable', () => {
+  it('is failed, and the handoffs behind it are still delivered', async () => {
+    const broken = receive('msg_a');
+    now += 10;
+    const sound = receive('msg_b');
+    const writer = new DatabaseSync(dbPath);
+    writer.prepare('DELETE FROM payloads WHERE receipt_id=?').run(broken);
+    writer.close();
+    const routine = vi.fn<Handle>().mockResolvedValue('accepted');
+
+    await dispatcher({ routine }).runOnce();
+
+    expect(routine).toHaveBeenCalledTimes(1);
+    expect(routine.mock.calls[0]?.[0].handoff.receiptId).toBe(sound);
+    expect(inbox()).toMatchObject({
+      receipts: [{ outcome: 'closed' }, { outcome: 'closed' }],
+      payloads: [],
+      handoffs: [
+        { state: 'failed', attempts: 0 },
+        { state: 'accepted', attempts: 1 },
+      ],
+    });
+    expect(loggedText()).toContain('its stored delivery is unreadable');
+  });
+});
+
 describe('a delivery with two consumers', () => {
   it('keeps its body through the first finish and loses it with the second', async () => {
     receive('msg_a', [ROUTINE, PROACTIVITY]);

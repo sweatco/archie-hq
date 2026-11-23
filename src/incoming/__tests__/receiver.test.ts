@@ -671,16 +671,90 @@ describe('an ignored delivery retains no body', () => {
       handoffs: [],
     });
 
-    store.resumeInput(sender.input.id);
+    const whilePaused = await deliverSigned(sender, EVENT, 'msg_a');
+    expect(await replyOf(whilePaused)).toEqual({
+      receipt_id: ignored.receipt_id,
+      status: 'duplicate',
+    });
 
-    // The ignored receipt is final: its key keeps answering with it.
-    const sameKey = await deliverSigned(sender, EVENT, 'msg_a');
-    expect(await replyOf(sameKey)).toEqual({ receipt_id: ignored.receipt_id, status: 'duplicate' });
-    expect(inbox().payloads).toEqual([]);
+    store.resumeInput(sender.input.id);
 
     const next = await deliverSigned(sender, EVENT, 'msg_b');
     expect(next.status).toBe(202);
     expect(inbox().payloads).toHaveLength(1);
+  });
+});
+
+describe('a retry of an ignored event', () => {
+  it('is accepted under the same receipt once the input is resumed', async () => {
+    const sender = await signedSender();
+    store.pauseInput(sender.input.id);
+    const ignored = await replyOf(await deliverSigned(sender, EVENT, 'msg_a'));
+    const ignoredAt = inbox().receipts[0]?.received_at;
+    store.resumeInput(sender.input.id);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    const replay = await deliverSigned(sender, EVENT, 'msg_a');
+
+    expect(replay.status).toBe(202);
+    expect(await replyOf(replay)).toEqual({ receipt_id: ignored.receipt_id, status: 'accepted' });
+    const { receipts, payloads, handoffs } = inbox();
+    expect(receipts).toMatchObject([
+      { id: ignored.receipt_id, outcome: 'open', ignored_reason: null },
+    ]);
+    expect(Number(receipts[0]?.received_at)).toBeGreaterThan(Number(ignoredAt));
+    expect(payloads).toEqual([{ receipt_id: ignored.receipt_id, body: hex(EVENT) }]);
+    expect(handoffs).toMatchObject([{ receipt_id: ignored.receipt_id, state: 'pending' }]);
+
+    const again = await deliverSigned(sender, EVENT, 'msg_a');
+    expect(await replyOf(again)).toEqual({ receipt_id: ignored.receipt_id, status: 'duplicate' });
+    expect(inbox().handoffs).toHaveLength(1);
+  });
+
+  it('is accepted once a consumer wants it', async () => {
+    const sender = await signedSender();
+    matched = { routine: [], proactivity: [] };
+    const ignored = await replyOf(await deliverSigned(sender, EVENT, 'msg_a'));
+    matched = { routine: [ROUTINE], proactivity: [] };
+
+    const replay = await deliverSigned(sender, EVENT, 'msg_a');
+
+    expect(replay.status).toBe(202);
+    expect(await replyOf(replay)).toMatchObject({ receipt_id: ignored.receipt_id });
+    expect(inbox().handoffs).toHaveLength(1);
+  });
+
+  it('stays a conflict when its content changed', async () => {
+    const sender = await signedSender();
+    store.pauseInput(sender.input.id);
+    await deliverSigned(sender, EVENT, 'msg_a');
+    store.resumeInput(sender.input.id);
+
+    const changed = await deliverSigned(sender, JSON.stringify({ type: 'other' }), 'msg_a');
+
+    expect(changed.status).toBe(409);
+    expect(inbox()).toMatchObject({
+      receipts: [{ outcome: 'ignored', conflicts: 1 }],
+      payloads: [],
+      handoffs: [],
+    });
+  });
+
+  it('is refused while the inbox is full and stays ignored', async () => {
+    const sender = await signedSender();
+    const large = JSON.stringify({ type: 'meeting.ended', pad: 'x'.repeat(3000) });
+    store.pauseInput(sender.input.id);
+    await deliverSigned(sender, large, 'msg_a');
+    store.resumeInput(sender.input.id);
+    expect((await deliverSigned(sender, large, 'msg_b')).status).toBe(202);
+
+    const replay = await deliverSigned(sender, large, 'msg_a');
+
+    expect(replay.status).toBe(429);
+    expect(inbox()).toMatchObject({
+      receipts: [{ outcome: 'ignored' }, { outcome: 'open' }],
+      payloads: [expect.anything()],
+    });
   });
 });
 

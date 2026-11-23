@@ -26,8 +26,8 @@ The secret is generated on the host and sealed with the [secrets vault](secrets.
 
 | Reply | Meaning |
 |---|---|
-| `202` | A new event was recorded with its body. Sent only after the commit. |
-| `200` `duplicate` | The same key and content again. Carries the original `receipt_id`. |
+| `202` | An event was recorded with its body. Sent only after the commit. |
+| `200` `duplicate` | The same key and content again, with nothing new to do. Carries the original `receipt_id`. |
 | `200` `ignored` | The input is paused, the filter excludes the event, or no consumer wants it. No body is kept. |
 | `409` | The same key with different content. Counted on the original receipt. |
 | `429` | The inbox is full. Nothing was recorded, so the sender should retry. |
@@ -41,6 +41,7 @@ Rules that hold on every path:
 
 - The event key is `webhook-id` for a signed delivery and `Idempotency-Key` for a bearer one. A bearer delivery without a key is always new.
 - The duplicate check comes first, so a retry gets its original receipt even when the inbox is full.
+- A retry of an ignored event is accepted under its original receipt once the input is enabled and a consumer wants it. A sender can therefore replay what arrived during a pause.
 - The signature covers the bytes as received. A bearer token is compared before the body is read.
 - Logs carry input and receipt ids and an error category. They never carry a body, a secret or a parser message.
 
@@ -70,6 +71,7 @@ The dispatcher is one loop per process. It polls every second and delivers one h
 - **Time limit:** a handler still running when its lease ends counts as a failed attempt.
 - **Retry:** a failed attempt waits 1, 5, 15, then 30 minutes. The fifth failure is final, so a handoff is given up after 51 minutes of waiting plus the time its attempts took.
 - **Pause and delete:** handoffs nobody is working on are cancelled and their bodies deleted. One being worked on may finish its attempt. If that attempt fails while the input is still paused or deleted, it is cancelled too.
+- **Unreadable handoff:** a handoff whose stored body or rows cannot be loaded is failed and logged, and the next one is delivered.
 - **Sweep:** hourly, handoffs older than seven days are failed and settled receipts older than 30 days are removed. A removed receipt's key is new again.
 
 ## Design choices

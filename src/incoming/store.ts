@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { z } from 'zod';
+import { logger } from '../system/logger.js';
 import { initializeSchema } from './schema.js';
 import { inTransaction } from './sqlite.js';
 import {
@@ -200,23 +201,29 @@ export class IncomingStore {
     };
   }
 
-  /** A known key is answered first, so a retry gets its receipt even when the inbox is full. */
+  /**
+   * A known key is answered first, so a retry gets its receipt even when the inbox is full.
+   * A retry of an ignored event is accepted under the same receipt once the input takes it.
+   */
   receive(delivery: Delivery, consumers: readonly MatchedConsumer[]): ReceiveResult {
     return inTransaction(this.db, () => {
       const input = this.input(delivery.inputId);
       if (!input) return { status: 'unavailable', reason: 'unknown' };
       if (input.state === 'deleted') return { status: 'unavailable', reason: 'deleted' };
 
-      if (delivery.eventKey !== null) {
-        const known = this.row(
-          'SELECT id,digest FROM receipts WHERE input_id=? AND binding=? AND event_key=?',
-          input.id,
-          delivery.binding,
-          delivery.eventKey,
-        );
-        if (known) {
-          const receiptId = String(known.id);
-          if (known.digest === delivery.digest) return { status: 'duplicate', receiptId };
+      const wanted = input.state === 'enabled' && consumers.length > 0;
+      const known =
+        delivery.eventKey === null
+          ? undefined
+          : this.row(
+              'SELECT id,digest,outcome FROM receipts WHERE input_id=? AND binding=? AND event_key=?',
+              input.id,
+              delivery.binding,
+              delivery.eventKey,
+            );
+      if (known) {
+        const receiptId = String(known.id);
+        if (known.digest !== delivery.digest) {
           this.run(
             'UPDATE receipts SET conflicts=conflicts+1,last_conflict_at=? WHERE id=?',
             delivery.receivedAt,
@@ -224,33 +231,49 @@ export class IncomingStore {
           );
           return { status: 'conflict', receiptId };
         }
+        if (known.outcome !== 'ignored' || !wanted) return { status: 'duplicate', receiptId };
+        if (this.wouldExceedCapacity(input.id, delivery.body.byteLength)) return { status: 'full' };
+        // The receipt's age restarts, so the sweep measures the handoff from this delivery.
+        this.run(
+          "UPDATE receipts SET outcome='open',ignored_reason=NULL,input_revision=?,received_at=? WHERE id=?",
+          input.revision,
+          delivery.receivedAt,
+          receiptId,
+        );
+        this.insertHandoffs(receiptId, delivery, consumers);
+        return { status: 'accepted', receiptId };
       }
 
       const receiptId = `rcp-${randomUUID()}`;
-      if (input.state === 'paused') {
-        this.insertReceipt(receiptId, input, delivery, 'paused');
-        return { status: 'ignored', receiptId, reason: 'paused' };
-      }
-      if (consumers.length === 0) {
-        this.insertReceipt(receiptId, input, delivery, 'filtered');
-        return { status: 'ignored', receiptId, reason: 'filtered' };
+      if (!wanted) {
+        const reason = input.state === 'paused' ? 'paused' : 'filtered';
+        this.insertReceipt(receiptId, input, delivery, reason);
+        return { status: 'ignored', receiptId, reason };
       }
       if (this.wouldExceedCapacity(input.id, delivery.body.byteLength)) return { status: 'full' };
 
       this.insertReceipt(receiptId, input, delivery, null);
-      this.run('INSERT INTO payloads(receipt_id,body) VALUES (?,?)', receiptId, delivery.body);
-      for (const consumer of consumers)
-        this.run(
-          "INSERT INTO handoffs(id,receipt_id,consumer_kind,consumer_id,snapshot,state,due_at) VALUES (?,?,?,?,?,'pending',?)",
-          `hnd-${randomUUID()}`,
-          receiptId,
-          consumer.kind,
-          consumer.consumerId,
-          consumer.snapshot,
-          delivery.receivedAt,
-        );
+      this.insertHandoffs(receiptId, delivery, consumers);
       return { status: 'accepted', receiptId };
     });
+  }
+
+  private insertHandoffs(
+    receiptId: string,
+    delivery: Delivery,
+    consumers: readonly MatchedConsumer[],
+  ): void {
+    this.run('INSERT INTO payloads(receipt_id,body) VALUES (?,?)', receiptId, delivery.body);
+    for (const consumer of consumers)
+      this.run(
+        "INSERT INTO handoffs(id,receipt_id,consumer_kind,consumer_id,snapshot,state,due_at) VALUES (?,?,?,?,?,'pending',?)",
+        `hnd-${randomUUID()}`,
+        receiptId,
+        consumer.kind,
+        consumer.consumerId,
+        consumer.snapshot,
+        delivery.receivedAt,
+      );
   }
 
   /** An ignored receipt keeps only the key and digest, for retries and history. */
@@ -291,34 +314,40 @@ export class IncomingStore {
   /** Leases the oldest due handoff and counts the attempt; one whose input was stopped is cancelled instead. */
   claimHandoff(now: number, leaseMs: number): ClaimedHandoff | null {
     return inTransaction(this.db, () => {
-      let due = this.dueHandoff(now);
-      while (due && due.input_state !== 'enabled') {
-        this.cancelHandoff(due.id, due.receipt_id);
-        due = this.dueHandoff(now);
-      }
-      if (!due) return null;
+      for (let id = this.dueHandoffId(now); id !== null; id = this.dueHandoffId(now)) {
+        const due = this.storedHandoff(id);
+        if (!due) {
+          this.failUnreadableHandoff(id);
+          continue;
+        }
+        if (due.input_state !== 'enabled') {
+          this.cancelHandoff(due.id, due.receipt_id);
+          continue;
+        }
 
-      const token = randomUUID();
-      this.run(
-        'UPDATE handoffs SET token=?,lease_until=?,attempts=attempts+1 WHERE id=?',
-        token,
-        now + leaseMs,
-        due.id,
-      );
-      return {
-        token,
-        body: due.body,
-        handoff: {
-          id: due.id,
-          receiptId: due.receipt_id,
-          consumerKind: due.consumer_kind,
-          consumerId: due.consumer_id,
-          snapshot: due.snapshot,
-          state: 'pending',
-          attempts: due.attempts + 1,
-          reservation: due.reservation,
-        },
-      };
+        const token = randomUUID();
+        this.run(
+          'UPDATE handoffs SET token=?,lease_until=?,attempts=attempts+1 WHERE id=?',
+          token,
+          now + leaseMs,
+          due.id,
+        );
+        return {
+          token,
+          body: due.body,
+          handoff: {
+            id: due.id,
+            receiptId: due.receipt_id,
+            consumerKind: due.consumer_kind,
+            consumerId: due.consumer_id,
+            snapshot: due.snapshot,
+            state: 'pending',
+            attempts: due.attempts + 1,
+            reservation: due.reservation,
+          },
+        };
+      }
+      return null;
     });
   }
 
@@ -412,8 +441,8 @@ export class IncomingStore {
     });
   }
 
-  private dueHandoff(now: number) {
-    // Chosen from the due index in its own order; the body is read only for the chosen handoff.
+  /** Chosen from the due index in its own order; the body is read only for the chosen handoff. */
+  private dueHandoffId(now: number): string | null {
     const next = this.row(
       `SELECT id FROM handoffs
         WHERE state='pending' AND due_at<=? AND lease_until<=?
@@ -421,9 +450,13 @@ export class IncomingStore {
       now,
       now,
     );
-    if (!next) return null;
-    return dueHandoffSchema.parse(
-      this.requiredRow(
+    return next ? String(next.id) : null;
+  }
+
+  /** Null when the handoff's body or one of its rows is missing or malformed. */
+  private storedHandoff(id: string) {
+    const stored = dueHandoffSchema.safeParse(
+      this.row(
         `SELECT h.id, h.receipt_id, h.consumer_kind, h.consumer_id, h.snapshot, h.attempts,
                 h.reservation, i.state AS input_state, p.body
            FROM handoffs h
@@ -431,8 +464,21 @@ export class IncomingStore {
            JOIN inputs i ON i.id=r.input_id
            JOIN payloads p ON p.receipt_id=h.receipt_id
           WHERE h.id=?`,
-        String(next.id),
+        id,
       ),
+    );
+    return stored.success ? stored.data : null;
+  }
+
+  /** Left pending, it would stay first in line and hold back every later handoff. */
+  private failUnreadableHandoff(id: string): void {
+    this.endHandoffs(
+      "UPDATE handoffs SET state='failed',token=NULL,lease_until=0 WHERE id=? RETURNING receipt_id",
+      id,
+    );
+    logger.error(
+      'incoming',
+      `Incoming handoff failed: its stored delivery is unreadable handoff=${id}`,
     );
   }
 
