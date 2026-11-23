@@ -44,7 +44,7 @@ Run the same cases on the base ref and the candidate, and report the per-case ch
 
 ### Substrate
 
-A live instance driven through the API channel, as `archie-e2e` does: the real spawn path, no Slack. The driver is a script over HTTP, like `tools/e2e/tool-gate-check.ts`, and is shared with scripted E2E scenarios. A stub MCP server (the `gatecheck` pattern) supplies fixed tool results, which the pilot lacked.
+A live instance driven through the API channel, as `archie-e2e` does: the real spawn path, no Slack. The driver is a script over HTTP, like `tools/e2e/tool-gate-check.ts`, and is shared with scripted E2E scenarios. A stub MCP server (the `gatecheck` pattern) supplies fixed tool results, which the pilot lacked. Since 2026-11-19 the driver is a promptfoo custom provider, and promptfoo supplies the case files, trials, assertions and report.
 
 ### Graders
 
@@ -151,3 +151,8 @@ About 25 to start:
 - **2026-11-18, maintainer:** evals should eventually run on pull requests with prompt or architecture changes, only when the maintainer approves the run. Approval uses a protected GitHub Environment with a required reviewer.
 - **2026-11-18, maintainer:** a model judge may read pulled production sessions, under a spend cap.
 - **2026-11-18, independent review:** the transcript reader follows one message chain, so the record builder must read every session of a task and mark incomplete records; the pull-request gate controls spend on the eval key and is not a security boundary against collaborators.
+- **2026-11-19, maintainer:** use promptfoo for case files, trials, assertions, the judge and the report, and build only the Archie-specific parts: the record builder, two providers, the hermetic boot, the manifest, the comparison script and the approval gate. A review of ready-made tools on that day found none that covers the whole loop:
+  - `claude plugin eval` runs a plugin inside stock Claude Code, so it cannot target the PM prompt or in-process tools.
+  - Promptfoo's built-in Claude Agent SDK provider and Inspect's Claude Code solver launch their own agent, not Archie.
+  - Tracing platforms over OpenTelemetry would move session content out of the task folder for no gain over the SDK reader.
+  - The review read documentation only. A check on a synthetic task folder the same day confirmed that promptfoo 0.125.1 assertions read a custom provider's record.
