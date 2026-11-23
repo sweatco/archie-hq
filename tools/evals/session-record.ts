@@ -43,6 +43,13 @@ export interface BuiltRecord {
   record: SessionRecord;
   /** Why `record.complete` is false. */
   gaps: string[];
+  /**
+   * False when the PM started a turn whose usage is not recorded, so
+   * `usage.costUsd` understates the task. The engine writes a turn's usage when
+   * the SDK reports its result, which can trail the event that settled the
+   * task; an aborted turn never reports one.
+   */
+  costComplete: boolean;
 }
 
 const PM_AGENT_ID = 'pm-agent';
@@ -60,6 +67,7 @@ const metadataSchema = z.object({
 });
 
 const usageLineSchema = z.object({
+  ts: z.string().optional(),
   query_nonce: z.string().optional(),
   agentKey: z.string().optional(),
   session_id: z.string().optional(),
@@ -99,7 +107,19 @@ export async function buildSessionRecord(
     usage: summarizeUsage(usageLines),
     manifest: 'unknown',
   };
-  return { record, gaps };
+  return { record, gaps, costComplete: usageCoversLastTurn(events, usageLines) };
+}
+
+/**
+ * Every PM turn starts with an `agent:active` event and ends with a usage
+ * record, written after it whether the turn succeeded or failed. So the cost is
+ * whole once some usage record is at least as new as the last such event.
+ */
+function usageCoversLastTurn(events: SystemEvent[], usageLines: UsageLine[]): boolean {
+  const lastTurnStart = events.filter((event) => event.type === 'agent:active').at(-1)?.timestamp;
+  if (lastTurnStart === undefined) return true;
+  const startedMs = Date.parse(lastTurnStart);
+  return usageLines.some((line) => line.ts !== undefined && Date.parse(line.ts) >= startedMs);
 }
 
 async function readJsonLines<T>(path: string, schema: z.ZodType<T>): Promise<T[]> {
