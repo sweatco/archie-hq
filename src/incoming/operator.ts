@@ -147,7 +147,7 @@ function formatRow([input, state, auth, created, receipts, ignored, waiting]: Ro
   ].join('  ');
 }
 
-function list(services: InputServices, print: (line: string) => void): void {
+async function list(services: OperatorServices, print: (line: string) => void): Promise<void> {
   const summaries = services.store.inputSummaries();
   if (summaries.length === 0) {
     print('No inputs yet. Create one with `npm run incoming -- create`.');
@@ -166,7 +166,14 @@ function list(services: InputServices, print: (line: string) => void): void {
         String(pendingHandoffs),
       ]),
     );
-    if (input.routines.length > 0) print(`  linked: ${input.routines.join(', ')}`);
+    if (input.routines.length > 0) {
+      const links = await Promise.all(
+        input.routines.map(async (id) =>
+          (await services.loadTrigger(id)) ? id : `${id} (no longer exists)`,
+        ),
+      );
+      print(`  linked: ${links.join(', ')}`);
+    }
   }
 }
 
@@ -266,12 +273,21 @@ async function reservedTask(
   state: string,
   reservation: string | null,
 ): Promise<string> {
-  const reserved = reservedTaskSchema.safeParse(reservation ? JSON.parse(reservation) : null);
+  const reserved = reservedTaskSchema.safeParse(parsedJson(reservation));
   if (!reserved.success) return '-';
   const status = await services.taskStatus(reserved.data.task_id);
   if (status === null) return '-';
   const uncertain = state === 'cancelled' || state === 'failed';
   return `${reserved.data.task_id} ${status}${uncertain ? ' (uncertain)' : ''}`;
+}
+
+function parsedJson(text: string | null): unknown {
+  if (text === null) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
 }
 
 function liveInput(services: InputServices, id: string): Input {

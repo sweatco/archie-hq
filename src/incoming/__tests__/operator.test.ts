@@ -216,6 +216,11 @@ it('links a trigger to an input, shows what was allowed, and lists the link', as
   await run('list');
   expect(printed).toHaveLength(3);
   expect(printed[2]).toBe(`  linked: ${ROUTINE_ID}`);
+
+  triggers.delete(ROUTINE_ID);
+  printed = [];
+  await run('list');
+  expect(printed[2]).toBe(`  linked: ${ROUTINE_ID} (no longer exists)`);
 });
 
 it('says when a linked trigger does not receive events yet', async () => {
@@ -337,6 +342,31 @@ it('shows how each handed-off event ended, why, and the Task it reserved', async
   expect(printed).toHaveLength(6);
   expect(printed[1]).toMatch(new RegExp(`${other.id}\\s+${ROUTINE_ID}\\s+pending`));
   await expect(run('history', 'inp-missing')).rejects.toThrow(/No input inp-missing/);
+});
+
+it('shows a handoff whose reservation cannot be read', async () => {
+  const { id } = await created();
+  const at = Date.UTC(2026, 10, 21, 9, 30);
+  store.receive(
+    {
+      inputId: id,
+      binding: 'generic',
+      eventKey: 'msg_1',
+      digest: 'unused',
+      body: new Uint8Array(),
+      receivedAt: at,
+    },
+    [{ kind: 'routine', consumerId: ROUTINE_ID, snapshot: '{}' }],
+  );
+  const claimed = store.claimHandoff(at + 60_000, 1000);
+  if (!claimed) throw new Error('Expected a waiting handoff');
+  store.saveReservation(claimed.handoff.id, claimed.token, 'not json');
+  store.finishHandoff(claimed.handoff.id, claimed.token, 'failed', 'attempts_exhausted');
+  printed = [];
+
+  await run('history', id);
+
+  expect(printed[1]).toMatch(/failed\s+attempts_exhausted\s+-$/);
 });
 
 it('says so when no event has been handed off', async () => {

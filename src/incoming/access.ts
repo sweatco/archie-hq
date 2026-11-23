@@ -16,15 +16,26 @@ export function routineMayUseInput(input: Input | null, triggerId: string): bool
   return input !== null && input.state !== 'deleted' && input.routines.includes(triggerId);
 }
 
+type EventStart = Pick<TaskMetadata, 'triggered_by' | 'triggered_start'>;
+
 /**
  * A Task that an incoming event started may post, share files and write memory only while its routine may use the input.
  * The inbox is read on every call, and a closed inbox refuses. Every other Task passes.
  */
-export function taskMayUseItsInput(
-  metadata: Pick<TaskMetadata, 'triggered_by' | 'triggered_start'>,
-): boolean {
+export function taskMayUseItsInput(metadata: EventStart): boolean {
+  return inputRefusal(metadata) === null;
+}
+
+/** Why such a Task is refused, or null when it may go on. A closed inbox is named apart from a lost link. */
+export function inputRefusal(metadata: EventStart): string | null {
   const start = metadata.triggered_start;
-  if (!start) return true;
-  if (!openInbox || !metadata.triggered_by) return false;
-  return routineMayUseInput(openInbox.input(start.input_id), metadata.triggered_by);
+  if (!start) return null;
+  if (!openInbox)
+    return 'the incoming events inbox is not open, so the input that started this task cannot be checked';
+  if (
+    !metadata.triggered_by ||
+    !routineMayUseInput(openInbox.input(start.input_id), metadata.triggered_by)
+  )
+    return 'this task may no longer use the incoming events input that started it';
+  return null;
 }

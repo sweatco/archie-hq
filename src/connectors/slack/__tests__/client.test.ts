@@ -1782,3 +1782,28 @@ describe('getMessageReactions — failure is not emptiness', () => {
     },
   );
 });
+
+describe('channelReachability — a failed lookup is not a missing channel', () => {
+  it.each([
+    ['a live channel', () => ({ channel: { id: 'C1' } }), 'reachable', true],
+    ['an archived channel', () => ({ channel: { id: 'C1', is_archived: true } }), 'gone', false],
+    [
+      'a channel Slack does not know',
+      () => Promise.reject(Object.assign(new Error('x'), { data: { error: 'channel_not_found' } })),
+      'gone',
+      false,
+    ],
+    [
+      'a rate limit',
+      () => Promise.reject(Object.assign(new Error('x'), { data: { error: 'ratelimited' } })),
+      'unknown',
+      false,
+    ],
+    ['a network failure', () => Promise.reject(new Error('socket hang up')), 'unknown', false],
+  ])('%s', async (_name, answer, state, reachable) => {
+    slackApi.conversations.info.mockImplementation(answer);
+
+    expect(await client.channelReachability('C1')).toBe(state);
+    expect(await client.isChannelReachable('C1')).toBe(reachable);
+  });
+});

@@ -27,7 +27,11 @@ import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { emitEvent } from './event-bus.js';
 import { logger } from './logger.js';
 import { isAppAuthorId } from './trigger-match.js';
-import { postSlackMessage, isChannelReachable } from '../connectors/slack/client.js';
+import {
+  postSlackMessage,
+  isChannelReachable,
+  channelReachability,
+} from '../connectors/slack/client.js';
 import { ensureChannelCanvas } from '../connectors/slack/channel-canvas.js';
 import { ensureChannelPins } from '../connectors/slack/channel-pins.js';
 import { formatConversationLabel } from '../connectors/slack/channel-ids.js';
@@ -71,6 +75,17 @@ function withinDailyCap(): boolean {
 /** Run slots taken today, across schedule, message and event fires. */
 export function dailyFireCount(): number {
   return new Date().toISOString().slice(0, 10) === fireDay ? fireCount : 0;
+}
+
+// The day each event Task took its slot, until the Task starts. Kept in memory like the count itself.
+const unstartedEventSlots = new Map<string, string>();
+
+/** Gives back the run slot of an event Task that was discarded before it started. A second call does nothing. */
+export function releaseEventSlot(taskId: string): void {
+  const day = unstartedEventSlots.get(taskId);
+  if (day === undefined) return;
+  unstartedEventSlots.delete(taskId);
+  if (day === fireDay && fireCount > 0) fireCount--;
 }
 
 // ---- Cron helpers (exported for tools + tests) ----
@@ -525,9 +540,10 @@ export async function fireTrigger(
 async function boundChannelReachable(
   trigger: Trigger,
   pause: () => Promise<unknown>,
+  reachable: (channelId: string) => Promise<boolean> = isChannelReachable,
 ): Promise<boolean> {
   if (trigger.binding.type !== 'channel') return true;
-  if (await isChannelReachable(trigger.binding.channel_id)) return true;
+  if (await reachable(trigger.binding.channel_id)) return true;
   logger.warn(
     'trigger-scheduler',
     `Trigger ${trigger.id} bound channel ${trigger.binding.channel_id} unreachable — pausing`,
@@ -587,10 +603,19 @@ const skipped = (reason: string): FireResult => ({ status: 'skipped', reason });
  */
 export async function fireEvent(routine: Trigger, fire: EventFire): Promise<FireResult> {
   if (!triggersEnabled()) return skipped('triggers_disabled');
-  const reachable = await boundChannelReachable(routine, () =>
-    updateLiveTrigger(routine.id, (stored) => {
-      stored.status = 'paused';
-    }),
+  const reachable = await boundChannelReachable(
+    routine,
+    () =>
+      updateLiveTrigger(routine.id, (stored) => {
+        stored.status = 'paused';
+      }),
+    async (channelId) => {
+      const channel = await channelReachability(channelId);
+      // Thrown, so the handoff retries: a lookup that failed says nothing about the channel.
+      if (channel === 'unknown')
+        throw new Error(`Could not check channel ${channelId} for trigger ${routine.id}`);
+      return channel === 'reachable';
+    },
   );
   if (!reachable) return skipped('destination_unreachable');
 
@@ -604,11 +629,12 @@ export async function fireEvent(routine: Trigger, fire: EventFire): Promise<Fire
       return skipped('daily_cap');
     }
     taskId = generateTaskId();
+    unstartedEventSlots.set(taskId, fireDay);
     try {
       fire.reserve(taskId);
     } catch (error) {
       // The slot belongs to the reservation, so a reservation that was not saved frees it.
-      fireCount--;
+      releaseEventSlot(taskId);
       throw error;
     }
   }
@@ -633,7 +659,9 @@ export async function fireEvent(routine: Trigger, fire: EventFire): Promise<Fire
   const stop = await fire.whyStop();
   if (stop) return skipped(stop);
 
-  if (await task.startTriggered()) {
+  const started = await task.startTriggered();
+  unstartedEventSlots.delete(taskId);
+  if (started) {
     logger.system(`Trigger ${routine.id} fired (event) → task ${taskId}`);
     await updateLiveTrigger(routine.id, (stored) => {
       stored.last_fired_at = new Date().toISOString();

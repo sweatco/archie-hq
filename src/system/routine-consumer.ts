@@ -15,7 +15,12 @@ import { loadMetadata } from '../tasks/persistence.js';
 import { Task } from '../tasks/task.js';
 import type { Trigger, TriggerBinding } from '../types/trigger.js';
 import { logger } from './logger.js';
-import { fireEvent, getEnabledTrigger, triggersEnabled } from './trigger-scheduler.js';
+import {
+  fireEvent,
+  getEnabledTrigger,
+  releaseEventSlot,
+  triggersEnabled,
+} from './trigger-scheduler.js';
 import { loadTrigger } from './trigger-store.js';
 
 export const ROUTINE_CONSUMER_KIND = 'routine';
@@ -88,7 +93,7 @@ async function startRoutine(work: HandoffWork): Promise<HandleResult> {
   if (taskId && (await startedFor(taskId, handoff.id))) return ACCEPTED;
 
   const skip = async (reason: string): Promise<HandleResult> => {
-    if (taskId) await Task.discardPrepared(taskId, handoff.id);
+    if (taskId) await discardUnstarted(taskId, handoff.id);
     return { state: 'skipped', reason };
   };
 
@@ -114,6 +119,13 @@ async function startRoutine(work: HandoffWork): Promise<HandleResult> {
     },
   );
   return fired.status === 'fired' ? ACCEPTED : skip(fired.reason);
+}
+
+/** Removes a Task that never started and gives its run slot back. Returns whether the folder is gone. */
+async function discardUnstarted(taskId: string, origin: string): Promise<boolean> {
+  const gone = await Task.discardPrepared(taskId, origin);
+  if (gone) releaseEventSlot(taskId);
+  return gone;
 }
 
 async function startedFor(taskId: string, origin: string): Promise<boolean> {
@@ -145,14 +157,23 @@ async function liveRoutine(
   return namesInput ? { routine } : { stop: 'routine_changed' };
 }
 
+/** The Task a reservation names, or undefined when the stored text is not a reservation. */
+function reservedTaskId(reservation: string): string | undefined {
+  try {
+    const reserved = routineReservationSchema.safeParse(JSON.parse(reservation));
+    return reserved.success ? reserved.data.task_id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** The inbox ends some handoffs without calling `handle`; a Task one of them prepared is removed here. */
 async function discardAbandoned(inbox: InboxView): Promise<void> {
   for (const { handoffId, reservation } of inbox.abandonedReservations(ROUTINE_CONSUMER_KIND)) {
-    const reserved = routineReservationSchema.safeParse(JSON.parse(reservation));
-    if (!reserved.success) continue;
-    const { task_id: taskId } = reserved.data;
+    const taskId = reservedTaskId(reservation);
+    if (!taskId) continue;
     const prepared = (await loadMetadata(taskId))?.status === 'preparing';
-    if ((await Task.discardPrepared(taskId, handoffId)) && prepared)
+    if ((await discardUnstarted(taskId, handoffId)) && prepared)
       logger.system(`Discarded task ${taskId}: its handoff ${handoffId} ended before it started`);
   }
 }

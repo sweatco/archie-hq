@@ -59,7 +59,11 @@ export function mountIncomingEvents(
     mkdirSync(INCOMING_SECRETS_DIR, { recursive: true, mode: 0o700 });
   } catch (error) {
     // Senders retry a 503, which keeps their events alive until the inbox is back.
-    logger.error('incoming', 'Incoming events inbox cannot be opened; deliveries get 503', error);
+    logger.error(
+      'incoming',
+      'Incoming events inbox cannot be opened; deliveries get 503 and tasks that events started cannot post',
+      error,
+    );
     app.post(INCOMING_ROUTE, (_req: Request, res: Response) => {
       res.status(503).json({ error: 'unavailable' });
     });

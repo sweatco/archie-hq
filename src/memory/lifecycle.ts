@@ -133,6 +133,7 @@ async function processExtraction(taskId: string): Promise<void> {
     if (!outcome) return;
     const current = await classify();
     if (
+      !taskMayUseItsInput(metadata) ||
       !isAuthorizedMemoryScope(destination, current) ||
       current.kind !== scope.kind ||
       (scope.kind === 'user' && current.kind === 'user' && current.user_id !== scope.user_id)
@@ -210,7 +211,12 @@ async function processExtraction(taskId: string): Promise<void> {
     return;
   }
   const current = await classify();
-  if (!isAuthorizedMemoryScope(destination, current) || current.kind !== 'public') return;
+  if (
+    !taskMayUseItsInput(metadata) ||
+    !isAuthorizedMemoryScope(destination, current) ||
+    current.kind !== 'public'
+  )
+    return;
 
   // Apply per-user updates. Use the identity-aware writer so first-touch
   // user files get YAML frontmatter (slack_user_id + display_name + aliases).

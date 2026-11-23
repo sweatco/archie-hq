@@ -137,6 +137,8 @@ import { applyEntityUpdate } from '../entities.js';
 import { rebuildIndex } from '../entity-index.js';
 import { enqueuePending, readPending } from '../pending-queue.js';
 import { runExtraction } from '../extractor.js';
+import { setOpenInbox } from '../../incoming/access.js';
+import type { Input } from '../../incoming/types.js';
 import { classifySlackMemoryScope, postSlackMessage } from '../../connectors/slack/client.js';
 import { logger } from '../../system/logger.js';
 import { expectDefined } from '../../test-support/assertions.js';
@@ -302,6 +304,44 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     expect(existsSync(join(publicTasksDir, `${TASK_ID}.md`))).toBe(false);
     expect(existsSync(activityPath)).toBe(false);
     expect(await readPending()).toEqual([]);
+  });
+
+  it('writes nothing when the routine loses its input while the extraction runs', async () => {
+    await writeFile(
+      join(sessionsDir, TASK_ID, 'shared', 'metadata.json'),
+      JSON.stringify({
+        ...METADATA,
+        triggered_by: 'trg-20261121-0900-notes1',
+        triggered_start: { origin: 'hnd-1', input_id: 'inp-1', phase: 'ready', brief: '' },
+      }),
+      'utf-8',
+    );
+    const linked: Input = {
+      id: 'inp-1',
+      state: 'enabled',
+      auth: 'bearer',
+      secretRefs: [],
+      filter: [],
+      routines: ['trg-20261121-0900-notes1'],
+      revision: 1,
+    };
+    setOpenInbox({ input: () => linked });
+    const extraction = expectDefined(vi.mocked(runExtraction).getMockImplementation());
+    vi.mocked(runExtraction).mockImplementationOnce(async (...args) => {
+      setOpenInbox({ input: () => ({ ...linked, routines: [] }) });
+      return extraction(...args);
+    });
+
+    try {
+      handleTaskCompleted(TASK_ID);
+      await enqueueMemoryWrite(() => Promise.resolve());
+    } finally {
+      setOpenInbox(null);
+    }
+
+    expect(runExtraction).toHaveBeenCalledTimes(1);
+    expect(existsSync(join(publicTasksDir, `${TASK_ID}.md`))).toBe(false);
+    expect(existsSync(activityPath)).toBe(false);
   });
 
   it('does not classify, read, or extract while memory is unavailable', async () => {

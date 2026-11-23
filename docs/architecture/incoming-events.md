@@ -109,7 +109,7 @@ This defines no scope for an input. Who owns an input, who may see its events an
 4. **Prepare.** The event is written as `incoming-event.json` in the Task's folder. Then the Task's metadata is written with status `preparing`, homed in the routine's conversation.
 5. **Start.** The live check runs again, the Task flips to `in_progress`, and the PM gets its instruction.
 
-Each step is safe to repeat. A retry finds the reservation, continues the same Task and takes no second slot. A Task that already started is accepted without a second instruction. After a crash in mid-start, the retry waits for the interrupted attempt's lease to end, up to five minutes.
+Each step is safe to repeat. A retry finds the reservation, continues the same Task and takes no second slot. A Task that already started is accepted without a second instruction. A start whose first wake fails is undone, so the retry starts the Task. After a crash in mid-start, the retry waits for the interrupted attempt's lease to end, up to five minutes.
 
 The Task opens its own thread with its first post, as a [schedule fire](triggers.md#a-schedule-fire-homes-its-task-in-the-bound-channel) does.
 
@@ -128,9 +128,10 @@ The instruction names the event file and says its content is untrusted data, nev
 | Routine unlinked | Skipped | Its next post, file share and memory write are refused |
 
 - **Skip reasons:** `routine_paused`, `routine_deleted`, `routine_changed`, `routine_unlinked`, `input_paused`, `input_deleted`, `triggers_disabled`, `destination_unreachable`, `daily_cap`.
-- **A skip leaves no Task.** A Task that an earlier attempt prepared is removed with its event file. The sweep does the same for handoffs the inbox ended by itself.
+- **A skip leaves no Task.** A Task that an earlier attempt prepared is removed with its event file, and its run slot goes back to the daily allowance. The sweep does the same for handoffs the inbox ended by itself.
+- **A channel that Slack could not be asked about is not a skip.** The attempt fails and is retried. Only a channel that Slack reports missing or archived pauses the routine and skips the event as `destination_unreachable`.
 - **Timing.** A stopped routine's waiting work is skipped at its next attempt, which can be 30 minutes away. The body stays in the inbox until then.
-- **A running Task** is checked against the inbox before every post and file share, by the same gate that holds it to its [destination](memory.md). Explicit memory writes and completion extraction ask the same question. With the inbox closed or incoming events off, the answer is no. Context the agent already loaded is not taken back.
+- **A running Task** is checked against the inbox before every post and file share, by the same gate that holds it to its [destination](memory.md). Explicit memory writes and completion extraction ask the same question, and extraction asks again just before it writes. With incoming events off, or an inbox that could not be opened, the answer is no and the refusal says so: such a Task stays silent in its thread until the inbox is open again. Context the agent already loaded is not taken back.
 - **Two writes pass without the check,** as they pass the destination check: the notice a Task's trigger tools post to a trigger's bound channel, and the removal of an acknowledgement reaction. The notice carries a summary the PM wrote, which is one reason the tool review under [Not built yet](#not-built-yet) comes before production use.
 - **An uncertain run** is a Task that outlived a cancelled or failed handoff: it started, and the handoff did not record it. `history` marks it.
 
@@ -167,7 +168,7 @@ npm run incoming -- history [<input-id>]
 ```
 
 - `create` prints the callback URL, built from `ARCHIE_PUBLIC_URL`, and the secret. The secret is shown only then.
-- `link` refuses a trigger with no condition for that input, then prints its destination, summary and status. `list` shows each input's links.
+- `link` refuses a trigger with no condition for that input, then prints its destination, summary and status. `list` shows each input's links and marks one whose trigger no longer exists.
 - `history` shows the newest 50 handoffs: state, reason and the Task each reserved.
 
 Before running an older binary, delete event routines and `WORKDIR/incoming/`: it refuses the newer inbox and does not know the `incoming_event` condition.

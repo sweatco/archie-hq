@@ -22,7 +22,7 @@ import { prCardFingerprint, prCardTitlePlain } from '../system/pr-card-format.js
 import { APPROVAL_TTL_MS, PENDING_APPROVAL_TTL_MS } from '../agents/tool-approval-gate.js';
 import { getGitHubClient } from '../connectors/github/client.js';
 import { createKeyedLock } from '../system/keyed-lock.js';
-import { taskMayUseItsInput } from '../incoming/access.js';
+import { inputRefusal } from '../incoming/access.js';
 
 /**
  * Target for postToUser — controls where the message is delivered.
@@ -493,9 +493,27 @@ export class Task {
       if (start.phase === 'ready') return false;
       if (persisted.status !== 'preparing') throw new Error('Task preparation incomplete');
       this.metadata.triggered_start = { ...start, phase: 'ready' };
-      await this.startWith(start.brief);
+      try {
+        await this.startWith(start.brief);
+      } catch (error) {
+        await this.backToPrepared(start);
+        throw error;
+      }
       return true;
     });
+  }
+
+  /** Undoes a start whose first wake failed, so the handoff's retry starts the Task instead of finding it started. */
+  private async backToPrepared(start: NonNullable<TaskMetadata['triggered_start']>): Promise<void> {
+    this.isActive = false;
+    activeTasks.delete(this.taskId);
+    this.clearTaskTimeout();
+    this.agent?.queue.stop();
+    this.metadata.status = 'preparing';
+    this.metadata.triggered_start = start;
+    await persistTaskMetadata(this.taskId, this.metadata).catch((error: unknown) =>
+      logger.error('task', `Task ${this.taskId} could not be put back to prepared`, error),
+    );
   }
 
   private async startWith(brief: string): Promise<void> {
@@ -860,10 +878,8 @@ export class Task {
     if (!destination || destination.channel_id !== channelId) {
       throw new Error('delivery blocked: this task belongs to a different Slack destination');
     }
-    if (!taskMayUseItsInput(this.metadata))
-      throw new Error(
-        'delivery blocked: this task may no longer use the incoming events input that started it',
-      );
+    const refusal = inputRefusal(this.metadata);
+    if (refusal) throw new Error(`delivery blocked: ${refusal}`);
   }
 
   async prepareTriggerDelivery(binding: TriggerBinding): Promise<void> {

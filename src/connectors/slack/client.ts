@@ -2524,17 +2524,27 @@ export async function fetchSlackFileBody(fileUrl: string): Promise<string> {
  * actually posting.
  */
 export async function isChannelReachable(channelId: string): Promise<boolean> {
+  // An unanswered probe counts as unreachable here, so fireTrigger pauses the
+  // trigger rather than error-looping every tick.
+  return (await channelReachability(channelId)) === 'reachable';
+}
+
+/**
+ * The same probe with its doubt kept: `gone` when Slack says the channel is missing or archived,
+ * `unknown` when Slack could not be asked or answered with any other error.
+ */
+export async function channelReachability(
+  channelId: string,
+): Promise<'reachable' | 'gone' | 'unknown'> {
+  let result: Awaited<ReturnType<WebClient['conversations']['info']>>;
   try {
-    // getSlackClient() is inside the try on purpose: if the client isn't
-    // initialized it throws, and this probe must return false (→ fireTrigger
-    // pauses the trigger) rather than propagate and error-loop every tick.
-    const client = getSlackClient();
-    const result = await client.conversations.info({ channel: channelId });
-    const channel = result.channel as { is_archived?: boolean } | undefined;
-    return channel ? channel.is_archived !== true : false;
-  } catch {
-    return false;
+    // getSlackClient() throws when the client isn't initialized, which is also `unknown`.
+    result = await getSlackClient().conversations.info({ channel: channelId });
+  } catch (error) {
+    return slackErrorCode(error) === 'channel_not_found' ? 'gone' : 'unknown';
   }
+  const channel = result.channel as { is_archived?: boolean } | undefined;
+  return channel && channel.is_archived !== true ? 'reachable' : 'gone';
 }
 
 /**

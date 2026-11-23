@@ -18,7 +18,7 @@ const fixture = await vi.hoisted(async () => {
     spawn: vi.fn<typeof import('../../agents/spawn.js').spawnAgent>(),
     post: vi.fn<typeof import('../../connectors/slack/client.js').postSlackMessage>(),
     files: vi.fn<typeof import('../../connectors/slack/client.js').postSlackFiles>(),
-    reachable: vi.fn<typeof import('../../connectors/slack/client.js').isChannelReachable>(),
+    channel: vi.fn<typeof import('../../connectors/slack/client.js').channelReachability>(),
     channelInfo: vi.fn(),
     /** Runs after the Task is prepared and before it starts. */
     betweenPrepareAndStart: vi.fn(async (): Promise<void> => {}),
@@ -42,7 +42,7 @@ vi.mock('../../connectors/slack/client.js', async (original) => ({
   ...(await original<typeof import('../../connectors/slack/client.js')>()),
   postSlackMessage: fixture.post,
   postSlackFiles: fixture.files,
-  isChannelReachable: fixture.reachable,
+  channelReachability: fixture.channel,
   getChannelInfo: fixture.channelInfo,
 }));
 vi.mock('../../connectors/slack/channel-canvas.js', async (original) => ({
@@ -194,7 +194,7 @@ beforeEach(() => {
     agent.handle = { isRunning: true, running: new Promise(() => {}), abort: vi.fn() };
   });
   fixture.post.mockResolvedValue(THREAD_TS);
-  fixture.reachable.mockResolvedValue(true);
+  fixture.channel.mockResolvedValue('reachable');
   fixture.betweenPrepareAndStart.mockResolvedValue(undefined);
 
   now = 1_800_000_000_000;
@@ -347,7 +347,7 @@ describe('a handoff for a linked routine', () => {
       home_channel: { channel_id: 'D0DANA' },
       memory_destination: { channel_id: 'D0DANA' },
     });
-    expect(fixture.reachable).not.toHaveBeenCalled();
+    expect(fixture.channel).not.toHaveBeenCalled();
   });
 });
 
@@ -403,6 +403,33 @@ describe('an interrupted start is continued by the retry', () => {
     });
     expect(dailyFireCount() - slotsBefore).toBe(1);
     expect(fixture.spawn).toHaveBeenCalledTimes(1);
+    expect(wakes).toHaveBeenCalledTimes(1);
+  });
+
+  it('puts a Task whose first wake failed back to prepared, and starts it on the retry', async () => {
+    await routine();
+    deliver();
+    const wakes = vi.spyOn(MessageQueue.prototype, 'addMessage');
+    fixture.spawn.mockRejectedValueOnce(new Error('spawn failed'));
+
+    await dispatch();
+
+    expect(inbox().handoffs).toMatchObject([{ state: 'pending', attempts: 1 }]);
+    expect(await onlyTask()).toMatchObject({
+      status: 'preparing',
+      triggered_start: { phase: 'prepared' },
+    });
+    expect(activeTasks.size).toBe(0);
+    expect(wakes).not.toHaveBeenCalled();
+
+    now += 1000;
+    await dispatch();
+
+    expect(inbox().handoffs).toMatchObject([{ state: 'accepted', attempts: 2 }]);
+    expect(await onlyTask()).toMatchObject({
+      status: 'in_progress',
+      triggered_start: { phase: 'ready' },
+    });
     expect(wakes).toHaveBeenCalledTimes(1);
   });
 
@@ -467,7 +494,7 @@ describe('work that may no longer run is skipped with its reason', () => {
     ],
     ['routine_unlinked', () => void store.unlinkRoutine(INPUT_ID, ROUTINE_ID)],
     ['triggers_disabled', () => void vi.stubEnv('ARCHIE_TRIGGERS_ENABLED', 'false')],
-    ['destination_unreachable', () => void fixture.reachable.mockResolvedValue(false)],
+    ['destination_unreachable', () => void fixture.channel.mockResolvedValue('gone')],
     // The input stops while the attempt holds the lease, so the inbox leaves the handoff to the consumer.
     [
       'input_paused',
@@ -500,9 +527,11 @@ describe('work that may no longer run is skipped with its reason', () => {
   it('discards the Task an earlier attempt prepared', async () => {
     await routine();
     deliver();
+    const slotsBefore = dailyFireCount();
     vi.spyOn(Task.prototype, 'startTriggered').mockRejectedValueOnce(new Error('process stopped'));
     await dispatch();
     expect((await onlyTask()).status).toBe('preparing');
+    expect(dailyFireCount()).toBe(slotsBefore + 1);
 
     await pause();
     now += 1000;
@@ -510,18 +539,37 @@ describe('work that may no longer run is skipped with its reason', () => {
 
     expect(inbox().handoffs).toMatchObject([{ state: 'skipped', reason: 'routine_paused' }]);
     expect(taskIds()).toEqual([]);
+    expect(dailyFireCount()).toBe(slotsBefore);
   });
 
   it('pauses the routine under the store lock when its channel is gone', async () => {
     await routine();
     deliver();
-    fixture.reachable.mockResolvedValue(false);
+    fixture.channel.mockResolvedValue('gone');
 
     await dispatch();
 
     expect((await loadTrigger(ROUTINE_ID))?.status).toBe('paused');
     expect(getEnabledTrigger(ROUTINE_ID)).toBeUndefined();
     expect(fixture.post.mock.calls.map(([post]) => post.channel)).toEqual(['U0DANA']);
+  });
+
+  it('retries, with the routine left on, when Slack cannot say whether its channel is there', async () => {
+    await routine();
+    deliver();
+    fixture.channel.mockResolvedValueOnce('unknown');
+
+    await dispatch();
+
+    expect(inbox().handoffs).toMatchObject([{ state: 'pending', attempts: 1 }]);
+    expect((await loadTrigger(ROUTINE_ID))?.status).toBe('enabled');
+    expect(getEnabledTrigger(ROUTINE_ID)).toBeDefined();
+    expect(fixture.post).not.toHaveBeenCalled();
+
+    now += 1000;
+    await dispatch();
+
+    expect(inbox().handoffs).toMatchObject([{ state: 'accepted', attempts: 2 }]);
   });
 
   it('skips at the daily allowance, which other triggers share, without a message per event', async () => {
@@ -571,6 +619,46 @@ describe('a handoff the inbox ends by itself', () => {
     expect(taskIds()).toEqual([]);
   });
 
+  it('gives the run slot of a discarded Task back once', async () => {
+    await routine();
+    deliver('msg_1');
+    await dispatch();
+    const used = dailyFireCount();
+    deliver('msg_2');
+    vi.spyOn(Task.prototype, 'startTriggered').mockRejectedValueOnce(new Error('process stopped'));
+    await dispatch();
+    expect(dailyFireCount()).toBe(used + 1);
+
+    store.pauseInput(INPUT_ID, now);
+    now += HOUR;
+    await dispatch();
+    now += HOUR;
+    await dispatch();
+
+    expect(dailyFireCount()).toBe(used);
+    expect(taskIds()).toHaveLength(1);
+  });
+
+  it('removes a prepared Task listed after a reservation it cannot read', async () => {
+    await routine();
+    deliver('msg_1');
+    vi.spyOn(Task, 'prepareTriggered').mockRejectedValueOnce(new Error('process stopped'));
+    await dispatch();
+    const db = new DatabaseSync(dbPath);
+    db.prepare("UPDATE handoffs SET reservation='not json'").run();
+    db.close();
+    deliver('msg_2');
+    vi.spyOn(Task.prototype, 'startTriggered').mockRejectedValueOnce(new Error('process stopped'));
+    await dispatch();
+    expect((await onlyTask()).status).toBe('preparing');
+
+    store.pauseInput(INPUT_ID, now);
+    now += HOUR;
+    await dispatch();
+
+    expect(taskIds()).toEqual([]);
+  });
+
   it('keeps a Task that had already started', async () => {
     await routine();
     deliver();
@@ -608,7 +696,8 @@ describe('a handoff the inbox ends by itself', () => {
 });
 
 describe('a Task an event started, once it runs', () => {
-  const REFUSED = /may no longer use the incoming events input/;
+  const UNLINKED = /may no longer use the incoming events input/;
+  const INBOX_CLOSED = /incoming events inbox is not open/;
 
   /** Starts the Task and opens its thread, so a later post and file share have somewhere to go. */
   async function started(): Promise<Task> {
@@ -620,18 +709,22 @@ describe('a Task an event started, once it runs', () => {
     return task;
   }
 
-  it.each<[string, () => void]>([
-    ['the operator unlinks its routine', () => void store.unlinkRoutine(INPUT_ID, ROUTINE_ID)],
-    ['its input is deleted', () => void store.markInputDeleted(INPUT_ID, now)],
-    ['the inbox closes', () => setOpenInbox(null)],
-  ])('has its next post and file share refused after %s', async (_name, revoke) => {
+  it.each<[string, () => void, RegExp]>([
+    [
+      'the operator unlinks its routine',
+      () => void store.unlinkRoutine(INPUT_ID, ROUTINE_ID),
+      UNLINKED,
+    ],
+    ['its input is deleted', () => void store.markInputDeleted(INPUT_ID, now), UNLINKED],
+    ['the inbox closes', () => setOpenInbox(null), INBOX_CLOSED],
+  ])('has its next post and file share refused after %s', async (_name, revoke, refusal) => {
     const task = await started();
 
     revoke();
 
-    await expect(task.postToUser('One more thing.', 'pm-agent')).rejects.toThrow(REFUSED);
-    await expect(task.postFilesToUser(['/tmp/notes.md'], 'pm-agent')).rejects.toThrow(REFUSED);
-    await expect(task.prepareMemoryDelivery('C0NOTES')).rejects.toThrow(REFUSED);
+    await expect(task.postToUser('One more thing.', 'pm-agent')).rejects.toThrow(refusal);
+    await expect(task.postFilesToUser(['/tmp/notes.md'], 'pm-agent')).rejects.toThrow(refusal);
+    await expect(task.prepareMemoryDelivery('C0NOTES')).rejects.toThrow(refusal);
     expect(fixture.post).toHaveBeenCalledTimes(1);
     expect(fixture.files).not.toHaveBeenCalled();
   });

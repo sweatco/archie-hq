@@ -96,7 +96,7 @@ A one-off schedule auto-pauses after it fires (its condition is consumed). **Res
 2. Wire delivery, differently per mode (below).
 3. Seed the PM with `AGENT_PROMPTS.triggered(...)` and let it do the work.
 
-An incoming event does not go through `fireTrigger`. `fireEvent` in the same file uses the same kill switch, channel probe and daily cap, then reserves, prepares and starts the task in three durable steps, so a retried event continues the same task. [Incoming events](incoming-events.md#from-event-to-task) describes it.
+An incoming event does not go through `fireTrigger`. `fireEvent` in the same file uses the same kill switch, channel probe and daily cap, except that a probe Slack could not answer makes the event retry instead of pausing the trigger. It then reserves, prepares and starts the task in three durable steps, so a retried event continues the same task. [Incoming events](incoming-events.md#from-event-to-task) describes it.
 
 **Firing posts no preamble.** The spawned PM does the work and posts the result itself, so the first thing the channel sees is the actual output — not an "I was triggered" line. Nothing else posts on the fire path either, which is why the standing-context refresh below is told not to announce.
 
