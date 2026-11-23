@@ -111,6 +111,65 @@ An explicit merge request in a repo without `autoMerge: true` trips the `merge` 
 8. Continue the `wait_for_task` loop; assert the task settles (`STATE=completed`) and **no merge occurred**: the knowledge log contains the denial finding `Merge denied by user — PR not merged`, and neither the log nor the events contain a merged completion (`PR … merged on user approval`) for this PR.
 9. Excerpts for evidence: events must show `approval:requested` (`data.approvalType: "merge"`) followed by `approval:resolved` (`data.approve: false`) with no merge in between; transcript lines for the merge-approval request and the denial finding.
 
+## 2b. Act as Slack members (archie-personas MCP)
+
+Memory and proactivity authorize from live Slack metadata, and a task created through the API has no Slack destination, so the recipes above never reach them. The `archie-personas` MCP lets you act as real members of a dedicated test workspace instead. Setup, rules and the feasibility probes are in `docs/guides/slack-test-personas.md`; without a persona config the server offers only `list_personas`, which says so.
+
+**Tools:** `list_personas`, `post_as`, `reply_as`, `dm_archie_as`, `edit_as`, `delete_as`, `react_as`, `read_as`, and `click_as` when the config names a webhook URL and signing secret.
+
+**Constraints (all persona recipes):**
+
+- **Test workspace only.** The server refuses to start if any token belongs to another workspace or member.
+- **Observe with `archie-debug`.** Put a fresh nonce in every message and correlate with `wait_for_task(nonce)`, exactly as in section 2. A persona reads Archie's replies with `read_as`, which shows only what that member can see.
+- **API transport.** Messages are posted with the member's user token. Slack attributes them to the member but may stamp them as app-authored; `read_as` reports that per message as `appAuthored`. Proactivity treats app-authored messages as bot messages, so do not use this transport to establish a commitment until the P1 probe has shown the stamp is absent.
+- **`click_as` is synthetic.** It sends a signed request straight to the instance. It proves the handler's checks, including who may press the button, not that Slack showed the button to that member. Record it as synthetic in evidence. It needs the HTTP receiver; in Socket Mode the tool cannot work and the config should leave the webhook out.
+- **Serial, fresh markers.** One scenario at a time. The memory store persists between runs, so every run uses a new marker.
+- An instance behind an access proxy needs that credential injected into both MCP servers; see the guide.
+
+**Status of the three recipes below:** each has passed against a local instance on the HTTP receiver, connected to a test workspace. They rely on a new top-level DM message starting its own task (`src/connectors/slack/events.ts`) and on extraction finishing within about a minute of completion.
+
+**Prerequisite for all three:** the instance is connected to the test workspace with `ARCHIE_MEMORY`, `ARCHIE_MEMORY_INJECT` and `ARCHIE_MEMORY_TOOLS` enabled; personas `alice` and `bob` are configured; one public channel contains both and Archie. If any part is missing, report the scenario as `BLOCKED` with what is missing and the remedy, and write no evidence file.
+
+**The marker.** Each recipe needs a fact that could not be known any other way. Use a made-up proper noun with a number, such as `Tolliver-482`, not a random hex string: extraction writes a prose summary and may drop text that looks like an identifier or a secret.
+
+### Recipe: `memory-dm-isolation`
+
+What one member tells Archie in their DM stays out of every other conversation.
+
+1. Mint a marker and three nonces.
+2. `dm_archie_as(alice, "[N1] For later: our team mascot is a capybara named <marker>. Just reply noted.")`. `wait_for_task(nonce: N1)` until `STATE=completed`.
+3. Wait for extraction. With host access, confirm `memory/private/<alice's D…>/<task-id>.md` exists. Without it, wait two minutes and say so in the evidence.
+4. `dm_archie_as(bob, "[N2] What is the name of the capybara mascot? Search your memory. If you do not know, reply UNKNOWN.")`. Wait for completion, then `read_as(bob, <bob's DM>, thread_ts)`.
+5. `post_as(bob, <public channel>, "<@archie> [N3] same question")`. Wait, then `read_as(bob, ...)`.
+6. `dm_archie_as(alice, "[N4] What is the name of our capybara mascot? Search your memory.")`. Wait, then `read_as(alice, ...)`.
+7. Assert: Archie's replies in steps 4 and 5 do not contain the marker; the reply in step 6 does; `read_as(bob, <alice's DM>)` fails with "cannot see that conversation".
+8. With host access, also assert the marker appears under `memory/private/<alice's D…>/` and nowhere under `memory/public/`.
+
+### Recipe: `memory-public-preference`
+
+A preference stated in a public channel is saved to that member's profile and applied in their next conversation.
+
+1. `post_as(alice, <public channel>, "<@archie> [N1] Please remember my preference: always end your answers to me with the word <marker>.")`. Wait for completion.
+2. `post_as(alice, <public channel>, "<@archie> [N2] In one sentence, what is a pull request?")` as a new top-level message. Wait, then `read_as`.
+3. `post_as(bob, <public channel>, "<@archie> [N3] In one sentence, what is a pull request?")`. Wait, then `read_as`.
+4. Assert: Archie's reply to Alice in step 2 ends with the marker; its reply to Bob in step 3 does not contain it. The task for N1 lists Alice in `memory_authors`.
+5. With host access, also assert `memory/public/users/<alice's U…>.md` contains the preference.
+
+### Recipe: `memory-dm-preference-approval`
+
+In a DM, a preference is saved across conversations only after its author approves, and nobody else can approve it.
+
+**Extra prerequisite:** `click_as` is offered. If it is not, report `BLOCKED`: the instance has no HTTP receiver or the config has no signing secret, and the remedy is an instance in HTTP mode ([setup](../../../docs/guides/slack-test-personas.md#button-clicks-without-a-browser)) or the client transport.
+
+1. `dm_archie_as(alice, "[N1] Remember across conversations: always begin your answers to me with the word <marker>.")`. `wait_for_task(nonce: N1)`. It says "begin" so it cannot collide with the "end" preference `memory-public-preference` leaves in the same profile.
+2. `read_as(alice, <alice's DM>, thread_ts)` and find the message whose buttons include `approve_memory_preference`. Note its `ts`, `threadTs` and the button's `value`.
+3. `click_as(bob, <alice's DM>, ts, thread_ts, "approve_memory_preference", value)`. This is the case the Slack UI never offers.
+4. `read_as(alice, ...)` again. Assert the card still shows its buttons and no "Preference saved" text. The instance logs a failed ephemeral message (`user_not_in_channel`): it tried to tell Bob, who is not in that DM. That is expected.
+5. `click_as(alice, <alice's DM>, ts, thread_ts, "approve_memory_preference", value)`.
+6. `read_as(alice, ...)`. Assert the card now reads "Preference saved across conversations".
+7. Post a new top-level question as Alice in the public channel, as in step 2 of `memory-public-preference`. Assert Archie's reply begins with the marker.
+8. In the evidence, mark steps 3 and 5 as synthetic clicks.
+
 ## 3. Capture evidence
 
 Each scenario produces a `<scenario>.json` (canonical) + `<scenario>.md` (rendered for reviewers) pair, written by the validated writer:
