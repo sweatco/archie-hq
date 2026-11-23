@@ -1,0 +1,35 @@
+# Slack app manifest for the test-persona app. Install it only in a dedicated test workspace.
+#
+# The app has no bot user and subscribes to no events. Each test member authorizes it once
+# through tools/persona-mcp/authorize.ts, which yields a user token that posts and reads as
+# that member.
+#
+# Slack requires an HTTPS redirect URL. It does not need to serve anything: the authorize
+# helper reads the code from the URL the browser ends up on. If Slack rejects this URL,
+# replace it here and in the persona config with any HTTPS URL you control.
+
+display_information:
+  name: Archie Test Personas
+  description: 'Lets a local coding agent act as test members of this workspace'
+oauth_config:
+  redirect_urls:
+    - https://localhost/archie-personas/oauth
+  scopes:
+    user:
+      - chat:write
+      - reactions:read
+      - reactions:write
+      - channels:history
+      - channels:read
+      - groups:history
+      - groups:read
+      - im:history
+      - im:read
+      - im:write
+      - mpim:history
+      - mpim:read
+      - users:read
+settings:
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

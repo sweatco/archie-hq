@@ -1,0 +1,31 @@
+{
+  "environment": "staging",
+  "teamId": "T0000000000",
+  "archieBotUserId": "U0000000000",
+  "archieApiUrl": "https://archie-staging.example.com",
+  "slackWebhookUrl": "https://archie-staging.example.com/webhooks/slack",
+  "signingSecret": "op://Private/Archie Test Personas/signing-secret",
+  "personaApp": {
+    "clientId": "0000000000.0000000000",
+    "clientSecret": "op://Private/Archie Test Personas/client-secret",
+    "redirectUrl": "https://localhost/archie-personas/oauth"
+  },
+  "probeChannelId": "C0000000000",
+  "personas": [
+    {
+      "key": "alice",
+      "slackUserId": "U0000000001",
+      "token": "op://Private/Archie Test Personas/alice"
+    },
+    {
+      "key": "bob",
+      "slackUserId": "U0000000002",
+      "token": "op://Private/Archie Test Personas/bob"
+    },
+    {
+      "key": "carol",
+      "slackUserId": "U0000000003",
+      "token": "op://Private/Archie Test Personas/carol"
+    }
+  ]
+}

@@ -31,6 +31,7 @@ How to work with the system. Setup, deployment, and development patterns.
 | Document | Description |
 |----------|-------------|
 | [Local Development](guides/local-development.md) | Prerequisites, setup, running, debugging |
+| [Slack Test Personas](guides/slack-test-personas.md) | Acting as test members of a dedicated Slack workspace: setup, rules and feasibility probes |
 | [Coding Guidelines](guides/coding-guidelines.md) | Readability, ownership, review and automated checks |
 | [Project Management](guides/project-management.md) | How ideas, plans and status are tracked in issues: types, milestones, states and the agent routine |
 | [Project Access and Automation](guides/project-access-and-automation.md) | Canonical-repository access boundary and how the board is fed |
