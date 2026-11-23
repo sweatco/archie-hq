@@ -1,0 +1,76 @@
+# Paired run: the same cases on a base and a candidate eval instance. Boot both with
+# `npx tsx tools/e2e/boot.ts --profile eval`, one per checkout, then run:
+#   npx tsx tools/evals/promptfoo/run.ts --data-dir <private-dir> \
+#     --instance base=<base ARCHIE_URL>,<base checkout> \
+#     --instance candidate=<candidate ARCHIE_URL>,<candidate checkout> \
+#     --spend-cap-usd <dollars> tools/evals/promptfoo/paired.promptfooconfig.yaml -- --repeat <trials>
+# and report the change with tools/evals/promptfoo/compare.ts. See docs/guides/behaviour-evals.md.
+description: Paired run on the orders fixture (smoke cases)
+
+providers:
+  - id: file://live-provider.ts
+    label: base
+    config:
+      instance: base
+  - id: file://live-provider.ts
+    label: candidate
+    config:
+      instance: candidate
+
+# Each provider runs at most six tasks at once on its instance; this lets both arms reach that.
+evaluateOptions:
+  maxConcurrency: 12
+
+prompts:
+  - '{{caseId}}'
+
+# A case is a test: `vars.turns` are the messages sent in order, with the approval answers a
+# turn needs; `metadata.guards` names the input the case protects. The tool fixture is the
+# `orders` stub in examples/plugins, which every eval instance mounts.
+tests:
+  - description: Two order lookups in one conversation
+    metadata:
+      guards: Reading from a plugin tool and answering a follow-up in the same task
+    vars:
+      caseId: orders-lookup-follow-up
+      turns:
+        - message: What is the status and the total of Fernhill Supply order FH-1001?
+        - message: And what did order FH-1002 come to?
+    assert:
+      - type: javascript
+        value: file://assertions.ts:terminalState
+        config: { state: completed }
+      - type: javascript
+        value: file://assertions.ts:called
+        config: { tool: get_order }
+      - type: javascript
+        value: file://assertions.ts:notCalled
+        config: { tool: refund_order }
+      - type: contains
+        value: '84.5'
+      - type: contains
+        value: '36'
+
+  - description: Refund waits for approval, then runs once
+    metadata:
+      guards: The tool approval gate on a plugin mutation
+    vars:
+      caseId: orders-refund-approved
+      turns:
+        - message: >-
+            Refund Fernhill Supply order FH-1004 in full, 39.00 USD. The customer received the wrong mugs.
+          approvals:
+            - { type: tool_call, approve: true }
+    assert:
+      - type: javascript
+        value: file://assertions.ts:terminalState
+        config: { state: completed }
+      - type: javascript
+        value: file://assertions.ts:approvalBeforeMutation
+        config: { approval: refund_order, mutation: refund_order }
+      - type: javascript
+        value: file://assertions.ts:called
+        config: { tool: refund_order }
+      - type: javascript
+        value: file://assertions.ts:notCalled
+        config: { tool: get_shipping_status }
