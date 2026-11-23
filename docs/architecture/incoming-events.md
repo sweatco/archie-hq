@@ -199,6 +199,6 @@ These are starting defaults, named constants in `receiver.ts`, `store.ts` and `d
 - Proactivity as a second consumer ([#406](https://github.com/sweatco/archie-hq/issues/406)).
 - Input scope, and setup, history, secret reveal and rotation in Slack ([#403](https://github.com/sweatco/archie-hq/issues/403)).
 - Choosing which event fields a Task receives, and how long the event file is kept ([#403](https://github.com/sweatco/archie-hq/issues/403), [#407](https://github.com/sweatco/archie-hq/issues/407)).
-- A review of the tools an event-started Task may use, with the event as untrusted input. Required before production use.
+- A review of the tools an event-started Task may use, with the event as untrusted input ([#439](https://github.com/sweatco/archie-hq/issues/439)). Required before production use.
 - MCP event subscriptions ([#404](https://github.com/sweatco/archie-hq/issues/404), [#405](https://github.com/sweatco/archie-hq/issues/405)).
 - A per-input rate limit. Until then, the edge in front of Archie is the only defence against a flood.
