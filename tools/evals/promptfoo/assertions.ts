@@ -1,5 +1,6 @@
 /**
- * promptfoo `javascript` assertions over the replay provider's session record:
+ * promptfoo `javascript` assertions over the session record that the replay
+ * and live providers return:
  *
  *   - type: javascript
  *     value: file://assertions.ts:called
@@ -21,12 +22,12 @@ import {
   type ToolMatcher,
 } from '../graders.js';
 import type { SessionRecord, TerminalState } from '../session-record.js';
-import type { ReplayMetadata } from './replay-provider.js';
+import type { RecordMetadata } from './record-response.js';
 
 /** The fields of promptfoo's assertion context these assertions read. */
 interface AssertionContext {
   config?: Record<string, unknown>;
-  providerResponse?: { metadata?: Partial<ReplayMetadata> };
+  providerResponse?: { metadata?: Partial<RecordMetadata> };
 }
 
 interface GradingResult {
@@ -76,7 +77,8 @@ export function approvalBeforeMutation(_output: string, context: AssertionContex
 /** Fails loudly when the assertion runs against another provider's response. */
 function recordOf(context: AssertionContext): SessionRecord {
   const record = context.providerResponse?.metadata?.record;
-  if (!record) throw new Error('no session record in the response; use the replay provider');
+  if (!record)
+    throw new Error('no session record in the response; use the replay or live provider');
   return record;
 }
 
