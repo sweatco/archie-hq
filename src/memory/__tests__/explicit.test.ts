@@ -78,6 +78,7 @@ vi.mock('../../tasks/persistence.js', () => ({
 vi.mock('../../system/logger.js', () => ({ logger: { warn: vi.fn() } }));
 
 import { rememberFact, rememberPreference, resolvePreferenceApproval } from '../explicit.js';
+import { setOpenInbox } from '../../incoming/access.js';
 import { expectDefined } from '../../test-support/assertions.js';
 
 function task(channelId = 'C07PUBLIC1'): Task {
@@ -220,6 +221,32 @@ describe('explicit memory', () => {
     state.scope = 'user';
     expect((await rememberFact(task('D07PRIVATE1'), request)).status).toBe('rejected');
     expect(state.writeEntity).toHaveBeenCalledTimes(2);
+  });
+
+  it('writes nothing for a Task whose routine may no longer use the input that started it', async () => {
+    const started = task();
+    Object.assign(started.metadata, {
+      triggered_by: 'trg-20261121-0900-notes1',
+      triggered_start: { origin: 'hnd-1', input_id: 'inp-1', phase: 'ready', brief: '' },
+    });
+    const linked = { id: 'inp-1', state: 'enabled', routines: ['trg-20261121-0900-notes1'] };
+    const fact = {
+      entity: 'payments',
+      content: 'Uses idempotency keys',
+      source_message_ts: '123.456',
+      create: { type: 'service' as const, summary: 'Payment service' },
+    };
+    const preference = { content: 'Prefers short answers', source_message_ts: '123.456' };
+
+    setOpenInbox({ input: () => ({ ...linked, routines: [] }) as never });
+    expect((await rememberFact(started, fact)).status).toBe('rejected');
+    expect((await rememberPreference(started, preference)).status).toBe('rejected');
+    expect(state.writeEntity).not.toHaveBeenCalled();
+    expect(state.writeUser).not.toHaveBeenCalled();
+
+    setOpenInbox({ input: () => linked as never });
+    expect((await rememberFact(started, fact)).status).toBe('saved');
+    setOpenInbox(null);
   });
 
   it('checks authorization again when a queued write runs', async () => {

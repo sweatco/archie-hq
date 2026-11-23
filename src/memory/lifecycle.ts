@@ -20,6 +20,7 @@ import type { TaskMetadata } from '../types/task.js';
 import { writeTaskSummary } from './task-summaries.js';
 import { classifySlackMemoryScope } from '../connectors/slack/client.js';
 import { isAuthorizedMemoryScope, scopeForSlackChannel } from '../tasks/memory-scope.js';
+import { taskMayUseItsInput } from '../incoming/access.js';
 
 // ============================================================================
 // Housekeeping note queue (consumed by buildSummaryMarkdown)
@@ -102,6 +103,7 @@ async function processExtraction(taskId: string): Promise<void> {
 
   const destination = metadata.memory_destination;
   if (!destination) return;
+  if (!taskMayUseItsInput(metadata)) return;
   const classify = async () =>
     scopeForSlackChannel(
       await classifySlackMemoryScope(destination.channel_id),

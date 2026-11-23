@@ -6,6 +6,7 @@ import type { Application, Request, Response } from 'express';
 import { logger } from '../system/logger.js';
 import { validateMasterKey } from '../system/secrets-vault.js';
 import { INCOMING_DIR, INCOMING_SECRETS_DIR } from '../system/workdir.js';
+import { setOpenInbox } from './access.js';
 import { IncomingDispatcher } from './dispatcher.js';
 import { INCOMING_ROUTE, mountIncomingReceiver } from './receiver.js';
 import { vaultInputSecrets, type InputSecrets } from './secrets.js';
@@ -65,6 +66,7 @@ export function mountIncomingEvents(
     return null;
   }
 
+  setOpenInbox(store);
   mountIncomingReceiver(app, { store, secrets: incomingSecrets(), consumers });
   const dispatcher = new IncomingDispatcher(store, consumers);
   return {
@@ -76,6 +78,7 @@ export function mountIncomingEvents(
       });
       await Promise.race([dispatcher.stop(), waitedLongEnough]);
       clearTimeout(timer);
+      setOpenInbox(null);
       store.close();
     },
   };

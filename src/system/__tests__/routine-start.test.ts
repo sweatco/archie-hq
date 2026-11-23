@@ -17,6 +17,7 @@ const fixture = await vi.hoisted(async () => {
   return {
     spawn: vi.fn<typeof import('../../agents/spawn.js').spawnAgent>(),
     post: vi.fn<typeof import('../../connectors/slack/client.js').postSlackMessage>(),
+    files: vi.fn<typeof import('../../connectors/slack/client.js').postSlackFiles>(),
     reachable: vi.fn<typeof import('../../connectors/slack/client.js').isChannelReachable>(),
     channelInfo: vi.fn(),
     /** Runs after the Task is prepared and before it starts. */
@@ -40,6 +41,7 @@ vi.mock('../../agents/spawn.js', () => ({ spawnAgent: fixture.spawn }));
 vi.mock('../../connectors/slack/client.js', async (original) => ({
   ...(await original<typeof import('../../connectors/slack/client.js')>()),
   postSlackMessage: fixture.post,
+  postSlackFiles: fixture.files,
   isChannelReachable: fixture.reachable,
   getChannelInfo: fixture.channelInfo,
 }));
@@ -53,6 +55,7 @@ vi.mock('../../connectors/slack/channel-pins.js', async (original) => ({
 }));
 
 import { MessageQueue } from '../../agents/message-queue.js';
+import { setOpenInbox } from '../../incoming/access.js';
 import { IncomingDispatcher, type DispatchPolicy } from '../../incoming/dispatcher.js';
 import { IncomingStore } from '../../incoming/store.js';
 import { loadMetadata, getSharedPath, getTaskPath } from '../../tasks/persistence.js';
@@ -197,6 +200,7 @@ beforeEach(() => {
   now = 1_800_000_000_000;
   dbPath = join(WORKDIR, `inbox-${++inboxes}.sqlite`);
   store = new IncomingStore(dbPath);
+  setOpenInbox(store);
   for (const id of [INPUT_ID, OTHER_INPUT_ID])
     store.insertInput(
       {
@@ -215,6 +219,7 @@ beforeEach(() => {
 afterEach(async () => {
   activeTasks.clear();
   deindexTrigger(ROUTINE_ID);
+  setOpenInbox(null);
   store.close();
   vi.clearAllTimers();
   vi.useRealTimers();
@@ -599,5 +604,64 @@ describe('a handoff the inbox ends by itself', () => {
     await dispatch();
 
     expect(existsSync(orphan)).toBe(false);
+  });
+});
+
+describe('a Task an event started, once it runs', () => {
+  const REFUSED = /may no longer use the incoming events input/;
+
+  /** Starts the Task and opens its thread, so a later post and file share have somewhere to go. */
+  async function started(): Promise<Task> {
+    await routine();
+    deliver();
+    await dispatch();
+    const task = await Task.get((await onlyTask()).task_id);
+    await task.postToUser('Here is the summary.', 'pm-agent');
+    return task;
+  }
+
+  it.each<[string, () => void]>([
+    ['the operator unlinks its routine', () => void store.unlinkRoutine(INPUT_ID, ROUTINE_ID)],
+    ['its input is deleted', () => void store.markInputDeleted(INPUT_ID, now)],
+    ['the inbox closes', () => setOpenInbox(null)],
+  ])('has its next post and file share refused after %s', async (_name, revoke) => {
+    const task = await started();
+
+    revoke();
+
+    await expect(task.postToUser('One more thing.', 'pm-agent')).rejects.toThrow(REFUSED);
+    await expect(task.postFilesToUser(['/tmp/notes.md'], 'pm-agent')).rejects.toThrow(REFUSED);
+    await expect(task.prepareMemoryDelivery('C0NOTES')).rejects.toThrow(REFUSED);
+    expect(fixture.post).toHaveBeenCalledTimes(1);
+    expect(fixture.files).not.toHaveBeenCalled();
+  });
+
+  it.each<[string, () => void | Promise<void>]>([
+    ['its input is paused', () => void store.pauseInput(INPUT_ID, now)],
+    [
+      'its routine is paused',
+      async () => {
+        await updateLiveTrigger(ROUTINE_ID, (stored) => {
+          stored.status = 'paused';
+        });
+        deindexTrigger(ROUTINE_ID);
+      },
+    ],
+    [
+      'another routine is unlinked',
+      () => {
+        store.linkRoutine(INPUT_ID, 'trg-20261121-0900-ticket');
+        store.unlinkRoutine(INPUT_ID, 'trg-20261121-0900-ticket');
+      },
+    ],
+  ])('keeps posting and sharing files after %s', async (_name, change) => {
+    const task = await started();
+
+    await change();
+
+    await task.postToUser('One more thing.', 'pm-agent');
+    await task.postFilesToUser(['/tmp/notes.md'], 'pm-agent');
+    expect(fixture.post).toHaveBeenCalledTimes(2);
+    expect(fixture.files).toHaveBeenCalledTimes(1);
   });
 });

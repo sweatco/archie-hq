@@ -128,6 +128,7 @@ vi.mock('../extractor.js', async (importOriginal) => {
 // ============================================================================
 
 import {
+  enqueueMemoryWrite,
   handleTaskCompleted,
   rescheduleTaskCompleted,
   selectRelatedTasksByEntity,
@@ -278,6 +279,29 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     expect(lifecycleState.transcriptReads).toBe(0);
     expect(existsSync(join(publicTasksDir, `${TASK_ID}.md`))).toBe(false);
     expect(existsSync(activityPath)).toBe(false);
+  });
+
+  it('extracts nothing for a Task whose routine may no longer use the input that started it', async () => {
+    await writeFile(
+      join(sessionsDir, TASK_ID, 'shared', 'metadata.json'),
+      JSON.stringify({
+        ...METADATA,
+        triggered_by: 'trg-20261121-0900-notes1',
+        triggered_start: { origin: 'hnd-1', input_id: 'inp-1', phase: 'ready', brief: '' },
+      }),
+      'utf-8',
+    );
+
+    handleTaskCompleted(TASK_ID);
+    // Runs after the completion's own work on the same queue.
+    await enqueueMemoryWrite(() => Promise.resolve());
+
+    expect(classifySlackMemoryScope).not.toHaveBeenCalled();
+    expect(runExtraction).not.toHaveBeenCalled();
+    expect(lifecycleState.transcriptReads).toBe(0);
+    expect(existsSync(join(publicTasksDir, `${TASK_ID}.md`))).toBe(false);
+    expect(existsSync(activityPath)).toBe(false);
+    expect(await readPending()).toEqual([]);
   });
 
   it('does not classify, read, or extract while memory is unavailable', async () => {

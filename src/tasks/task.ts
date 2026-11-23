@@ -22,6 +22,7 @@ import { prCardFingerprint, prCardTitlePlain } from '../system/pr-card-format.js
 import { APPROVAL_TTL_MS, PENDING_APPROVAL_TTL_MS } from '../agents/tool-approval-gate.js';
 import { getGitHubClient } from '../connectors/github/client.js';
 import { createKeyedLock } from '../system/keyed-lock.js';
+import { taskMayUseItsInput } from '../incoming/access.js';
 
 /**
  * Target for postToUser — controls where the message is delivered.
@@ -859,6 +860,10 @@ export class Task {
     if (!destination || destination.channel_id !== channelId) {
       throw new Error('delivery blocked: this task belongs to a different Slack destination');
     }
+    if (!taskMayUseItsInput(this.metadata))
+      throw new Error(
+        'delivery blocked: this task may no longer use the incoming events input that started it',
+      );
   }
 
   async prepareTriggerDelivery(binding: TriggerBinding): Promise<void> {
