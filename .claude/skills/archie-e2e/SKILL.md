@@ -202,7 +202,7 @@ In place of the worktree preparation, boot:
 
 **Fixture plugins** are `examples/plugins`: `helper`, `gatecheck` and `orders`. `orders` is a stub MCP server for a fictional shop with canned, deterministic results that eval cases may assert on: `get_order`, `list_orders`, `get_shipping_status` (always fails with the error flag set) and `refund_order` (gated by the server's `ask` default; returns a canned confirmation and changes nothing). `tools/e2e/orders-stub.test.ts` pins that contract; change the data only together with the cases that rely on it.
 
-**Two refs side by side.** `docker-compose.yml` mounts paths relative to the checkout, so each ref needs its own checkout (a worktree or a clone). Boot each from its own checkout; each gets its own compose project, port and `eval-instance/`. Boot them one after another: two boots running at once can pick the same free port, and the second then fails at compose up. A ref that predates the eval profile cannot be booted with it.
+**Two refs side by side.** `docker-compose.yml` mounts paths relative to the checkout, so each ref needs its own checkout (a worktree or a clone). Boot each from its own checkout; each gets its own compose project, port and `eval-instance/`. Boot them one after another: two boots running at once can pick the same free port, and the second then fails at compose up. A ref that predates the eval profile cannot be booted with it. To run cases on both and report the change, pass each `ARCHIE_URL=` and checkout to the eval wrapper; see [paired runs](../../../docs/guides/behaviour-evals.md#paired-runs-on-live-instances).
 
 **Known limits.** The profile measures engine conduct, not the production configuration:
 

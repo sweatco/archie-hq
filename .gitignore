@@ -59,6 +59,9 @@ eval-instance/
 # Local E2E evidence (Forge Stage 4 targets qa-evidence/ explicitly instead)
 e2e-evidence/
 
+# Paired-run comparison reports (tools/evals/promptfoo/compare.ts)
+eval-reports/
+
 # Local data snapshots pulled by scripts/pull-remote-data.sh
 archie-data-*
 *.partial.*

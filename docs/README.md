@@ -36,7 +36,7 @@ How to work with the system. Setup, deployment, and development patterns.
 | [Project Access and Automation](guides/project-access-and-automation.md) | Canonical-repository access boundary and how the board is fed |
 | [Deployment](guides/deployment.md) | GCP deployment, CI/CD, monitoring, operations |
 | [SDK Patterns](guides/sdk-patterns.md) | Agent SDK hooks, turn detection, streaming input |
-| [Behaviour Evals](guides/behaviour-evals.md) | Session records, promptfoo grading and per-task pulls; the privacy rule for production sessions |
+| [Behaviour Evals](guides/behaviour-evals.md) | Session records, promptfoo grading, paired runs on live instances and per-task pulls; the privacy rule for production sessions |
 | [Bedrock Guardrails Setup](guides/bedrock-guardrails-setup.md) | Configuring AWS Bedrock guardrails for prompt injection defense |
 
 ## Plans

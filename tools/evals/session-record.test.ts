@@ -3,6 +3,7 @@ import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { afterEach, describe, expect, it } from 'vitest';
+import { expectDefined } from '../../src/test-support/assertions.js';
 import { measureRecord } from './graders.js';
 import { buildSessionRecord } from './session-record.js';
 
@@ -165,9 +166,47 @@ describe('buildSessionRecord', () => {
     const taskDir = await copyFixture();
     await rm(join(taskDir, 'shared', 'usage.jsonl'));
 
-    const { record } = await buildSessionRecord(taskDir, 'production');
+    const { record, costComplete } = await buildSessionRecord(taskDir, 'production');
 
     expect(record.usage).toEqual({ costUsd: null, models: [] });
+    expect(costComplete).toBe(false);
+  });
+
+  describe('costComplete', () => {
+    /** The fixture with the usage record of its second turn, which started at 09:00:20, replaced. */
+    async function withLastUsageAt(ts: string | undefined): Promise<string> {
+      const taskDir = await copyFixture();
+      const usagePath = join(taskDir, 'shared', 'usage.jsonl');
+      const lines = (await readFile(usagePath, 'utf8')).trimEnd().split('\n');
+      const last = JSON.parse(expectDefined(lines.pop())) as Record<string, unknown>;
+      if (ts !== undefined) lines.push(JSON.stringify({ ...last, ts }));
+      await writeFile(usagePath, lines.join('\n') + '\n');
+      return taskDir;
+    }
+
+    it('is true once every turn the PM started has a usage record', async () => {
+      const { costComplete } = await buildSessionRecord(FIXTURE, 'eval');
+      expect(costComplete).toBe(true);
+    });
+
+    it('is false while the last turn has none, though earlier turns recorded a cost', async () => {
+      const { record, costComplete } = await buildSessionRecord(
+        await withLastUsageAt(undefined),
+        'eval',
+      );
+
+      expect(record.usage.costUsd).toBeCloseTo(0.08, 10);
+      expect(costComplete).toBe(false);
+    });
+
+    // A failed turn fires no Stop hook: its usage is written before the PM is marked inactive.
+    it('is true for usage written before the event that ends the turn', async () => {
+      const { costComplete } = await buildSessionRecord(
+        await withLastUsageAt('2026-01-01T09:00:23.000Z'),
+        'eval',
+      );
+      expect(costComplete).toBe(true);
+    });
   });
 
   it('rejects a folder that is not a task folder', async () => {

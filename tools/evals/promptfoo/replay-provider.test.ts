@@ -79,7 +79,7 @@ describe('assertions', () => {
     const providerResponse = await replayFixture();
 
     expect(() => called('', { config: { tool: 'Bash' }, providerResponse: {} })).toThrow(
-      'no session record in the response; use the replay provider',
+      'no session record in the response; use the replay or live provider',
     );
     expect(() => called('', { config: {}, providerResponse })).toThrow('config.tool is required');
     expect(() => terminalState('', { config: { state: 'done' }, providerResponse })).toThrow(

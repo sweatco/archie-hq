@@ -13,6 +13,9 @@ repos/
 # Eval-profile instance state (mounted as volumes; its .env holds the model key)
 eval-instance/
 
+# Paired-run comparison reports
+eval-reports/
+
 # Secrets (mounted as volume)
 secrets/
 *.pem

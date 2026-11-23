@@ -14,6 +14,14 @@
  * raw sockets, HTTP/2, a request with its own http.Agent, DNS lookups and
  * child processes that ignore the proxy variables still reach the network.
  *
+ * A live run drives eval instances on this machine, so it names them and its
+ * spend cap:
+ *
+ *   ... --instance base=http://localhost:3001,<checkout> \
+ *       --instance candidate=http://localhost:3002,<checkout> --spend-cap-usd 2 ...
+ *
+ * Only those hosts and ports bypass the closed proxy; see live-settings.ts.
+ *
  * After the run, any file git would see in the checkout (tracked, or untracked
  * and not ignored) that was created or changed during the run fails it.
  * Ignored paths such as workdir/ and node_modules/ are not checked: a running
@@ -26,9 +34,20 @@ import { lstat, mkdir, realpath } from 'fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { parseArgs, promisify } from 'util';
+import {
+  encodeLiveSettings,
+  LIVE_SETTINGS_ENV,
+  noProxyEntries,
+  parseInstanceOption,
+  parseSpendCap,
+  type EvalInstance,
+  type LiveSettings,
+} from './live-settings.js';
 
 const USAGE =
-  'Usage: npx tsx tools/evals/promptfoo/run.ts --data-dir <private-dir> <config.yaml> [-- <promptfoo eval options>]';
+  'Usage: npx tsx tools/evals/promptfoo/run.ts --data-dir <private-dir> ' +
+  '[--instance <label>=<url>,<checkout>]... [--spend-cap-usd <dollars>] ' +
+  '<config.yaml> [-- <promptfoo eval options>]';
 
 const PACKAGE_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(PACKAGE_DIR, '..', '..', '..');
@@ -53,6 +72,8 @@ interface Invocation {
   dataDir: string;
   configPath: string;
   evalArgs: string[];
+  /** Present when the run drives eval instances. */
+  live?: LiveSettings;
 }
 
 export function parseInvocation(argv: string[]): Invocation {
@@ -63,7 +84,11 @@ export function parseInvocation(argv: string[]): Invocation {
   const { values, positionals } = parseArgs({
     args: own,
     allowPositionals: true,
-    options: { 'data-dir': { type: 'string' } },
+    options: {
+      'data-dir': { type: 'string' },
+      instance: { type: 'string', multiple: true },
+      'spend-cap-usd': { type: 'string' },
+    },
   });
   const dataDir = values['data-dir'];
   if (!dataDir) throw new Error('--data-dir is required');
@@ -72,15 +97,47 @@ export function parseInvocation(argv: string[]): Invocation {
   if (evalArgs.some((arg) => arg === '--share' || arg.startsWith('--share='))) {
     throw new Error('sharing is not allowed');
   }
-  return { dataDir: resolve(dataDir), configPath: resolve(configPath), evalArgs };
+  const live = parseLiveSettings(values.instance ?? [], values['spend-cap-usd']);
+  return {
+    dataDir: resolve(dataDir),
+    configPath: resolve(configPath),
+    evalArgs,
+    ...(live ? { live } : {}),
+  };
 }
 
-/** Environment that keeps promptfoo's state in `dataDir` and its traffic local. */
+/** A live run needs both its instances and a spend cap; a replay run has neither. */
+function parseLiveSettings(
+  instanceOptions: string[],
+  spendCap: string | undefined,
+): LiveSettings | undefined {
+  if (instanceOptions.length === 0) {
+    if (spendCap !== undefined) throw new Error('--spend-cap-usd needs at least one --instance');
+    return undefined;
+  }
+  if (spendCap === undefined) throw new Error('--instance needs --spend-cap-usd');
+
+  const instances: Record<string, EvalInstance> = {};
+  for (const option of instanceOptions) {
+    const { label, instance } = parseInstanceOption(option);
+    if (Object.hasOwn(instances, label)) throw new Error(`instance "${label}" is given twice`);
+    instances[label] = instance;
+  }
+  return { instances, spendCapUsd: parseSpendCap(spendCap) };
+}
+
+/**
+ * Environment that keeps promptfoo's state in `dataDir` and its traffic local.
+ * A live run exempts its instances' `host:port` from the closed proxy and
+ * passes the settings on to the live providers; nothing else is exempt.
+ */
 export function buildPromptfooEnv(
   base: NodeJS.ProcessEnv,
   dataDir: string,
+  live?: LiveSettings,
 ): Record<string, string | undefined> {
   const promptfooDir = join(dataDir, 'promptfoo');
+  const noProxy = live ? noProxyEntries(live).join(',') : '';
   return {
     ...base,
     PROMPTFOO_CONFIG_DIR: promptfooDir,
@@ -97,8 +154,10 @@ export function buildPromptfooEnv(
     http_proxy: CLOSED_PROXY,
     https_proxy: CLOSED_PROXY,
     all_proxy: CLOSED_PROXY,
-    NO_PROXY: '',
-    no_proxy: '',
+    NO_PROXY: noProxy,
+    no_proxy: noProxy,
+    // Never inherited: only this invocation's --instance options make a run live.
+    [LIVE_SETTINGS_ENV]: live ? encodeLiveSettings(live) : undefined,
   };
 }
 
@@ -155,7 +214,7 @@ async function main(): Promise<number> {
     console.error(`run: ${error instanceof Error ? error.message : String(error)}\n\n${USAGE}`);
     return 2;
   }
-  const { dataDir, configPath, evalArgs } = invocation;
+  const { dataDir, configPath, evalArgs, live } = invocation;
 
   if (!existsSync(PROMPTFOO_BIN)) {
     console.error('run: promptfoo is not installed; run `npm ci --prefix tools/evals/promptfoo`');
@@ -188,7 +247,7 @@ async function main(): Promise<number> {
       '--no-progress-bar',
       ...evalArgs,
     ],
-    { cwd: dirname(configPath), env: buildPromptfooEnv(process.env, dataDir) },
+    { cwd: dirname(configPath), env: buildPromptfooEnv(process.env, dataDir, live) },
   );
 
   const written = await findFilesWrittenSince(repoRoot, startedMs - CLOCK_SLACK_MS);
