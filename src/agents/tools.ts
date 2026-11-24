@@ -127,7 +127,12 @@ import {
 import * as chrono from 'chrono-node';
 import { writeFile } from 'fs/promises';
 import { join } from 'path';
-import type { Trigger, TriggerBinding, TriggerCondition } from '../types/trigger.js';
+import type {
+  SlackMessageRef,
+  Trigger,
+  TriggerBinding,
+  TriggerCondition,
+} from '../types/trigger.js';
 import {
   generateTriggerId,
   saveTrigger,
@@ -166,7 +171,11 @@ import { isSlackAuthorId, isAppAuthorId } from '../system/trigger-match.js';
 import { inputServices } from '../incoming/access.js';
 import { incomingEventsEnabled } from '../incoming/runtime.js';
 import { INPUT_ID_PATTERN, inputFilterSchema, inputPurposeSchema } from '../incoming/types.js';
-import { routineDestinationRefusal, routineReviewBlocks } from '../system/routine-approval.js';
+import {
+  routineDestinationRefusal,
+  routineRefusalText,
+  routineReviewBlocks,
+} from '../system/routine-approval.js';
 import { approvalReference, isEventCondition, isEventRoutine } from '../system/routine-review.js';
 
 // Re-export branch state helpers for consumers that import from tools.ts
@@ -3049,16 +3058,55 @@ async function postTriggerApprovalCard(task: Task, trigger: Trigger): Promise<bo
   const what = triggerWhat(trigger);
   const when = triggerWhen(trigger);
   const where = triggerWhere(trigger);
+  const text = `Set up this automation? ${what} · ${when} · ${where}`;
+  if (!isEventRoutine(trigger))
+    return task.postInteractiveToUser(
+      text,
+      buildTriggerApprovalBlocks(trigger),
+      'trigger',
+      undefined,
+      undefined,
+      trigger.id,
+    );
+
   // An event routine's card shows the whole review, and its reference says which review was shown.
-  const review = isEventRoutine(trigger);
-  return task.postInteractiveToUser(
-    `Set up this automation? ${what} · ${when} · ${where}`,
-    review ? await routineReviewBlocks(trigger) : buildTriggerApprovalBlocks(trigger),
+  const landed: SlackMessageRef[] = [];
+  const posted = await task.postInteractiveToUser(
+    text,
+    await routineReviewBlocks(trigger),
     'trigger',
     undefined,
     undefined,
-    review ? approvalReference(trigger) : trigger.id,
+    approvalReference(trigger),
+    (card) => landed.push(card),
   );
+  const [card] = landed;
+  if (card) await replaceReviewCard(task, trigger, card);
+  return posted;
+}
+
+/** Remembers the proposal's newest review card and retires the one before it, which can no longer approve anything. */
+async function replaceReviewCard(
+  task: Task,
+  trigger: Trigger,
+  card: SlackMessageRef,
+): Promise<void> {
+  const previous = trigger.review_card;
+  await updatePendingTrigger(trigger.id, (stored) => {
+    stored.review_card = card;
+  });
+  if (!previous) return;
+  try {
+    await task.updateSlackMessageSafely(
+      previous.channel_id,
+      previous.ts,
+      `ℹ️ ${routineRefusalText({ status: 'refused', reason: 'stale_card' })}`,
+      [],
+    );
+  } catch (error) {
+    // The card then stays clickable, and a click on it retires it instead.
+    logger.warn('tools', `Could not retire an outdated review card of ${trigger.id}`, error);
+  }
 }
 
 /** What the proposer is told about who can approve an event routine and what approval does. */

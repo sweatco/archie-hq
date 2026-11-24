@@ -473,6 +473,18 @@ describe('approve_trigger — an event routine is approved from the card that wa
     expect(updateSlackMessageSafely).not.toHaveBeenCalled();
   });
 
+  it('retires an outdated card where it stands, for everyone to see', async () => {
+    taskThatAnswers({ status: 'refused', reason: 'stale_card' });
+
+    await clickCard(`${TRIGGER_ID}|${DIGEST}`);
+
+    expect(cardText()).toBe(
+      'ℹ️ This card is out of date: the proposal changed after it was posted. Use the newest card in this thread.',
+    );
+    expect(cardBlocks()).toEqual([]);
+    expect(postEphemeral).not.toHaveBeenCalled();
+  });
+
   it('says who owns the new input when the approval created one', async () => {
     taskThatAnswers({
       status: 'approved',

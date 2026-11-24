@@ -16,7 +16,7 @@ import type {
 } from '../types/task.js';
 import { CLI_CHANNEL_KEY } from '../types/task.js';
 import type { AgentDef } from '../types/agent.js';
-import type { Trigger, TriggerBinding } from '../types/trigger.js';
+import type { SlackMessageRef, Trigger, TriggerBinding } from '../types/trigger.js';
 import type { InputActor } from '../incoming/types.js';
 import type { RoutineApproval } from '../system/routine-approval.js';
 import { modelDisplayLabel, resolveAgentModel } from '../agents/model-label.js';
@@ -89,7 +89,6 @@ import {
   postSlackMessage,
   postSlackFiles,
   postInteractiveToThread,
-  postInteractiveToThreads,
   updateMessage,
   deleteMessage,
   buildPrCardBlocks,
@@ -1231,6 +1230,8 @@ export class Task {
     channelKey?: string,
     context?: { github: string; pr_number: number },
     ref?: string,
+    /** Told where the card landed in Slack, for a caller that will edit the card later. */
+    onPosted?: (card: SlackMessageRef) => void,
   ): Promise<boolean> {
     // Merge approvals carry the PR identity so CLI/SSE consumers can echo it
     // back on resolution (the API route requires github+pr_number for
@@ -1247,17 +1248,8 @@ export class Task {
     const ch = this.resolveSlackChannel(channelKey);
     if (ch) {
       await this.prepareMemoryDelivery(ch.channel_id);
-      await postInteractiveToThreads(
-        [
-          {
-            thread_id: ch.thread_id,
-            channel_id: ch.channel_id,
-            last_processed_ts: ch.last_processed_ts,
-          },
-        ],
-        text,
-        blocks,
-      );
+      const ts = await postInteractiveToThread(ch.channel_id, ch.thread_id, text, blocks);
+      if (ts) onPosted?.({ channel_id: ch.channel_id, ts });
       return true;
     }
     logger.slack(`POST (interactive): ${text}`);
@@ -2611,7 +2603,11 @@ export class Task {
     const enabled = await enableProposedTrigger(
       triggerId,
       approver.kind === 'operator' ? 'cli' : approver.userId,
-      (stored) => routineDigest(stored) === digest && bindNewInputs(stored),
+      (stored) => {
+        if (routineDigest(stored) !== digest || !bindNewInputs(stored)) return false;
+        stored.review_card = undefined;
+        return true;
+      },
     );
     if (!enabled && (await loadTrigger(triggerId))?.status === 'pending')
       return { status: 'refused', reason: 'stale_card' };

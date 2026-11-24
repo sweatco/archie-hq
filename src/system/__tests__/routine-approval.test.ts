@@ -259,6 +259,16 @@ describe('a proposal that asks for a new input', () => {
     expect((await stored(trigger)).status).toBe('pending');
   });
 
+  it('forgets where the review card was once the proposal is approved', async () => {
+    const trigger = await proposed([NEW_INPUT], {
+      review_card: { channel_id: 'C0NOTES', ts: '1795530311.467989' },
+    });
+
+    await approve(trigger, DANA);
+
+    expect((await stored(trigger)).review_card).toBeUndefined();
+  });
+
   it('gives an input the operator approves no owner', async () => {
     const trigger = await proposed([NEW_INPUT]);
 

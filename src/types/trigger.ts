@@ -88,4 +88,12 @@ export interface Trigger {
    */
   summary?: string;
   last_fired_at?: string;
+  /** Where the newest review card of an event routine's proposal was posted, so an edit can retire it. Cleared at approval. */
+  review_card?: SlackMessageRef;
+}
+
+/** One Slack message: the conversation it is in and its timestamp. */
+export interface SlackMessageRef {
+  channel_id: string;
+  ts: string;
 }

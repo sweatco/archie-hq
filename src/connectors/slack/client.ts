@@ -10,7 +10,6 @@ import { z } from 'zod';
 import type { Block } from '@slack/types';
 import { WebClient } from '@slack/web-api';
 import type {
-  SlackThreadRef,
   SlackFile,
   SlackThread,
   SlackThreadMessage,
@@ -338,19 +337,6 @@ export async function postInteractiveToThread(
   });
 
   return result.ts;
-}
-
-/**
- * Post an interactive message to multiple threads
- */
-export async function postInteractiveToThreads(
-  threads: SlackThreadRef[],
-  text: string,
-  blocks: unknown[],
-): Promise<void> {
-  for (const thread of threads) {
-    await postInteractiveToThread(thread.channel_id, thread.thread_id, text, blocks);
-  }
 }
 
 /**

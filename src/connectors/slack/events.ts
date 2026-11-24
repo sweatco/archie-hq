@@ -534,6 +534,11 @@ export async function mountSlackApp(
           triggerId,
           shown,
         );
+        if (approval.status === 'refused' && approval.reason === 'stale_card') {
+          // An outdated card can never approve anything again, so it says so where it stands and loses its buttons.
+          await updateTaskApprovalMessage(taskId, body, `ℹ️ ${routineRefusalText(approval)}`);
+          return;
+        }
         if (approval.status === 'refused') {
           // The card stays: the proposal is still pending, and the right person may yet approve it.
           await tellApprover(routineRefusalText(approval));

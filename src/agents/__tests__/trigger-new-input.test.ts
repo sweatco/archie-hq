@@ -109,6 +109,7 @@ function makeTask(): Task {
     save: vi.fn().mockResolvedValue(undefined),
     prepareTriggerDelivery: vi.fn().mockResolvedValue(undefined),
     postInteractiveToUser: vi.fn().mockResolvedValue(true),
+    updateSlackMessageSafely: vi.fn().mockResolvedValue(undefined),
   } as unknown as Task;
 }
 
@@ -325,5 +326,90 @@ describe('get_trigger', () => {
     expect(out).toContain(
       'a new input “Meeting recordings” (bearer), created when the proposal is approved',
     );
+  });
+});
+
+describe('the review card of a proposal that is edited', () => {
+  const FIRST_CARD = { channel_id: 'C0NOTES', ts: '1795530311.467989' };
+  const SECOND_CARD = { channel_id: 'C0NOTES', ts: '1795530322.348299' };
+
+  /** A task whose card reaches Slack at `card`, reported the way the real task reports it. */
+  function taskPostingAt(card: { channel_id: string; ts: string } | null): Task {
+    const task = makeTask();
+    vi.mocked(task.postInteractiveToUser).mockImplementation(
+      (_text, _blocks, _type, _channel, _context, _ref, onPosted) => {
+        if (card) onPosted?.(card);
+        return Promise.resolve(card !== null);
+      },
+    );
+    return task;
+  }
+
+  /** Lets the store apply its change to `record`, as the real store does to the record on disk. */
+  function storeHolding(record: Trigger): void {
+    updatePendingTrigger.mockImplementation((_id: string, mutate: (trigger: Trigger) => void) => {
+      mutate(record);
+      return Promise.resolve({ outcome: 'updated', trigger: record });
+    });
+  }
+
+  it('remembers where the first card landed and retires nothing', async () => {
+    const record = stored({ status: 'pending' });
+    storeHolding(record);
+    const task = taskPostingAt(FIRST_CARD);
+
+    await call('propose_trigger', task, proposal([NEW_INPUT]));
+
+    expect(record.review_card).toEqual(FIRST_CARD);
+    expect(task.updateSlackMessageSafely).not.toHaveBeenCalled();
+  });
+
+  it('retires the earlier card as soon as the edit posts a new one', async () => {
+    const pending = stored({ status: 'pending', review_card: FIRST_CARD });
+    loadTrigger.mockResolvedValue(pending);
+    storeHolding(pending);
+    const task = taskPostingAt(SECOND_CARD);
+
+    await call('update_trigger', task, { id: TRIGGER_ID, action_prompt: 'Summarize it twice.' });
+
+    expect(task.updateSlackMessageSafely).toHaveBeenCalledWith(
+      'C0NOTES',
+      FIRST_CARD.ts,
+      'ℹ️ This card is out of date: the proposal changed after it was posted. Use the newest card in this thread.',
+      [],
+    );
+    expect(pending.review_card).toEqual(SECOND_CARD);
+  });
+
+  it('keeps the earlier card when no new card reached Slack', async () => {
+    const pending = stored({ status: 'pending', review_card: FIRST_CARD });
+    loadTrigger.mockResolvedValue(pending);
+    storeHolding(pending);
+    const task = taskPostingAt(null);
+
+    const out = await call('update_trigger', task, {
+      id: TRIGGER_ID,
+      action_prompt: 'Summarize it twice.',
+    });
+
+    expect(out).toMatch(/NO new approval card could be posted/);
+    expect(task.updateSlackMessageSafely).not.toHaveBeenCalled();
+    expect(pending.review_card).toEqual(FIRST_CARD);
+  });
+
+  it('still posts the new card when the earlier one cannot be retired', async () => {
+    const pending = stored({ status: 'pending', review_card: FIRST_CARD });
+    loadTrigger.mockResolvedValue(pending);
+    storeHolding(pending);
+    const task = taskPostingAt(SECOND_CARD);
+    vi.mocked(task.updateSlackMessageSafely).mockRejectedValue(new Error('message_not_found'));
+
+    const out = await call('update_trigger', task, {
+      id: TRIGGER_ID,
+      action_prompt: 'Summarize it twice.',
+    });
+
+    expect(out).toMatch(/updated and re-posted for approval/);
+    expect(pending.review_card).toEqual(SECOND_CARD);
   });
 });
