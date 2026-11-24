@@ -316,6 +316,42 @@ describe('renderMarkdown', () => {
     expect(markdown).toContain('- Spend: $0.30 (base $0.20 over 1 trial(s), candidate $0.10');
   });
 
+  it('names list-valued checks in full and keeps a regex inside its table cell', () => {
+    const assertions = [
+      {
+        type: 'javascript',
+        value: 'file://assertions.ts:turnReply',
+        config: { turn: 2, contains: ['36', 'lamp'] },
+      },
+      { type: 'icontains-any', value: ['timed out', '504'] },
+      { type: 'not-regex', value: '\\bUSD\\b|\\$\\d' },
+    ];
+    const row = (arm: string, pass: boolean) => ({
+      provider: { label: arm },
+      success: pass,
+      cost: 0.1,
+      testCase: { vars: { caseId: 'orders-carrier' }, assert: assertions },
+      gradingResult: {
+        componentResults: assertions.map((assertion) => ({ pass, assertion })),
+      },
+      response: {
+        metadata: {
+          record: { terminalState: 'completed', toolCalls: [], usage: { models: [] } },
+          measures: { replyCount: 1, wordCount: 10 },
+        },
+      },
+    });
+    const results = { results: { results: [row('base', true), row('candidate', false)] } };
+
+    const markdown = renderMarkdown(
+      compareTrials(readTrials(JSON.stringify(results)), { base: 'base' }),
+    );
+
+    expect(markdown).toContain('| `turnReply(turn=2, contains=[36, lamp])` | 100% | 0% |');
+    expect(markdown).toContain('| `icontains-any [timed out, 504]` | 100% | 0% |');
+    expect(markdown).toContain('| `not-regex \\bUSD\\b\\|\\$\\d` | 100% | 0% |');
+  });
+
   it('prints a difference that rounds to nothing as zero', () => {
     const markdown = renderMarkdown(
       compareTrials(
