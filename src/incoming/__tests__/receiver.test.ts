@@ -20,6 +20,7 @@ vi.mock('../../system/shutdown.js', () => ({ getIsShuttingDown: vi.fn() }));
 import { logger } from '../../system/logger.js';
 import { getIsShuttingDown } from '../../system/shutdown.js';
 import { createInput, deleteInput } from '../inputs.js';
+import { lastRefusedDelivery } from '../refusals.js';
 import { mountIncomingReceiver } from '../receiver.js';
 import { vaultInputSecrets, type InputSecrets } from '../secrets.js';
 import { IncomingStore } from '../store.js';
@@ -775,4 +776,18 @@ it('keeps secrets and bodies out of the log on accepted, rejected and conflictin
   expect(logged).not.toContain(signed.secret);
   expect(logged).not.toContain(signed.secret.replace(/^whsec_/, ''));
   expect(logged).not.toContain(bearer.secret);
+});
+
+it('notes when it refused a delivery, for the connection check', async () => {
+  const sender = await signedSender();
+  expect(lastRefusedDelivery(sender.input.id)).toBeNull();
+  const before = Date.now();
+
+  const response = await deliverSigned(
+    { ...sender, secret: `whsec_${randomBytes(32).toString('base64')}` },
+    EVENT,
+  );
+
+  expect(response.status).toBe(401);
+  expect(lastRefusedDelivery(sender.input.id)).toBeGreaterThanOrEqual(before);
 });

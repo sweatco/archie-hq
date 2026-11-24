@@ -258,6 +258,15 @@ export class IncomingStore {
     };
   }
 
+  /** The newest receipt of an input, whatever became of it. */
+  latestReceipt(inputId: string): Receipt | null {
+    const row = this.row(
+      'SELECT id FROM receipts WHERE input_id=? ORDER BY received_at DESC, rowid DESC LIMIT 1',
+      inputId,
+    );
+    return row ? this.receipt(String(row.id)) : null;
+  }
+
   /**
    * A known key is answered first, so a retry gets its receipt even when the inbox is full.
    * A retry of an ignored event is accepted under the same receipt once the input takes it.

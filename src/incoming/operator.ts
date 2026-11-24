@@ -9,7 +9,7 @@ import {
   unlinkRoutine,
   type InputServices,
 } from './inputs.js';
-import { INCOMING_ROUTE } from './receiver.js';
+import { inputCallback } from './receiver.js';
 import {
   inputFilterSchema,
   type Input,
@@ -130,13 +130,12 @@ async function create(
     filter: parseFilter(flags['--filter']),
   });
 
-  const path = INCOMING_ROUTE.replace(':inputId', input.id);
-  const publicUrl = process.env.ARCHIE_PUBLIC_URL?.replace(/\/+$/, '');
+  const callback = inputCallback(input.id);
   print(`Created input ${input.id}`);
   print(
-    publicUrl
-      ? `Callback URL:  ${publicUrl}${path}`
-      : `Callback path: ${path}  (set ARCHIE_PUBLIC_URL to print the full URL)`,
+    'url' in callback
+      ? `Callback URL:  ${callback.url}`
+      : `Callback path: ${callback.path}  (set ARCHIE_PUBLIC_URL to print the full URL)`,
   );
   print(
     auth === 'bearer'

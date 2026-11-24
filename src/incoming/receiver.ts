@@ -8,6 +8,7 @@ import { logger } from '../system/logger.js';
 import { getIsShuttingDown } from '../system/shutdown.js';
 import { bearerTokenMatches, signatureMatches } from './authenticate.js';
 import { passesFilter } from './filter.js';
+import { noteRefusedDelivery } from './refusals.js';
 import type { InputSecrets } from './secrets.js';
 import type { IncomingStore, MatchedConsumer, ReceiveResult } from './store.js';
 import type { IncomingConsumer, Input } from './types.js';
@@ -17,6 +18,13 @@ const express = require('express') as typeof import('express');
 
 export const INCOMING_ROUTE = '/webhooks/incoming/:inputId';
 export const MAX_BODY_BYTES = 1024 * 1024;
+
+/** Where a sender posts to an input: the full URL when the deployment's public URL is configured, else the path alone. */
+export function inputCallback(inputId: string): { url: string } | { path: string } {
+  const path = INCOMING_ROUTE.replace(':inputId', inputId);
+  const publicUrl = process.env.ARCHIE_PUBLIC_URL?.replace(/\/+$/, '');
+  return publicUrl ? { url: `${publicUrl}${path}` } : { path };
+}
 const GENERIC_BINDING = 'generic';
 
 export interface ReceiverServices {
@@ -120,6 +128,7 @@ async function readSecrets(vault: InputSecrets, input: Input): Promise<string[]>
 }
 
 function unauthorized(input: Input): Reply {
+  noteRefusedDelivery(input.id, Date.now());
   logger.warn('incoming', `Rejected an unauthenticated delivery for input ${input.id}`);
   return rejected(401, 'unauthorized');
 }

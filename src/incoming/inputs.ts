@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { randomBytes } from 'node:crypto';
+import { lastRefusedDelivery } from './refusals.js';
 import type { InputSecrets } from './secrets.js';
 import type { IncomingStore } from './store.js';
 import {
@@ -8,6 +9,7 @@ import {
   type InputActor,
   type InputAuth,
   type PointerCheck,
+  type Receipt,
 } from './types.js';
 
 export interface InputServices {
@@ -112,4 +114,59 @@ function changeLink(
   if (!changed || changed.state === 'deleted')
     return { status: 'refused', reason: 'input_deleted' };
   return { status: 'changed', input: changed };
+}
+
+export type KeyReveal =
+  | { status: 'revealed'; secret: string }
+  | { status: 'refused'; reason: 'unknown_input' | 'input_deleted' | 'not_owner' | 'unreadable' };
+
+/** Only the owner reads a key. The operator replaces one instead of reading it. */
+export async function revealKey(
+  services: InputServices,
+  actor: InputActor,
+  inputId: string,
+): Promise<KeyReveal> {
+  const input = services.store.input(inputId);
+  if (!input) return { status: 'refused', reason: 'unknown_input' };
+  if (input.state === 'deleted') return { status: 'refused', reason: 'input_deleted' };
+  if (actor.kind !== 'slack_user' || input.owner !== actor.userId)
+    return { status: 'refused', reason: 'not_owner' };
+  const secret = await readKey(services, input);
+  return secret ? { status: 'revealed', secret } : { status: 'refused', reason: 'unreadable' };
+}
+
+/** What Archie holds about an input's sender. Reading it starts nothing and writes nothing. */
+export interface ConnectionStatus {
+  keyReadable: boolean;
+  /** The newest delivery that authenticated, recorded or not acted on. */
+  lastReceipt: Pick<Receipt, 'receivedAt' | 'outcome' | 'ignoredReason'> | null;
+  /** The newest delivery whose signature or token did not verify, since the daemon started. */
+  lastRefusedAt: number | null;
+}
+
+export async function connectionStatus(
+  services: InputServices,
+  input: Input,
+): Promise<ConnectionStatus> {
+  const receipt = services.store.latestReceipt(input.id);
+  return {
+    keyReadable: (await readKey(services, input)) !== null,
+    lastReceipt: receipt && {
+      receivedAt: receipt.receivedAt,
+      outcome: receipt.outcome,
+      ignoredReason: receipt.ignoredReason,
+    },
+    lastRefusedAt: lastRefusedDelivery(input.id),
+  };
+}
+
+/** Null when the key's file is missing or cannot be decrypted. */
+async function readKey(services: InputServices, input: Input): Promise<string | null> {
+  const [ref] = input.secretRefs;
+  if (!ref) return null;
+  try {
+    return await services.secrets.read(ref);
+  } catch {
+    return null;
+  }
 }

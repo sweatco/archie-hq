@@ -4,7 +4,16 @@ import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { createInput, deleteInput, linkRoutine, mayManageInput, unlinkRoutine } from '../inputs.js';
+import {
+  connectionStatus,
+  createInput,
+  deleteInput,
+  linkRoutine,
+  mayManageInput,
+  revealKey,
+  unlinkRoutine,
+} from '../inputs.js';
+import { noteRefusedDelivery } from '../refusals.js';
 import { vaultInputSecrets, type InputSecrets } from '../secrets.js';
 import { IncomingStore } from '../store.js';
 import type { InputActor } from '../types.js';
@@ -110,5 +119,61 @@ it('refuses a link to an input that is unknown or deleted', async () => {
   expect(linkRoutine(store, OPERATOR, 'inp-missing', ROUTINE_ID)).toEqual({
     status: 'refused',
     reason: 'unknown_input',
+  });
+});
+
+it('shows a key to the owner and to nobody else', async () => {
+  const { input, secret } = await createInput(
+    { store, secrets },
+    { auth: 'bearer', owner: 'U0DANA' },
+  );
+
+  await expect(revealKey({ store, secrets }, DANA, input.id)).resolves.toEqual({
+    status: 'revealed',
+    secret,
+  });
+  await expect(revealKey({ store, secrets }, EVE, input.id)).resolves.toEqual({
+    status: 'refused',
+    reason: 'not_owner',
+  });
+  await expect(revealKey({ store, secrets }, OPERATOR, input.id)).resolves.toEqual({
+    status: 'refused',
+    reason: 'not_owner',
+  });
+});
+
+it('says so when a key cannot be read', async () => {
+  const { input } = await createInput({ store, secrets }, { auth: 'bearer', owner: 'U0DANA' });
+  vi.spyOn(secrets, 'read').mockRejectedValue(new Error('bad key file'));
+
+  await expect(revealKey({ store, secrets }, DANA, input.id)).resolves.toEqual({
+    status: 'refused',
+    reason: 'unreadable',
+  });
+  expect((await connectionStatus({ store, secrets }, input)).keyReadable).toBe(false);
+});
+
+it('reports the newest delivery and the last refusal of an input, and nothing for a new one', async () => {
+  const { input } = await createInput({ store, secrets }, { auth: 'bearer', owner: 'U0DANA' });
+  expect(await connectionStatus({ store, secrets }, input)).toEqual({
+    keyReadable: true,
+    lastReceipt: null,
+    lastRefusedAt: null,
+  });
+
+  // No routine is linked, so an authenticated delivery is recorded and not acted on.
+  const delivery = { inputId: input.id, binding: 'generic', digest: 'd1', body: Buffer.from('{}') };
+  store.receive({ ...delivery, eventKey: 'msg_1', receivedAt: 1000 }, []);
+  store.receive({ ...delivery, eventKey: 'msg_2', receivedAt: 2000 }, []);
+  noteRefusedDelivery(input.id, 3000);
+
+  expect(await connectionStatus({ store, secrets }, input)).toEqual({
+    keyReadable: true,
+    lastReceipt: {
+      receivedAt: 2000,
+      outcome: 'ignored',
+      ignoredReason: 'filtered',
+    },
+    lastRefusedAt: 3000,
   });
 });
