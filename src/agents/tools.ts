@@ -163,8 +163,11 @@ import {
   type TriggerOrigin,
 } from '../system/trigger-visibility.js';
 import { isSlackAuthorId, isAppAuthorId } from '../system/trigger-match.js';
+import { inputServices } from '../incoming/access.js';
 import { incomingEventsEnabled } from '../incoming/runtime.js';
-import { INPUT_ID_PATTERN, inputFilterSchema } from '../incoming/types.js';
+import { INPUT_ID_PATTERN, inputFilterSchema, inputPurposeSchema } from '../incoming/types.js';
+import { routineDestinationRefusal, routineReviewBlocks } from '../system/routine-approval.js';
+import { approvalReference, isEventCondition, isEventRoutine } from '../system/routine-review.js';
 
 // Re-export branch state helpers for consumers that import from tools.ts
 export { hydrateBranchState, findBranchStateByPR };
@@ -2800,7 +2803,25 @@ const triggerConditionObject = z.object({
     .string()
     .optional()
     .describe(
-      'Input whose events fire the trigger (required for incoming_event), as `inp-…`. An operator creates the input and, after approval, links the trigger to it; until then the trigger receives nothing. Cannot be combined with schedule or channel_message conditions.',
+      "Existing input whose events fire the trigger (incoming_event), as `inp-…`. Only the input's owner can approve the trigger; for an input an operator made, the operator links the trigger after approval. Pass this or `new_input`, not both. Cannot be combined with schedule or channel_message conditions.",
+    ),
+  new_input: z
+    .object({
+      purpose: z
+        .string()
+        .describe(
+          'What the input is for, in a few plain words, e.g. "Meeting recordings". Shown on the review card.',
+        ),
+      auth: z
+        .enum(['signed', 'bearer'])
+        .optional()
+        .describe(
+          '"signed" (default): the sender signs each delivery with Standard Webhooks headers. "bearer": the sender sends a token in the Authorization header, for senders that cannot sign.',
+        ),
+    })
+    .optional()
+    .describe(
+      'Set up a new input for this trigger (incoming_event) instead of naming an existing one. Nothing is created until a person approves the proposal; that person becomes the owner of the input. Only on a proposal, never on an approved trigger.',
     ),
   event_filter: z
     .array(
@@ -2892,11 +2913,13 @@ function makePrivacyResolver(): (channelId: string) => Promise<boolean> {
  *
  * A message fire replies in the watched thread, not to the binding, so a DM binding cannot watch a channel.
  * The scheduler tick writes back the record it read before a fire, so event conditions stay on triggers it never fires.
+ * A new input can only be asked for on a proposal, where a person's approval creates it.
  */
 function buildConditions(
   raw: RawCondition[],
   defaultTz: string,
   bindingType: TriggerBinding['type'],
+  proposal: boolean,
 ): { conditions: TriggerCondition[] } | { error: string } {
   const conditions: TriggerCondition[] = [];
   for (const c of raw) {
@@ -2951,10 +2974,25 @@ function buildConditions(
     } else if (c.type === 'incoming_event') {
       if (!incomingEventsEnabled())
         return { error: 'Incoming events are not enabled on this instance.' };
-      if (!c.input_id || !INPUT_ID_PATTERN.test(c.input_id)) {
+      if (c.new_input && c.input_id)
+        return {
+          error: 'An incoming_event condition takes either `input_id` or `new_input`, not both.',
+        };
+      if (c.new_input && !proposal)
         return {
           error:
-            'An incoming_event condition needs the `input_id` of an input an operator created (`inp-…`).',
+            'A new input can only be set up through a proposal. Propose another trigger with `new_input`.',
+        };
+      const purpose = c.new_input ? inputPurposeSchema.safeParse(c.new_input.purpose) : undefined;
+      if (purpose && !purpose.success)
+        return {
+          error:
+            'Invalid new_input.purpose — use 1 to 80 characters of plain text, without <, >, & or backticks.',
+        };
+      if (!c.new_input && (!c.input_id || !INPUT_ID_PATTERN.test(c.input_id))) {
+        return {
+          error:
+            'An incoming_event condition needs the `input_id` of an existing input (`inp-…`), or `new_input` to set one up.',
         };
       }
       const filter = inputFilterSchema.safeParse(c.event_filter ?? []);
@@ -2964,23 +3002,30 @@ function buildConditions(
         );
         return { error: `Invalid event_filter — ${problems.join('; ')}.` };
       }
-      conditions.push({
-        type: 'incoming_event',
-        input_id: c.input_id,
-        ...(filter.data.length ? { filter: filter.data } : {}),
-      });
+      const eventFilter = filter.data.length ? { filter: filter.data } : {};
+      if (c.new_input && purpose?.success)
+        conditions.push({
+          type: 'new_input_event',
+          purpose: purpose.data,
+          auth: c.new_input.auth === 'bearer' ? 'bearer' : 'standard_webhooks',
+          ...eventFilter,
+        });
+      else if (c.input_id)
+        conditions.push({ type: 'incoming_event', input_id: c.input_id, ...eventFilter });
     } else {
       return { error: `Unknown condition type "${(c as { type: string }).type}".` };
     }
   }
   if (conditions.length === 0) return { error: 'At least one condition is required.' };
-  const onEvents = conditions.filter((c) => c.type === 'incoming_event').length;
+  const onEvents = conditions.filter(isEventCondition).length;
   if (onEvents > 0 && onEvents < conditions.length) {
     return {
       error:
         'An incoming_event condition cannot share a trigger with a schedule or channel_message condition. Propose a separate trigger for each.',
     };
   }
+  if (conditions.filter((c) => c.type === 'new_input_event').length > 1)
+    return { error: 'A trigger can set up one new input. Propose a separate trigger for each.' };
   return { conditions };
 }
 
@@ -3004,14 +3049,36 @@ async function postTriggerApprovalCard(task: Task, trigger: Trigger): Promise<bo
   const what = triggerWhat(trigger);
   const when = triggerWhen(trigger);
   const where = triggerWhere(trigger);
+  // An event routine's card shows the whole review, and its reference says which review was shown.
+  const review = isEventRoutine(trigger);
   return task.postInteractiveToUser(
     `Set up this automation? ${what} · ${when} · ${where}`,
-    buildTriggerApprovalBlocks(trigger),
+    review ? await routineReviewBlocks(trigger) : buildTriggerApprovalBlocks(trigger),
     'trigger',
     undefined,
     undefined,
-    trigger.id,
+    review ? approvalReference(trigger) : trigger.id,
   );
+}
+
+/** What the proposer is told about who can approve an event routine and what approval does. */
+function eventApprovalNote(conditions: readonly TriggerCondition[]): string {
+  const notes = new Set<string>();
+  for (const condition of conditions) {
+    if (condition.type === 'new_input_event') {
+      notes.add(
+        ' Approving it creates the input, and the person who approves becomes the owner of that input.',
+      );
+    } else if (condition.type === 'incoming_event') {
+      const owner = inputServices()?.store.input(condition.input_id)?.owner;
+      notes.add(
+        owner
+          ? ` Only <@${owner}>, who owns the input, can approve it.`
+          : ' After approval it receives events only once an operator links it to the input.',
+      );
+    }
+  }
+  return [...notes].join('');
 }
 
 function createProposeTriggerTool(task: Task) {
@@ -3107,8 +3174,12 @@ function createProposeTriggerTool(task: Task) {
         }
       }
 
-      const built = buildConditions(args.conditions, defaultTz, binding.type);
+      const built = buildConditions(args.conditions, defaultTz, binding.type, true);
       if ('error' in built) return ok(`Could not create the trigger: ${built.error}`);
+      const routineRefusal = built.conditions.some(isEventCondition)
+        ? await routineDestinationRefusal(binding)
+        : null;
+      if (routineRefusal) return ok(`Could not create the trigger: ${routineRefusal}.`);
 
       if (binding.type === 'channel') {
         const channelId = binding.channel_id;
@@ -3155,11 +3226,8 @@ function createProposeTriggerTool(task: Task) {
       );
 
       await postTriggerApprovalCard(task, trigger);
-      const linkNote = built.conditions.some((c) => c.type === 'incoming_event')
-        ? ' After approval it receives events only once an operator links it to the input.'
-        : '';
       return ok(
-        `Trigger proposed and posted for approval. It will not run until the user approves (or types y in the CLI).${linkNote} No need to pause — continue if there is other work.`,
+        `Trigger proposed and posted for approval. It will not run until the user approves (or types y in the CLI).${eventApprovalNote(built.conditions)} No need to pause — continue if there is other work.`,
       );
     },
   );
@@ -3211,6 +3279,14 @@ function detailCondition(c: TriggerCondition, index: number): string {
   if (c.type === 'incoming_event') {
     return [
       `${head}an event received by input ${c.input_id}`,
+      c.filter?.length
+        ? `       event_filter (every check must pass): ${JSON.stringify(c.filter)}`
+        : '       event_filter: none — every event the input accepts',
+    ].join('\n');
+  }
+  if (c.type === 'new_input_event') {
+    return [
+      `${head}an event received by a new input “${c.purpose}” (${c.auth === 'bearer' ? 'bearer' : 'signed'}), created when the proposal is approved`,
       c.filter?.length
         ? `       event_filter (every check must pass): ${JSON.stringify(c.filter)}`
         : '       event_filter: none — every event the input accepts',
@@ -3367,7 +3443,12 @@ function createUpdateTriggerTool(task: Task) {
           trigger.conditions.find(
             (c): c is Extract<TriggerCondition, { type: 'schedule' }> => c.type === 'schedule',
           )?.tz || 'UTC';
-        const built = buildConditions(args.conditions, defaultTz, trigger.binding.type);
+        const built = buildConditions(
+          args.conditions,
+          defaultTz,
+          trigger.binding.type,
+          trigger.status === 'pending',
+        );
         if ('error' in built) return ok(`Could not update the trigger: ${built.error}`);
         nextConditions = built.conditions;
       }
@@ -3377,6 +3458,10 @@ function createUpdateTriggerTool(task: Task) {
           return ok('Nothing to update — pass action_prompt, summary, or conditions.');
         const deliveryError = await authorizeTriggerChange(task, trigger);
         if (deliveryError) return err(`Proposal not updated: ${deliveryError}`);
+        const routineRefusal = nextConditions?.some(isEventCondition)
+          ? await routineDestinationRefusal(trigger.binding)
+          : null;
+        if (routineRefusal) return ok(`Proposal not updated: ${routineRefusal}.`);
 
         const result = await updatePendingTrigger(args.id, (t) => {
           if (args.action_prompt) t.action.prompt = args.action_prompt;

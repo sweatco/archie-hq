@@ -190,6 +190,7 @@ vi.mock('../../../system/logger.js', () => ({
 }));
 
 import { mountSlackApp } from '../events.js';
+import { postEphemeral } from '../client.js';
 import { expectDefined } from '../../../test-support/assertions.js';
 
 const TRIGGER_ID = 'trg-20260729-1056-6nd69p';
@@ -414,6 +415,103 @@ describe('approve_trigger — the card reads the real state instead of guessing'
   it('retires the buttons when the approval really enabled the trigger', async () => {
     withTask(makeTrigger('enabled'));
     await click('approve_trigger');
+    expect(cardBlocks()).toEqual([]);
+  });
+});
+
+describe('approve_trigger — an event routine is approved from the card that was clicked', () => {
+  const DIGEST = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
+  const eventRoutine = (): Trigger => ({
+    ...makeTrigger('pending'),
+    conditions: [{ type: 'incoming_event', input_id: 'inp-AAAAAAAAAAAAAAAAAAAAAA' }],
+  });
+
+  async function clickCard(value: string): Promise<void> {
+    await expectDefined(bolt.actions.get('approve_trigger'))({
+      action: { value },
+      ack: vi.fn().mockResolvedValue(undefined),
+      body: clickBody,
+    });
+  }
+
+  function taskThatAnswers(approval: unknown) {
+    const task = {
+      approveEventRoutine: vi.fn().mockResolvedValue(approval),
+      handleTriggerApproval: vi.fn().mockResolvedValue(null),
+      updateSlackMessageSafely,
+    };
+    findTaskByThread.mockResolvedValue('task-1');
+    taskGet.mockResolvedValue(task);
+    return task;
+  }
+
+  it('passes the clicker and the digest the card carried', async () => {
+    const task = taskThatAnswers({ status: 'not_pending' });
+    loadTrigger.mockResolvedValue(null);
+
+    await clickCard(`${TRIGGER_ID}|${DIGEST}`);
+
+    expect(task.approveEventRoutine).toHaveBeenCalledWith(
+      { kind: 'slack_user', userId: 'U_CLICKER' },
+      TRIGGER_ID,
+      DIGEST,
+    );
+    expect(task.handleTriggerApproval).not.toHaveBeenCalled();
+  });
+
+  it('tells only the clicker about a refusal and leaves the card as it is', async () => {
+    taskThatAnswers({ status: 'refused', reason: 'not_owner', owner: 'U_OWNER' });
+
+    await clickCard(`${TRIGGER_ID}|${DIGEST}`);
+
+    expect(postEphemeral).toHaveBeenCalledWith(
+      'C_THREAD',
+      'U_CLICKER',
+      'Only <@U_OWNER>, who owns the input, can approve this routine.',
+      '1722249000.000100',
+    );
+    expect(updateSlackMessageSafely).not.toHaveBeenCalled();
+  });
+
+  it('says who owns the new input when the approval created one', async () => {
+    taskThatAnswers({
+      status: 'approved',
+      trigger: { ...eventRoutine(), status: 'enabled' },
+      created: ['inp-AAAAAAAAAAAAAAAAAAAAAA'],
+      linked: ['inp-AAAAAAAAAAAAAAAAAAAAAA'],
+      awaitingOperator: [],
+    });
+
+    await clickCard(`${TRIGGER_ID}|${DIGEST}`);
+
+    expect(cardText()).toBe(
+      '✅ Approved by <@U_CLICKER> — *the standup digest* is now on. <@U_CLICKER> owns its new input.',
+    );
+    expect(cardBlocks()).toEqual([]);
+  });
+
+  it('says what waits for the operator on an operator-made input', async () => {
+    taskThatAnswers({
+      status: 'approved',
+      trigger: { ...eventRoutine(), status: 'enabled' },
+      created: [],
+      linked: [],
+      awaitingOperator: ['inp-AAAAAAAAAAAAAAAAAAAAAA'],
+    });
+
+    await clickCard(`${TRIGGER_ID}|${DIGEST}`);
+
+    expect(cardText()).toMatch(/is now on\. It receives events once an operator links it/);
+  });
+
+  it('retires a card that carries no digest', async () => {
+    const task = taskThatAnswers({ status: 'not_pending' });
+    loadTrigger.mockResolvedValue(eventRoutine());
+
+    await clickCard(TRIGGER_ID);
+
+    expect(task.approveEventRoutine).not.toHaveBeenCalled();
+    expect(cardText()).toMatch(/This card is out of date, so nothing was set up/);
     expect(cardBlocks()).toEqual([]);
   });
 });

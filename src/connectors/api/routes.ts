@@ -41,6 +41,8 @@ import {
   MAX_TRIGGERS_PER_CHANNEL,
 } from '../../system/trigger-scheduler.js';
 import type { Trigger } from '../../types/trigger.js';
+import { routineRefusalText } from '../../system/routine-approval.js';
+import { parseApprovalReference } from '../../system/routine-review.js';
 import { cancelReminder } from '../../system/reminder-scheduler.js';
 
 /**
@@ -327,7 +329,29 @@ export function mountApiRoutes(app: Application): void {
         // Approve/Deny buttons call. `ref` carries the specific trigger id (the
         // CLI echoes it from the approval event), so the right one resolves even
         // when several proposals are outstanding. Approver is the CLI operator.
-        if (approve) {
+        // An event routine's reference also carries the digest of the review that was shown.
+        const routine = ref ? parseApprovalReference(ref) : undefined;
+        if (approve && routine?.shown !== undefined) {
+          const approval = await task.approveEventRoutine(
+            { kind: 'operator' },
+            routine.triggerId,
+            routine.shown,
+          );
+          if (approval.status !== 'approved') {
+            // A refusal leaves the proposal approvable, so the CLI keeps its prompt, as for a cap.
+            const stillPending = approval.status === 'refused';
+            if (!stillPending) emitEvent('approval:resolved', taskId, { type, approve });
+            res.status(409).json({
+              ok: false,
+              stale: true,
+              capBlocked: stillPending,
+              error: stillPending
+                ? `Trigger ${routine.triggerId} was not enabled — ${routineRefusalText(approval)}`
+                : `Trigger ${routine.triggerId} was not enabled — it is already active or was withdrawn.`,
+            });
+            return;
+          }
+        } else if (approve) {
           const trigger = await task.handleTriggerApproval('cli', ref);
           if (!trigger) {
             // A cap refusal leaves the proposal approvable, so keep the CLI prompt; anything else is
@@ -346,7 +370,7 @@ export function mountApiRoutes(app: Application): void {
             return;
           }
         } else {
-          const result = await task.handleTriggerDenial(ref);
+          const result = await task.handleTriggerDenial(routine?.triggerId ?? ref);
           if (result.outcome !== 'withdrawn') {
             emitEvent('approval:resolved', taskId, { type, approve });
             res.status(409).json({

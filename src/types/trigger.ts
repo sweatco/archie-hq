@@ -11,7 +11,7 @@
  * trigger-store.ts) and indexed in-memory by the trigger scheduler.
  */
 
-import type { PointerCheck } from '../incoming/types.js';
+import type { InputAuth, PointerCheck } from '../incoming/types.js';
 
 export type TriggerStatus = 'pending' | 'enabled' | 'paused';
 
@@ -38,8 +38,12 @@ export type TriggerBinding =
  *  - `channel_message` — a new top-level message in `channel_id` matching the
  *    optional `match` filter.
  *  - `incoming_event` — an event received by input `input_id` that passes every
- *    check in `filter`. A trigger holds these alone, never beside the other two
- *    types, and receives events only while the operator has linked it to the input.
+ *    check in `filter`. A trigger holds event conditions alone, never beside the other
+ *    two types, and receives events only while it is linked to the input.
+ *  - `new_input_event` — on a proposal only: an event condition whose input does not
+ *    exist yet. Approval creates the input and turns this into `incoming_event`.
+ *    `input_id` is the id reserved for that input once an approval has begun, so a
+ *    repeated approval finds the same input.
  */
 export type TriggerCondition =
   | { type: 'schedule'; tz: string; next_run_at: string; cron?: string }
@@ -48,7 +52,14 @@ export type TriggerCondition =
       channel_id: string;
       match?: { contains?: string; from_user?: string };
     }
-  | { type: 'incoming_event'; input_id: string; filter?: PointerCheck[] };
+  | { type: 'incoming_event'; input_id: string; filter?: PointerCheck[] }
+  | {
+      type: 'new_input_event';
+      purpose: string;
+      auth: InputAuth;
+      input_id?: string;
+      filter?: PointerCheck[];
+    };
 
 export interface Trigger {
   /** "trg-YYYYMMDD-HHMM-random6" */

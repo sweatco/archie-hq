@@ -223,14 +223,19 @@ export async function countActiveTriggers(predicate?: (t: Trigger) => boolean): 
  * Returns the updated trigger, or null when it doesn't exist or isn't pending.
  * The caller is responsible for indexing it into the scheduler (which computes
  * the first `next_run_at` for schedule conditions).
+ *
+ * `finalize` sees the record as it is inside the lock and may change it. Returning false
+ * leaves the proposal pending and unchanged; it must be synchronous.
  */
 export async function enableProposedTrigger(
   id: string,
   approverId: string,
+  finalize?: (trigger: Trigger) => boolean,
 ): Promise<Trigger | null> {
   return triggerLock(id, async () => {
     const trigger = await loadTrigger(id);
     if (!trigger || trigger.status !== 'pending') return null;
+    if (finalize && !finalize(trigger)) return null;
     trigger.status = 'enabled';
     trigger.approved_by = approverId;
     await saveTrigger(trigger);

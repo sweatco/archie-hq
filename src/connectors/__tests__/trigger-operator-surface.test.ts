@@ -571,3 +571,56 @@ describe('DELETE /tasks/:id/reminder — the operator off switch', () => {
     expect(cancelReminder).not.toHaveBeenCalled();
   });
 });
+
+describe('POST /tasks/:id/approve — an event routine', () => {
+  const REFERENCE = `${TRIGGER_ID}|a1b2c3d4e5f60718293a4b5c6d7e8f90`;
+
+  async function resolve(approve: boolean, task: Record<string, unknown>) {
+    vi.mocked(Task.get).mockResolvedValue(task as unknown as Task);
+    const res = makeRes();
+    await captureRoute('/tasks/:id/approve', 'post')(
+      {
+        params: { id: TASK_ID },
+        body: { type: 'trigger', approve, ref: REFERENCE },
+      } as unknown as Request,
+      res,
+    );
+    return res;
+  }
+
+  it('approves as the operator, with the digest the reference carried', async () => {
+    const task = { approveEventRoutine: vi.fn().mockResolvedValue({ status: 'approved' }) };
+
+    const res = await resolve(true, task);
+
+    expect(task.approveEventRoutine).toHaveBeenCalledWith(
+      { kind: 'operator' },
+      TRIGGER_ID,
+      'a1b2c3d4e5f60718293a4b5c6d7e8f90',
+    );
+    expect(res.json).toHaveBeenCalledWith({ ok: true });
+  });
+
+  it('answers 409 with the reason and keeps the prompt when the approval is refused', async () => {
+    const task = {
+      approveEventRoutine: vi.fn().mockResolvedValue({ status: 'refused', reason: 'stale_card' }),
+    };
+
+    const res = await resolve(true, task);
+
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.json.mock.calls[0][0]).toMatchObject({ ok: false, capBlocked: true });
+    expect(res.json.mock.calls[0][0]).toHaveProperty(
+      'error',
+      expect.stringMatching(/was not enabled — This card is out of date/),
+    );
+  });
+
+  it('declines by the trigger id alone', async () => {
+    const task = { handleTriggerDenial: vi.fn().mockResolvedValue({ outcome: 'withdrawn' }) };
+
+    await resolve(false, task);
+
+    expect(task.handleTriggerDenial).toHaveBeenCalledWith(TRIGGER_ID);
+  });
+});

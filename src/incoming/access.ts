@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import type { TaskMetadata } from '../types/task.js';
+import type { InputServices } from './inputs.js';
 import type { InboxView, Input } from './types.js';
 
 type InputReader = Pick<InboxView, 'input'>;
@@ -9,6 +10,18 @@ let openInbox: InputReader | null = null;
 /** The daemon sets its inbox here when it opens and clears it when it closes. */
 export function setOpenInbox(inbox: InputReader | null): void {
   openInbox = inbox;
+}
+
+let daemonInputs: InputServices | null = null;
+
+/** The daemon sets its store and vault here beside the inbox, for code that changes inputs while it runs. */
+export function setInputServices(services: InputServices | null): void {
+  daemonInputs = services;
+}
+
+/** Null when incoming events are off or the inbox could not be opened. */
+export function inputServices(): InputServices | null {
+  return daemonInputs;
 }
 
 /** May this routine still use this input? Every check before and during a run asks here, so scope has one place to go. */
