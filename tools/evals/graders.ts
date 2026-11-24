@@ -74,6 +74,61 @@ export function checkTerminalState(record: SessionRecord, expected: TerminalStat
   return { pass: record.terminalState === expected, reason: `ended ${record.terminalState}` };
 }
 
+// ---- Replies -----------------------------------------------------------------
+
+/** Texts the replies to one turn must hold and must not hold, compared ignoring case. */
+export interface ReplyTexts {
+  contains: string[];
+  omits: string[];
+}
+
+/**
+ * The PM replied to the turn, and its replies together hold every `contains`
+ * text and none of the `omits`. Turns are numbered from 1, as a case lists them.
+ */
+export function checkTurnReply(
+  record: SessionRecord,
+  turnNumber: number,
+  texts: ReplyTexts,
+): Check {
+  const turn = record.turns[turnNumber - 1];
+  if (!turn) return turnNotPlayed(record, turnNumber);
+  if (turn.replies.length === 0) return { pass: false, reason: `no reply to turn ${turnNumber}` };
+
+  const reply = turn.replies.join('\n\n').toLowerCase();
+  const holds = (text: string) => reply.includes(text.toLowerCase());
+  const missing = texts.contains.filter((text) => !holds(text));
+  const unwanted = texts.omits.filter(holds);
+  if (missing.length === 0 && unwanted.length === 0) {
+    return { pass: true, reason: `the reply to turn ${turnNumber} has the expected text` };
+  }
+  const problems = [
+    ...(missing.length > 0 ? [`lacks ${quoteAll(missing)}`] : []),
+    ...(unwanted.length > 0 ? [`has ${quoteAll(unwanted)}`] : []),
+  ];
+  return { pass: false, reason: `the reply to turn ${turnNumber} ${problems.join(' and ')}` };
+}
+
+/** The turn was played and the PM sent nothing in reply. */
+export function checkNoReply(record: SessionRecord, turnNumber: number): Check {
+  const turn = record.turns[turnNumber - 1];
+  if (!turn) return turnNotPlayed(record, turnNumber);
+  const replies = turn.replies.length;
+  return { pass: replies === 0, reason: `${replies} reply(ies) to turn ${turnNumber}` };
+}
+
+/** A turn the trial never reached proves nothing about how the PM would have answered it. */
+function turnNotPlayed(record: SessionRecord, turnNumber: number): Check {
+  return {
+    pass: false,
+    reason: `turn ${turnNumber} was not played: the record has ${record.turns.length} turn(s)`,
+  };
+}
+
+function quoteAll(texts: string[]): string {
+  return texts.map((text) => `"${text}"`).join(', ');
+}
+
 // ---- Trajectory --------------------------------------------------------------
 
 /**

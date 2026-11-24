@@ -2,7 +2,15 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { describe, expect, it } from 'vitest';
 import { expectDefined } from '../../../src/test-support/assertions.js';
-import { approvalBeforeMutation, called, notCalled, order, terminalState } from './assertions.js';
+import {
+  approvalBeforeMutation,
+  called,
+  noReply,
+  notCalled,
+  order,
+  terminalState,
+  turnReply,
+} from './assertions.js';
 import ReplayProvider from './replay-provider.js';
 
 const FIXTURE = join(
@@ -75,6 +83,23 @@ describe('assertions', () => {
     });
   });
 
+  it('grade the replies to one turn of the record', async () => {
+    const providerResponse = await replayFixture();
+    const context = (config: Record<string, unknown>) => ({ config, providerResponse });
+
+    expect(
+      turnReply('', context({ turn: 2, contains: ['approve it'], omits: ['channel'] })),
+    ).toEqual({ pass: true, score: 1, reason: 'the reply to turn 2 has the expected text' });
+    expect(turnReply('', context({ turn: 1, omits: ['this channel'] })).reason).toBe(
+      'the reply to turn 1 has "this channel"',
+    );
+    expect(noReply('', context({ turn: 2 }))).toEqual({
+      pass: false,
+      score: 0,
+      reason: '1 reply(ies) to turn 2',
+    });
+  });
+
   it('reject a missing record or malformed config', async () => {
     const providerResponse = await replayFixture();
 
@@ -87,6 +112,16 @@ describe('assertions', () => {
     );
     expect(() => order('', { config: { tools: [] }, providerResponse })).toThrow(
       'config.tools must be a non-empty list of tool names',
+    );
+    expect(() => noReply('', { config: { turn: 0 }, providerResponse })).toThrow(
+      'config.turn must be a turn number, counted from 1',
+    );
+    expect(() => turnReply('', { config: { turn: 1 }, providerResponse })).toThrow(
+      'config needs a contains or an omits list',
+    );
+    // YAML reads a bare 36 as a number.
+    expect(() => turnReply('', { config: { turn: 1, contains: [36] }, providerResponse })).toThrow(
+      'config.contains must be a list of quoted texts',
     );
   });
 });
