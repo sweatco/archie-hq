@@ -156,6 +156,8 @@ When budget is exceeded, Slack interactive buttons are posted:
 - **Approve (+5):** Increases `research_budget_extra` in task metadata by 5, reactivates the task
 - **Deny:** Reactivates the task without extra budget; PM sees the denial and works with existing research
 
+Either button first cancels the stop that `onResearchBudgetExceeded()` deferred to the PM's turn end, so an answer that lands before that turn ends does not stop the task (see [deferred teardown](orchestration.md#deferred-teardown)).
+
 The budget count persists across task stop/reactivate cycles via `research_request_count` in `TaskMetadata`.
 
 **Source:** `src/tasks/task.ts` (`handleResearchBudgetApproval`)

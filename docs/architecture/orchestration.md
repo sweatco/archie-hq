@@ -279,7 +279,7 @@ Both `stop()` and `complete()`:
 
 ### Deferred teardown
 
-`request_edit_mode`, `request_max_mode`, the research-budget stop and the tool-approval park all run **inside** a tool call, so stopping the queue there would close the input stream under an in-flight hook. Each arms `agent.deferTeardown(...)` instead, and the spawn loop runs it on the SDK `result` event — with a backstop in the loop's `finally` for an agent that crashed before the result arrived. `report_completion` is different: it records `completionIntent` and lets the idle check park the task at quiescence, so a still-running background worker cannot be orphaned by a premature teardown.
+`request_edit_mode`, `request_max_mode`, the research-budget stop and the tool-approval park all run **inside** a tool call, so stopping the queue there would close the input stream under an in-flight hook. Each arms `agent.deferTeardown(...)` instead, and the spawn loop runs it on the SDK `result` event — with a backstop in the loop's `finally` for an agent that crashed before the result arrived. Every handler that answers one of these requests, approve or deny, clears the armed teardown before it wakes the PM. The answer can reach the PM inside the turn that asked; left armed, `report_completion` refuses to post ("Task already stopping") and the stop fires at turn end, so the task ends `stopped` without the PM's reply. `report_completion` is different: it records `completionIntent` and lets the idle check park the task at quiescence, so a still-running background worker cannot be orphaned by a premature teardown.
 
 ### Wall-clock timeout
 
