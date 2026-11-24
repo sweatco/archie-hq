@@ -4,6 +4,12 @@
 
 <!-- This file is generated automatically — do NOT edit it by hand. The `.github/workflows/daily-changelog.yml` workflow summarizes each day's merged PRs into a dated entry and commits it to `main` on its own. To shape how a change reads here, write a clear PR description — that is the source the automation reads. Quiet days with nothing merged are intentionally skipped (no entry), so gaps between dates are expected. Hand edits drift from the automation and may be overwritten; the only reason to touch this file directly is to repair a mistake the automation made. -->
 
+## 2026-11-23
+
+- _Technical: builds the ground truth for grading how Archie actually behaves — a session record (replies, tool calls, terminal state, cost) assembled from a finished task folder, replayed through promptfoo with Archie-specific assertions (terminal state, call order, approval-before-mutation), plus a privacy-wrapped per-task pull from production so real sessions can be graded offline with no model call. Stage 0 of the behaviour evals plan, part of #393. PR #419._
+- _Technical: adds a hermetic `--profile eval` boot mode to the E2E harness so a base and candidate instance start from identical, isolated state — no linked workdir/claude-data, no Slack or GitHub credentials, no SSH agent — refusing to boot if an isolation check finds a leaked credential or shared mount; ships a stub "orders" MCP plugin fixture for deterministic test tasks. Closes #394, Stage 1 of the behaviour evals plan. PR #420._
+- _Technical: completes the pipeline with a live promptfoo provider that drives a real Archie instance over its API, a spend cap shared across both arms of a paired run, and a comparison script reporting each case's candidate-versus-base change (pass rate, cost, replies, tool calls), with reuse of an earlier run's base results. Stage 2 of the behaviour evals plan, part of #395. PR #437._
+
 ## 2026-11-21
 
 - _Technical: three review findings fixed in the pull-request image publish workflow — only `main` writes the Docker layer cache so a labelled build can no longer evict it, a failed label removal now fails the job instead of printing a reassuring line, the success comment is posted before label removal so a successful build is still reported even if that step fails, and the deployment guide now notes a manual run needs the branch to contain this workflow. PR #430 (commit 61868d6)._
