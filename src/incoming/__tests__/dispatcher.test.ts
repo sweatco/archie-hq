@@ -181,6 +181,8 @@ beforeEach(() => {
         filter: [],
         routines: [],
         revision: 1,
+        owner: null,
+        purpose: '',
       },
       now,
     );

@@ -2,15 +2,29 @@
 import { statSync } from 'node:fs';
 import { z } from 'zod';
 import type { Trigger } from '../types/trigger.js';
-import { createInput, deleteInput, type InputServices } from './inputs.js';
+import {
+  createInput,
+  deleteInput,
+  linkRoutine,
+  unlinkRoutine,
+  type InputServices,
+} from './inputs.js';
 import { INCOMING_ROUTE } from './receiver.js';
-import { inputFilterSchema, type Input, type InputAuth, type PointerCheck } from './types.js';
+import {
+  inputFilterSchema,
+  type Input,
+  type InputActor,
+  type InputAuth,
+  type PointerCheck,
+} from './types.js';
 
 export interface OperatorServices extends InputServices {
   loadTrigger(id: string): Promise<Trigger | null>;
   /** Null when the Task has no folder. */
   taskStatus(taskId: string): Promise<string | null>;
 }
+
+const OPERATOR: InputActor = { kind: 'operator' };
 
 export const USAGE = `archie incoming — manage inputs that receive webhooks
 
@@ -166,6 +180,8 @@ async function list(services: OperatorServices, print: (line: string) => void): 
         String(pendingHandoffs),
       ]),
     );
+    if (input.owner !== null || input.purpose !== '')
+      print(`  owner: ${input.owner ?? '(operator)'}  purpose: ${input.purpose || '(none)'}`);
     if (input.routines.length > 0) {
       const links = await Promise.all(
         input.routines.map(async (id) =>
@@ -199,12 +215,13 @@ async function link(
       `Trigger ${triggerId} has no condition for input ${inputId}, so a link would deliver nothing`,
     );
 
-  if (input.routines.includes(triggerId)) {
-    print(`Trigger ${triggerId} is already linked to input ${inputId}.`);
-  } else {
-    services.store.linkRoutine(inputId, triggerId);
-    print(`Linked trigger ${triggerId} to input ${inputId}.`);
-  }
+  const change = linkRoutine(services.store, OPERATOR, input.id, triggerId);
+  if (change.status === 'refused') throw new Error(`Input ${inputId} was deleted`);
+  print(
+    change.status === 'unchanged'
+      ? `Trigger ${triggerId} is already linked to input ${inputId}.`
+      : `Linked trigger ${triggerId} to input ${inputId}.`,
+  );
   const { binding } = trigger;
   print(
     binding.type === 'channel'
@@ -224,9 +241,10 @@ function unlink(
   if (!inputId || !triggerId || args.length !== 2)
     throw new Error('Usage: incoming unlink <input-id> <trigger-id>');
   const input = liveInput(services, inputId);
-  if (!input.routines.includes(triggerId))
+  const change = unlinkRoutine(services.store, OPERATOR, input.id, triggerId);
+  if (change.status === 'refused') throw new Error(`Input ${inputId} was deleted`);
+  if (change.status === 'unchanged')
     throw new Error(`Trigger ${triggerId} is not linked to input ${inputId}`);
-  services.store.unlinkRoutine(inputId, triggerId);
   print(`Unlinked trigger ${triggerId} from input ${inputId}.`);
 }
 

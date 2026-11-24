@@ -4,9 +4,10 @@ import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { createInput, deleteInput } from '../inputs.js';
+import { createInput, deleteInput, linkRoutine, mayManageInput, unlinkRoutine } from '../inputs.js';
 import { vaultInputSecrets, type InputSecrets } from '../secrets.js';
 import { IncomingStore } from '../store.js';
+import type { InputActor } from '../types.js';
 
 let root: string;
 let secretsDir: string;
@@ -47,4 +48,67 @@ it('finishes removing secrets when an interrupted deletion is repeated', async (
 
   await deleteInput({ store, secrets }, input.id);
   expect(readdirSync(secretsDir)).toEqual([]);
+});
+
+const OPERATOR: InputActor = { kind: 'operator' };
+const DANA: InputActor = { kind: 'slack_user', userId: 'U0DANA' };
+const EVE: InputActor = { kind: 'slack_user', userId: 'U0EVE' };
+const ROUTINE_ID = 'trg-20261124-0900-notes1';
+
+it('keeps the owner, the purpose and a reserved id it was given', async () => {
+  const { input } = await createInput(
+    { store, secrets },
+    { auth: 'bearer', id: 'inp-RESERVEDRESERVEDRESERV', owner: 'U0DANA', purpose: 'Deploys' },
+  );
+
+  expect(input).toMatchObject({ id: 'inp-RESERVEDRESERVEDRESERV', owner: 'U0DANA' });
+  expect(store.input(input.id)).toMatchObject({ owner: 'U0DANA', purpose: 'Deploys' });
+});
+
+it('gives an input made without an owner to the operator alone', async () => {
+  const { input } = await createInput({ store, secrets }, { auth: 'bearer' });
+
+  expect(store.input(input.id)).toMatchObject({ owner: null, purpose: '' });
+  expect(mayManageInput(input, OPERATOR)).toBe(true);
+  expect(mayManageInput(input, DANA)).toBe(false);
+});
+
+it('lets the owner and the operator link a routine, and nobody else', async () => {
+  const { input } = await createInput({ store, secrets }, { auth: 'bearer', owner: 'U0DANA' });
+
+  expect(linkRoutine(store, EVE, input.id, ROUTINE_ID)).toEqual({
+    status: 'refused',
+    reason: 'not_owner',
+  });
+  expect(store.input(input.id)?.routines).toEqual([]);
+
+  expect(linkRoutine(store, DANA, input.id, ROUTINE_ID).status).toBe('changed');
+  expect(linkRoutine(store, OPERATOR, input.id, ROUTINE_ID).status).toBe('unchanged');
+  expect(store.input(input.id)?.routines).toEqual([ROUTINE_ID]);
+});
+
+it('lets the owner unlink a routine, and nobody else', async () => {
+  const { input } = await createInput({ store, secrets }, { auth: 'bearer', owner: 'U0DANA' });
+  linkRoutine(store, DANA, input.id, ROUTINE_ID);
+
+  expect(unlinkRoutine(store, EVE, input.id, ROUTINE_ID).status).toBe('refused');
+  expect(store.input(input.id)?.routines).toEqual([ROUTINE_ID]);
+
+  expect(unlinkRoutine(store, DANA, input.id, ROUTINE_ID).status).toBe('changed');
+  expect(unlinkRoutine(store, DANA, input.id, ROUTINE_ID).status).toBe('unchanged');
+  expect(store.input(input.id)?.routines).toEqual([]);
+});
+
+it('refuses a link to an input that is unknown or deleted', async () => {
+  const { input } = await createInput({ store, secrets }, { auth: 'bearer', owner: 'U0DANA' });
+  await deleteInput({ store, secrets }, input.id);
+
+  expect(linkRoutine(store, DANA, input.id, ROUTINE_ID)).toEqual({
+    status: 'refused',
+    reason: 'input_deleted',
+  });
+  expect(linkRoutine(store, OPERATOR, 'inp-missing', ROUTINE_ID)).toEqual({
+    status: 'refused',
+    reason: 'unknown_input',
+  });
 });

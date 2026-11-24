@@ -54,6 +54,10 @@ const MIGRATIONS: readonly string[] = [
     ALTER TABLE inputs ADD COLUMN routines TEXT NOT NULL DEFAULT '[]';
     ALTER TABLE handoffs ADD COLUMN reason TEXT;
   `,
+  `
+    ALTER TABLE inputs ADD COLUMN owner TEXT;
+    ALTER TABLE inputs ADD COLUMN purpose TEXT NOT NULL DEFAULT '';
+  `,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

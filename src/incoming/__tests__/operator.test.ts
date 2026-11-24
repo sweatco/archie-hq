@@ -387,3 +387,20 @@ it.each([
   if (refused) expect(check).toThrow(/not as root: \/workdir belongs to uid 1001/);
   else expect(check).not.toThrow();
 });
+
+it('lists the owner and the purpose of an input made in Slack', async () => {
+  const { createInput } = await import('../inputs.js');
+  const { input } = await createInput(
+    { store, secrets },
+    { auth: 'standard_webhooks', owner: 'U0DANA', purpose: 'Meeting recordings' },
+  );
+  await created();
+  printed = [];
+
+  await run('list');
+
+  const lines = printed.join('\n').split('\n');
+  const row = lines.findIndex((line) => line.startsWith(input.id));
+  expect(lines[row + 1]).toBe('  owner: U0DANA  purpose: Meeting recordings');
+  expect(lines.filter((line) => line.includes('owner:'))).toHaveLength(1);
+});

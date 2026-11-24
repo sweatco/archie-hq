@@ -88,6 +88,8 @@ const inputRowSchema = z.object({
   filter: z.string(),
   routines: z.string(),
   revision: z.number(),
+  owner: z.string().nullable(),
+  purpose: z.string(),
 });
 
 const receiptRowSchema = z.object({
@@ -144,6 +146,8 @@ function toInput(row: Record<string, unknown>): Input {
     filter: inputFilterSchema.parse(JSON.parse(stored.filter)),
     routines: z.array(z.string()).parse(JSON.parse(stored.routines)),
     revision: stored.revision,
+    owner: stored.owner,
+    purpose: stored.purpose,
   };
 }
 
@@ -171,7 +175,7 @@ export class IncomingStore {
 
   insertInput(input: Input, createdAt: number): void {
     this.run(
-      'INSERT INTO inputs(id,state,auth,secret_refs,filter,routines,revision,created_at) VALUES (?,?,?,?,?,?,?,?)',
+      'INSERT INTO inputs(id,state,auth,secret_refs,filter,routines,revision,owner,purpose,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
       input.id,
       input.state,
       input.auth,
@@ -179,6 +183,8 @@ export class IncomingStore {
       JSON.stringify(input.filter),
       JSON.stringify(input.routines),
       input.revision,
+      input.owner,
+      input.purpose,
       createdAt,
     );
   }

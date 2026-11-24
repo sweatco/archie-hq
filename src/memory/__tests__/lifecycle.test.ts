@@ -324,6 +324,8 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
       filter: [],
       routines: ['trg-20261121-0900-notes1'],
       revision: 1,
+      owner: null,
+      purpose: '',
     };
     setOpenInbox({ input: () => linked });
     const extraction = expectDefined(vi.mocked(runExtraction).getMockImplementation());

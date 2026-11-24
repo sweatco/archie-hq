@@ -79,6 +79,8 @@ function addWaitingHandoff(): void {
       filter: [],
       routines: [],
       revision: 1,
+      owner: null,
+      purpose: '',
     },
     Date.now(),
   );
