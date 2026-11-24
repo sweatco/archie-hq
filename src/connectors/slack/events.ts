@@ -33,6 +33,8 @@ import { ensureChannelPins } from './channel-pins.js';
 import { shouldCreateNewTask, shouldForwardMessageEvent, isAckableEvent } from './task-routing.js';
 import { Task } from '../../tasks/task.js';
 import { registerMemoryPreferenceHandlers } from '../../memory/slack-approval.js';
+import { registerInputControlHandlers } from '../../system/input-controls.js';
+import { inputControlBlocks } from '../../system/input-panels.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { logger } from '../../system/logger.js';
 import { getIsShuttingDown } from '../../system/shutdown.js';
@@ -497,6 +499,7 @@ export async function mountSlackApp(
   registerMergeActionHandlers(app);
   registerToolApprovalHandlers(app);
   registerMemoryPreferenceHandlers(app);
+  registerInputControlHandlers(app);
 
   // Handle trigger approval button
   boltApp.action<BlockAction<ButtonAction>>('approve_trigger', async ({ action, ack, body }) => {
@@ -527,6 +530,8 @@ export async function mountSlackApp(
       const taskId = threadId ? await findTaskByThread(threadId) : null;
       let trigger: Trigger | null = null;
       let routineNote = '';
+      // The input an approved event routine is linked to, whose owner gets the next step as a button.
+      let linkedInput: string | undefined;
       if (taskId && shown !== undefined) {
         const task = await Task.get(taskId);
         const approval = await task.approveEventRoutine(
@@ -547,6 +552,7 @@ export async function mountSlackApp(
         if (approval.status === 'approved') {
           trigger = approval.trigger;
           routineNote = routineApprovalNote(approval, userId);
+          [linkedInput] = approval.linked;
         }
       } else if (taskId) {
         const task = await Task.get(taskId);
@@ -562,6 +568,7 @@ export async function mountSlackApp(
       let blocks: unknown[] = [];
       if (trigger) {
         text = `✅ Approved by <@${userId}> — *${triggerWhat(trigger)}* is now on.${routineNote}`;
+        if (linkedInput) blocks = inputControlBlocks(text, linkedInput);
       } else {
         const { loadTrigger } = await import('../../system/trigger-store.js');
         const existing = await loadTrigger(triggerId);

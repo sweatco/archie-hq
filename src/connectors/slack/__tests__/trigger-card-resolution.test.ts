@@ -496,10 +496,17 @@ describe('approve_trigger — an event routine is approved from the card that wa
 
     await clickCard(`${TRIGGER_ID}|${DIGEST}`);
 
-    expect(cardText()).toBe(
-      '✅ Approved by <@U_CLICKER> — *the standup digest* is now on. <@U_CLICKER> owns its new input.',
-    );
-    expect(cardBlocks()).toEqual([]);
+    const approved =
+      '✅ Approved by <@U_CLICKER> — *the standup digest* is now on. <@U_CLICKER> owns its new input.';
+    expect(cardText()).toBe(approved);
+    const [line, controls] = cardBlocks() as [
+      { text: { text: string } },
+      { elements: Array<{ action_id: string; value: string }> },
+    ];
+    expect(line.text.text).toBe(approved);
+    expect(controls.elements.map((button) => [button.action_id, button.value])).toEqual([
+      ['input_connect', 'inp-AAAAAAAAAAAAAAAAAAAAAA'],
+    ]);
   });
 
   it('says what waits for the operator on an operator-made input', async () => {
