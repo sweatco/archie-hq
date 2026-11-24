@@ -256,6 +256,7 @@ Every **configuration change** to a **channel**-bound trigger — created/enable
 | `src/system/routine-consumer.ts` | Event routines: the snapshot at receipt, and one Task per handoff |
 | `src/system/routine-review.ts` | An event routine's review card, its digest, and the approval reference |
 | `src/system/routine-approval.ts` | Who may approve an event routine; creating and linking its inputs |
+| `src/system/input-panels.ts`, `input-controls.ts` | The owner's button under an approved event routine, and the Connect window |
 | `src/system/trigger-visibility.ts` | Pure visibility decision (privacy injected) |
 | `src/system/trigger-match.ts` | Pure channel-message match decision — author-id shape, the `contains`/`from_user` predicate |
 | `src/agents/tools.ts` | PM tools: `propose_trigger`, `list_triggers`, `get_trigger`, `update_trigger`, `delete_trigger` |

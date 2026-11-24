@@ -2,7 +2,7 @@
 
 Incoming events let a system other than Slack or GitHub tell Archie that something happened. A sender posts a JSON webhook to a callback URL. Archie authenticates it, records it durably, and later hands it to whatever acts on it.
 
-**Status:** the receiver, the inbox, the dispatcher and event routines are implemented behind `ARCHIE_INCOMING_EVENTS`, which is off by default. An event starts a Task only for a routine linked to its input. A person can set a routine up in Slack with a new input, which they then own; connecting a sender from Slack is still to come ([#403](https://github.com/sweatco/archie-hq/issues/403)). The feature design is in the [incoming events plan](../plans/20261116-incoming-events-shared-receiver.md).
+**Status:** the receiver, the inbox, the dispatcher and event routines are implemented behind `ARCHIE_INCOMING_EVENTS`, which is off by default. An event starts a Task only for a routine linked to its input. A person can set a routine up in Slack with a new input, which they then own, and connect a sender. History, the inventory and key rotation in Slack are still to come ([#403](https://github.com/sweatco/archie-hq/issues/403)). The feature design is in the [incoming events plan](../plans/20261116-incoming-events-shared-receiver.md).
 
 The inbox is in `src/incoming/`. The routine consumer is `src/system/routine-consumer.ts`, beside the trigger code it uses.
 
@@ -127,6 +127,25 @@ The approval card is a review: the source, its owner, the filter, the audience a
 
 The pure parts are in `src/system/routine-review.ts`: the card, the digest and the condition a new input becomes. `src/system/routine-approval.ts` checks the approver and creates and links inputs.
 
+### Connecting a sender
+
+When an approval links a routine to an input the approver manages, the approval line keeps a **Connect a sender** button. Everyone in the conversation sees it. The button carries an id only, and each click is checked against the input as it is then: only the owner gets a window, anyone else is told who owns the input, and only they see that.
+
+**Connect a sender** opens a window with the callback URL, the headers to send, the key behind a **Show key** button, and the connection status. The URL is built from `ARCHIE_PUBLIC_URL`; without it the window shows the path alone.
+
+- **The key is shown to the owner alone,** and only after they ask. A Slack window is visible to the person who opened it, which makes it the one place in Slack a key may appear. The key never reaches model context, a card, an action value or a log. It does pass through Slack.
+- **An owner who is no longer a member of the workspace** is refused the key.
+- **The operator cannot read a key.** The CLI prints one only for an input it creates.
+
+**The connection status** reads two things and starts nothing:
+
+- the newest delivery that authenticated, whether it was acted on or not;
+- when a delivery was last refused because its signature or token did not verify. The receiver keeps this in memory (`src/incoming/refusals.ts`), so a refusal costs no write and the time is lost on restart.
+
+To test a sender without a run, pause the routine. An authenticated delivery is then recorded as ignored, with no body kept, and the status shows it.
+
+The layout is in `src/system/input-panels.ts` and the handlers are in `src/system/input-controls.ts`.
+
 ### From event to Task
 
 1. **Snapshot at receipt.** `match` reads each linked routine from the trigger index and records its prompt and binding in the handoff. The run uses that snapshot. An edit applies to events received after it.
@@ -195,7 +214,7 @@ npm run incoming -- history [<input-id>]
 
 - `create` prints the callback URL, built from `ARCHIE_PUBLIC_URL`, and the secret. The secret is shown only then.
 - `link` refuses a trigger with no condition for that input, then prints its destination, summary and status. `list` shows each input's links and marks one whose trigger no longer exists. For an input made in Slack it also shows the owner and the purpose.
-- An input made in Slack has a key that nobody has seen. Until Slack can show it ([#403](https://github.com/sweatco/archie-hq/issues/403)), such an input cannot be connected to a sender.
+- The key of an input made in Slack is shown to its owner in Slack, under [Connect a sender](#connecting-a-sender). The CLI cannot read it.
 - `history` shows the newest 50 handoffs: state, reason and the Task each reserved.
 
 Before running an older binary, delete event routines and `WORKDIR/incoming/`: it refuses the newer inbox and does not know the `incoming_event` condition.
@@ -224,7 +243,7 @@ These are starting defaults, named constants in `receiver.ts`, `store.ts` and `d
 ## Not built yet
 
 - Proactivity as a second consumer ([#406](https://github.com/sweatco/archie-hq/issues/406)).
-- Connecting a sender, a sample run, history, the inventory, and showing, rotating or transferring a key in Slack ([#403](https://github.com/sweatco/archie-hq/issues/403)).
+- History, the inventory, and rotating a key or transferring an input in Slack ([#403](https://github.com/sweatco/archie-hq/issues/403)).
 - Choosing which event fields a Task receives ([#451](https://github.com/sweatco/archie-hq/issues/451)), and how long the event file is kept ([#407](https://github.com/sweatco/archie-hq/issues/407)).
 - An overlap of two keys during rotation ([#449](https://github.com/sweatco/archie-hq/issues/449)), matching a delivery against the input as committed ([#450](https://github.com/sweatco/archie-hq/issues/450)), and an audit log of input changes ([#454](https://github.com/sweatco/archie-hq/issues/454)).
 - A review of the tools an event-started Task may use, with the event as untrusted input ([#439](https://github.com/sweatco/archie-hq/issues/439)). Required before production use.
