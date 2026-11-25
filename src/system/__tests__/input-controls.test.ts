@@ -354,7 +354,7 @@ describe('Check again', () => {
     await clickWindow('input_check_connection', input.id, 'U0DANA');
 
     const [updated] = slack.update.mock.calls[0] as [{ view: unknown }];
-    expect(shown(updated.view)).toContain('Last delivery refused');
+    expect(shown(updated.view)).toContain('Last refused');
     expect(shown(updated.view)).not.toContain(secret);
   });
 });

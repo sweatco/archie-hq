@@ -132,7 +132,7 @@ The pure parts are in `src/system/routine-review.ts`: the card, the digest and t
 
 When an approval links a routine to an input the approver manages, the approval line keeps a **Settings** button. Everyone in the conversation sees it. The button carries an id only, and each click is checked against the input as it is then: only the owner gets a window, anyone else is told who owns the input, and only they see that.
 
-**Settings** opens a window with the callback URL, the headers to send, the key behind a **Show key** button, the connection status, and **Delete**, which does what the CLI's `delete` does. The URL is built from `ARCHIE_PUBLIC_URL`; without it the window shows the path alone.
+**Settings** opens a window with the callback URL, the key behind a **Show key** button, the connection status, and **Delete**, which does what the CLI's `delete` does. The URL is built from `ARCHIE_PUBLIC_URL`; without it the window shows the path alone.
 
 - **The key is shown to the owner alone,** and only after they ask. A Slack window is visible to the person who opened it, which makes it the one place in Slack a key may appear. The key never reaches model context, a card, an action value or a log. It does pass through Slack.
 - **An owner who is no longer a member of the workspace** is refused the key.

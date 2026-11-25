@@ -91,9 +91,7 @@ export function inputsPanelBlocks(listings: InputListing[]): unknown[] {
   const blocks: unknown[] = [
     {
       type: 'section',
-      text: markdown(
-        `*Incoming-event inputs visible here (${listings.length})*\nSettings opens for an input's owner.`,
-      ),
+      text: markdown(`*Incoming-event inputs visible here (${listings.length})*`),
     },
   ];
   for (const listing of shown) blocks.push({ type: 'divider' }, panelRow(listing));
@@ -110,38 +108,27 @@ export function inputsPanelBlocks(listings: InputListing[]): unknown[] {
 }
 
 function describeReceipt(receipt: NonNullable<ConnectionStatus['lastReceipt']>): string {
-  const received = `Last delivery received: ${slackTime(receipt.receivedAt)}.`;
-  if (receipt.outcome === 'ignored')
-    return `${received} It authenticated and was not acted on: ${
-      receipt.ignoredReason === 'paused'
-        ? 'the input was paused'
-        : 'a filter excluded it, or no routine was taking events'
-    }.`;
-  return `${received} It authenticated and was ${
-    receipt.outcome === 'open' ? 'accepted; its routine is starting' : 'handed to its routine'
-  }.`;
+  const what =
+    receipt.outcome === 'ignored'
+      ? `not acted on: ${receipt.ignoredReason === 'paused' ? 'input paused' : 'filtered out or no routine'}`
+      : receipt.outcome === 'open'
+        ? 'starting its routine'
+        : 'handed to its routine';
+  return `Last received ${slackTime(receipt.receivedAt)} · ${what}`;
 }
 
-function describeConnection(status: ConnectionStatus): string {
+function describeDeliveries(status: ConnectionStatus): string {
   const lines: string[] = [];
-  if (!status.keyReadable)
-    lines.push('⚠️ The key cannot be read on the server, so no delivery can authenticate.');
-  lines.push(
-    status.lastReceipt ? describeReceipt(status.lastReceipt) : 'No delivery has been received yet.',
-  );
-  lines.push(
-    status.lastRefusedAt === null
-      ? 'No delivery has been refused since Archie last started.'
-      : `Last delivery refused: ${slackTime(status.lastRefusedAt)}. Its signature or key did not verify.`,
-  );
+  if (!status.keyReadable) lines.push('⚠️ Key unreadable on the server');
+  lines.push(status.lastReceipt ? describeReceipt(status.lastReceipt) : 'None received yet');
+  if (status.lastRefusedAt !== null)
+    lines.push(`Last refused ${slackTime(status.lastRefusedAt)} · bad signature or key`);
   return lines.join('\n');
 }
 
-const HOW_TO_SEND: Record<Input['auth'], string> = {
-  standard_webhooks:
-    'Sign each delivery with the Standard Webhooks headers `webhook-id`, `webhook-timestamp` and `webhook-signature`, using the key below.',
-  bearer:
-    'Send the key below as `Authorization: Bearer <key>`. Add an `Idempotency-Key` header to make retries safe.',
+const KEY_LABEL: Record<Input['auth'], string> = {
+  standard_webhooks: '*Key* · Standard Webhooks',
+  bearer: '*Key* · Bearer token',
 };
 
 /** The message a Settings window was opened from, so a deletion can change that message. */
@@ -178,8 +165,8 @@ const WINDOW_TITLE = plainText('Input settings');
 function routinesLeft(count: number): string {
   if (count === 0) return '';
   return count === 1
-    ? ' Its routine stays and receives nothing more.'
-    : ` Its ${count} routines stay and receive nothing more.`;
+    ? ' Its routine receives nothing more.'
+    : ` Its ${count} routines receive nothing more.`;
 }
 
 /**
@@ -189,86 +176,61 @@ function routinesLeft(count: number): string {
 export function settingsView(panel: SettingsPanel): ModalView {
   const { input, callback, status } = panel;
   const address = 'url' in callback ? callback.url : callback.path;
-  const blocks: ModalView['blocks'] = [
-    { type: 'section', text: markdown(`*${inputTitle(input)}*\n${STATE_WORD[input.state]}`) },
-    { type: 'divider' },
-    { type: 'section', text: markdown(`*Callback URL*\n\`${address}\``) },
-    { type: 'section', text: markdown(`*How to send*\n${HOW_TO_SEND[input.auth]}`) },
-  ];
-  if (panel.key) {
-    blocks.push(
-      { type: 'section', text: markdown(`*Key*\n\`${panel.key}\``) },
-      {
-        type: 'context',
-        elements: [markdown('Shown only to you, in this window. Put it into the sender now.')],
-      },
-    );
-  } else {
-    blocks.push({
-      type: 'section',
-      text: markdown(`*Key*\n${panel.keyNotice ?? '••••••••••••••••'}`),
-      accessory: {
-        type: 'button',
-        text: plainText('Show key'),
-        action_id: INPUT_ACTIONS.showKey,
-        value: input.id,
-      },
-    });
-  }
-  blocks.push(
-    { type: 'divider' },
-    {
-      type: 'section',
-      text: markdown(`*Connection*\n${describeConnection(status)}`),
-      accessory: {
-        type: 'button',
-        text: plainText('Check again'),
-        action_id: INPUT_ACTIONS.checkConnection,
-        value: input.id,
-      },
-    },
-    {
-      type: 'context',
-      elements: [
-        markdown(
-          'To test a sender without starting a run, pause the routine first. Deliveries are still recorded here.',
-        ),
-      ],
-    },
-    { type: 'divider' },
-    {
-      type: 'section',
-      text: markdown(
-        `*Delete this input*\nIts callback stops accepting deliveries and its key is removed.${routinesLeft(
-          input.routines.length,
-        )} This cannot be undone.`,
-      ),
-      accessory: {
-        type: 'button',
-        text: plainText('Delete'),
-        action_id: INPUT_ACTIONS.delete,
-        value: input.id,
-        style: 'danger',
-        confirm: {
-          title: plainText('Delete this input?'),
-          text: plainText(
-            `“${inputTitle(input)}” stops accepting deliveries and its key is removed.${routinesLeft(
-              input.routines.length,
-            )} This cannot be undone.`,
-          ),
-          confirm: plainText('Delete'),
-          deny: plainText('Cancel'),
-          style: 'danger',
-        },
-      },
-    },
-  );
+  const title = `*${inputTitle(input)}*${input.state === 'enabled' ? '' : ` · ${STATE_WORD[input.state]}`}`;
   return {
     type: 'modal',
     title: WINDOW_TITLE,
     close: plainText('Close'),
     private_metadata: JSON.stringify({ input_id: input.id, from: panel.from }),
-    blocks,
+    blocks: [
+      { type: 'section', text: markdown(title) },
+      { type: 'section', text: markdown(`*Callback URL*\n\`${address}\``) },
+      panel.key
+        ? { type: 'section', text: markdown(`${KEY_LABEL[input.auth]}\n\`${panel.key}\``) }
+        : {
+            type: 'section',
+            text: markdown(`${KEY_LABEL[input.auth]}\n${panel.keyNotice ?? '••••••••••••••••'}`),
+            accessory: {
+              type: 'button',
+              text: plainText('Show key'),
+              action_id: INPUT_ACTIONS.showKey,
+              value: input.id,
+            },
+          },
+      {
+        type: 'section',
+        text: markdown(`*Deliveries*\n${describeDeliveries(status)}`),
+        accessory: {
+          type: 'button',
+          text: plainText('Check again'),
+          action_id: INPUT_ACTIONS.checkConnection,
+          value: input.id,
+        },
+      },
+      {
+        type: 'actions',
+        elements: [
+          {
+            type: 'button',
+            text: plainText('Delete'),
+            action_id: INPUT_ACTIONS.delete,
+            value: input.id,
+            style: 'danger',
+            confirm: {
+              title: plainText('Delete this input?'),
+              text: plainText(
+                `“${inputTitle(input)}” stops accepting deliveries.${routinesLeft(
+                  input.routines.length,
+                )} This cannot be undone.`,
+              ),
+              confirm: plainText('Delete'),
+              deny: plainText('Cancel'),
+              style: 'danger',
+            },
+          },
+        ],
+      },
+    ],
   };
 }
 
@@ -282,9 +244,7 @@ export function settingsNoticeView(notice: string): ModalView {
 }
 
 export function deletedNotice(input: Input): string {
-  return `🗑️ *${inputTitle(input)}* was deleted. Its callback no longer accepts deliveries and its key is gone.${routinesLeft(
-    input.routines.length,
-  )}`;
+  return `🗑️ *${inputTitle(input)}* was deleted.`;
 }
 
 const settingsButtonSchema = z

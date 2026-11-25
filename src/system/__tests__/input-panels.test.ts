@@ -48,11 +48,11 @@ describe('the button under an approved routine', () => {
 });
 
 describe('the Settings window', () => {
-  it('shows the callback URL and how to sign, and keeps the key masked', () => {
+  it('shows the callback URL and the kind of key, and keeps the key masked', () => {
     const shown = text(settingsView({ input: INPUT, callback: CALLBACK, status: QUIET }));
 
     expect(shown).toContain(CALLBACK.url);
-    expect(shown).toContain('webhook-signature');
+    expect(shown).toContain('*Key* · Standard Webhooks');
     expect(shown).toContain('input_show_key');
     expect(shown).not.toContain(KEY);
   });
@@ -61,7 +61,6 @@ describe('the Settings window', () => {
     const shown = text(settingsView({ input: INPUT, callback: CALLBACK, status: QUIET, key: KEY }));
 
     expect(shown).toContain(KEY);
-    expect(shown).toContain('Shown only to you');
     expect(shown).not.toContain('input_show_key');
   });
 
@@ -72,12 +71,12 @@ describe('the Settings window', () => {
     expect(text(view.blocks.filter((block) => block.type === 'actions'))).not.toContain(KEY);
   });
 
-  it('tells a bearer sender to send the key as a token', () => {
+  it('names a bearer key as a token', () => {
     const shown = text(
       settingsView({ input: { ...INPUT, auth: 'bearer' }, callback: CALLBACK, status: QUIET }),
     );
 
-    expect(shown).toContain('Authorization: Bearer');
+    expect(shown).toContain('*Key* · Bearer token');
   });
 
   it('gives the path when the deployment has no public URL configured', () => {
@@ -93,7 +92,7 @@ describe('the Settings window', () => {
   });
 
   it.each<[string, ConnectionStatus, RegExp]>([
-    ['nothing yet', QUIET, /No delivery has been received yet/],
+    ['nothing yet', QUIET, /\*Deliveries\*\\nNone received yet"/],
     [
       'an accepted delivery',
       {
@@ -104,7 +103,7 @@ describe('the Settings window', () => {
           ignoredReason: null,
         },
       },
-      /Last delivery received: <!date\^1800000000\^.*handed to its routine/,
+      /Last received <!date\^1800000000\^.* · handed to its routine/,
     ],
     [
       'a delivery that authenticated while the routine was paused',
@@ -116,40 +115,57 @@ describe('the Settings window', () => {
           ignoredReason: 'filtered',
         },
       },
-      /authenticated and was not acted on: a filter excluded it, or no routine was taking events/,
+      /not acted on: filtered out or no routine/,
     ],
     [
       'a refused delivery',
       { ...QUIET, lastRefusedAt: 1_800_000_060_000 },
-      /Last delivery refused: <!date\^1800000060\^.*did not verify/,
+      /Last refused <!date\^1800000060\^.* · bad signature or key/,
     ],
-    ['an unreadable key', { ...QUIET, keyReadable: false }, /key cannot be read on the server/],
+    ['an unreadable key', { ...QUIET, keyReadable: false }, /Key unreadable on the server/],
   ])('reports %s', (_name, status, expected) => {
     expect(text(settingsView({ input: INPUT, callback: CALLBACK, status }))).toMatch(expected);
+  });
+
+  it('holds the name, the callback URL, the key, the deliveries and Delete, and nothing else', () => {
+    const view = settingsView({ input: INPUT, callback: CALLBACK, status: QUIET });
+
+    expect(view.blocks.map((block) => block.type)).toEqual([
+      'section',
+      'section',
+      'section',
+      'section',
+      'actions',
+    ]);
+    expect(text(view.blocks[0])).toContain('"*Meeting recordings*"');
+  });
+
+  it('says so in the name line when the input is paused', () => {
+    const view = settingsView({
+      input: { ...INPUT, state: 'paused' },
+      callback: CALLBACK,
+      status: QUIET,
+    });
+
+    expect(text(view.blocks[0])).toContain('*Meeting recordings* · Paused');
   });
 
   it('offers Delete behind a confirmation that says what stops', () => {
     const view = settingsView({ input: INPUT, callback: CALLBACK, status: QUIET });
 
-    const remove = view.blocks
-      .map((block) => ('accessory' in block ? block.accessory : undefined))
-      .find(
-        (accessory) =>
-          accessory && 'action_id' in accessory && accessory.action_id === 'input_delete',
-      );
-    expect(remove).toMatchObject({ value: INPUT.id, style: 'danger' });
+    const last = view.blocks.at(-1);
+    const [remove] = last && 'elements' in last ? last.elements : [];
+    expect(remove).toMatchObject({ action_id: 'input_delete', value: INPUT.id, style: 'danger' });
     expect(text(remove)).toContain('Delete this input?');
     expect(text(remove)).toContain(
-      '“Meeting recordings” stops accepting deliveries and its key is removed. Its routine stays and receives nothing more. This cannot be undone.',
+      '“Meeting recordings” stops accepting deliveries. Its routine receives nothing more. This cannot be undone.',
     );
   });
 
   it('becomes a plain notice once the input is deleted', () => {
     const view = settingsNoticeView(deletedNotice({ ...INPUT, routines: [] }));
 
-    expect(text(view.blocks)).toContain(
-      '*Meeting recordings* was deleted. Its callback no longer accepts deliveries and its key is gone.',
-    );
+    expect(text(view.blocks)).toContain('*Meeting recordings* was deleted.');
     expect(text(view)).not.toContain('action_id');
   });
 });
