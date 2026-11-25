@@ -3432,7 +3432,6 @@ function createGetTriggerTool(task: Task) {
   );
 }
 
-/** The lookups an input listing needs, with routine visibility decided for this conversation. */
 function inventoryLookups(origin: TriggerOrigin): InventoryLookups {
   const resolvePrivacy = makePrivacyResolver();
   return {

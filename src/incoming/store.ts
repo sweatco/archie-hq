@@ -73,7 +73,7 @@ export interface HandoffRecord {
   reservation: string | null;
 }
 
-/** One delivery an input authenticated, with what became of it at each consumer. An ignored one has no handoffs. */
+/** An ignored delivery has no handoffs. */
 export interface DeliveryRecord {
   receiptId: string;
   receivedAt: number;
@@ -535,7 +535,7 @@ export class IncomingStore {
       });
   }
 
-  /** The newest deliveries of one input first, ignored ones included. */
+  /** Newest first, ignored deliveries included. */
   deliveryHistory(inputId: string, limit: number): DeliveryRecord[] {
     const newest =
       'SELECT id FROM receipts WHERE input_id=?1 ORDER BY received_at DESC, rowid DESC LIMIT ?2';

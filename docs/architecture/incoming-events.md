@@ -70,7 +70,6 @@ A consumer is the code that acts on an event. It implements two functions, defin
 - `match` runs on the request path, just before the receipt commits. It is synchronous and has no effects.
 - `handle` runs later, from the dispatcher. It may run more than once for one handoff, so the handoff id is its idempotency key. It answers `accepted`, or `skipped` with a reason.
 - `reconcile` is optional. It runs with each sweep, the first at start, so a consumer can drop work for handoffs that ended without `handle` seeing it.
-- `uses` is optional. It names what of that kind takes an input's events, so the inventory can list an input that no routine uses.
 
 `handle` can save a reservation on its handoff: a durable marker of progress that the next attempt reads. It also gets a read view of the inbox, for checks it repeats while it works.
 
@@ -149,32 +148,9 @@ The layout is in `src/system/input-panels.ts` and the handlers are in `src/syste
 
 ### The inventory and the history
 
-The PM has two read-only tools. `list_inputs` lists inputs with their owner, state, last delivery and what takes their events. `get_input_history` shows what became of an input's newest 50 deliveries. `show_inputs` posts the listing as a panel, with a **Settings** button on each input that has an owner.
+The PM reads inputs with `list_inputs` and an input's newest 50 deliveries with `get_input_history`. `show_inputs` posts the listing as a panel, with a **Settings** button on each input that has an owner. All three are scoped like trigger listings: the owner's own DM and the operator see an input whole, and any other conversation sees only the routines visible from it, with the rest as a count.
 
-Both are scoped by the conversation the question comes from, like trigger listings (`src/system/trigger-visibility.ts`):
-
-| Asked from | What is shown |
-|---|---|
-| The owner's own DM, or the operator | The input whole: every linked routine and every other consumer |
-| Any other conversation | Only the linked routines visible from it. Everything else is a count. An input with no routine visible there is not listed, and its history is refused |
-
-Neither tool shows a key or a callback address. A deleted input is left out of the inventory. A delivery that was not acted on belongs to no routine, so history shows its time and reason wherever the input is visible.
-
-History reads the receipts, which are kept for 30 days, and tells five outcomes apart:
-
-| Shown as | Meaning |
-|---|---|
-| Received | The handoff is waiting to start |
-| Handed off | The handoff was accepted: a Task started and has not posted yet |
-| Delivered | That Task opened its thread; the row links to it |
-| Skipped | The receipt was ignored, or the handoff ended without a run, with the reason in words |
-| Uncertain | The handoff was cancelled or failed, yet the Task it reserved exists |
-
-No event content is kept after handoff, so history cannot show or replay an event. A delivery that failed authentication has no receipt and does not appear; the Settings window shows when one was last refused.
-
-**Pausing a routine is a trigger operation** and touches nothing else. The paused routine stops matching at receipt, while the input's other routines and its other consumers keep receiving.
-
-The code is in `src/system/input-inventory.ts`; the tools are `list_inputs` and `get_input_history` in `src/agents/tools.ts`.
+History tells a delivery as received, handed off, delivered, skipped or uncertain. It holds no event content, and a delivery that failed authentication has no receipt, so it does not appear.
 
 ### From event to Task
 
@@ -272,7 +248,7 @@ These are starting defaults, named constants in `receiver.ts`, `store.ts` and `d
 
 ## Not built yet
 
-- Proactivity as a second consumer ([#406](https://github.com/sweatco/archie-hq/issues/406)). Until then only a test consumer exercises the inventory's `uses` seam.
+- Proactivity as a second consumer ([#406](https://github.com/sweatco/archie-hq/issues/406)).
 - Rotating a key, transferring an input and disconnecting a routine in Slack ([#403](https://github.com/sweatco/archie-hq/issues/403)).
 - Choosing which event fields a Task receives ([#451](https://github.com/sweatco/archie-hq/issues/451)), and how long the event file is kept ([#407](https://github.com/sweatco/archie-hq/issues/407)).
 - An overlap of two keys during rotation ([#449](https://github.com/sweatco/archie-hq/issues/449)), matching a delivery against the input as committed ([#450](https://github.com/sweatco/archie-hq/issues/450)), and an audit log of input changes ([#454](https://github.com/sweatco/archie-hq/issues/454)).

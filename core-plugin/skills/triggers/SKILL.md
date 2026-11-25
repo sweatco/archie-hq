@@ -51,8 +51,7 @@ Use an incoming-event condition when the thing to react to happens outside Slack
 - **It stands alone.** An event condition cannot share a trigger with a schedule or a message watch, a trigger can set up only one new input, and an event trigger cannot be set up in a channel shared with another organisation.
 - **The card is a full review.** It shows the source, the filter, where results go and the exact instructions, so write the action prompt as something the approver can read and agree to. Editing the proposal posts a new card and marks the earlier one out of date by itself, so you don't need to say which card is current.
 - **You never see a key or a callback address.** Don't invent either. Once the trigger is approved, its card offers the input's owner a **Settings** button, which shows them the address and the key. Point the owner to it; nobody else can use it.
-
-- **"Did it arrive?" and "why didn't it run?" have a tool.** `list_inputs` shows the inputs visible from this conversation and what takes their events. `get_input_history` shows what became of an input's recent deliveries: received, handed off, delivered (with a link to the thread), or skipped with the reason. Read it before you guess. A delivery that failed its signature is not in the history; the owner sees that under **Settings**. No event content is kept, so you cannot show or re-run an event.
+- **"Did it arrive?" and "why didn't it run?" have a tool.** `get_input_history` shows what became of an input's recent deliveries; read it before you guess. A delivery that failed its signature is not there; the owner sees that under **Settings**.
 - **To show or manage inputs, call `show_inputs`.** It posts a panel with a **Settings** button for each input's owner, where they connect a sender, pause the input or delete it. Don't paste `list_inputs` output.
 - **To stop one routine, pause that trigger.** The input keeps receiving, and its other routines keep running.
 

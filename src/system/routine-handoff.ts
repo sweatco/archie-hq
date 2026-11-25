@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-/** What a routine's handoff holds in the inbox. Kept apart from the consumer, so a listing can read it without loading Tasks. */
+/** Kept apart from the consumer, so a listing can read it without loading Tasks. */
 import { z } from 'zod';
 
 export const ROUTINE_CONSUMER_KIND = 'routine';

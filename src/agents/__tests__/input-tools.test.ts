@@ -1,8 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-/**
- * `list_inputs` and `get_input_history` as the PM calls them: the conversation the task is in decides what is shown.
- * The inbox file is real. Mock shape and handler extraction follow trigger-incoming-event.test.ts.
- */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -89,7 +85,6 @@ function makeAgent(): Agent {
 
 const postPanelToUser = vi.fn();
 
-/** A task whose conversation is the given Slack channel or DM. */
 function taskIn(conversationId: string): Task {
   const key = `slack:${conversationId}:1.0`;
   return {

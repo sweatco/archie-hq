@@ -12,7 +12,6 @@ export function setOpenInbox(inbox: InputReader | null): void {
   openInbox = inbox;
 }
 
-/** What the running daemon holds: the store, the vault, and the consumers its inbox hands events to. */
 export interface DaemonInputs extends InputServices {
   consumers?: readonly IncomingConsumer[];
 }

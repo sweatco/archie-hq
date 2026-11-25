@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 /**
- * What a conversation may learn about incoming events inputs: which exist, what takes their events, and what became of each delivery.
- * Scope follows trigger listings. The owner's own DM and the operator see an input whole. Any other conversation sees the routines
- * visible from it, and everything else as a count.
+ * Scope follows trigger listings. The owner's own DM and the operator see an input whole.
+ * Any other conversation sees the routines visible from it, and everything else as a count.
  */
 import type { DaemonInputs } from '../incoming/access.js';
 import { DEFAULT_DISPATCH_POLICY } from '../incoming/dispatcher.js';
@@ -20,17 +19,15 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 export interface InventoryLookups {
   loadTrigger(id: string): Promise<Trigger | null>;
-  /** Whether a routine may be shown in the asking conversation. */
   visible(routine: Trigger): Promise<boolean>;
   task(
     taskId: string,
   ): Promise<Pick<TaskMetadata, 'status' | 'default_channel' | 'channels'> | null>;
 }
 
-/** A routine's record when it may be shown here: null for one that no longer exists, undefined for one that stays hidden. */
+/** Null for a routine that no longer exists, undefined for one that stays hidden. */
 type RoutineLookup = (id: string) => Promise<Trigger | null | undefined>;
 
-/** The owner's own DM and the operator are told everything about an input. */
 function seesWhole(input: Input, origin: TriggerOrigin): boolean {
   if (origin.kind === 'operator') return true;
   return origin.kind === 'dm' && input.owner !== null && origin.userId === input.owner;
@@ -51,13 +48,12 @@ function routineLookup(whole: boolean, lookups: InventoryLookups): RoutineLookup
   };
 }
 
-/** What takes an input's events, as far as one conversation may see. */
 export interface InputUses {
-  /** The linked routines that may be shown. A null routine no longer exists. */
+  /** A null routine no longer exists. */
   routines: Array<{ id: string; routine: Trigger | null }>;
-  /** Consumers of other kinds, named only where the input is seen whole. */
+  /** Named only where the input is seen whole. */
   others: ConsumerUse[];
-  /** Linked routines and other consumers that stay unnamed here. */
+  /** Routines and other consumers that stay unnamed. */
   hidden: number;
 }
 
@@ -134,7 +130,6 @@ function describeInput({ input, latest, ...uses }: InputListing): string {
 
 export const NO_INPUTS_VISIBLE = 'There are no incoming events inputs visible from here.';
 
-/** The inputs that may be shown in the asking conversation, each with what takes its events. */
 export async function listInputs(
   services: DaemonInputs,
   origin: TriggerOrigin,
@@ -162,7 +157,7 @@ export function describeInputs(listings: InputListing[]): string {
   return `Inputs visible here (${listings.length}):\n${listings.map(describeInput).join('\n')}`;
 }
 
-/** Why a handoff ended without a run, in words. A reason not listed here is shown as recorded. */
+/** A reason not listed here is shown as recorded. */
 const ENDED_BECAUSE: Record<string, string> = {
   routine_paused: 'the routine was paused',
   routine_deleted: 'the routine was deleted',
@@ -181,7 +176,7 @@ const ENDED_BECAUSE: Record<string, string> = {
 
 type DeliveryHandoff = DeliveryRecord['handoffs'][number];
 
-/** One of: received, handed off, delivered, skipped, uncertain. A Task has delivered once it opened its thread. */
+/** A Task has delivered once it opened its thread. */
 async function routineOutcome(
   handoff: DeliveryHandoff,
   name: string,
@@ -254,7 +249,6 @@ async function deliveryLines(
   return lines;
 }
 
-/** What became of an input's newest deliveries, as far as the asking conversation may see. */
 export async function describeInputHistory(
   services: DaemonInputs,
   inputId: string,

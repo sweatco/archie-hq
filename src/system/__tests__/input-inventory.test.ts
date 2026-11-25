@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-/** The inventory and the history of inputs, read from a real inbox file through the visibility rules of trigger listings. */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -81,7 +80,6 @@ let routines: Map<string, Trigger>;
 let tasks: Map<string, Pick<TaskMetadata, 'status' | 'default_channel' | 'channels'>>;
 let deliveries: number;
 
-/** The lookups a tool would pass, with #leads as the only private channel. */
 function lookupsFrom(origin: TriggerOrigin): InventoryLookups {
   return {
     loadTrigger: (id) => Promise.resolve(routines.get(id) ?? null),
@@ -108,7 +106,6 @@ const historyFrom = (origin: TriggerOrigin, inputId = SHARED) =>
     lookupsFrom(origin),
   );
 
-// Neither listing reads a key.
 const unusedVault = {
   create: () => Promise.reject(new Error('unused')),
   read: () => Promise.reject(new Error('unused')),
@@ -136,7 +133,6 @@ function deliver(receivedAt: number, consumers: MatchedConsumer[], inputId = SHA
   );
 }
 
-/** Ends the oldest waiting handoff the way a consumer or the dispatcher would. */
 function finish(state: 'accepted' | 'skipped' | 'failed', reason?: string, taskId?: string): void {
   const claimed = store.claimHandoff(NOW, 60_000);
   if (!claimed) throw new Error('No handoff was waiting');
@@ -244,7 +240,6 @@ describe('the inventory', () => {
 });
 
 describe('the history of an input', () => {
-  /** One delivery of every kind, the oldest first. */
   function everyOutcome(): void {
     deliver(at(9, 0), []);
     store.pauseInput(SHARED);
