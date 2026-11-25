@@ -10,10 +10,22 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 # python3 + pip (for agent scripts)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-      git git-lfs bash bubblewrap socat gosu ca-certificates \
+      git git-lfs bash bubblewrap socat gosu ca-certificates curl \
       python3 python3-pip python3-venv && \
     git lfs install && \
     rm -rf /var/lib/apt/lists/*
+
+# GitHub CLI for agents, pinned and checksum-verified.
+RUN gh_version=2.97.0 && \
+    gh_package="gh_${gh_version}_linux_$(dpkg --print-architecture).deb" && \
+    gh_release="https://github.com/cli/cli/releases/download/v${gh_version}" && \
+    mkdir -p /tmp/gh-install && \
+    curl --fail --location --retry 3 "$gh_release/$gh_package" -o "/tmp/gh-install/$gh_package" && \
+    curl --fail --location --retry 3 "$gh_release/gh_${gh_version}_checksums.txt" -o /tmp/gh-install/checksums.txt && \
+    (cd /tmp/gh-install && sha256sum --check --ignore-missing checksums.txt) && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends "/tmp/gh-install/$gh_package" && \
+    rm -rf /tmp/gh-install /var/lib/apt/lists/*
 
 # Set SHELL environment variable (required by Claude CLI)
 ENV SHELL=/bin/bash
