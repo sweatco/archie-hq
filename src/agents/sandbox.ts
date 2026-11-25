@@ -33,6 +33,8 @@ export interface SandboxOptions {
   denyReadPaths?: string[];
   /** Domains Bash can reach (empty = deny all, default) */
   allowedNetworkDomains?: string[];
+  /** The session env carries GH_TOKEN; Bash must see a placeholder instead. */
+  maskGitHubToken?: boolean;
 }
 
 /**
@@ -48,6 +50,22 @@ export interface SandboxOptions {
  * compromised orchestrator. A broader "trusted" list is tracked separately.
  */
 export const TRUSTED_PACKAGE_REGISTRY_DOMAINS = ['registry.npmjs.org', 'registry.yarnpkg.com'];
+
+/** `github.com` is deliberately absent, so `git push` from Bash stays blocked by the network. */
+export const GITHUB_API_DOMAIN = 'api.github.com';
+
+const GITHUB_TOKEN_ENV = 'GH_TOKEN';
+
+/** Only for a session whose SandboxOptions set `maskGitHubToken`. */
+export function buildSandboxGitHubEnv(token: string): Record<string, string> {
+  return {
+    [GITHUB_TOKEN_ENV]: token,
+    GH_PROMPT_DISABLED: '1',
+    GH_NO_UPDATE_NOTIFIER: '1',
+    // The telemetry host is not on the allowlist.
+    GH_TELEMETRY: 'false',
+  };
+}
 
 // ---- Sandbox config (OS-level, Bash only) ----
 
@@ -91,9 +109,17 @@ export function buildSandboxConfig(opts: SandboxOptions) {
     },
     network: {
       allowedDomains: opts.allowedNetworkDomains ?? [],
+      // Masking needs TLS termination.
+      ...(opts.maskGitHubToken ? { tlsTerminate: {} } : {}),
     },
+    // Enforced by the CLI, so version-coupled like the egress allowlist.
     credentials: {
-      envVars: [{ name: 'ANTHROPIC_API_KEY', mode: 'deny' as const }],
+      envVars: [
+        { name: 'ANTHROPIC_API_KEY', mode: 'deny' as const },
+        ...(opts.maskGitHubToken
+          ? [{ name: GITHUB_TOKEN_ENV, mode: 'mask' as const, injectHosts: [GITHUB_API_DOMAIN] }]
+          : []),
+      ],
     },
   };
 }

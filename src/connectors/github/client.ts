@@ -24,6 +24,7 @@ import type {
 import type { PrCardData } from '../../types/task.js';
 import { summarizeCi } from '../../system/pr-card-format.js';
 import { logger } from '../../system/logger.js';
+import { sandboxReadPermissions } from './sandbox-token.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -1180,6 +1181,22 @@ export class GitHubClient {
       page += 1;
     }
     return results;
+  }
+
+  /** For `gh` in the sandbox. The cached installation token must never reach a session. */
+  async mintSandboxReadToken(): Promise<string> {
+    const installation = await this.app.octokit.request(
+      'GET /app/installations/{installation_id}',
+      { installation_id: this.installationId },
+    );
+    const accessToken = await this.app.octokit.request(
+      'POST /app/installations/{installation_id}/access_tokens',
+      {
+        installation_id: this.installationId,
+        permissions: sandboxReadPermissions(installation.data.permissions),
+      },
+    );
+    return accessToken.data.token;
   }
 
   /**

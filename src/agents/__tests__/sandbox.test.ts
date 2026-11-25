@@ -14,7 +14,9 @@ import {
   buildManagedNetworkPolicy,
   buildPackageManagerCacheEnv,
   buildRepoGrants,
+  buildSandboxGitHubEnv,
   createPmOnlyToolGuardHooks,
+  GITHUB_API_DOMAIN,
   PM_ONLY_MCP_SERVERS,
   TRUSTED_PACKAGE_REGISTRY_DOMAINS,
   type SandboxOptions,
@@ -119,6 +121,46 @@ describe('buildSandboxConfig', () => {
       buildSandboxConfig({ ...base, allowedNetworkDomains: [...TRUSTED_PACKAGE_REGISTRY_DOMAINS] })
         .credentials.envVars,
     ).toContainEqual(deny);
+  });
+
+  it('masks no credential and terminates no TLS unless a GitHub token is in the session', () => {
+    const cfg = buildSandboxConfig(base);
+    expect(cfg.credentials.envVars.map((entry) => entry.mode)).toEqual(['deny']);
+    expect(cfg.network).not.toHaveProperty('tlsTerminate');
+  });
+
+  it('masks the GitHub token for Bash and injects it at the API host only', () => {
+    const cfg = buildSandboxConfig({
+      ...base,
+      allowedNetworkDomains: ['sheets.googleapis.com', GITHUB_API_DOMAIN],
+      maskGitHubToken: true,
+    });
+    expect(cfg.credentials.envVars).toContainEqual({
+      name: 'GH_TOKEN',
+      mode: 'mask',
+      injectHosts: ['api.github.com'],
+    });
+    expect(cfg.network.tlsTerminate).toEqual({});
+  });
+});
+
+describe('buildSandboxGitHubEnv', () => {
+  it('names the token with the variable the mask covers', () => {
+    const env = buildSandboxGitHubEnv('ghs_example');
+    const masked = buildSandboxConfig({
+      ...base,
+      maskGitHubToken: true,
+    }).credentials.envVars.filter((entry) => entry.mode === 'mask');
+    expect(masked.map((entry) => entry.name)).toEqual(['GH_TOKEN']);
+    expect(env.GH_TOKEN).toBe('ghs_example');
+  });
+
+  it('keeps gh non-interactive and off hosts the allowlist refuses', () => {
+    expect(buildSandboxGitHubEnv('ghs_example')).toMatchObject({
+      GH_PROMPT_DISABLED: '1',
+      GH_NO_UPDATE_NOTIFIER: '1',
+      GH_TELEMETRY: 'false',
+    });
   });
 });
 
