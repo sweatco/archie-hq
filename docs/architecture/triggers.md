@@ -257,9 +257,10 @@ Every **configuration change** to a **channel**-bound trigger — created/enable
 | `src/system/routine-review.ts` | An event routine's review card, its digest, and the approval reference |
 | `src/system/routine-approval.ts` | Who may approve an event routine; creating and linking its inputs |
 | `src/system/input-panels.ts`, `input-controls.ts` | The owner's button under an approved event routine, and the Connect window |
+| `src/system/input-inventory.ts` | What `list_inputs` and `get_input_history` show, scoped by the asking conversation |
 | `src/system/trigger-visibility.ts` | Pure visibility decision (privacy injected) |
 | `src/system/trigger-match.ts` | Pure channel-message match decision — author-id shape, the `contains`/`from_user` predicate |
-| `src/agents/tools.ts` | PM tools: `propose_trigger`, `list_triggers`, `get_trigger`, `update_trigger`, `delete_trigger` |
+| `src/agents/tools.ts` | PM tools: `propose_trigger`, `list_triggers`, `get_trigger`, `update_trigger`, `delete_trigger`, `list_inputs`, `get_input_history` |
 | `src/tasks/task.ts` | `handleTriggerApproval` / `handleTriggerDenial`; `openHomeThread` (opens and adopts the task's own thread in its home channel) and `linkSlackThread` |
 | `src/connectors/slack/channel-ids.ts` | `taskSlackChannelLabels` / `taskSlackChannelIds` — the one derivation of which channels a task's standing context and capabilities cover, home channel included |
 | `src/connectors/slack/events.ts` | Approve/Deny buttons + channel-message dispatch hook |
