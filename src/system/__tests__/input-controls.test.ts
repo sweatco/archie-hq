@@ -251,6 +251,47 @@ describe('Show key', () => {
   });
 });
 
+describe('Pause and Resume', () => {
+  it('pauses the input for its owner and offers Resume, in the window and in the panel', async () => {
+    slack.fetchMessage.mockResolvedValue({ text: 'Inputs', blocks: panel() });
+
+    await clickWindow('input_pause', input.id, 'U0DANA');
+
+    expect(store.input(input.id)?.state).toBe('paused');
+    const [updated] = slack.update.mock.calls[0] as [{ view: unknown }];
+    expect(shown(updated.view)).toContain('*Meetings* · ⏸️ Paused');
+    expect(shown(updated.view)).toContain('input_resume');
+    expect(shown(updated.view)).not.toContain('input_pause');
+    const [, , , row] = slack.updateMessage.mock.calls[0] as [string, string, string, unknown[]];
+    expect(shown(row)).toContain('*Meetings*\\n⏸️ Paused · owned by <@U0DANA>');
+    expect(shown(vi.mocked(logger.system).mock.calls)).toContain('was paused by its owner');
+  });
+
+  it('resumes a paused input', async () => {
+    store.pauseInput(input.id);
+
+    await clickWindow('input_resume', input.id, 'U0DANA');
+
+    expect(store.input(input.id)?.state).toBe('enabled');
+    expect(shown(slack.update.mock.calls)).toContain('input_pause');
+  });
+
+  it('changes nothing for anyone else', async () => {
+    await clickWindow('input_pause', input.id, 'U0EVE');
+
+    expect(store.input(input.id)?.state).toBe('enabled');
+    expect(shown(slack.update.mock.calls)).toContain('Only <@U0DANA>, who owns this input');
+  });
+
+  it('changes nothing for an owner who is no longer a member of the workspace', async () => {
+    slack.members.delete('U0DANA');
+
+    await clickWindow('input_pause', input.id, 'U0DANA');
+
+    expect(store.input(input.id)?.state).toBe('enabled');
+  });
+});
+
 describe('Delete', () => {
   const deliveryStatus = () => store.input(input.id)?.state;
 
@@ -315,7 +356,7 @@ describe('Delete', () => {
     await clickWindow('input_delete', input.id, 'U0DANA');
 
     expect(deliveryStatus()).toBe('enabled');
-    expect(shown(slack.update.mock.calls)).toContain('Only the owner of this input can delete it');
+    expect(shown(slack.update.mock.calls)).toContain('Only the owner of this input can do that');
   });
 
   it('leaves an operator-made input to the operator', async () => {

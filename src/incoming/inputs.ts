@@ -89,6 +89,26 @@ export async function deleteInputAs(
     : { status: 'refused', reason: 'unknown_input' };
 }
 
+export type PauseChange =
+  | { status: 'changed'; input: Input }
+  | { status: 'refused'; reason: 'unknown_input' | 'input_deleted' | 'not_owner' };
+
+export function setInputPaused(
+  store: IncomingStore,
+  actor: InputActor,
+  inputId: string,
+  paused: boolean,
+): PauseChange {
+  const input = store.input(inputId);
+  if (!input) return { status: 'refused', reason: 'unknown_input' };
+  if (input.state === 'deleted') return { status: 'refused', reason: 'input_deleted' };
+  if (!mayManageInput(input, actor)) return { status: 'refused', reason: 'not_owner' };
+  const changed = paused ? store.pauseInput(inputId) : store.resumeInput(inputId);
+  if (!changed || changed.state === 'deleted')
+    return { status: 'refused', reason: 'input_deleted' };
+  return { status: 'changed', input: changed };
+}
+
 export type LinkChange =
   | { status: 'changed' | 'unchanged'; input: Input }
   | { status: 'refused'; reason: 'unknown_input' | 'input_deleted' | 'not_owner' };

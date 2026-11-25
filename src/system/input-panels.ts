@@ -11,6 +11,8 @@ export const INPUT_ACTIONS = {
   settings: 'input_settings',
   showKey: 'input_show_key',
   checkConnection: 'input_check_connection',
+  pause: 'input_pause',
+  resume: 'input_resume',
   delete: 'input_delete',
 } as const;
 
@@ -47,7 +49,7 @@ const inputTitle = (input: Input) => input.purpose || 'Input without a purpose';
 
 const STATE_WORD: Record<Input['state'], string> = {
   enabled: 'Enabled',
-  paused: 'Paused',
+  paused: '⏸️ Paused',
   deleted: 'Deleted',
 };
 
@@ -210,6 +212,19 @@ export function settingsView(panel: SettingsPanel): ModalView {
       {
         type: 'actions',
         elements: [
+          input.state === 'paused'
+            ? {
+                type: 'button',
+                text: plainText('Resume'),
+                action_id: INPUT_ACTIONS.resume,
+                value: input.id,
+              }
+            : {
+                type: 'button',
+                text: plainText('Pause'),
+                action_id: INPUT_ACTIONS.pause,
+                value: input.id,
+              },
           {
             type: 'button',
             text: plainText('Delete'),
@@ -284,4 +299,20 @@ export function withInputDeleted(blocks: unknown[], inputId: string): unknown[] 
     return [block];
   });
   return changed ? kept : null;
+}
+
+/** Null when the message has no row for that input. */
+export function withInputState(blocks: unknown[], input: Input): unknown[] | null {
+  let changed = false;
+  const next = blocks.map((block) => {
+    const row = panelRowSchema.safeParse(block);
+    if (!row.success || row.data.accessory.value !== input.id) return block;
+    changed = true;
+    const [title = '', facts = '', ...uses] = row.data.text.text.split('\n');
+    // Slack hands an emoji back as its name, so the state is found by its place in the line.
+    const [, ...rest] = facts.split(' · ');
+    const text = [title, [STATE_WORD[input.state], ...rest].join(' · '), ...uses].join('\n');
+    return { ...row.data, text: { ...row.data.text, text } };
+  });
+  return changed ? next : null;
 }

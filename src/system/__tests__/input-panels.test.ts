@@ -14,6 +14,7 @@ import {
   settingsOrigin,
   settingsView,
   withInputDeleted,
+  withInputState,
 } from '../input-panels.js';
 
 const INPUT: Input = {
@@ -147,14 +148,17 @@ describe('the Settings window', () => {
       status: QUIET,
     });
 
-    expect(text(view.blocks[0])).toContain('*Meeting recordings* · Paused');
+    expect(text(view.blocks[0])).toContain('*Meeting recordings* · ⏸️ Paused');
+    expect(text(view.blocks.at(-1))).toContain('input_resume');
+    expect(text(view.blocks.at(-1))).not.toContain('input_pause');
   });
 
   it('offers Delete behind a confirmation that says what stops', () => {
     const view = settingsView({ input: INPUT, callback: CALLBACK, status: QUIET });
 
     const last = view.blocks.at(-1);
-    const [remove] = last && 'elements' in last ? last.elements : [];
+    const [pause, remove] = last && 'elements' in last ? last.elements : [];
+    expect(pause).toMatchObject({ action_id: 'input_pause', value: INPUT.id });
     expect(remove).toMatchObject({ action_id: 'input_delete', value: INPUT.id, style: 'danger' });
     expect(text(remove)).toContain('Delete this input?');
     expect(text(remove)).toContain(
@@ -268,6 +272,36 @@ describe('the inputs panel', () => {
       text: { type: 'mrkdwn', text: '🗑️ ~Meeting recordings~ · deleted' },
     });
     expect(after[2]?.accessory).toMatchObject({ action_id: 'input_settings', value: other.id });
+  });
+});
+
+describe('a panel row after its input is paused', () => {
+  it('shows the new state and keeps the rest of the row', () => {
+    const listing = { input: INPUT, routines: [], others: [], hidden: 0, latest: null };
+    const blocks = inputsPanelBlocks([listing]);
+
+    const after = text(withInputState(blocks, { ...INPUT, state: 'paused' }));
+
+    expect(after).toContain(
+      '*Meeting recordings*\\n⏸️ Paused · owned by <@U0DANA> · no delivery yet',
+    );
+    expect(after).toContain('input_settings');
+    expect(withInputState(blocks, { ...INPUT, id: 'inp-other' })).toBeNull();
+  });
+
+  it('shows Enabled again after a resume, though Slack names the emoji', () => {
+    const row = {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: '*Meeting recordings*\n:double_vertical_bar: Paused · owned by <@U0DANA>',
+      },
+      accessory: { type: 'button', action_id: 'input_settings', value: INPUT.id },
+    };
+
+    expect(text(withInputState([row], INPUT))).toContain(
+      '*Meeting recordings*\\nEnabled · owned by <@U0DANA>',
+    );
   });
 });
 
