@@ -30,7 +30,6 @@ Max mode follows the same request → pause → approve/deny → resume shape as
    - guards idempotency and cancels the PM's deferred stop,
    - sets `metadata.max_mode = true` and persists,
    - logs a `decision` finding and wakes the PM with it.
-4. **On denial**, `handleMaxModeDenial` also cancels the deferred stop, then logs the denial and wakes the PM with it, so the PM carries on at its normal model.
 
 Max mode is **task-lifetime and one-way** (like `edit_allowed`): once `max_mode` is `true` it is never unset, it persists in `metadata.json`, and it survives task park/reopen and process restart. It is independent of edit mode — a task can have either, both, or neither.
 

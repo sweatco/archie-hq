@@ -1876,10 +1876,7 @@ export class Task {
   }
 
   async handleEditModeDenial(): Promise<void> {
-    // A denial is an answer too: the PM carries on read-only, so drop the park
-    // for the same race as approval (see handleEditModeApproval). Left armed,
-    // report_completion refuses to post and the stop fires at turn end, so the
-    // PM's reply to the denial is lost.
+    // A denial ends the wait too: same race as handleEditModeApproval.
     this.agent?.clearPendingTeardown();
     await this.notifyPm('Edit mode denied by user', 'decision');
   }
@@ -2421,14 +2418,11 @@ export class Task {
   }
 
   async handleMaxModeDenial(): Promise<void> {
-    // The PM carries on without max mode — same race as handleEditModeDenial.
     this.agent?.clearPendingTeardown();
     await this.notifyPm('Max mode denied by user', 'decision');
   }
 
   async handleResearchBudgetApproval(): Promise<void> {
-    // Cancel the park armed by onResearchBudgetExceeded — same race as
-    // handleEditModeApproval; the denial below drops it too.
     this.agent?.clearPendingTeardown();
     this.metadata.research_budget_extra = (this.metadata.research_budget_extra ?? 0) + 5;
     this.budgets.researchRequestLimit = 5 + (this.metadata.research_budget_extra ?? 0);
