@@ -50,3 +50,21 @@ export function extractTaskIdFromBranch(branch: string | undefined): string | un
   const match = branch.match(BRANCH_TASK_ID_RE);
   return match ? match[1] : undefined;
 }
+
+export type RefArgumentKind = 'branch' | 'revision';
+
+const REF_CHARACTERS: Record<RefArgumentKind, { pattern: RegExp; listed: string }> = {
+  branch: { pattern: /^[A-Za-z0-9._/@+-]+$/, listed: '. _ / @ + -' },
+  revision: { pattern: /^[A-Za-z0-9._/@+~^-]+$/, listed: '. _ / @ + - ~ ^' },
+};
+
+/** Stricter than git on purpose: accepts nothing git could read as an option, range or refspec. */
+export function invalidRefReason(value: string, kind: RefArgumentKind): string | undefined {
+  if (value === '') return 'is empty';
+  if (value.startsWith('-')) return 'starts with "-", which git would read as an option';
+  const { pattern, listed } = REF_CHARACTERS[kind];
+  if (!pattern.test(value)) return `may contain only letters, digits and ${listed}`;
+  if (!/^[A-Za-z0-9]/.test(value)) return 'must start with a letter or digit';
+  if (value.includes('..')) return 'contains ".."';
+  return undefined;
+}

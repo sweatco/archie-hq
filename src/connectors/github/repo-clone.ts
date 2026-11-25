@@ -13,7 +13,7 @@
  * base repo's .git/ directory and couldn't check out the same branch twice.
  */
 
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as path from 'path';
 import * as fs from 'fs/promises';
@@ -22,7 +22,7 @@ import { fetchOrigin, configureGitIdentity, getGitHubClient } from './client.js'
 import { hydrateBranchState } from './branch-state.js';
 import type { AttachedRepo, BranchState } from '../../types/task.js';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 // Re-export for backwards compatibility
 export { fetchOrigin };
@@ -46,13 +46,14 @@ export type CloneCheckout =
 
 // ---- Git helpers ----
 
-export async function gitExec(cwd: string, args: string): Promise<string> {
+/** For checkout, end options with `--end-of-options`: `--` there starts a pathspec. */
+export async function gitExec(cwd: string, args: string[]): Promise<string> {
   try {
-    const { stdout } = await execAsync(`git ${args}`, { cwd });
+    const { stdout } = await execFileAsync('git', args, { cwd });
     return stdout.trim();
   } catch (error: unknown) {
     if (error && typeof error === 'object' && 'stderr' in error && error.stderr) {
-      logger.error('repo-clone', `git command failed: git ${args}`);
+      logger.error('repo-clone', `git command failed: git ${args.join(' ')}`);
       logger.error('repo-clone', `stderr: ${String(error.stderr)}`);
     }
     throw error;
@@ -71,7 +72,9 @@ export async function resolveBaseBranch(github: string, clonePath?: string): Pro
   if (fromGitHub) return fromGitHub;
   if (clonePath) {
     try {
-      const { stdout } = await execAsync('git rev-parse --abbrev-ref HEAD', { cwd: clonePath });
+      const { stdout } = await execFileAsync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+        cwd: clonePath,
+      });
       const branch = stdout.trim();
       // Detached HEAD reports 'HEAD', which is not a branch name to check out.
       if (branch && branch !== 'HEAD') return branch;
@@ -85,15 +88,15 @@ export async function resolveBaseBranch(github: string, clonePath?: string): Pro
 
 async function getDefaultBranch(repoPath: string): Promise<string> {
   try {
-    const ref = await gitExec(repoPath, 'symbolic-ref refs/remotes/origin/HEAD --short');
+    const ref = await gitExec(repoPath, ['symbolic-ref', 'refs/remotes/origin/HEAD', '--short']);
     return ref.replace('origin/', '');
   } catch {
     try {
-      await gitExec(repoPath, 'rev-parse --verify origin/main');
+      await gitExec(repoPath, ['rev-parse', '--verify', 'origin/main']);
       return 'main';
     } catch {
       try {
-        await gitExec(repoPath, 'rev-parse --verify origin/master');
+        await gitExec(repoPath, ['rev-parse', '--verify', 'origin/master']);
         return 'master';
       } catch {
         logger.system(`Could not detect default branch, falling back to 'main'`);
@@ -135,9 +138,9 @@ async function ensureBaseCache(
 
   const url = githubRepoToUrl(githubRepo);
   await fs.mkdir(path.dirname(baseRepoPath), { recursive: true });
-  const branchFlag = baseBranch ? ` -b "${baseBranch}"` : '';
+  const branchArgs = baseBranch ? ['-b', baseBranch] : [];
   logger.system(`Base cache missing for ${githubRepo} — cloning from ${url}`);
-  await execAsync(`git clone${branchFlag} "${url}" "${baseRepoPath}"`);
+  await execFileAsync('git', ['clone', ...branchArgs, '--', url, baseRepoPath]);
   logger.system(`Created base cache at ${baseRepoPath}`);
 }
 
@@ -194,21 +197,29 @@ export async function setupSharedClone(
   // Update the base repo's local branch to match remote before cloning from it
   // (git clone --shared clones from local branches, not remote tracking refs)
   try {
-    await gitExec(baseRepoPath, `checkout "${cloneBranch}"`);
-    await gitExec(baseRepoPath, `reset --hard "origin/${cloneBranch}"`);
+    await gitExec(baseRepoPath, ['checkout', '--end-of-options', cloneBranch]);
+    await gitExec(baseRepoPath, ['reset', '--hard', `origin/${cloneBranch}`]);
   } catch {
     // Non-fatal — clone will use whatever state the base repo has
   }
 
   // Clone and initialize submodules (before remote change, so submodules resolve from local base repo)
-  await execAsync(`git clone --shared --branch ${cloneBranch} "${baseRepoPath}" "${clonePath}"`);
-  await gitExec(clonePath, 'submodule update --init --recursive').catch(() => {});
+  await execFileAsync('git', [
+    'clone',
+    '--shared',
+    '--branch',
+    cloneBranch,
+    '--',
+    baseRepoPath,
+    clonePath,
+  ]);
+  await gitExec(clonePath, ['submodule', 'update', '--init', '--recursive']).catch(() => {});
   if (githubUrl) {
-    await gitExec(clonePath, `remote set-url origin ${githubUrl}`);
+    await gitExec(clonePath, ['remote', 'set-url', 'origin', githubUrl]);
   }
   // Create feature branch if needed
   if (checkout.type === 'new_branch') {
-    await gitExec(clonePath, `checkout -b ${checkout.name}`);
+    await gitExec(clonePath, ['checkout', '-b', checkout.name]);
   }
 
   return { clone_path: clonePath, branch: resultBranch, base_branch: defaultBranch };
@@ -249,7 +260,7 @@ export function decideCloneCheckout(opts: {
 /** The branch a clone currently has checked out, or undefined if unreadable. */
 async function readCurrentBranch(clonePath: string): Promise<string | undefined> {
   try {
-    const branch = await gitExec(clonePath, 'rev-parse --abbrev-ref HEAD');
+    const branch = await gitExec(clonePath, ['rev-parse', '--abbrev-ref', 'HEAD']);
     return branch || undefined;
   } catch {
     return undefined;
@@ -375,8 +386,8 @@ export async function ensureTaskClone(opts: {
  */
 async function checkoutTaskBranch(clonePath: string, taskBranch: string): Promise<boolean> {
   try {
-    await gitExec(clonePath, `checkout ${taskBranch}`).catch(() =>
-      gitExec(clonePath, `checkout -b ${taskBranch}`),
+    await gitExec(clonePath, ['checkout', '--end-of-options', taskBranch]).catch(() =>
+      gitExec(clonePath, ['checkout', '-b', taskBranch]),
     );
     return true;
   } catch (error) {

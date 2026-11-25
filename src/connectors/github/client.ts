@@ -8,7 +8,7 @@
 import fs from 'fs';
 import type { Endpoints } from '@octokit/types';
 import path from 'path';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { App } from '@octokit/app';
 import { Octokit } from '@octokit/core';
@@ -25,7 +25,7 @@ import type { PrCardData } from '../../types/task.js';
 import { summarizeCi } from '../../system/pr-card-format.js';
 import { logger } from '../../system/logger.js';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 /**
  * Narrow an Octokit resource id to `number`.
@@ -1392,8 +1392,8 @@ export async function configureGitIdentity(repoPath: string): Promise<string | n
   const identity = getArchieAttributionIdentity();
   if (identity) {
     await dropOrphanedConfigLock(repoPath);
-    await execAsync(`git config user.name "${identity.name}"`, { cwd: repoPath });
-    await execAsync(`git config user.email "${identity.email}"`, { cwd: repoPath });
+    await execFileAsync('git', ['config', 'user.name', identity.name], { cwd: repoPath });
+    await execFileAsync('git', ['config', 'user.email', identity.email], { cwd: repoPath });
     return identity.name;
   }
   return null;
@@ -1408,8 +1408,8 @@ export async function configureGitIdentity(repoPath: string): Promise<string | n
  */
 export async function fetchOrigin(repoPath: string, branch?: string): Promise<void> {
   try {
-    const target = branch ? `origin ${branch}` : 'origin';
-    await execAsync(`git fetch ${target}`, { cwd: repoPath });
+    const refArgs = branch ? [branch] : [];
+    await execFileAsync('git', ['fetch', '--', 'origin', ...refArgs], { cwd: repoPath });
     logger.system(branch ? `Fetched origin/${branch}` : 'Fetched origin');
   } catch {
     // Non-fatal - log and continue with existing refs

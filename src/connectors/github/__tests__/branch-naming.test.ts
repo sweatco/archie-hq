@@ -7,7 +7,12 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { BRANCH_PREFIX, taskBranchName, extractTaskIdFromBranch } from '../branch-naming.js';
+import {
+  BRANCH_PREFIX,
+  taskBranchName,
+  extractTaskIdFromBranch,
+  invalidRefReason,
+} from '../branch-naming.js';
 
 const TASK_ID = 'task-20260101-1823-abc123';
 
@@ -47,5 +52,53 @@ describe('extractTaskIdFromBranch', () => {
     expect(extractTaskIdFromBranch('main')).toBeUndefined();
     expect(extractTaskIdFromBranch('archie/not-a-task')).toBeUndefined();
     expect(extractTaskIdFromBranch(`release/${TASK_ID}`)).toBeUndefined();
+  });
+});
+
+describe('invalidRefReason', () => {
+  it('accepts ordinary branch names', () => {
+    for (const name of [
+      'main',
+      `archie/${TASK_ID}-2`,
+      'feature/login.fix',
+      'release/1.2.x',
+      'dependabot/npm_and_yarn/@types/node-20.1.0',
+      'c++-bindings',
+    ]) {
+      expect(invalidRefReason(name, 'branch'), name).toBeUndefined();
+    }
+  });
+
+  it('accepts commit-ish revisions as a base', () => {
+    for (const rev of ['HEAD', 'HEAD~2', 'main^', 'origin/main', 'v1.2.3', 'a1b2c3d4']) {
+      expect(invalidRefReason(rev, 'revision'), rev).toBeUndefined();
+    }
+  });
+
+  it('refuses an empty value', () => {
+    expect(invalidRefReason('', 'branch')).toMatch(/empty/);
+    expect(invalidRefReason('', 'revision')).toMatch(/empty/);
+  });
+
+  it('refuses option-like values', () => {
+    expect(invalidRefReason('-b', 'branch')).toMatch(/option/);
+    expect(invalidRefReason('--upload-pack=x', 'revision')).toMatch(/option/);
+  });
+
+  it('refuses characters outside a plausible ref name', () => {
+    for (const value of ['a;b', 'a$(b)', 'a`b`', 'a&&b', 'a"b', "a'b", 'a b', 'a:b', 'a\nb']) {
+      expect(invalidRefReason(value, 'revision'), value).toMatch(/may contain only/);
+    }
+    expect(invalidRefReason('HEAD~1', 'branch')).toMatch(/may contain only/);
+  });
+
+  it('refuses values that do not start with a letter or digit', () => {
+    expect(invalidRefReason('.hidden', 'branch')).toMatch(/start with a letter or digit/);
+    expect(invalidRefReason('/main', 'branch')).toMatch(/start with a letter or digit/);
+  });
+
+  it('refuses ranges and parent traversal', () => {
+    expect(invalidRefReason('main..feature', 'revision')).toMatch(/\.\./);
+    expect(invalidRefReason('feature/../main', 'branch')).toMatch(/\.\./);
   });
 });
