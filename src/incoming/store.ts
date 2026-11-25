@@ -73,6 +73,17 @@ export interface HandoffRecord {
   reservation: string | null;
 }
 
+/** One delivery an input authenticated, with what became of it at each consumer. An ignored one has no handoffs. */
+export interface DeliveryRecord {
+  receiptId: string;
+  receivedAt: number;
+  outcome: Receipt['outcome'];
+  ignoredReason: IgnoredReason | null;
+  handoffs: Array<
+    Pick<HandoffRecord, 'consumerKind' | 'consumerId' | 'state' | 'reason' | 'reservation'>
+  >;
+}
+
 export interface ClaimedHandoff {
   handoff: Handoff;
   /** Proves the lease on every later write for this attempt. */
@@ -118,6 +129,22 @@ const dueHandoffSchema = z.object({
 });
 
 const handoffStateSchema = z.enum(['pending', 'accepted', 'skipped', 'cancelled', 'failed']);
+
+const deliveryRowSchema = z.object({
+  id: z.string(),
+  received_at: z.number(),
+  outcome: z.enum(['open', 'closed', 'ignored']),
+  ignored_reason: z.enum(['paused', 'filtered']).nullable(),
+});
+
+const deliveryHandoffSchema = z.object({
+  receipt_id: z.string(),
+  consumer_kind: z.string(),
+  consumer_id: z.string(),
+  state: handoffStateSchema,
+  reason: z.string().nullable(),
+  reservation: z.string().nullable(),
+});
 
 const handoffRecordSchema = z.object({
   id: z.string(),
@@ -504,6 +531,46 @@ export class IncomingStore {
           reason: stored.reason,
           attempts: stored.attempts,
           reservation: stored.reservation,
+        };
+      });
+  }
+
+  /** The newest deliveries of one input first, ignored ones included. */
+  deliveryHistory(inputId: string, limit: number): DeliveryRecord[] {
+    const newest =
+      'SELECT id FROM receipts WHERE input_id=?1 ORDER BY received_at DESC, rowid DESC LIMIT ?2';
+    const handoffs = new Map<string, DeliveryRecord['handoffs']>();
+    for (const row of this.db
+      .prepare(
+        `SELECT receipt_id, consumer_kind, consumer_id, state, reason, reservation
+           FROM handoffs WHERE receipt_id IN (${newest}) ORDER BY rowid`,
+      )
+      .all(inputId, limit)) {
+      const stored = deliveryHandoffSchema.parse(row);
+      const ofReceipt = handoffs.get(stored.receipt_id) ?? [];
+      ofReceipt.push({
+        consumerKind: stored.consumer_kind,
+        consumerId: stored.consumer_id,
+        state: stored.state,
+        reason: stored.reason,
+        reservation: stored.reservation,
+      });
+      handoffs.set(stored.receipt_id, ofReceipt);
+    }
+    return this.db
+      .prepare(
+        `SELECT id, received_at, outcome, ignored_reason FROM receipts
+          WHERE input_id=?1 ORDER BY received_at DESC, rowid DESC LIMIT ?2`,
+      )
+      .all(inputId, limit)
+      .map((row) => {
+        const stored = deliveryRowSchema.parse(row);
+        return {
+          receiptId: stored.id,
+          receivedAt: stored.received_at,
+          outcome: stored.outcome,
+          ignoredReason: stored.ignored_reason,
+          handoffs: handoffs.get(stored.id) ?? [],
         };
       });
   }

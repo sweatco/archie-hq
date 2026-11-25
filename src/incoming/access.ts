@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import type { TaskMetadata } from '../types/task.js';
 import type { InputServices } from './inputs.js';
-import type { InboxView, Input } from './types.js';
+import type { InboxView, IncomingConsumer, Input } from './types.js';
 
 type InputReader = Pick<InboxView, 'input'>;
 
@@ -12,15 +12,20 @@ export function setOpenInbox(inbox: InputReader | null): void {
   openInbox = inbox;
 }
 
-let daemonInputs: InputServices | null = null;
+/** What the running daemon holds: the store, the vault, and the consumers its inbox hands events to. */
+export interface DaemonInputs extends InputServices {
+  consumers?: readonly IncomingConsumer[];
+}
 
-/** The daemon sets its store and vault here beside the inbox, for code that changes inputs while it runs. */
-export function setInputServices(services: InputServices | null): void {
+let daemonInputs: DaemonInputs | null = null;
+
+/** The daemon sets these here beside the inbox, for code that reads or changes inputs while it runs. */
+export function setInputServices(services: DaemonInputs | null): void {
   daemonInputs = services;
 }
 
 /** Null when incoming events are off or the inbox could not be opened. */
-export function inputServices(): InputServices | null {
+export function inputServices(): DaemonInputs | null {
   return daemonInputs;
 }
 

@@ -72,7 +72,7 @@ export function mountIncomingEvents(
 
   const secrets = incomingSecrets();
   setOpenInbox(store);
-  setInputServices({ store, secrets });
+  setInputServices({ store, secrets, consumers });
   mountIncomingReceiver(app, { store, secrets, consumers });
   const dispatcher = new IncomingDispatcher(store, consumers);
   return {

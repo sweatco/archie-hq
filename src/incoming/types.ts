@@ -120,6 +120,12 @@ export interface InboxView {
   abandonedReservations(consumerKind: string): Array<{ handoffId: string; reservation: string }>;
 }
 
+/** One consumer that takes an input's events, as a listing names it. */
+export interface ConsumerUse {
+  consumerId: string;
+  label: string;
+}
+
 export type HandleResult = { state: 'accepted' } | { state: 'skipped'; reason: string };
 
 export interface HandoffWork {
@@ -139,4 +145,6 @@ export interface IncomingConsumer {
   handle(work: HandoffWork): Promise<HandleResult>;
   /** Runs with each sweep, the first at start: drops work whose handoff ended without `handle` seeing it. */
   reconcile?(inbox: InboxView): Promise<void>;
+  /** Names what of this kind takes the input's events, for listings. Synchronous and free of effects, like `match`. */
+  uses?(input: Input): ConsumerUse[];
 }

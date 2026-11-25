@@ -266,6 +266,16 @@ describe('an authenticated delivery', () => {
     expect(response.status).toBe(202);
   });
 
+  it('is still handed to another consumer when no routine takes it', async () => {
+    const sender = await signedSender();
+    matched = { routine: [], proactivity: [{ consumerId: 'proactivity', snapshot: '{}' }] };
+
+    const response = await deliverSigned(sender, EVENT);
+
+    expect(response.status).toBe(202);
+    expect(inbox().handoffs.map((handoff) => handoff.consumer_kind)).toEqual(['proactivity']);
+  });
+
   it('gets one handoff per matching consumer and a single payload', async () => {
     const sender = await signedSender();
     matched = {
