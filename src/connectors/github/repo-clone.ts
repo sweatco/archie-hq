@@ -51,7 +51,9 @@ export type CloneCheckout =
  *
  * There is no shell: each element of `args` reaches git as exactly one
  * argument. A ref from task metadata or agent input that begins an argument
- * goes after `--end-of-options`, so git cannot read it as an option.
+ * goes after an option terminator, so git cannot read it as an option: `--`
+ * for clone and fetch, `--end-of-options` for checkout, where `--` would
+ * start a pathspec instead.
  */
 export async function gitExec(cwd: string, args: string[]): Promise<string> {
   try {

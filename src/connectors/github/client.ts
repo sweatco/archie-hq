@@ -1409,9 +1409,7 @@ export async function configureGitIdentity(repoPath: string): Promise<string | n
 export async function fetchOrigin(repoPath: string, branch?: string): Promise<void> {
   try {
     const refArgs = branch ? [branch] : [];
-    await execFileAsync('git', ['fetch', '--end-of-options', 'origin', ...refArgs], {
-      cwd: repoPath,
-    });
+    await execFileAsync('git', ['fetch', '--', 'origin', ...refArgs], { cwd: repoPath });
     logger.system(branch ? `Fetched origin/${branch}` : 'Fetched origin');
   } catch {
     // Non-fatal - log and continue with existing refs

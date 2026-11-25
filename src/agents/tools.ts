@@ -2261,7 +2261,7 @@ function createSwitchBranchTool(task: Task) {
       const currentBranch = attached.current_branch;
 
       // 1. Fetch branch into clone
-      await gitExec(clonePath, ['fetch', '--end-of-options', 'origin', branch]).catch(() => {});
+      await gitExec(clonePath, ['fetch', '--', 'origin', branch]).catch(() => {});
 
       // 2. Auto-stash if dirty
       const status = await gitExec(clonePath, ['status', '--porcelain']);
