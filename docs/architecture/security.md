@@ -94,6 +94,10 @@ The allowlist is enforced from the **policy tier** (`managedSettings`), not from
 
 Two deployment caveats. A host-level IT managed-settings tier (e.g. `/etc/claude-code/managed-settings.json`) causes the SDK to **drop** our policy tier unless that admin sets `parentSettingsBehavior: 'merge'`, which would reopen egress with no error. And DNS inside the sandbox namespace is unavailable by design — all egress is forced through the sandbox's local proxy, so tools that ignore proxy environment variables fail to resolve even allowlisted hosts.
 
+### Environment
+
+The session process needs `ANTHROPIC_API_KEY`; `Bash` does not get it. `buildSandboxConfig` lists it under `credentials.envVars` with `mode: 'deny'`, so the CLI unsets it for sandboxed commands. This is CLI-enforced like the allowlist, so `tools/e2e/egress-check.ts` asserts it live too. The rest of the session env (`spawnAgent`) holds paths, flags and the commit author, none of them secret.
+
 ### Repo isolation: shared clones
 
 Task clones are `git clone --shared` repositories, one per repo per task. Each has a fully independent `.git/` — its own HEAD, index, refs and config — and the only connection to the base repo is a read-only alternates link to `.git/objects/` (immutable, content-addressed blobs). `origin` is rewritten to GitHub, so a push never goes back to the base cache. Git identity is configured on each clone at creation. Bwrap sandbox artifacts (`.bashrc`, `.gitmodules`) are excluded via `.git/info/exclude`.

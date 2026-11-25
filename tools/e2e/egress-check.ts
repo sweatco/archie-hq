@@ -40,6 +40,8 @@ export interface ProbeVerdicts {
   packageInstall: 'ok' | 'failed' | 'unknown';
   /** Whether the sandbox proxy reached Yarn Berry's own config keys (BASH_ENV wiring). */
   yarnProxy: 'mapped' | 'unset';
+  /** Whether sandboxed Bash can read the session's Anthropic API key. */
+  apiKey: 'hidden' | 'visible' | 'unknown';
 }
 
 function readReachability(output: string, key: string): Reachability {
@@ -54,12 +56,14 @@ function readReachability(output: string, key: string): Reachability {
 export function parseProbeOutput(output: string): ProbeVerdicts {
   const version = output.match(/^CLI_VERSION=(.+)$/m);
   const pkg = output.match(/^EGRESS_PKG_INSTALL=(ok|failed|unknown)$/m);
+  const key = output.match(/^EGRESS_API_KEY=(hidden|visible|unknown)$/m);
   return {
     cliVersion: version ? version[1].trim() : 'unknown',
     deniedHost: readReachability(output, 'EGRESS_DENIED_HOST'),
     allowedHost: readReachability(output, 'EGRESS_ALLOWED_HOST'),
     packageInstall: pkg ? (pkg[1] as ProbeVerdicts['packageInstall']) : 'unknown',
     yarnProxy: /^EGRESS_YARN_PROXY=mapped$/m.test(output) ? 'mapped' : 'unset',
+    apiKey: key ? (key[1] as ProbeVerdicts['apiKey']) : 'unknown',
   };
 }
 
@@ -95,6 +99,13 @@ export function decideEgress(v: ProbeVerdicts): EgressDecision {
       v.packageInstall === 'failed'
         ? '`npm install` failed inside the sandbox — check the package-manager cache redirection (a read-only $HOME makes installs fail with EROFS even when the registry is allowlisted)'
         : 'could not determine whether `npm install` works inside the sandbox (probe output unreadable)',
+    );
+  }
+  if (v.apiKey !== 'hidden') {
+    reasons.push(
+      v.apiKey === 'visible'
+        ? 'sandboxed Bash can read ANTHROPIC_API_KEY — check the credentials deny entry in buildSandboxConfig'
+        : 'could not determine whether sandboxed Bash can read ANTHROPIC_API_KEY (probe output unreadable)',
     );
   }
   return { pass: reasons.length === 0, reasons };
@@ -160,6 +171,7 @@ export async function runEgressCheck(exec: ExecFn, io: EgressCheckIo): Promise<n
   io.log(`  allowlisted host:     ${verdicts.allowedHost} (expected reachable)`);
   io.log(`  npm install:          ${verdicts.packageInstall} (expected ok)`);
   io.log(`  yarn berry proxy:     ${verdicts.yarnProxy} (expected mapped)`);
+  io.log(`  Anthropic API key:    ${verdicts.apiKey} (expected hidden)`);
 
   if (!decision.pass) {
     io.error('EGRESS CHECK FAILED — the documented network boundary does not hold:');
@@ -170,7 +182,9 @@ export async function runEgressCheck(exec: ExecFn, io: EgressCheckIo): Promise<n
     return 1;
   }
 
-  io.log('Egress check passed: sandboxed Bash reaches allowlisted hosts only.');
+  io.log(
+    'Egress check passed: sandboxed Bash reaches allowlisted hosts only and cannot read the API key.',
+  );
   return 0;
 }
 

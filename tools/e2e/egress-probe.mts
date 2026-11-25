@@ -58,7 +58,8 @@ const prompt = `Run these commands with the Bash tool, one call each, and report
 1. curl -sS -m 10 -o /dev/null -w 'DENIED=%{http_code}\\n' ${DENIED_HOST} || echo 'DENIED=blocked'
 2. curl -sS -m 10 -o /dev/null -w 'ALLOWED=%{http_code}\\n' ${ALLOWED_HOST} || echo 'ALLOWED=blocked'
 3. rm -rf ${WORKSPACE}/pkg && mkdir -p ${WORKSPACE}/pkg && cd ${WORKSPACE}/pkg && npm init -y >/dev/null && (npm install left-pad --no-audit --no-fund >/dev/null 2>&1 && test -f node_modules/left-pad/package.json && echo 'PKG=ok' || echo 'PKG=failed')
-4. test -n "$YARN_HTTPS_PROXY" && echo 'YARNPROXY=mapped' || echo 'YARNPROXY=unset'`;
+4. test -n "$YARN_HTTPS_PROXY" && echo 'YARNPROXY=mapped' || echo 'YARNPROXY=unset'
+5. test -n "$ANTHROPIC_API_KEY" && echo 'KEYENV=set' || echo 'KEYENV=unset'; echo "KEYPROC=$(cat /proc/[0-9]*/environ 2>/dev/null | tr '\\0' '\\n' | grep -c '^ANTHROPIC_API_KEY=.')"`;
 
 // Mirrors src/agents/spawn.ts buildQueryOptions for everything that bears on the
 // sandbox boundary: permissionMode, sandbox, managedSettings, settingSources.
@@ -135,10 +136,22 @@ function packageInstall(t: string): 'ok' | 'failed' | 'unknown' {
   return 'unknown';
 }
 
+/**
+ * Hidden only when Bash's own environment lacks the key AND no process it can
+ * see under /proc carries it; the count is printed, never the value.
+ */
+function apiKey(t: string): 'hidden' | 'visible' | 'unknown' {
+  const proc = t.match(/KEYPROC=(\d+)/);
+  if (/KEYENV=set/.test(t) || (proc && proc[1] !== '0')) return 'visible';
+  if (/KEYENV=unset/.test(t) && proc) return 'hidden';
+  return 'unknown';
+}
+
 console.log(`CLI_VERSION=${cliVersion}`);
 console.log(`EGRESS_DENIED_HOST=${classify(transcript, 'DENIED')}`);
 console.log(`EGRESS_ALLOWED_HOST=${classify(transcript, 'ALLOWED')}`);
 console.log(`EGRESS_PKG_INSTALL=${packageInstall(transcript)}`);
 console.log(`EGRESS_YARN_PROXY=${/YARNPROXY=mapped/.test(transcript) ? 'mapped' : 'unset'}`);
+console.log(`EGRESS_API_KEY=${apiKey(transcript)}`);
 console.log('---- agent transcript ----');
 console.log(transcript.trim());
