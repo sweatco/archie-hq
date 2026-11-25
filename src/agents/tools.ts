@@ -178,8 +178,11 @@ import { incomingEventsEnabled } from '../incoming/runtime.js';
 import {
   describeInputHistory,
   describeInputs,
+  listInputs,
+  NO_INPUTS_VISIBLE,
   type InventoryLookups,
 } from '../system/input-inventory.js';
+import { inputsPanelBlocks } from '../system/input-panels.js';
 import { INPUT_ID_PATTERN, inputFilterSchema, inputPurposeSchema } from '../incoming/types.js';
 import {
   routineDestinationRefusal,
@@ -3450,7 +3453,39 @@ function createListInputsTool(task: Task) {
       const services = inputServices();
       if (!services) return ok(INCOMING_UNAVAILABLE);
       const origin = await resolveTriggerOrigin(task);
-      return ok(await describeInputs(services, origin, inventoryLookups(origin)));
+      return ok(describeInputs(await listInputs(services, origin, inventoryLookups(origin))));
+    },
+  );
+}
+
+function createShowInputsTool(task: Task) {
+  return tool(
+    'show_inputs',
+    "Post a panel in this conversation that lists the incoming-event inputs visible from it, scoped like `list_inputs`. Each input its owner can manage has a Settings button, which opens only for that owner: it shows how to connect a sender and can delete the input. Use it when someone wants to see or manage inputs, and don't repeat the panel's content in your reply. Use `list_inputs` when you only need to read the inputs yourself.",
+    {
+      input_id: z.string().optional().describe('Show only this input.'),
+    },
+    async (args) => {
+      const services = inputServices();
+      if (!services) return ok(INCOMING_UNAVAILABLE);
+      const origin = await resolveTriggerOrigin(task);
+      const visible = await listInputs(services, origin, inventoryLookups(origin));
+      const shown = args.input_id
+        ? visible.filter((listing) => listing.input.id === args.input_id)
+        : visible;
+      if (shown.length === 0)
+        return ok(
+          args.input_id ? `Input ${args.input_id} isn't visible from here.` : NO_INPUTS_VISIBLE,
+        );
+      const posted = await task.postPanelToUser(
+        `Incoming-event inputs visible here (${shown.length})`,
+        inputsPanelBlocks(shown),
+      );
+      return ok(
+        posted
+          ? `Posted the panel with ${shown.length} input${shown.length === 1 ? '' : 's'}. Don't repeat its content.`
+          : `No panel can be posted in this conversation, so here is the list.\n${describeInputs(shown)}`,
+      );
     },
   );
 }
@@ -3927,6 +3962,7 @@ export function createOrchestrationMcpServer(agent: Agent, task: Task) {
       createListTriggersTool(task),
       createGetTriggerTool(task),
       createListInputsTool(task),
+      createShowInputsTool(task),
       createGetInputHistoryTool(task),
       createUpdateTriggerTool(task),
       createDeleteTriggerTool(task),

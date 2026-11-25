@@ -18,6 +18,7 @@ import {
   describeInputHistory,
   describeInputs,
   HISTORY_LIMIT,
+  listInputs,
   type InventoryLookups,
 } from '../input-inventory.js';
 import { triggerVisibleFrom, type TriggerOrigin } from '../trigger-visibility.js';
@@ -90,8 +91,14 @@ function lookupsFrom(origin: TriggerOrigin): InventoryLookups {
   };
 }
 
-const listFrom = (origin: TriggerOrigin) =>
-  describeInputs({ store, secrets: unusedVault, consumers: [digest] }, origin, lookupsFrom(origin));
+const listFrom = async (origin: TriggerOrigin) =>
+  describeInputs(
+    await listInputs(
+      { store, secrets: unusedVault, consumers: [digest] },
+      origin,
+      lookupsFrom(origin),
+    ),
+  );
 
 const historyFrom = (origin: TriggerOrigin, inputId = SHARED) =>
   describeInputHistory(

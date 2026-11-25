@@ -1,20 +1,35 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 /**
- * The Slack controls of an input: connecting a sender, seeing the key and checking the connection.
+ * The Slack controls of an input: the Settings window and what its owner does in it.
  * Every click is checked against the input as it is now. A button is drawn for everyone in the conversation, so being able to click one grants nothing.
  */
 import type { App, BlockAction, ButtonAction, SlackActionMiddlewareArgs } from '@slack/bolt';
 import {
+  fetchMessage,
   getSlackClient,
   getUserInfo,
   isInternalMemoryUser,
   postEphemeral,
+  updateMessage,
 } from '../connectors/slack/client.js';
 import { inputServices } from '../incoming/access.js';
-import { connectionStatus, revealKey, type InputServices } from '../incoming/inputs.js';
+import {
+  connectionStatus,
+  deleteInputAs,
+  revealKey,
+  type InputServices,
+} from '../incoming/inputs.js';
 import { inputCallback } from '../incoming/receiver.js';
 import type { Input } from '../incoming/types.js';
-import { connectView, INPUT_ACTIONS } from './input-panels.js';
+import {
+  deletedNotice,
+  INPUT_ACTIONS,
+  settingsNoticeView,
+  settingsOrigin,
+  settingsView,
+  withInputDeleted,
+  type SettingsOrigin,
+} from './input-panels.js';
 import { logger } from './logger.js';
 
 type ButtonClick = SlackActionMiddlewareArgs<BlockAction<ButtonAction>>;
@@ -23,11 +38,12 @@ type ButtonClick = SlackActionMiddlewareArgs<BlockAction<ButtonAction>>;
 function ownedInput(
   userId: string,
   inputId: string,
-): { services: InputServices; input: Input } | { refusal: string } {
+): { services: InputServices; input: Input } | { refusal: string; gone?: true } {
   const services = inputServices();
   if (!services) return { refusal: 'Incoming events are not available right now.' };
   const input = services.store.input(inputId);
-  if (!input || input.state === 'deleted') return { refusal: 'This input no longer exists.' };
+  if (!input || input.state === 'deleted')
+    return { refusal: 'This input no longer exists.', gone: true };
   if (input.owner === userId) return { services, input };
   return {
     refusal: input.owner
@@ -53,23 +69,53 @@ async function tell(body: ButtonClick['body'], text: string): Promise<void> {
     );
 }
 
-async function openConnect({ body, action }: ButtonClick): Promise<void> {
-  const owned = ownedInput(body.user.id, action.value ?? '');
-  if ('refusal' in owned) return tell(body, owned.refusal);
+function clickedMessage(body: ButtonClick['body']): SettingsOrigin | undefined {
+  if (!body.channel?.id || !body.message) return undefined;
+  const thread: unknown = body.message.thread_ts;
+  return {
+    channel_id: body.channel.id,
+    ts: body.message.ts,
+    ...(typeof thread === 'string' ? { thread_ts: thread } : {}),
+  };
+}
+
+async function retireInMessage(
+  at: SettingsOrigin,
+  message: { text: string; blocks: unknown[] },
+  inputId: string,
+): Promise<void> {
+  const retired = withInputDeleted(message.blocks, inputId);
+  if (retired) await updateMessage(at.channel_id, at.ts, message.text, retired);
+}
+
+async function openSettings({ body, action }: ButtonClick): Promise<void> {
+  const inputId = action.value ?? '';
+  const from = clickedMessage(body);
+  const owned = ownedInput(body.user.id, inputId);
+  if ('refusal' in owned) {
+    const blocks: unknown = body.message?.blocks;
+    if (owned.gone && from && Array.isArray(blocks))
+      await retireInMessage(from, { text: body.message?.text ?? '', blocks }, inputId);
+    return tell(body, owned.refusal);
+  }
   const { services, input } = owned;
   // Only what is on this host is read before the window opens: Slack gives a click three seconds.
   await getSlackClient().views.open({
     trigger_id: body.trigger_id,
-    view: connectView({
+    view: settingsView({
       input,
       callback: inputCallback(input.id),
       status: await connectionStatus(services, input),
+      from,
     }),
   });
 }
 
-/** Redraws the Connect window in place: with the key when the owner asked for it, masked again otherwise. */
-async function redrawConnect({ body, action }: ButtonClick, show: 'key' | 'status'): Promise<void> {
+/** Redraws the Settings window in place: with the key when the owner asked for it, masked again otherwise. */
+async function redrawSettings(
+  { body, action }: ButtonClick,
+  show: 'key' | 'status',
+): Promise<void> {
   const view = body.view;
   if (!view) return;
   const owned = ownedInput(body.user.id, action.value ?? '');
@@ -95,14 +141,60 @@ async function redrawConnect({ body, action }: ButtonClick, show: 'key' | 'statu
   await getSlackClient().views.update({
     view_id: view.id,
     hash: view.hash,
-    view: connectView({
+    view: settingsView({
       input,
       callback: inputCallback(input.id),
       status: await connectionStatus(services, input),
       key,
       keyNotice,
+      from: settingsOrigin(view.private_metadata),
     }),
   });
+}
+
+/** Slack's confirmation dialog ran before this click arrives. */
+async function deleteFromSettings({ body, action }: ButtonClick): Promise<void> {
+  const view = body.view;
+  if (!view) return;
+  const conclude = async (notice: string): Promise<void> => {
+    await getSlackClient().views.update({ view_id: view.id, view: settingsNoticeView(notice) });
+  };
+
+  const owned = ownedInput(body.user.id, action.value ?? '');
+  if ('refusal' in owned) return conclude(owned.refusal);
+  const { services, input } = owned;
+  if (!(await isMember(body.user.id)))
+    return conclude('Only the owner of this input can delete it.');
+
+  try {
+    const removal = await deleteInputAs(
+      services,
+      { kind: 'slack_user', userId: body.user.id },
+      input.id,
+    );
+    if (removal.status === 'refused')
+      return conclude('This input could not be deleted. It may be gone already.');
+  } catch (error) {
+    // The input is marked deleted before its secrets go, so a failure after that leaves only a file behind.
+    if (services.store.input(input.id)?.state !== 'deleted') throw error;
+    logger.warn(
+      'incoming',
+      `Input ${input.id} is deleted, but a secret file could not be removed. Run \`incoming delete ${input.id}\` to finish`,
+      error,
+    );
+  }
+  logger.system(`Incoming events: input ${input.id} was deleted by its owner`);
+  await conclude(deletedNotice(input));
+
+  const from = settingsOrigin(view.private_metadata);
+  if (!from) return;
+  try {
+    const message = await fetchMessage(from.channel_id, from.ts, from.thread_ts);
+    if (message) await retireInMessage(from, message, input.id);
+  } catch (error) {
+    // The row then keeps its button, and the next click on it removes it.
+    logger.warn('incoming', `Could not update the panel after deleting input ${input.id}`, error);
+  }
 }
 
 /** Logs a failed control and, where there is a card to answer under, says so to the person who clicked. */
@@ -123,7 +215,8 @@ export function registerInputControlHandlers(boltApp: Pick<App, 'action'>): void
       await handle(args).catch(reportFailure(args));
     });
   };
-  onClick(INPUT_ACTIONS.connect, openConnect);
-  onClick(INPUT_ACTIONS.showKey, (args) => redrawConnect(args, 'key'));
-  onClick(INPUT_ACTIONS.checkConnection, (args) => redrawConnect(args, 'status'));
+  onClick(INPUT_ACTIONS.settings, openSettings);
+  onClick(INPUT_ACTIONS.showKey, (args) => redrawSettings(args, 'key'));
+  onClick(INPUT_ACTIONS.checkConnection, (args) => redrawSettings(args, 'status'));
+  onClick(INPUT_ACTIONS.delete, deleteFromSettings);
 }

@@ -1257,6 +1257,14 @@ export class Task {
     return false;
   }
 
+  /** Posts blocks that ask for no approval. False when the task has no Slack thread. */
+  async postPanelToUser(text: string, blocks: unknown[]): Promise<boolean> {
+    const ch = this.resolveSlackChannel();
+    if (!ch) return false;
+    await this.prepareMemoryDelivery(ch.channel_id);
+    return (await postInteractiveToThread(ch.channel_id, ch.thread_id, text, blocks)) !== undefined;
+  }
+
   /**
    * Ack a message on a Slack channel, moving the acknowledgment to it.
    *

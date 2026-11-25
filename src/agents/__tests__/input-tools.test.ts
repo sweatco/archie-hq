@@ -87,6 +87,8 @@ function makeAgent(): Agent {
   } as unknown as Agent;
 }
 
+const postPanelToUser = vi.fn();
+
 /** A task whose conversation is the given Slack channel or DM. */
 function taskIn(conversationId: string): Task {
   const key = `slack:${conversationId}:1.0`;
@@ -99,6 +101,7 @@ function taskIn(conversationId: string): Task {
     },
     touch: vi.fn(),
     debouncedSave: vi.fn(),
+    postPanelToUser,
   } as unknown as Task;
 }
 
@@ -168,6 +171,7 @@ beforeEach(() => {
     ),
   );
   loadMetadata.mockResolvedValue(null);
+  postPanelToUser.mockResolvedValue(true);
 });
 
 afterEach(() => {
@@ -189,6 +193,43 @@ it("lists the input whole in its owner's DM", async () => {
 
   expect(listed).toContain('Meeting notes');
   expect(listed).toContain('Lead alerts');
+});
+
+it("posts a panel that names only what the conversation may see, with the owner's Settings button", async () => {
+  const answer = await call('show_inputs', taskIn('C0GENERAL'));
+
+  expect(answer).toBe("Posted the panel with 1 input. Don't repeat its content.");
+  const [text, blocks] = postPanelToUser.mock.calls[0] as [string, unknown[]];
+  expect(text).toBe('Incoming-event inputs visible here (1)');
+  const panel = JSON.stringify(blocks);
+  expect(panel).toContain('Meeting recordings');
+  expect(panel).toContain('Meeting notes → #notes');
+  expect(panel).toContain('and 1 other consumer not visible from here');
+  expect(panel).not.toContain('Lead alerts');
+  expect(panel).toContain(`"action_id":"input_settings","value":"${INPUT_ID}"`);
+});
+
+it('posts no panel where no input is visible', async () => {
+  loadTrigger.mockResolvedValue(null);
+  store.unlinkRoutine(INPUT_ID, NOTES);
+  store.unlinkRoutine(INPUT_ID, LEADS);
+
+  expect(await call('show_inputs', taskIn('C0GENERAL'))).toBe(
+    'There are no incoming events inputs visible from here.',
+  );
+  expect(await call('show_inputs', taskIn('C0GENERAL'), { input_id: INPUT_ID })).toBe(
+    `Input ${INPUT_ID} isn't visible from here.`,
+  );
+  expect(postPanelToUser).not.toHaveBeenCalled();
+});
+
+it('answers with the list where there is no Slack thread to post a panel in', async () => {
+  postPanelToUser.mockResolvedValue(false);
+
+  const answer = await call('show_inputs', taskIn('C0GENERAL'));
+
+  expect(answer).toContain('No panel can be posted in this conversation');
+  expect(answer).toContain(`routine [${NOTES}] (enabled) “Meeting notes” — delivers to #notes`);
 });
 
 it('reads a delivery as delivered once its task has opened a thread', async () => {
@@ -232,6 +273,9 @@ it('says so when incoming events are not available', async () => {
     'Incoming events are not available on this instance right now.',
   );
   expect(await call('get_input_history', taskIn('C0GENERAL'), { input_id: INPUT_ID })).toBe(
+    'Incoming events are not available on this instance right now.',
+  );
+  expect(await call('show_inputs', taskIn('C0GENERAL'))).toBe(
     'Incoming events are not available on this instance right now.',
   );
 });

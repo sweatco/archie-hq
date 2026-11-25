@@ -18,6 +18,8 @@ const slack = vi.hoisted(() => ({
   open: vi.fn(),
   update: vi.fn(),
   postEphemeral: vi.fn(),
+  fetchMessage: vi.fn(),
+  updateMessage: vi.fn(),
   members: new Set<string>(),
 }));
 vi.mock('../../connectors/slack/client.js', async (importOriginal) => {
@@ -28,16 +30,19 @@ vi.mock('../../connectors/slack/client.js', async (importOriginal) => {
     getUserInfo: vi.fn((userId: string) => Promise.resolve({ id: userId })),
     isInternalMemoryUser: vi.fn((user: { id: string }) => slack.members.has(user.id)),
     postEphemeral: slack.postEphemeral,
+    fetchMessage: slack.fetchMessage,
+    updateMessage: slack.updateMessage,
   };
 });
 
 import { setInputServices } from '../../incoming/access.js';
-import { createInput } from '../../incoming/inputs.js';
+import { createInput, deleteInput } from '../../incoming/inputs.js';
 import { noteRefusedDelivery } from '../../incoming/refusals.js';
 import { vaultInputSecrets, type InputSecrets } from '../../incoming/secrets.js';
 import { IncomingStore } from '../../incoming/store.js';
 import type { Input } from '../../incoming/types.js';
 import { registerInputControlHandlers } from '../input-controls.js';
+import { inputsPanelBlocks } from '../input-panels.js';
 import { logger } from '../logger.js';
 
 type Handler = (args: Record<string, unknown>) => Promise<void>;
@@ -49,8 +54,15 @@ let secrets: InputSecrets;
 let input: Input;
 let secret: string;
 
+const PANEL = { channel_id: 'C0NOTES', ts: '1795530322.348299', thread_ts: '1795530309.733459' };
+
 /** A click on a button under the approved card, in the routine's thread. */
-function clickCard(actionId: string, value: string, userId: string): Promise<void> {
+function clickCard(
+  actionId: string,
+  value: string,
+  userId: string,
+  blocks: unknown[] = [],
+): Promise<void> {
   const handler = actions.get(actionId);
   if (!handler) throw new Error(`${actionId} was never registered`);
   return handler({
@@ -59,20 +71,32 @@ function clickCard(actionId: string, value: string, userId: string): Promise<voi
     body: {
       user: { id: userId },
       trigger_id: 'trigger-1',
-      channel: { id: 'C0NOTES' },
-      message: { ts: '1795530322.348299', thread_ts: '1795530309.733459' },
+      channel: { id: PANEL.channel_id },
+      message: { ts: PANEL.ts, thread_ts: PANEL.thread_ts, text: 'Inputs', blocks },
     },
   });
 }
 
-/** A click on a button inside the Connect window. */
-function clickWindow(actionId: string, value: string, userId: string): Promise<void> {
+const panel = () =>
+  inputsPanelBlocks([{ input, routines: [], others: [], hidden: 0, latest: null }]);
+
+/** A click on a button inside the Settings window. */
+function clickWindow(
+  actionId: string,
+  value: string,
+  userId: string,
+  metadata: object = { input_id: value, from: PANEL },
+): Promise<void> {
   const handler = actions.get(actionId);
   if (!handler) throw new Error(`${actionId} was never registered`);
   return handler({
     ack: vi.fn().mockResolvedValue(undefined),
     action: { action_id: actionId, value },
-    body: { user: { id: userId }, trigger_id: 'trigger-2', view: { id: 'V0CONNECT', hash: 'h1' } },
+    body: {
+      user: { id: userId },
+      trigger_id: 'trigger-2',
+      view: { id: 'V0SETTINGS', hash: 'h1', private_metadata: JSON.stringify(metadata) },
+    },
   });
 }
 
@@ -85,6 +109,8 @@ beforeEach(async () => {
   slack.open.mockResolvedValue({ ok: true });
   slack.update.mockResolvedValue({ ok: true });
   slack.postEphemeral.mockResolvedValue(undefined);
+  slack.fetchMessage.mockResolvedValue(null);
+  slack.updateMessage.mockResolvedValue(undefined);
   slack.members = new Set(['U0DANA', 'U0EVE']);
   actions.clear();
   registerInputControlHandlers({
@@ -107,9 +133,9 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-describe('Connect a sender', () => {
+describe('Settings', () => {
   it('opens the window for the owner, with the callback URL and without the key', async () => {
-    await clickCard('input_connect', input.id, 'U0DANA');
+    await clickCard('input_settings', input.id, 'U0DANA');
 
     expect(slack.open).toHaveBeenCalledOnce();
     const [opened] = slack.open.mock.calls[0] as [{ trigger_id: string; view: unknown }];
@@ -121,8 +147,43 @@ describe('Connect a sender', () => {
     expect(slack.postEphemeral).not.toHaveBeenCalled();
   });
 
+  it('remembers the message it was opened from, through a redraw too', async () => {
+    await clickCard('input_settings', input.id, 'U0DANA');
+    await clickWindow('input_check_connection', input.id, 'U0DANA');
+
+    const [opened] = slack.open.mock.calls[0] as [{ view: { private_metadata: string } }];
+    const [redrawn] = slack.update.mock.calls[0] as [{ view: { private_metadata: string } }];
+    expect(JSON.parse(opened.view.private_metadata)).toEqual({ input_id: input.id, from: PANEL });
+    expect(redrawn.view.private_metadata).toBe(opened.view.private_metadata);
+  });
+
+  it('takes the button of a deleted input out of the message it was clicked in', async () => {
+    const blocks = panel();
+    await deleteInput({ store, secrets }, input.id);
+
+    await clickCard('input_settings', input.id, 'U0DANA', blocks);
+
+    expect(slack.open).not.toHaveBeenCalled();
+    expect(slack.postEphemeral.mock.calls[0]?.[2]).toBe('This input no longer exists.');
+    const [channel, ts, text, retired] = slack.updateMessage.mock.calls[0] as [
+      string,
+      string,
+      string,
+      unknown[],
+    ];
+    expect([channel, ts, text]).toEqual([PANEL.channel_id, PANEL.ts, 'Inputs']);
+    expect(shown(retired)).toContain('~Meetings~ · deleted');
+    expect(shown(retired)).not.toContain('input_settings');
+  });
+
+  it('leaves the message alone when the person clicking does not own the input', async () => {
+    await clickCard('input_settings', input.id, 'U0EVE', panel());
+
+    expect(slack.updateMessage).not.toHaveBeenCalled();
+  });
+
   it('tells anyone else who owns the input, only them, and opens nothing', async () => {
-    await clickCard('input_connect', input.id, 'U0EVE');
+    await clickCard('input_settings', input.id, 'U0EVE');
 
     expect(slack.open).not.toHaveBeenCalled();
     expect(slack.postEphemeral).toHaveBeenCalledWith(
@@ -136,7 +197,7 @@ describe('Connect a sender', () => {
   it('leaves an operator-made input to the operator', async () => {
     const { input: operators } = await createInput({ store, secrets }, { auth: 'bearer' });
 
-    await clickCard('input_connect', operators.id, 'U0DANA');
+    await clickCard('input_settings', operators.id, 'U0DANA');
 
     expect(slack.open).not.toHaveBeenCalled();
     expect(slack.postEphemeral.mock.calls[0]?.[2]).toMatch(/managed by the operator/);
@@ -145,7 +206,7 @@ describe('Connect a sender', () => {
   it('says so when the window cannot be opened', async () => {
     slack.open.mockRejectedValue(new Error('expired_trigger_id'));
 
-    await clickCard('input_connect', input.id, 'U0DANA');
+    await clickCard('input_settings', input.id, 'U0DANA');
 
     expect(logger.error).toHaveBeenCalled();
     expect(slack.postEphemeral.mock.calls[0]?.[2]).toBe(
@@ -162,7 +223,7 @@ describe('Show key', () => {
     const [updated] = slack.update.mock.calls[0] as [
       { view_id: string; hash: string; view: unknown },
     ];
-    expect(updated).toMatchObject({ view_id: 'V0CONNECT', hash: 'h1' });
+    expect(updated).toMatchObject({ view_id: 'V0SETTINGS', hash: 'h1' });
     expect(shown(updated.view)).toContain(secret);
   });
 
@@ -187,6 +248,102 @@ describe('Show key', () => {
 
     expect(shown(vi.mocked(logger.system).mock.calls)).not.toContain(secret);
     expect(shown(vi.mocked(logger.system).mock.calls)).toContain('showed its key to its owner');
+  });
+});
+
+describe('Delete', () => {
+  const deliveryStatus = () => store.input(input.id)?.state;
+
+  it('deletes the input for its owner, removes the key and says so in the window', async () => {
+    const [ref] = input.secretRefs;
+
+    await clickWindow('input_delete', input.id, 'U0DANA');
+
+    expect(deliveryStatus()).toBe('deleted');
+    expect(await secrets.read(ref ?? '')).toBeNull();
+    const [updated] = slack.update.mock.calls[0] as [{ view_id: string; view: unknown }];
+    expect(updated.view_id).toBe('V0SETTINGS');
+    expect(shown(updated.view)).toContain('*Meetings* was deleted');
+    expect(shown(updated.view)).not.toContain('input_delete');
+    expect(shown(vi.mocked(logger.system).mock.calls)).toContain('was deleted by its owner');
+  });
+
+  it('changes the row of the panel the window was opened from', async () => {
+    slack.fetchMessage.mockResolvedValue({ text: 'Inputs', blocks: panel() });
+
+    await clickWindow('input_delete', input.id, 'U0DANA');
+
+    expect(slack.fetchMessage).toHaveBeenCalledWith(PANEL.channel_id, PANEL.ts, PANEL.thread_ts);
+    const [channel, ts, , retired] = slack.updateMessage.mock.calls[0] as [
+      string,
+      string,
+      string,
+      unknown[],
+    ];
+    expect([channel, ts]).toEqual([PANEL.channel_id, PANEL.ts]);
+    expect(shown(retired)).toContain('~Meetings~ · deleted');
+    expect(shown(retired)).not.toContain('input_settings');
+  });
+
+  it('still deletes when the panel cannot be updated', async () => {
+    slack.fetchMessage.mockRejectedValue(new Error('missing_scope'));
+
+    await clickWindow('input_delete', input.id, 'U0DANA');
+
+    expect(deliveryStatus()).toBe('deleted');
+    expect(shown(slack.update.mock.calls)).toContain('was deleted');
+    expect(shown(vi.mocked(logger.warn).mock.calls)).toContain('Could not update the panel');
+  });
+
+  it('touches no message when the window was not opened from one', async () => {
+    await clickWindow('input_delete', input.id, 'U0DANA', { input_id: input.id });
+
+    expect(deliveryStatus()).toBe('deleted');
+    expect(slack.fetchMessage).not.toHaveBeenCalled();
+  });
+
+  it('deletes nothing for anyone else', async () => {
+    await clickWindow('input_delete', input.id, 'U0EVE');
+
+    expect(deliveryStatus()).toBe('enabled');
+    expect(shown(slack.update.mock.calls)).toContain('Only <@U0DANA>, who owns this input');
+  });
+
+  it('deletes nothing for an owner who is no longer a member of the workspace', async () => {
+    slack.members.delete('U0DANA');
+
+    await clickWindow('input_delete', input.id, 'U0DANA');
+
+    expect(deliveryStatus()).toBe('enabled');
+    expect(shown(slack.update.mock.calls)).toContain('Only the owner of this input can delete it');
+  });
+
+  it('leaves an operator-made input to the operator', async () => {
+    const { input: operators } = await createInput({ store, secrets }, { auth: 'bearer' });
+
+    await clickWindow('input_delete', operators.id, 'U0DANA');
+
+    expect(store.input(operators.id)?.state).toBe('enabled');
+    expect(shown(slack.update.mock.calls)).toContain('managed by the operator');
+  });
+
+  it('says the input is gone when the window is older than the deletion', async () => {
+    await clickWindow('input_delete', input.id, 'U0DANA');
+    slack.update.mockClear();
+
+    await clickWindow('input_delete', input.id, 'U0DANA');
+
+    expect(shown(slack.update.mock.calls)).toContain('This input no longer exists.');
+  });
+
+  it('still reports the deletion when a secret file stays behind, and warns the operator', async () => {
+    vi.spyOn(secrets, 'remove').mockRejectedValue(new Error('EACCES'));
+
+    await clickWindow('input_delete', input.id, 'U0DANA');
+
+    expect(deliveryStatus()).toBe('deleted');
+    expect(shown(slack.update.mock.calls)).toContain('was deleted');
+    expect(shown(vi.mocked(logger.warn).mock.calls)).toContain('secret file could not be removed');
   });
 });
 

@@ -70,6 +70,25 @@ export function mayManageInput(input: Input, actor: InputActor): boolean {
   return actor.kind === 'operator' || (input.owner !== null && input.owner === actor.userId);
 }
 
+export type InputRemoval =
+  | { status: 'deleted'; input: Input }
+  | { status: 'refused'; reason: 'unknown_input' | 'input_deleted' | 'not_owner' };
+
+export async function deleteInputAs(
+  services: InputServices,
+  actor: InputActor,
+  inputId: string,
+): Promise<InputRemoval> {
+  const input = services.store.input(inputId);
+  if (!input) return { status: 'refused', reason: 'unknown_input' };
+  if (input.state === 'deleted') return { status: 'refused', reason: 'input_deleted' };
+  if (!mayManageInput(input, actor)) return { status: 'refused', reason: 'not_owner' };
+  const deleted = await deleteInput(services, inputId);
+  return deleted
+    ? { status: 'deleted', input: deleted }
+    : { status: 'refused', reason: 'unknown_input' };
+}
+
 export type LinkChange =
   | { status: 'changed' | 'unchanged'; input: Input }
   | { status: 'refused'; reason: 'unknown_input' | 'input_deleted' | 'not_owner' };

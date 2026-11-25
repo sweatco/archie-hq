@@ -152,6 +152,7 @@ const PM_ORCHESTRATION_TOOLS = [
   'mcp__orchestration-tools__list_triggers',
   'mcp__orchestration-tools__get_trigger',
   'mcp__orchestration-tools__list_inputs',
+  'mcp__orchestration-tools__show_inputs',
   'mcp__orchestration-tools__get_input_history',
   'mcp__orchestration-tools__update_trigger',
   'mcp__orchestration-tools__delete_trigger',

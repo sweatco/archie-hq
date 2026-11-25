@@ -452,6 +452,23 @@ export async function updateMessage(
   });
 }
 
+/** Null when the message is gone. A reply needs `threadTs`. */
+export async function fetchMessage(
+  channel: string,
+  ts: string,
+  threadTs?: string,
+): Promise<{ text: string; blocks: unknown[] } | null> {
+  const result = await getSlackClient().conversations.replies({
+    channel,
+    ts: threadTs ?? ts,
+    oldest: ts,
+    latest: ts,
+    inclusive: true,
+  });
+  const found = result.messages?.find((message) => message.ts === ts);
+  return found ? { text: found.text ?? '', blocks: found.blocks ?? [] } : null;
+}
+
 /**
  * Delete a message by timestamp. Used to drop a stale PR card before reposting
  * a fresh one at the bottom of the thread. Best-effort — swallows errors

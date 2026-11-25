@@ -51,15 +51,24 @@ function routineLookup(whole: boolean, lookups: InventoryLookups): RoutineLookup
   };
 }
 
-interface InputScope {
-  whole: boolean;
-  /** The linked routines that may be shown. */
+/** What takes an input's events, as far as one conversation may see. */
+export interface InputUses {
+  /** The linked routines that may be shown. A null routine no longer exists. */
   routines: Array<{ id: string; routine: Trigger | null }>;
   /** Consumers of other kinds, named only where the input is seen whole. */
   others: ConsumerUse[];
   /** Linked routines and other consumers that stay unnamed here. */
   hidden: number;
+}
+
+interface InputScope extends InputUses {
+  whole: boolean;
   shows: RoutineLookup;
+}
+
+export interface InputListing extends InputUses {
+  input: Input;
+  latest: Receipt | null;
 }
 
 /** Null when nothing about the input may be shown in the asking conversation. */
@@ -90,7 +99,7 @@ async function scopeOf(
 
 const utc = (at: number) => `${new Date(at).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
 
-const unnamed = (count: number) =>
+export const unnamedConsumers = (count: number) =>
   `${count} other consumer${count === 1 ? '' : 's'} not visible from here`;
 
 const inputName = (input: Input) =>
@@ -99,44 +108,58 @@ const inputName = (input: Input) =>
 const routineName = (id: string, routine: Trigger | null) =>
   routine ? `[${id}] “${triggerWhat(routine)}”` : `[${id}] (no longer exists)`;
 
-function destination(routine: Trigger): string {
+export function routineDestination(routine: Trigger): string {
   return routine.binding.type === 'channel'
     ? `#${routine.binding.channel_name}`
     : `a DM with <@${routine.binding.user_id}>`;
 }
 
-function describeInput(input: Input, scope: InputScope, latest: Receipt | null): string {
+function describeInput({ input, latest, ...uses }: InputListing): string {
   const lines = [
     `• ${inputName(input)} — ${input.state}, ${input.auth === 'bearer' ? 'bearer' : 'signed'}, ${
       input.owner ? `owned by <@${input.owner}>` : 'managed by the operator'
     }; ${latest ? `last delivery ${utc(latest.receivedAt)}` : 'no delivery on record'}`,
   ];
-  for (const { id, routine } of scope.routines)
+  for (const { id, routine } of uses.routines)
     lines.push(
       routine
-        ? `    routine [${id}] (${routine.status}) “${triggerWhat(routine)}” — delivers to ${destination(routine)}`
+        ? `    routine [${id}] (${routine.status}) “${triggerWhat(routine)}” — delivers to ${routineDestination(routine)}`
         : `    routine ${routineName(id, routine)}`,
     );
-  for (const other of scope.others) lines.push(`    consumer: ${other.label}`);
-  if (scope.hidden > 0) lines.push(`    and ${unnamed(scope.hidden)}`);
+  for (const other of uses.others) lines.push(`    consumer: ${other.label}`);
+  if (uses.hidden > 0) lines.push(`    and ${unnamedConsumers(uses.hidden)}`);
   if (lines.length === 1) lines.push('    nothing takes its events yet');
   return lines.join('\n');
 }
 
+export const NO_INPUTS_VISIBLE = 'There are no incoming events inputs visible from here.';
+
 /** The inputs that may be shown in the asking conversation, each with what takes its events. */
-export async function describeInputs(
+export async function listInputs(
   services: DaemonInputs,
   origin: TriggerOrigin,
   lookups: InventoryLookups,
-): Promise<string> {
-  const entries: string[] = [];
+): Promise<InputListing[]> {
+  const listings: InputListing[] = [];
   for (const { input } of services.store.inputSummaries()) {
     if (input.state === 'deleted') continue;
     const scope = await scopeOf(input, origin, services, lookups);
-    if (scope) entries.push(describeInput(input, scope, services.store.latestReceipt(input.id)));
+    if (!scope) continue;
+    const { routines, others, hidden } = scope;
+    listings.push({
+      input,
+      routines,
+      others,
+      hidden,
+      latest: services.store.latestReceipt(input.id),
+    });
   }
-  if (entries.length === 0) return 'There are no incoming events inputs visible from here.';
-  return `Inputs visible here (${entries.length}):\n${entries.join('\n')}`;
+  return listings;
+}
+
+export function describeInputs(listings: InputListing[]): string {
+  if (listings.length === 0) return NO_INPUTS_VISIBLE;
+  return `Inputs visible here (${listings.length}):\n${listings.map(describeInput).join('\n')}`;
 }
 
 /** Why a handoff ended without a run, in words. A reason not listed here is shown as recorded. */
@@ -226,8 +249,8 @@ async function deliveryLines(
       );
   }
   if (lines.length === 0)
-    return [`${at}received${hidden > 0 ? `: taken by ${unnamed(hidden)}` : ''}`];
-  if (hidden > 0) lines.push(`    and ${unnamed(hidden)}`);
+    return [`${at}received${hidden > 0 ? `: taken by ${unnamedConsumers(hidden)}` : ''}`];
+  if (hidden > 0) lines.push(`    and ${unnamedConsumers(hidden)}`);
   return lines;
 }
 

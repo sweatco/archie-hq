@@ -505,7 +505,7 @@ describe('approve_trigger — an event routine is approved from the card that wa
     ];
     expect(line.text.text).toBe(approved);
     expect(controls.elements.map((button) => [button.action_id, button.value])).toEqual([
-      ['input_connect', 'inp-AAAAAAAAAAAAAAAAAAAAAA'],
+      ['input_settings', 'inp-AAAAAAAAAAAAAAAAAAAAAA'],
     ]);
   });
 
