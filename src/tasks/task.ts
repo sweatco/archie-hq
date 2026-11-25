@@ -1070,9 +1070,6 @@ export class Task {
     appendMessageToUser(this.taskId, sender, message, logDest).catch((error: unknown) =>
       logger.error('task', 'Could not record outgoing message', error),
     );
-    // The app just posted into the thread — Slack auto-clears the loading
-    // indicator, so sync our notion of what's shown (re-pushes if work continues).
-    this.statusController.notePosted();
   }
 
   /**
@@ -1376,18 +1373,23 @@ export class Task {
    * Single sink for a rendered status line ('' clears it). Delivers it to every
    * surface so the indicator can be observed without Slack:
    *   - a `status` event on the bus → SSE → the CLI shows the same line live
-   *   - the Slack assistant-thread indicator (best-effort)
+   *   - the Slack agent-session working indicator (best-effort)
    * Gated as a whole by ARCHIE_LIVE_STATUS so the feature has one off switch.
    */
   private onStatusRendered(status: string): void {
     if (!isStatusEnabled()) return;
+    // A stopped or completed task never shows the indicator again, even when its
+    // agent wakes once more before exiting (e.g. a background shell finishing
+    // after Slack's stop button). Nothing would clear it, and Slack keeps a
+    // working session for up to an hour.
+    if (status && !this.isActive) return;
     emitEvent('status', this.taskId, { status });
     this.pushSlackStatus(status);
   }
 
   /**
-   * Push (or clear, with an empty string) the "Archie is …" loading indicator
-   * on every linked Slack thread. Fire-and-forget and best-effort — each call
+   * Set (or clear, with an empty string) the working indicator on every linked
+   * Slack thread. Fire-and-forget and best-effort — each call
    * swallows its own errors. Muted channels are skipped so a thread the PM has
    * gone quiet in doesn't keep shimmering. No-op when there are no Slack
    * channels (e.g. CLI-only tasks), where the CLI shows the status instead.

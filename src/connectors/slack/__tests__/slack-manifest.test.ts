@@ -61,3 +61,29 @@ describe('slack-manifest.yaml — pinned messages', () => {
     expect(botScopes).toContain('pins:read');
   });
 });
+
+/**
+ * Slack manifest — Agent surface (#425).
+ *
+ * The stop button needs the `agent_session_stopped` subscription. Nothing handles `assistant_thread_started`, the old surface's event. Archie's recurring work runs on its own triggers, so Slack's Tasks tab stays off.
+ */
+describe('slack-manifest.yaml — Agent surface', () => {
+  it('declares agent_view with a description instead of assistant_view', () => {
+    const agentView = section(manifest, 'agent_view');
+    expect(agentView).toContain('agent_description:');
+    expect(section(manifest, 'features')).not.toContain('assistant_view:');
+  });
+
+  it('subscribes to agent_session_stopped and no longer to assistant_thread_started', () => {
+    const botEvents = section(manifest, 'bot_events');
+    expect(botEvents).toContain('agent_session_stopped');
+    expect(botEvents).not.toContain('assistant_thread_started');
+  });
+
+  it('keeps the Messages tab writable and the Tasks tab off', () => {
+    const appHome = section(manifest, 'app_home');
+    expect(appHome).toContain('messages_tab_enabled: true');
+    expect(appHome).toContain('messages_tab_read_only_enabled: false');
+    expect(appHome).toContain('agent_tasks_enabled: false');
+  });
+});

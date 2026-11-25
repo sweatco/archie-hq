@@ -16,8 +16,8 @@ settings:
   event_subscriptions:
     request_url: https://<host>/webhooks/slack
     bot_events:
+      - agent_session_stopped
       - app_mention
-      - assistant_thread_started
       - message.channels
       - message.groups
       - message.im
@@ -42,9 +42,21 @@ To enable Socket Mode end-to-end, also flip `socket_mode_enabled: true` in `slac
 
 ### Bot Scopes
 
-The manifest declares these bot scopes: `app_mentions:read`, `chat:write`, `channels:history`, `channels:read`, `groups:history`, `groups:read`, `im:history`, `im:read`, `im:write`, `mpim:history`, `mpim:read`, `users:read`, `usergroups:read`, `files:read`, `files:write`, `pins:read`, `reactions:read`, `reactions:write`, `assistant:write`. The `channels:*` and `groups:*` scopes cover public and private channels respectively (`groups:history` is required to read messages and thread context in private channels); the `im:*` scopes enable DM-originated tasks; the `mpim:*` scopes cover group DMs (multi-party DMs) — `mpim:history` lets `conversations.replies`/`conversations.history` read a group DM's thread and enables the `message.mpim` event, and `mpim:read` lets `conversations.info` resolve a group DM's channel name, shared status, and canvas tabs; `pins:read` backs `pins.list` for the pinned-message index (see [Channel Pinned Messages](#channel-pinned-messages)) and is the one scope the app is not yet installed with — the feature is dormant without it and costs nothing until it is granted; `reactions:write` powers the eyes-emoji acknowledgment pattern and the PM's `react_to_message` tool; `reactions:read` backs `get_message_reactions`; `assistant:write` is required to push generated titles to DM-rooted assistant threads via `assistant.threads.setTitle`, and (together with `chat:write`) backs the live "Archie is …" status indicator via `assistant.threads.setStatus` — see [Live Status Indicator](#live-status-indicator).
+The manifest declares these bot scopes: `app_mentions:read`, `chat:write`, `channels:history`, `channels:read`, `groups:history`, `groups:read`, `im:history`, `im:read`, `im:write`, `mpim:history`, `mpim:read`, `users:read`, `usergroups:read`, `files:read`, `files:write`, `pins:read`, `reactions:read`, `reactions:write`, `assistant:write`. The `channels:*` and `groups:*` scopes cover public and private channels respectively (`groups:history` is required to read messages and thread context in private channels); the `im:*` scopes enable DM-originated tasks; the `mpim:*` scopes cover group DMs (multi-party DMs) — `mpim:history` lets `conversations.replies`/`conversations.history` read a group DM's thread and enables the `message.mpim` event, and `mpim:read` lets `conversations.info` resolve a group DM's channel name, shared status, and canvas tabs; `pins:read` backs `pins.list` for the pinned-message index (see [Channel Pinned Messages](#channel-pinned-messages)) and is the one scope the app is not yet installed with — the feature is dormant without it and costs nothing until it is granted; `reactions:write` powers the eyes-emoji acknowledgment pattern and the PM's `react_to_message` tool; `reactions:read` backs `get_message_reactions`; `assistant:write` is required to push generated titles to DM-rooted threads via `assistant.threads.setTitle`, and (together with `chat:write`) backs the working indicator via `agents.sessions.setStatus` — see [Live Status Indicator](#live-status-indicator).
 
 **Adding a scope to the manifest does not grant it to an existing installation.** Saving the manifest updates what the app *requests*; the bot token keeps its old scope set until the app is **reinstalled to the workspace**. Until then the affected calls fail with `missing_scope` while everything else keeps working, which reads as a code bug but is not one — e.g. before the reinstall that granted `mpim:*`, a group DM produced `[Slack] Failed to fetch shared-channel status … needed: 'mpim:read'` followed by `[Server] Error processing Slack event … needed: 'mpim:history'`, and the message was dropped with no reply in Slack. To check what the live token actually holds, read the `x-oauth-scopes` response header from any Web API call (e.g. `auth.test`) rather than trusting the manifest.
+
+### Agent Surface
+
+The manifest declares Slack's Agent surface (`features.agent_view`). Moving an existing app from `assistant_view` to `agent_view` cannot be undone, and people must hard-refresh Slack to see it. On this surface:
+
+- Slack opens each top-level DM message as its own thread, and Archie replies in it. A second top-level DM message therefore starts a separate task, as it did before.
+- Each DM and channel thread Archie works in is an agent session. Archie marks it working and ends it explicitly (see [Live Status Indicator](#live-status-indicator)); Slack shows "Archie is working" with a stop button.
+- The title set through `assistant.threads.setTitle` shows in the DM thread header; Slack bridges the old call onto the session.
+- The Messages tab stays writable and Slack's Tasks tab is off (`features.app_home`).
+- Slack's manifest editor suggests subscribing to `app_home_opened`; nothing uses it yet.
+
+These behaviours were observed on a throwaway app before the switch (#425).
 
 ## Bot Identity Detection
 
@@ -55,7 +67,7 @@ On startup, `initSlackClient()` in `src/connectors/slack/client.ts` calls `auth.
 
 ## Event Handling
 
-The server registers two Bolt event handlers:
+The server registers these Bolt event handlers for task traffic:
 
 1. **`app_mention`** -- Fires when a user mentions `@Archie` in any channel Archie is a member of — public, private, or a group DM. This is the primary way users start new tasks in channels and group DMs.
 
@@ -75,7 +87,9 @@ The server registers two Bolt event handlers:
 
    The `message` handler also branches on the **`message_changed`** subtype (a user editing a message) and routes it to `handleSlackEdit` — see [Message Edits](#message-edits) below.
 
-Both handlers run the same pipeline:
+3. **`agent_session_stopped`** -- Fires when a person presses the stop button on an agent session. `handleAgentSessionStopped` finds the thread's task with `findTaskByThread` and calls `Task.stop()`, which aborts a running turn and ends the session's working state; the next message in the thread resumes the task. An unknown thread, a task that is not running, and an external or guest presser (the same `isExternalUser` check as inbound messages) are ignored. Slack does not end the session on its own: until the app does, it shows "Stopping…".
+
+The `app_mention` and `message` handlers run the same pipeline:
 
 ```
 Slack webhook
@@ -220,7 +234,7 @@ When a PR is opened, Archie posts a compact, self-updating **PR card** so it's o
 
 ## Live Status Indicator
 
-While a task is being worked on, Archie shows a live "**Archie is …**" status line of what it's currently doing. This is a **surface-agnostic** capability: one status string is composed per task and rendered to whatever surfaces are available — the CLI, the logs, and Slack. Slack happens to render it natively as the assistant-thread loading shimmer under the composer (via `assistant.threads.setStatus`, the progress sibling of the title pipeline — same `client.assistant.threads.*` accessor and `channel_id` + `thread_ts`, wrapped best-effort in `src/connectors/slack/status.ts`). Slack auto-prepends the app name, so the string is always a verb fragment (`"is checking mobile and backend…"` → "**Archie** is checking mobile and backend…"). Since the 2026-03 platform change `setStatus` accepts `chat:write` as well as `assistant:write`, so it works in regular channel threads as well as DM/assistant threads — Archie sets it on every linked, non-muted Slack thread. (Documented here because Slack is the primary renderer; the engine itself is generic and lives in `src/tasks/status.ts`.)
+While a task is being worked on, Archie shows a live "**Archie is …**" status line of what it's currently doing. This is a **surface-agnostic** capability: one status string is composed per task and rendered to whatever surfaces are available — the CLI, the logs, and Slack. The string is a verb fragment (`"is checking mobile and backend…"` → "**Archie** is checking mobile and backend…"), shown in full in the CLI. Slack's Agent surface shows only that Archie is working: `src/connectors/slack/status.ts` calls `agents.sessions.setStatus` with `processing` for any status and `active` for the clear, on every linked, non-muted Slack thread, DM or channel. That call, rather than the bridged `assistant.threads.setStatus`, is what gives the indicator its stop button; the old call also lost the text. `@slack/web-api` has no typed `agents.*` methods, so it goes through `apiCall`. (The engine itself is generic and lives in `src/tasks/status.ts`.)
 
 The status is derived **automatically** from the session's tool calls — no prompt changes, and work the PM delegates surfaces as the PM's own activity, so the single persona never reveals a worker:
 
@@ -231,8 +245,8 @@ The status is derived **automatically** from the session's tool calls — no pro
 
   Active/idle transitions flow through `Task.updateAgentState`, which already knows when the turn is running.
 - **Render.** `TaskStatusController` (`src/tasks/status.ts`) has nothing to arbitrate: the line is whatever the session is currently doing, or a generic "working on this" while it is active with no surfaced tool call. It is always first person and never names an agent.
-- **Deliver.** Each rendered line goes through a single sink, `Task.onStatusRendered`, which fans it out to both surfaces so the status can be observed with or without Slack: (1) a `status` event on the in-process event bus → SSE → the **CLI** renders the same "Archie is …" line live (a spinner above the message input — `TaskDetail.tsx`); (2) the **Slack** assistant-thread indicator (best-effort, every linked non-muted Slack thread). A CLI-only task has no Slack channel, so the Slack push is a no-op there and the CLI is how you test it. (Status changes are intentionally not logged — they'd be noise; the CLI is the debug surface.)
-- **Debounce, keepalive & clear.** Pushes are debounced (~1s) and de-duplicated so no surface is spammed and the indicator doesn't flicker between turns. Because Slack auto-clears a status after ~2 minutes if nothing refreshes it, a keepalive re-asserts the current status every ~90s — without it, a long-running, quiet tool call (e.g. `web_research`) would lose the indicator mid-work. It is cleared when the PM posts to the user (`logOutgoingMessage` → Slack also auto-clears on a posted reply) and on task `stop()`/`complete()` (which also stops the keepalive). When a turn is **winding down** to a stop/complete — `report_completion`, an edit-mode request, or a research-budget stop — the controller is **suspended** (`Task.suspendStatus`) so the indicator is blanked *immediately* rather than at turn-end; otherwise a trailing tool call (or the keepalive) would pop the status back for a couple seconds after the final message. Activity is in-memory only — never persisted — so a restart never resurfaces a stale "working…". The whole feature is gated by `ARCHIE_LIVE_STATUS` (default on).
+- **Deliver.** Each rendered line goes through a single sink, `Task.onStatusRendered`, which fans it out to both surfaces so the status can be observed with or without Slack: (1) a `status` event on the in-process event bus → SSE → the **CLI** renders the same "Archie is …" line live (a spinner above the message input — `TaskDetail.tsx`); (2) the **Slack** agent-session working indicator (best-effort, every linked non-muted Slack thread). A CLI-only task has no Slack channel, so the Slack push is a no-op there and the CLI is how you test it. (Status changes are intentionally not logged — they'd be noise; the CLI is the debug surface.)
+- **Debounce, keepalive & clear.** Pushes are debounced (~1s) and de-duplicated so no surface is spammed and the indicator doesn't flicker between turns. A keepalive re-asserts the current status every ~90s so a long-running, quiet tool call (e.g. `web_research`) keeps the indicator. A posted reply does not end Slack's working state, so the clear is always sent when a task parks or stops: on `stop()`/`complete()` (which also stops the keepalive), and when a turn is **winding down** to a stop/complete — `report_completion`, an edit-mode request, or a research-budget stop — where the controller is **suspended** (`Task.suspendStatus`) so the indicator ends *immediately* rather than at turn-end; otherwise a trailing tool call (or the keepalive) would pop the status back after the final message. The clear is sent even when the controller believes nothing is shown, since it may be newer than what Slack shows. A task that is no longer active never sets the indicator again, even if its agent wakes once more before exiting (for example, a background shell finishing after the stop button). Activity is in-memory only — never persisted. A session left working, for example by a crash mid-turn with no recovery, stays so for up to an hour. The whole feature is gated by `ARCHIE_LIVE_STATUS` (default on).
 
 ## Interactive Messages
 
@@ -273,11 +287,11 @@ The Slack client extracts file metadata from messages, including files shared di
 
 - `src/connectors/slack/client.ts` — Slack WebClient wrapper: `postSlackMessage`, `postSlackFiles`, `postInteractiveToThread(s)`, thread history, mention resolution, file downloads, shared-channel detection, user/channel lookup caches
 - `src/connectors/slack/api-errors.ts` — dependency-free Slack error-code parsing shared by the client and agent-facing error formatters; only safe API codes cross this boundary, with `unknown_error` used where no safe code is available
-- `src/connectors/slack/events.ts` — Bolt app setup (`mountSlackApp`), `app_mention` / `message` handlers, `routeSlackEvent` + `handleSlackEvent`, button action handlers, title pipeline, shared-channel warnings
+- `src/connectors/slack/events.ts` — Bolt app setup (`mountSlackApp`), `app_mention` / `message` / `agent_session_stopped` handlers, `routeSlackEvent` + `handleSlackEvent`, button action handlers, title pipeline, shared-channel warnings
 - `src/connectors/slack/task-routing.ts` — pure inbound-routing decisions, import-free by design: `mayWakeTask` / `mayReachTriggers` (the two questions the gate answers separately) over the `MESSAGE_NOISE_SUBTYPES` denylist, `shouldForwardMessageEvent` (their disjunction — the single call site's entry point), `isAckableEvent` (does it earn an eyes reaction), `shouldCreateNewTask` (does it seed a task) — the channel-vs-DM predicates that keep group DMs channel-like
 - `src/connectors/slack/message-body.ts` — **the one place a Slack message becomes agent-facing text**: `renderMessageBody` plus the named entry points every path uses (`messageBody` for the title transcript, `exploreBody` for explore reads, `pinBody` for the pin index, `rawMessageBody` for a raw Bolt payload). Task ingestion calls `renderMessageBody` + `shouldRedact` directly rather than `messageBody`, because it must substitute the DOWNLOADED files into the parts — only those carry a `localPath`, and the `[Attachments: …]` suffix prints the path only when it is set, so rendering from the un-downloaded files would silently drop every path an agent needs to open the file and `shouldRedact`, the single answer to the redaction question
-- `src/connectors/slack/title.ts` — `assistant.threads.setTitle` wrapper for DM-rooted tasks
-- `src/connectors/slack/status.ts` — Slack renderer for the status indicator: best-effort `assistant.threads.setStatus` wrapper
+- `src/connectors/slack/title.ts` — `assistant.threads.setTitle` wrapper for DM-rooted tasks, bridged onto agent sessions
+- `src/connectors/slack/status.ts` — Slack renderer for the status indicator: best-effort `agents.sessions.setStatus` wrapper
 - `src/tasks/status.ts` — `TaskStatusController` (composes the single first-person status line, debounced, with a keepalive) + `isStatusEnabled` (the `ARCHIE_LIVE_STATUS` master gate, all surfaces)
 - `src/cli/components/TaskDetail.tsx` — CLI renderer: shows the live status line from `status` events (a spinner above the message input)
 - `src/agents/activity.ts` — `deriveActivity` (tool call → status fragment, including the MCP-metadata-derived integration phrasing)

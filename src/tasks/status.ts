@@ -10,11 +10,11 @@
  * with no surfaced tool call. Work the PM delegates surfaces as the PM's own
  * activity — the single persona never reveals a worker.
  *
- * Output is the fragment after the app name (Slack prepends "Archie"), composed
- * as "is <fragment>…". Pushes are debounced and de-duplicated so we never spam
- * Slack or flicker the indicator between turns, and a keepalive re-asserts the
- * current status on an interval so it survives Slack's ~2-minute timeout during
- * long, quiet tool calls (e.g. research).
+ * Output is the fragment after the app name, composed as "is <fragment>…". The
+ * CLI shows it in full; Slack's Agent surface shows only that Archie is working
+ * (see src/connectors/slack/status.ts). Pushes are debounced and de-duplicated
+ * so we never spam Slack or flicker the indicator between turns, and a keepalive
+ * re-asserts the current status during long, quiet tool calls (e.g. research).
  */
 
 import { logger } from '../system/logger.js';
@@ -29,10 +29,9 @@ export function isStatusEnabled(): boolean {
 
 const DEBOUNCE_MS = 800;
 /**
- * Slack auto-clears a status after ~2 minutes if nothing refreshes it. A
- * long-running tool (e.g. web_research) emits no intervening tool calls, so the
- * status would silently vanish mid-work. Re-assert it on this interval to reset
- * Slack's timer — comfortably under the ~120s timeout.
+ * Slack drops a status that nothing refreshes, and a long-running tool (e.g.
+ * web_research) emits no intervening tool calls. Re-assert it on this interval
+ * so the indicator survives long, quiet work.
  */
 const KEEPALIVE_MS = 90_000;
 
@@ -70,17 +69,6 @@ export class TaskStatusController {
     this.schedule();
   }
 
-  /**
-   * The PM just posted a message to the user. Slack auto-clears the loading
-   * indicator when the app posts into the thread, so forget what we believe is
-   * shown; the next render re-pushes if work continues. Does NOT wipe the
-   * current activity — ongoing work shows through again.
-   */
-  notePosted(): void {
-    this.current = '';
-    this.schedule();
-  }
-
   /** Blank the indicator for good — task parked / stopped / done. */
   clear(): void {
     this.active = false;
@@ -90,10 +78,7 @@ export class TaskStatusController {
       this.timer = undefined;
     }
     this.stopKeepalive();
-    if (this.current !== '') {
-      this.current = '';
-      this.safePush('');
-    }
+    this.pushClear();
   }
 
   dispose(): void {
@@ -122,16 +107,23 @@ export class TaskStatusController {
     this.stopKeepalive();
     this.active = false;
     this.phrase = undefined;
-    if (this.current !== '') {
-      this.current = '';
-      this.safePush('');
-    }
+    this.pushClear();
   }
 
   /**
-   * Keep the current status alive against Slack's ~2-minute timeout by
-   * re-asserting it on an interval — so a long-running tool that emits no new
-   * activity doesn't lose the indicator. Self-stops once nothing is shown.
+   * Sent even when nothing is believed shown: Slack keeps an agent session
+   * working, or "Stopping…" after its stop button, until the app ends it, and
+   * this controller may be newer than what Slack shows (respawn, restart).
+   */
+  private pushClear(): void {
+    this.current = '';
+    this.safePush('');
+  }
+
+  /**
+   * Keep the current status alive by re-asserting it on an interval — so a
+   * long-running tool that emits no new activity doesn't lose the indicator.
+   * Self-stops once nothing is shown.
    */
   private armKeepalive(): void {
     if (this.disposed || this.keepalive) return;

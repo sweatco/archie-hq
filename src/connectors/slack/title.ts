@@ -1,12 +1,14 @@
 /**
- * Slack assistant thread title wrapper.
+ * Slack thread title wrapper for DM-originated tasks.
  *
- * Wraps `assistant.threads.setTitle` for DM-originated tasks. Errors are
- * logged and swallowed — title is still persisted in metadata even if Slack
+ * Wraps `assistant.threads.setTitle`. On Slack's Agent surface the call is
+ * bridged: Slack applies the title to the thread's agent session, where it shows
+ * in the thread header (observed, #425). `agents.sessions.rename` is the new
+ * method; the bridge is kept until Slack dates the old one's removal. Errors are
+ * logged and swallowed — the title is still persisted in metadata even if Slack
  * sync fails.
  *
- * Required Slack scope: `assistant:write`. The Agents & AI Apps feature
- * toggle must be enabled on the bot.
+ * Required Slack scope: `assistant:write`.
  */
 
 import type { WebClient } from '@slack/web-api';

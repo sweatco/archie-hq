@@ -111,6 +111,15 @@ const editedMessageSchema = z.object({
   previous_message: z.object({ text: z.string().optional() }).passthrough().optional(),
 });
 
+const agentSessionStoppedSchema = z
+  .object({
+    type: z.literal('agent_session_stopped'),
+    channel: z.string(),
+    thread_ts: z.string(),
+    user: z.string(),
+  })
+  .passthrough();
+
 let app: AppType | null = null;
 
 async function updateTaskApprovalMessage(
@@ -291,6 +300,16 @@ export async function mountSlackApp(
       ts: event.ts,
       thread_ts: event.thread_ts,
     }).catch((err: unknown) => logger.error('Server', 'Error processing Slack event', err));
+  });
+
+  // The stop button Slack shows on an agent session while Archie is working.
+  boltApp.event('agent_session_stopped', async ({ event: rawEvent }) => {
+    if (getIsShuttingDown()) return;
+    const parsedEvent = agentSessionStoppedSchema.safeParse(rawEvent);
+    if (!parsedEvent.success) return;
+    handleAgentSessionStopped(parsedEvent.data).catch((err: unknown) =>
+      logger.error('Server', 'Error handling Slack stop button', err),
+    );
   });
 
   boltApp.action<BlockAction<ButtonAction>>(/^initiative_/, async ({ ack, body, action }) => {
@@ -855,6 +874,43 @@ function routeSlackEvent(event: {
   }
 
   return { action: 'process' };
+}
+
+// ============================================================================
+// Stop Button
+// ============================================================================
+
+/**
+ * Stop the thread's task when a person presses Slack's stop button. Slack does
+ * not end the session itself: `Task.stop()` ends the work, and its status clear
+ * sets the session back to active. The next message in the thread resumes the
+ * task, as after any stop.
+ */
+export async function handleAgentSessionStopped(event: {
+  channel: string;
+  thread_ts: string;
+  user: string;
+}): Promise<void> {
+  const taskId = await findTaskByThread(event.thread_ts);
+  if (!taskId) return;
+  const task = await Task.get(taskId);
+  if (!task.isActive) return;
+
+  // The same external/guest bail-out as inbound messages, applied to whoever
+  // pressed stop.
+  try {
+    const userInfo = await getUserInfo(event.user);
+    if (isExternalUser(userInfo)) {
+      logger.system(`Ignoring stop from external/guest user ${event.user}`);
+      return;
+    }
+  } catch (error) {
+    // Fail open, as inbound messages do.
+    logger.warn('Slack', `Failed to classify stop requester ${event.user}`, error);
+  }
+
+  logger.system(`Task ${taskId} stopped from Slack by ${event.user}`);
+  await task.stop();
 }
 
 // ============================================================================

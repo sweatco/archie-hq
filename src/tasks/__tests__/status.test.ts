@@ -68,16 +68,16 @@ describe('TaskStatusController', () => {
     expect(pushed.at(-1)).toBe('');
   });
 
-  it('re-shows the status after a post if work continues', () => {
-    ctl.note('going through the details');
-    flush();
-    expect(pushed.at(-1)).toBe('is going through the details…');
+  // A posted reply does not end Slack's working state, and this controller may
+  // be newer than what Slack shows, so parking and stopping always send it.
+  it('sends the clear on suspend and clear even when nothing was pushed', () => {
+    ctl.suspend();
+    expect(pushed).toEqual(['']);
 
-    // The PM posted an interim message — Slack auto-cleared the shimmer. The
-    // next render should re-push because work is still under way.
-    ctl.notePosted();
-    flush();
-    expect(pushed.at(-1)).toBe('is going through the details…');
+    const fresh = new TaskStatusController((s) => pushed.push(s));
+    fresh.clear();
+    expect(pushed).toEqual(['', '']);
+    fresh.dispose();
   });
 
   it('re-asserts the status on an interval to beat Slack’s ~2-min timeout', () => {

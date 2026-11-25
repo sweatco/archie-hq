@@ -9,17 +9,26 @@
 #      Archie selects Socket Mode automatically when this var is present.
 # The `request_url` fields are ignored by Slack when Socket Mode is on,
 # so they can stay as-is for environments that toggle between modes.
+#
+# The app uses Slack's Agent surface (`agent_view`). Moving an existing app
+# from `assistant_view` to `agent_view` cannot be undone, and people must
+# hard-refresh Slack to see it. `agent_session_stopped` powers the stop button.
 
 display_information:
   name: Archie
   description: 'Autonomous Responsive and Collaborative Hyper Intelligent Employee'
   background_color: '#2c2d30'
 features:
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+    agent_tasks_enabled: false
   bot_user:
     display_name: Archie
     always_online: true
-  assistant_view:
-    assistant_description: 'Autonomous Responsive and Collaborative Hyper Intelligent Employee'
+  agent_view:
+    agent_description: 'Autonomous Responsive and Collaborative Hyper Intelligent Employee'
     suggested_prompts: []
 oauth_config:
   scopes:
@@ -51,8 +60,8 @@ settings:
   event_subscriptions:
     request_url: https://your-domain.example.com/webhooks/slack
     bot_events:
+      - agent_session_stopped
       - app_mention
-      - assistant_thread_started
       - member_joined_channel
       - message.channels
       - message.groups
