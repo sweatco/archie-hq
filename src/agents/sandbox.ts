@@ -52,18 +52,25 @@ export interface SandboxOptions {
 export const TRUSTED_PACKAGE_REGISTRY_DOMAINS = ['registry.npmjs.org', 'registry.yarnpkg.com'];
 
 /** `github.com` is deliberately absent, so `git push` from Bash stays blocked by the network. */
-export const GITHUB_API_DOMAIN = 'api.github.com';
+const GITHUB_API_DOMAIN = 'api.github.com';
+
+/** `gh run view --log` is redirected here for the log archive; the token is not injected on this host. */
+const GITHUB_ACTIONS_LOG_DOMAIN = 'results-receiver.actions.githubusercontent.com';
+
+export const SANDBOX_GITHUB_DOMAINS = [GITHUB_API_DOMAIN, GITHUB_ACTIONS_LOG_DOMAIN];
 
 const GITHUB_TOKEN_ENV = 'GH_TOKEN';
 
-/** Only for a session whose SandboxOptions set `maskGitHubToken`. */
-export function buildSandboxGitHubEnv(token: string): Record<string, string> {
+/** Only for a session whose SandboxOptions set `maskGitHubToken`. `workspace` must be writable in the sandbox. */
+export function buildSandboxGitHubEnv(token: string, workspace: string): Record<string, string> {
   return {
     [GITHUB_TOKEN_ENV]: token,
     GH_PROMPT_DISABLED: '1',
     GH_NO_UPDATE_NOTIFIER: '1',
     // The telemetry host is not on the allowlist.
     GH_TELEMETRY: 'false',
+    // `gh run view --log` keeps the log archive in its cache and $HOME is read-only. Per task, so one task cannot alter logs another reads.
+    XDG_CACHE_HOME: resolve(workspace, '.cache'),
   };
 }
 

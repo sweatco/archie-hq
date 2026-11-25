@@ -16,8 +16,8 @@ import {
   buildRepoGrants,
   buildSandboxGitHubEnv,
   createPmOnlyToolGuardHooks,
-  GITHUB_API_DOMAIN,
   PM_ONLY_MCP_SERVERS,
+  SANDBOX_GITHUB_DOMAINS,
   TRUSTED_PACKAGE_REGISTRY_DOMAINS,
   type SandboxOptions,
 } from '../sandbox.js';
@@ -132,7 +132,7 @@ describe('buildSandboxConfig', () => {
   it('masks the GitHub token for Bash and injects it at the API host only', () => {
     const cfg = buildSandboxConfig({
       ...base,
-      allowedNetworkDomains: ['sheets.googleapis.com', GITHUB_API_DOMAIN],
+      allowedNetworkDomains: ['sheets.googleapis.com', ...SANDBOX_GITHUB_DOMAINS],
       maskGitHubToken: true,
     });
     expect(cfg.credentials.envVars).toContainEqual({
@@ -142,11 +142,15 @@ describe('buildSandboxConfig', () => {
     });
     expect(cfg.network.tlsTerminate).toEqual({});
   });
+
+  it('keeps github.com off the hosts sandboxed gh may reach', () => {
+    expect(SANDBOX_GITHUB_DOMAINS).not.toContain('github.com');
+  });
 });
 
 describe('buildSandboxGitHubEnv', () => {
   it('names the token with the variable the mask covers', () => {
-    const env = buildSandboxGitHubEnv('ghs_example');
+    const env = buildSandboxGitHubEnv('ghs_example', base.cwd);
     const masked = buildSandboxConfig({
       ...base,
       maskGitHubToken: true,
@@ -156,11 +160,17 @@ describe('buildSandboxGitHubEnv', () => {
   });
 
   it('keeps gh non-interactive and off hosts the allowlist refuses', () => {
-    expect(buildSandboxGitHubEnv('ghs_example')).toMatchObject({
+    expect(buildSandboxGitHubEnv('ghs_example', base.cwd)).toMatchObject({
       GH_PROMPT_DISABLED: '1',
       GH_NO_UPDATE_NOTIFIER: '1',
       GH_TELEMETRY: 'false',
     });
+  });
+
+  it('keeps the gh cache inside the task workspace', () => {
+    expect(buildSandboxGitHubEnv('ghs_example', base.cwd).XDG_CACHE_HOME).toBe(
+      `${base.cwd}/.cache`,
+    );
   });
 });
 

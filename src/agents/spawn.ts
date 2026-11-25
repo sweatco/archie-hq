@@ -73,7 +73,7 @@ import {
   buildSandboxGitHubEnv,
   createFilesystemGuardHooks,
   createPmOnlyToolGuardHooks,
-  GITHUB_API_DOMAIN,
+  SANDBOX_GITHUB_DOMAINS,
   TRUSTED_PACKAGE_REGISTRY_DOMAINS,
   type SandboxOptions,
 } from './sandbox.js';
@@ -437,7 +437,7 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     allowedNetworkDomains: [
       ...(def.allowedNetworkDomains ?? []),
       ...(editAllowed ? TRUSTED_PACKAGE_REGISTRY_DOMAINS : []),
-      ...(sandboxGitHubToken ? [GITHUB_API_DOMAIN] : []),
+      ...(sandboxGitHubToken ? SANDBOX_GITHUB_DOMAINS : []),
     ],
     maskGitHubToken: sandboxGitHubToken !== undefined,
   };
@@ -723,7 +723,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
       // Commit authorship — see commitAuthorEnv above.
       ...commitAuthorEnv,
       // Masked for Bash: sandboxOpts.maskGitHubToken.
-      ...(sandboxGitHubToken ? buildSandboxGitHubEnv(sandboxGitHubToken) : {}),
+      ...(sandboxGitHubToken ? buildSandboxGitHubEnv(sandboxGitHubToken, workspace) : {}),
     },
     resume: sessionId,
     ...(sessionId && refusalCheckpoint

@@ -27,7 +27,7 @@ const {
   buildManagedNetworkPolicy,
   buildPackageManagerCacheEnv,
   buildSandboxGitHubEnv,
-  GITHUB_API_DOMAIN,
+  SANDBOX_GITHUB_DOMAINS,
   TRUSTED_PACKAGE_REGISTRY_DOMAINS,
 } = (await import(sandboxPath)) as typeof import('../../src/agents/sandbox.js');
 
@@ -55,7 +55,7 @@ const sandboxOpts = {
   allowReadPaths: [WORKSPACE],
   // allowWrite only — a path in both lists loses its rw mount (see sandbox.ts).
   allowWritePaths: [WORKSPACE, CACHE_ROOT],
-  allowedNetworkDomains: [...TRUSTED_PACKAGE_REGISTRY_DOMAINS, GITHUB_API_DOMAIN],
+  allowedNetworkDomains: [...TRUSTED_PACKAGE_REGISTRY_DOMAINS, ...SANDBOX_GITHUB_DOMAINS],
   maskGitHubToken: true,
 };
 
@@ -94,7 +94,7 @@ const it = query({
       ...(process.env.NODE_EXTRA_CA_CERTS
         ? { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS }
         : {}),
-      ...buildSandboxGitHubEnv(GITHUB_TOKEN),
+      ...buildSandboxGitHubEnv(GITHUB_TOKEN, WORKSPACE),
     },
     maxTurns: 10,
     permissionMode: 'bypassPermissions' as const,
