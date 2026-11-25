@@ -21,11 +21,8 @@ import { vaultInputSecrets, type InputSecrets } from '../../incoming/secrets.js'
 import { IncomingStore } from '../../incoming/store.js';
 import type { IncomingConsumer, PointerCheck } from '../../incoming/types.js';
 import type { Trigger, TriggerCondition } from '../../types/trigger.js';
-import {
-  matchRoutines,
-  ROUTINE_CONSUMER_KIND,
-  routineSnapshotSchema,
-} from '../routine-consumer.js';
+import { matchRoutines, routineSnapshotSchema } from '../routine-consumer.js';
+import { ROUTINE_CONSUMER_KIND } from '../routine-handoff.js';
 import { deindexTrigger, indexTrigger } from '../trigger-scheduler.js';
 
 const require = createRequire(import.meta.url);
@@ -242,6 +239,27 @@ it('records one handoff per linked routine, each under its own filter', async ()
   expect(handoffs().map((handoff) => handoff.consumer_id)).toEqual([
     ROUTINE_ID,
     OTHER_ID,
+    OTHER_ID,
+  ]);
+});
+
+it('keeps handing events to the other routine of an input while one is paused', async () => {
+  const from = await sender();
+  const notes = linked(from, routine([on(from.inputId)]));
+  linked(from, routine([on(from.inputId)], { id: OTHER_ID, action: { prompt: 'File a ticket.' } }));
+
+  await deliver(from);
+  // A pause and a resume both index the changed record, as the trigger tools do.
+  indexTrigger({ ...notes, status: 'paused' });
+  expect(await deliver(from)).toMatchObject({ status: 'accepted' });
+  indexTrigger(notes);
+  await deliver(from);
+
+  expect(handoffs().map((handoff) => handoff.consumer_id)).toEqual([
+    ROUTINE_ID,
+    OTHER_ID,
+    OTHER_ID,
+    ROUTINE_ID,
     OTHER_ID,
   ]);
 });

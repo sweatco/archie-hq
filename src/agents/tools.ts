@@ -30,7 +30,12 @@ import {
   assignPrNumber,
 } from '../connectors/github/branch-state.js';
 import { taskBranchName, invalidRefReason } from '../connectors/github/branch-naming.js';
-import { appendAgentFinding, isThreadMuted, getTaskClonePath } from '../tasks/persistence.js';
+import {
+  appendAgentFinding,
+  isThreadMuted,
+  getTaskClonePath,
+  loadMetadata,
+} from '../tasks/persistence.js';
 import { getBaseCachePath } from '../system/workdir.js';
 import { exploreBody } from '../connectors/slack/message-body.js';
 import { assertReadable } from './artifacts.js';
@@ -170,6 +175,11 @@ import {
 import { isSlackAuthorId, isAppAuthorId } from '../system/trigger-match.js';
 import { inputServices } from '../incoming/access.js';
 import { incomingEventsEnabled } from '../incoming/runtime.js';
+import {
+  describeInputHistory,
+  describeInputs,
+  type InventoryLookups,
+} from '../system/input-inventory.js';
 import { INPUT_ID_PATTERN, inputFilterSchema, inputPurposeSchema } from '../incoming/types.js';
 import {
   routineDestinationRefusal,
@@ -3419,6 +3429,50 @@ function createGetTriggerTool(task: Task) {
   );
 }
 
+/** The lookups an input listing needs, with routine visibility decided for this conversation. */
+function inventoryLookups(origin: TriggerOrigin): InventoryLookups {
+  const resolvePrivacy = makePrivacyResolver();
+  return {
+    loadTrigger,
+    visible: (routine) => triggerVisibleFrom(routine, origin, resolvePrivacy),
+    task: loadMetadata,
+  };
+}
+
+const INCOMING_UNAVAILABLE = 'Incoming events are not available on this instance right now.';
+
+function createListInputsTool(task: Task) {
+  return tool(
+    'list_inputs',
+    "List the incoming-event inputs visible from this conversation, each with its owner, state, last delivery and what takes its events. An input is shown whole in its owner's DM. Anywhere else only the routines visible from this conversation are named, and anything else is a count. An input with no routine visible here is not listed. No key or callback address is ever shown.",
+    {},
+    async () => {
+      const services = inputServices();
+      if (!services) return ok(INCOMING_UNAVAILABLE);
+      const origin = await resolveTriggerOrigin(task);
+      return ok(await describeInputs(services, origin, inventoryLookups(origin)));
+    },
+  );
+}
+
+function createGetInputHistoryTool(task: Task) {
+  return tool(
+    'get_input_history',
+    'Read what became of the newest deliveries to one incoming-event input: received (waiting), handed off (a task started), delivered (that task posted, with a link), skipped (with the reason) or uncertain. Use it when someone asks whether an event arrived or why a routine did not run. Scoped like `list_inputs`: routines not visible from this conversation appear only as a count. No event content is kept, so none can be shown or replayed.',
+    {
+      input_id: z.string().describe('Input ID (from list_inputs or get_trigger).'),
+    },
+    async (args) => {
+      const services = inputServices();
+      if (!services) return ok(INCOMING_UNAVAILABLE);
+      const origin = await resolveTriggerOrigin(task);
+      return ok(
+        await describeInputHistory(services, args.input_id, origin, inventoryLookups(origin)),
+      );
+    },
+  );
+}
+
 function createUpdateTriggerTool(task: Task) {
   return tool(
     'update_trigger',
@@ -3872,6 +3926,8 @@ export function createOrchestrationMcpServer(agent: Agent, task: Task) {
       createProposeTriggerTool(task),
       createListTriggersTool(task),
       createGetTriggerTool(task),
+      createListInputsTool(task),
+      createGetInputHistoryTool(task),
       createUpdateTriggerTool(task),
       createDeleteTriggerTool(task),
     ],

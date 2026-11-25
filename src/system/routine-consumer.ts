@@ -16,14 +16,17 @@ import { Task } from '../tasks/task.js';
 import type { Trigger, TriggerBinding } from '../types/trigger.js';
 import { logger } from './logger.js';
 import {
+  reservedTaskId,
+  ROUTINE_CONSUMER_KIND,
+  routineReservationSchema,
+} from './routine-handoff.js';
+import {
   fireEvent,
   getEnabledTrigger,
   releaseEventSlot,
   triggersEnabled,
 } from './trigger-scheduler.js';
 import { loadTrigger } from './trigger-store.js';
-
-export const ROUTINE_CONSUMER_KIND = 'routine';
 
 const bindingSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('channel'), channel_id: z.string(), channel_name: z.string() }),
@@ -44,9 +47,6 @@ export const routineSnapshotSchema = z.object({
   binding: bindingSchema,
 });
 export type RoutineSnapshot = z.infer<typeof routineSnapshotSchema>;
-
-/** Exists once a run slot was taken; names the Task every later attempt continues. */
-export const routineReservationSchema = z.object({ task_id: z.string() });
 
 const ACCEPTED: HandleResult = { state: 'accepted' };
 
@@ -155,16 +155,6 @@ async function liveRoutine(
     (condition) => condition.type === 'incoming_event' && condition.input_id === snapshot.input_id,
   );
   return namesInput ? { routine } : { stop: 'routine_changed' };
-}
-
-/** The Task a reservation names, or undefined when the stored text is not a reservation. */
-function reservedTaskId(reservation: string): string | undefined {
-  try {
-    const reserved = routineReservationSchema.safeParse(JSON.parse(reservation));
-    return reserved.success ? reserved.data.task_id : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 /** The inbox ends some handoffs without calling `handle`; a Task one of them prepared is removed here. */
