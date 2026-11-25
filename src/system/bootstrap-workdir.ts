@@ -4,7 +4,7 @@
 import { join, dirname } from 'path';
 import { existsSync, lstatSync } from 'fs';
 import { mkdir } from 'fs/promises';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { initPlugins } from './plugin-loader.js';
 import { logger } from './logger.js';
@@ -23,7 +23,7 @@ import {
   getBaseCachePath,
 } from './workdir.js';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 // =============================================================================
 // Bootstrap (async — must be called from main() before plugin/repo loading)
@@ -142,8 +142,10 @@ let pluginsRefreshPromise: Promise<boolean> | null = null;
  */
 async function ensureSubmodules(): Promise<void> {
   try {
-    await execAsync('git submodule sync --recursive', { cwd: PLUGINS_DIR });
-    await execAsync('git submodule update --init --recursive', { cwd: PLUGINS_DIR });
+    await execFileAsync('git', ['submodule', 'sync', '--recursive'], { cwd: PLUGINS_DIR });
+    await execFileAsync('git', ['submodule', 'update', '--init', '--recursive'], {
+      cwd: PLUGINS_DIR,
+    });
   } catch (err) {
     logger.error('workdir', 'Plugin submodule init failed', err);
   }
@@ -192,9 +194,9 @@ export async function refreshPlugins(): Promise<boolean> {
         logger.system(
           `Plugins: ${branch} moved ${localSha?.slice(0, 8) ?? 'unknown'} → ${remoteSha.slice(0, 8)}, updating`,
         );
-        await execAsync('git fetch --all --prune', { cwd: PLUGINS_DIR });
-        await execAsync(`git checkout "${branch}"`, { cwd: PLUGINS_DIR });
-        await execAsync(`git reset --hard "origin/${branch}"`, { cwd: PLUGINS_DIR });
+        await execFileAsync('git', ['fetch', '--all', '--prune'], { cwd: PLUGINS_DIR });
+        await execFileAsync('git', ['checkout', '--end-of-options', branch], { cwd: PLUGINS_DIR });
+        await execFileAsync('git', ['reset', '--hard', `origin/${branch}`], { cwd: PLUGINS_DIR });
         // `reset --hard` moves the gitlink but not submodule working trees, so
         // sync+update them onto their recorded commits (and init newly added ones).
         await ensureSubmodules();
@@ -242,7 +244,9 @@ export async function getPluginsHeadInfo(): Promise<PluginsHeadInfo | null> {
   try {
     if (!existsSync(join(PLUGINS_DIR, '.git'))) return null;
     // \x1f (unit separator) is safe — it can't appear in a SHA, date, or subject.
-    const { stdout } = await execAsync('git log -1 --format=%H%x1f%cI%x1f%s', { cwd: PLUGINS_DIR });
+    const { stdout } = await execFileAsync('git', ['log', '-1', '--format=%H%x1f%cI%x1f%s'], {
+      cwd: PLUGINS_DIR,
+    });
     const [sha, committedAt, subject] = stdout.trim().split('\x1f');
     if (!sha) return null;
     return {
@@ -260,7 +264,7 @@ export async function getPluginsHeadInfo(): Promise<PluginsHeadInfo | null> {
 /** Read the remote branch tip via `ls-remote` (no object download). Returns null on failure. */
 async function getRemoteHeadSha(repoDir: string, branch: string): Promise<string | null> {
   try {
-    const { stdout } = await execAsync(`git ls-remote origin "refs/heads/${branch}"`, {
+    const { stdout } = await execFileAsync('git', ['ls-remote', 'origin', `refs/heads/${branch}`], {
       cwd: repoDir,
     });
     const sha = stdout.split(/\s+/)[0]?.trim();
@@ -274,7 +278,7 @@ async function getRemoteHeadSha(repoDir: string, branch: string): Promise<string
 /** Read the local HEAD sha. Returns null on failure. */
 async function getLocalHeadSha(repoDir: string): Promise<string | null> {
   try {
-    const { stdout } = await execAsync('git rev-parse HEAD', { cwd: repoDir });
+    const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: repoDir });
     return stdout.trim() || null;
   } catch {
     return null;
@@ -294,17 +298,26 @@ async function cloneRepo(
   label: string,
   branch?: string,
 ): Promise<void> {
-  const branchFlag = branch ? ` -b "${branch}"` : '';
+  const branchArgs = branch ? ['-b', branch] : [];
   logger.system(`Cloning ${label} from ${url}${branch ? ` (branch: ${branch})` : ''}...`);
-  await execAsync(`git clone --recurse-submodules${branchFlag} "${url}" "${targetDir}"`);
+  await execFileAsync('git', [
+    'clone',
+    '--recurse-submodules',
+    ...branchArgs,
+    '--',
+    url,
+    targetDir,
+  ]);
 }
 
 async function checkoutBranch(repoDir: string, branch: string, label: string): Promise<void> {
   try {
-    const { stdout } = await execAsync('git rev-parse --abbrev-ref HEAD', { cwd: repoDir });
+    const { stdout } = await execFileAsync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+      cwd: repoDir,
+    });
     if (stdout.trim() === branch) return;
-    await execAsync('git fetch --all', { cwd: repoDir });
-    await execAsync(`git checkout "${branch}"`, { cwd: repoDir });
+    await execFileAsync('git', ['fetch', '--all'], { cwd: repoDir });
+    await execFileAsync('git', ['checkout', '--end-of-options', branch], { cwd: repoDir });
     logger.system(`Switched ${label} to branch ${branch}`);
   } catch (error) {
     logger.warn('workdir', `Failed to switch ${label} to branch ${branch}: ${error}`);
@@ -329,10 +342,10 @@ async function cloneOrFetch(
   if (cloned) {
     logger.system(`Pulling latest for ${label}...`);
     try {
-      await execAsync('git remote prune origin', { cwd: targetDir });
-      await execAsync('git fetch --all', { cwd: targetDir });
-      await execAsync(`git checkout "${branch}"`, { cwd: targetDir });
-      await execAsync(`git reset --hard "origin/${branch}"`, { cwd: targetDir });
+      await execFileAsync('git', ['remote', 'prune', 'origin'], { cwd: targetDir });
+      await execFileAsync('git', ['fetch', '--all'], { cwd: targetDir });
+      await execFileAsync('git', ['checkout', '--end-of-options', branch], { cwd: targetDir });
+      await execFileAsync('git', ['reset', '--hard', `origin/${branch}`], { cwd: targetDir });
     } catch (error) {
       logger.warn('workdir', `Failed to pull ${label}, using existing state: ${error}`);
     }
@@ -340,6 +353,6 @@ async function cloneOrFetch(
     // Nested `org/repo` target dirs require the parent to exist before clone.
     await mkdir(dirname(targetDir), { recursive: true });
     logger.system(`Cloning ${label} from ${url} (branch: ${branch})...`);
-    await execAsync(`git clone -b "${branch}" "${url}" "${targetDir}"`);
+    await execFileAsync('git', ['clone', '-b', branch, '--', url, targetDir]);
   }
 }

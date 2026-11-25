@@ -108,6 +108,16 @@ describe('configureGitIdentity', () => {
     );
   });
 
+  it('writes the account name exactly as configured', async () => {
+    process.env.ARCHIE_GITHUB_LOGIN = 'archie-hq';
+    process.env.ARCHIE_GITHUB_USER_ID = '302249786';
+    process.env.ARCHIE_GITHUB_NAME = 'Archie "HQ" $HOME';
+
+    await configureGitIdentity(repoPath);
+
+    expect(await readConfig(repoPath, 'user.name')).toBe('Archie "HQ" $HOME');
+  });
+
   it('falls back to the bot identity when no account is configured', async () => {
     const name = await configureGitIdentity(repoPath);
 

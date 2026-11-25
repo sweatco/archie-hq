@@ -77,6 +77,7 @@ vi.mock('../registry.js', () => ({
 
 import { getGitHubClient, getArchieAttributionIdentity } from '../../connectors/github/client.js';
 import { isAutoMergeRepo } from '../registry.js';
+import { gitExec } from '../../connectors/github/repo-clone.js';
 import { expectDefined } from '../../test-support/assertions.js';
 
 const mockGitHubClient = {
@@ -176,6 +177,30 @@ describe('branch tools preserve the mounted attachment', () => {
     expect(attached.current_branch).not.toBe('feature/task-123');
     expect(attached.branch_states).toHaveProperty(expectDefined(attached.current_branch));
     expect(task.metadata.repositories[0]).toBe(attached);
+  });
+});
+
+describe('branch tools refuse option-like refs', () => {
+  beforeEach(() => {
+    vi.mocked(gitExec).mockClear();
+  });
+
+  it('switch_branch refuses a leading-dash branch before running git', async () => {
+    const task = makeTask();
+    const result = await getRepoTool(makeAgent(), task, 'switch_branch')({ branch: '--orphan' });
+
+    expect(result.content[0].text).toMatch(/^Error: Invalid branch "--orphan": starts with "-"/);
+    expect(gitExec).not.toHaveBeenCalled();
+    expect(task.metadata.repositories[0].current_branch).toBe('feature/task-123');
+  });
+
+  it('create_branch refuses a leading-dash base before running git', async () => {
+    const task = makeTask();
+    const result = await getRepoTool(makeAgent(), task, 'create_branch')({ base: '-f' });
+
+    expect(result.content[0].text).toMatch(/^Error: Invalid base "-f": starts with "-"/);
+    expect(gitExec).not.toHaveBeenCalled();
+    expect(task.metadata.repositories[0].current_branch).toBe('feature/task-123');
   });
 });
 

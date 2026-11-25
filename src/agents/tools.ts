@@ -9,7 +9,7 @@
  * Replaces: mcp/tools.ts (definitions) + task-runtime.ts closures (implementations)
  */
 
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
@@ -29,7 +29,7 @@ import {
   findBranchStateByPR,
   assignPrNumber,
 } from '../connectors/github/branch-state.js';
-import { taskBranchName } from '../connectors/github/branch-naming.js';
+import { taskBranchName, invalidRefReason } from '../connectors/github/branch-naming.js';
 import { appendAgentFinding, isThreadMuted, getTaskClonePath } from '../tasks/persistence.js';
 import { getBaseCachePath } from '../system/workdir.js';
 import { exploreBody } from '../connectors/slack/message-body.js';
@@ -262,7 +262,7 @@ const githubArgSchema = z
     'Github identifier (e.g. "org/repo") of a repo mounted in this task. Optional when exactly one repo is mounted.',
   );
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 // ---- Tool result helpers ----
 
@@ -1390,8 +1390,8 @@ function createPushBranchTool(agent: Agent, task: Task) {
       }
 
       try {
-        const forceFlag = force ? '--force-with-lease ' : '';
-        await execAsync(`git push ${forceFlag}-u origin HEAD:${branch}`, {
+        const forceArgs = force ? ['--force-with-lease'] : [];
+        await execFileAsync('git', ['push', ...forceArgs, '-u', 'origin', `HEAD:${branch}`], {
           cwd: attached.clone_path,
         });
 
@@ -2231,7 +2231,7 @@ function createFetchTool(task: Task) {
     async (args) => {
       const resolved = requireAttached(task, args.github);
       if (!resolved.ok) return err(resolved.error);
-      await gitExec(resolved.attached.clone_path, 'fetch origin');
+      await gitExec(resolved.attached.clone_path, ['fetch', 'origin']);
       return ok(`Fetched latest from origin (${resolved.github})`);
     },
   );
@@ -2246,22 +2246,28 @@ function createSwitchBranchTool(task: Task) {
       github: githubArgSchema,
     },
     async (args) => {
+      const branch = args.branch;
+      const branchProblem = invalidRefReason(branch, 'branch');
+      if (branchProblem) {
+        return err(
+          `Invalid branch ${JSON.stringify(branch)}: ${branchProblem}. Pass the branch name as git shows it, e.g. "feature/login-fix".`,
+        );
+      }
       const resolved = requireAttached(task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const { attached } = resolved;
       const clonePath = attached.clone_path;
 
-      const branch = args.branch;
       const currentBranch = attached.current_branch;
 
       // 1. Fetch branch into clone
-      await gitExec(clonePath, `fetch origin ${branch}`).catch(() => {});
+      await gitExec(clonePath, ['fetch', '--end-of-options', 'origin', branch]).catch(() => {});
 
       // 2. Auto-stash if dirty
-      const status = await gitExec(clonePath, 'status --porcelain');
+      const status = await gitExec(clonePath, ['status', '--porcelain']);
       if (status.trim()) {
         const stashName = `archie:${task.taskId}:${currentBranch}`;
-        await gitExec(clonePath, `stash push --include-untracked -m "${stashName}"`);
+        await gitExec(clonePath, ['stash', 'push', '--include-untracked', '-m', stashName]);
         if (currentBranch && attached.branch_states?.[currentBranch]) {
           attached.branch_states[currentBranch].stash_name = stashName;
         }
@@ -2269,10 +2275,10 @@ function createSwitchBranchTool(task: Task) {
 
       // 3. Checkout — always normal (shared clones have no branch conflicts)
       try {
-        await gitExec(clonePath, `checkout ${branch}`);
+        await gitExec(clonePath, ['checkout', '--end-of-options', branch]);
       } catch {
         // Branch doesn't exist locally yet — track remote
-        await gitExec(clonePath, `checkout -b ${branch} origin/${branch}`);
+        await gitExec(clonePath, ['checkout', '-b', branch, `origin/${branch}`]);
       }
 
       // 4. Track branch state
@@ -2287,10 +2293,10 @@ function createSwitchBranchTool(task: Task) {
       // 7. Auto-pop stash if exists for target branch
       const targetState = attached.branch_states[branch];
       if (targetState?.stash_name) {
-        const stashList = await gitExec(clonePath, 'stash list');
+        const stashList = await gitExec(clonePath, ['stash', 'list']);
         const stashIndex = findStashIndex(stashList, targetState.stash_name);
         if (stashIndex !== null) {
-          await gitExec(clonePath, `stash pop stash@{${stashIndex}}`);
+          await gitExec(clonePath, ['stash', 'pop', `stash@{${stashIndex}}`]);
         }
         targetState.stash_name = undefined;
       }
@@ -2310,6 +2316,13 @@ function createCreateBranchTool(task: Task) {
       github: githubArgSchema,
     },
     async (args) => {
+      const base = args.base || 'HEAD';
+      const baseProblem = invalidRefReason(base, 'revision');
+      if (baseProblem) {
+        return err(
+          `Invalid base ${JSON.stringify(base)}: ${baseProblem}. Pass a branch, tag or commit, e.g. "main", "origin/main" or "HEAD~1".`,
+        );
+      }
       const resolved = requireAttached(task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const { attached } = resolved;
@@ -2318,8 +2331,7 @@ function createCreateBranchTool(task: Task) {
       const existing = Object.keys(attached.branch_states || {}).length;
       const branchName = taskBranchName(task.taskId, existing);
 
-      const base = args.base || 'HEAD';
-      await gitExec(attached.clone_path, `checkout -b ${branchName} ${base}`);
+      await gitExec(attached.clone_path, ['checkout', '-b', branchName, '--end-of-options', base]);
 
       attached.branch_states ??= {};
       attached.branch_states[branchName] = {};

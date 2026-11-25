@@ -14,7 +14,12 @@ import { promisify } from 'util';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
-import { decideCloneCheckout, recordedBaseBranch, ensureTaskClone } from '../repo-clone.js';
+import {
+  decideCloneCheckout,
+  recordedBaseBranch,
+  ensureTaskClone,
+  gitExec,
+} from '../repo-clone.js';
 import type { AttachedRepo } from '../../../types/task.js';
 
 const execFileAsync = promisify(execFile);
@@ -169,5 +174,96 @@ describe('recordedBaseBranch', () => {
         branch_states: { [TASK_BRANCH]: {} },
       } as AttachedRepo),
     ).toBeUndefined();
+  });
+});
+
+/**
+ * Git helpers hand every value to git as one argument, never through a shell.
+ * Branch names stored in task metadata reach these helpers unvalidated, so the
+ * marker file below must not appear whatever such a name contains.
+ */
+describe('git helpers pass refs as single arguments', () => {
+  let tmpDir: string;
+  let baseRepoPath: string;
+  let markerPath: string;
+
+  async function git(cwd: string, ...args: string[]): Promise<string> {
+    const { stdout } = await execFileAsync('git', args, { cwd });
+    return stdout.trim();
+  }
+
+  function refsWithShellSyntax(marker: string): string[] {
+    return [
+      `x;touch ${marker}`,
+      `x$(touch ${marker})`,
+      `x\`touch ${marker}\``,
+      `main && touch ${marker}`,
+      `main"; touch ${marker}; echo "`,
+      `main'; touch ${marker}; echo '`,
+    ];
+  }
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'archie-git-args-'));
+    markerPath = path.join(tmpDir, 'marker');
+    const seedPath = path.join(tmpDir, 'seed');
+    const remotePath = path.join(tmpDir, 'remote.git');
+    baseRepoPath = path.join(tmpDir, 'base');
+
+    await fs.mkdir(seedPath);
+    await git(seedPath, 'init', '-q', '-b', 'main');
+    await git(
+      seedPath,
+      '-c',
+      'user.name=Test',
+      '-c',
+      'user.email=test@example.com',
+      '-c',
+      'commit.gpgsign=false',
+      'commit',
+      '-q',
+      '--allow-empty',
+      '-m',
+      'init',
+    );
+    await git(tmpDir, 'clone', '-q', '--bare', seedPath, remotePath);
+    await git(tmpDir, 'clone', '-q', remotePath, baseRepoPath);
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('gitExec passes each argument to git unchanged', async () => {
+    for (const ref of refsWithShellSyntax(markerPath)) {
+      await expect(
+        gitExec(baseRepoPath, ['checkout', '--end-of-options', ref]),
+        ref,
+      ).rejects.toThrow();
+    }
+    await expect(fs.access(markerPath)).rejects.toThrow();
+    expect(await gitExec(baseRepoPath, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('main');
+  });
+
+  it('restoring a clone for a stored branch runs no part of its name', async () => {
+    for (const [index, ref] of refsWithShellSyntax(markerPath).entries()) {
+      const attached = {
+        github: 'org/backend',
+        current_branch: ref,
+        branch_states: { [ref]: { base_branch: 'main' } },
+      } as AttachedRepo;
+
+      await expect(
+        ensureTaskClone({
+          attached,
+          clonePath: path.join(tmpDir, `clone-${index}`),
+          baseRepoPath,
+          editAllowed: true,
+          taskBranch: TASK_BRANCH,
+        }),
+        ref,
+      ).rejects.toThrow();
+    }
+    await expect(fs.access(markerPath)).rejects.toThrow();
   });
 });
