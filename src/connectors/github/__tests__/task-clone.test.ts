@@ -177,11 +177,6 @@ describe('recordedBaseBranch', () => {
   });
 });
 
-/**
- * Git helpers hand every value to git as one argument, never through a shell.
- * Branch names stored in task metadata reach these helpers unvalidated, so the
- * marker file below must not appear whatever such a name contains.
- */
 describe('git helpers pass refs as single arguments', () => {
   let tmpDir: string;
   let baseRepoPath: string;

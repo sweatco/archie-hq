@@ -1,12 +1,3 @@
-/**
- * Branch tools against real git repositories.
- *
- * The other branch-tool tests mock git away; these run it, so they cover what
- * git actually receives. A ref is one argument: nothing an agent names, or a
- * task stored from an earlier call, is interpreted by a shell or read by git
- * as an option. A marker file outside the repositories proves the negative.
- */
-
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -44,7 +35,6 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
   return stdout.trim();
 }
 
-/** Values that would run `touch <marker>` if any part of them reached a shell. */
 function refsWithShellSyntax(marker: string): string[] {
   return [
     `x;touch ${marker}`,
@@ -166,8 +156,6 @@ describe('branch tools pass refs as single arguments', () => {
   });
 
   it('pushes a stored branch name without a shell', async () => {
-    // Branch names already in task metadata are not re-validated, so pushing
-    // one must be safe however it was recorded.
     for (const ref of refsWithShellSyntax(markerPath)) {
       const attached: AttachedRepo = {
         github: 'org/repo',

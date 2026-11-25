@@ -46,15 +46,7 @@ export type CloneCheckout =
 
 // ---- Git helpers ----
 
-/**
- * Run git in `cwd` and return its trimmed stdout.
- *
- * There is no shell: each element of `args` reaches git as exactly one
- * argument. A ref from task metadata or agent input that begins an argument
- * goes after an option terminator, so git cannot read it as an option: `--`
- * for clone and fetch, `--end-of-options` for checkout, where `--` would
- * start a pathspec instead.
- */
+/** For checkout, end options with `--end-of-options`: `--` there starts a pathspec. */
 export async function gitExec(cwd: string, args: string[]): Promise<string> {
   try {
     const { stdout } = await execFileAsync('git', args, { cwd });

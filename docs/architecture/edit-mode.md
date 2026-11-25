@@ -108,8 +108,6 @@ The first feature branch is `archie/{taskId}` (the task id already begins with `
 
 Tasks can also be resolved by branch name or PR number over `metadata.repositories` (`findTaskByBranch`, `findTaskByPRNumber`), which is what handles a branch that does not follow the pattern.
 
-The branch an agent passes to `switch_branch`, and the base it passes to `create_branch`, must pass `invalidRefReason()` in the same module before any git command runs; [security.md](security.md#host-input-and-persistence) lists the rules and how git commands are run.
-
 ## Commit authorship
 
 By default a commit is both authored and committed by the GitHub App bot, because `configureGitIdentity()` writes that identity into the clone's `user.name`/`user.email`. To make `git blame` point at the person who asked for the work, the **author** is set to the edit-mode approver while the **committer** stays the bot:

@@ -6,8 +6,7 @@
  * that pull requests opened before the migration keep routing to their task.
  *
  * Single source of truth for both branch generation (spawn, create_branch tool,
- * PR head fallback) and branch parsing (webhook → task attribution), and for
- * which refs an agent may name in the branch tools.
+ * PR head fallback) and branch parsing (webhook → task attribution).
  */
 
 /** Prefix used for newly created repo-agent branches. */
@@ -52,10 +51,6 @@ export function extractTaskIdFromBranch(branch: string | undefined): string | un
   return match ? match[1] : undefined;
 }
 
-/**
- * What an agent names in the branch tools: a branch to switch to, or a
- * revision to branch from (a branch, tag or commit, with optional `~`/`^`).
- */
 export type RefArgumentKind = 'branch' | 'revision';
 
 const REF_CHARACTERS: Record<RefArgumentKind, { pattern: RegExp; listed: string }> = {
@@ -63,13 +58,7 @@ const REF_CHARACTERS: Record<RefArgumentKind, { pattern: RegExp; listed: string 
   revision: { pattern: /^[A-Za-z0-9._/@+~^-]+$/, listed: '. _ / @ + - ~ ^' },
 };
 
-/**
- * Why `value` is not a ref an agent may pass to git, or undefined when it is.
- *
- * Narrower than git's own ref-name rules on purpose: it admits the names real
- * branches and commits carry and refuses anything git could read as an option,
- * a range or a refspec. Git still applies its full rules when the ref is used.
- */
+/** Stricter than git on purpose: accepts nothing git could read as an option, range or refspec. */
 export function invalidRefReason(value: string, kind: RefArgumentKind): string | undefined {
   if (value === '') return 'is empty';
   if (value.startsWith('-')) return 'starts with "-", which git would read as an option';
