@@ -96,7 +96,7 @@ Two deployment caveats. A host-level IT managed-settings tier (e.g. `/etc/claude
 
 ### Environment
 
-The session process needs `ANTHROPIC_API_KEY`; `Bash` does not get it. `buildSandboxConfig` lists it under `credentials.envVars` with `mode: 'deny'`, so the CLI unsets it for sandboxed commands. This is CLI-enforced like the allowlist, so `tools/e2e/egress-check.ts` asserts it live too. The rest of the session env (`spawnAgent`) holds paths, flags and the commit author, none of them secret.
+`Bash` does not see `ANTHROPIC_API_KEY`: `buildSandboxConfig` denies it under `credentials.envVars`, and `tools/e2e/egress-check.ts` asserts that live.
 
 ### Repo isolation: shared clones
 

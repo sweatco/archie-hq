@@ -40,7 +40,6 @@ export interface ProbeVerdicts {
   packageInstall: 'ok' | 'failed' | 'unknown';
   /** Whether the sandbox proxy reached Yarn Berry's own config keys (BASH_ENV wiring). */
   yarnProxy: 'mapped' | 'unset';
-  /** Whether sandboxed Bash can read the session's Anthropic API key. */
   apiKey: 'hidden' | 'visible' | 'unknown';
 }
 

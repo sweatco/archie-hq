@@ -136,10 +136,6 @@ function packageInstall(t: string): 'ok' | 'failed' | 'unknown' {
   return 'unknown';
 }
 
-/**
- * Hidden only when Bash's own environment lacks the key AND no process it can
- * see under /proc carries it; the count is printed, never the value.
- */
 function apiKey(t: string): 'hidden' | 'visible' | 'unknown' {
   const proc = t.match(/KEYPROC=(\d+)/);
   if (/KEYENV=set/.test(t) || (proc && proc[1] !== '0')) return 'visible';

@@ -93,12 +93,7 @@ export function buildSandboxConfig(opts: SandboxOptions) {
       allowedDomains: opts.allowedNetworkDomains ?? [],
     },
     credentials: {
-      envVars: [
-        // The session needs the key; commands run from Bash never do. The CLI
-        // unsets it for sandboxed commands only, so it is version-coupled like
-        // the egress allowlist.
-        { name: 'ANTHROPIC_API_KEY', mode: 'deny' as const },
-      ],
+      envVars: [{ name: 'ANTHROPIC_API_KEY', mode: 'deny' as const }],
     },
   };
 }
