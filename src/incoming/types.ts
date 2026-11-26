@@ -120,11 +120,6 @@ export interface InboxView {
   abandonedReservations(consumerKind: string): Array<{ handoffId: string; reservation: string }>;
 }
 
-export interface ConsumerUse {
-  consumerId: string;
-  label: string;
-}
-
 export type HandleResult = { state: 'accepted' } | { state: 'skipped'; reason: string };
 
 export interface HandoffWork {
@@ -144,6 +139,4 @@ export interface IncomingConsumer {
   handle(work: HandoffWork): Promise<HandleResult>;
   /** Runs with each sweep, the first at start: drops work whose handoff ended without `handle` seeing it. */
   reconcile?(inbox: InboxView): Promise<void>;
-  /** For listings. Synchronous and free of effects, like `match`. */
-  uses?(input: Input): ConsumerUse[];
 }

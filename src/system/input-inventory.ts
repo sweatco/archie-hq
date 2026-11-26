@@ -3,10 +3,10 @@
  * Scope follows trigger listings. The owner's own DM and the operator see an input whole.
  * Any other conversation sees the routines visible from it, and everything else as a count.
  */
-import type { DaemonInputs } from '../incoming/access.js';
 import { DEFAULT_DISPATCH_POLICY } from '../incoming/dispatcher.js';
+import type { InputServices } from '../incoming/inputs.js';
 import type { DeliveryRecord } from '../incoming/store.js';
-import type { ConsumerUse, Input, Receipt } from '../incoming/types.js';
+import type { Input, Receipt } from '../incoming/types.js';
 import type { TaskMetadata } from '../types/task.js';
 import type { Trigger } from '../types/trigger.js';
 import { reservedTaskId, ROUTINE_CONSUMER_KIND } from './routine-handoff.js';
@@ -51,14 +51,11 @@ function routineLookup(whole: boolean, lookups: InventoryLookups): RoutineLookup
 export interface InputUses {
   /** A null routine no longer exists. */
   routines: Array<{ id: string; routine: Trigger | null }>;
-  /** Named only where the input is seen whole. */
-  others: ConsumerUse[];
-  /** Routines and other consumers that stay unnamed. */
+  /** Routines that stay unnamed. */
   hidden: number;
 }
 
 interface InputScope extends InputUses {
-  whole: boolean;
   shows: RoutineLookup;
 }
 
@@ -71,7 +68,6 @@ export interface InputListing extends InputUses {
 async function scopeOf(
   input: Input,
   origin: TriggerOrigin,
-  services: DaemonInputs,
   lookups: InventoryLookups,
 ): Promise<InputScope | null> {
   const whole = seesWhole(input, origin);
@@ -83,20 +79,13 @@ async function scopeOf(
     if (routine === undefined) hidden += 1;
     else routines.push({ id, routine });
   }
-  if (!whole && routines.length === 0) return null;
-
-  const others = (services.consumers ?? [])
-    .filter((consumer) => consumer.kind !== ROUTINE_CONSUMER_KIND)
-    .flatMap((consumer) => consumer.uses?.(input) ?? []);
-  return whole
-    ? { whole, routines, others, hidden, shows }
-    : { whole, routines, others: [], hidden: hidden + others.length, shows };
+  return whole || routines.length > 0 ? { routines, hidden, shows } : null;
 }
 
 const utc = (at: number) => `${new Date(at).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
 
-export const unnamedConsumers = (count: number) =>
-  `${count} other consumer${count === 1 ? '' : 's'} not visible from here`;
+export const unnamedRoutines = (count: number) =>
+  `${count} other routine${count === 1 ? '' : 's'} not visible from here`;
 
 const inputName = (input: Input) =>
   `[${input.id}] ${input.purpose ? `“${input.purpose}”` : '(no purpose set)'}`;
@@ -122,8 +111,7 @@ function describeInput({ input, latest, ...uses }: InputListing): string {
         ? `    routine [${id}] (${routine.status}) “${triggerWhat(routine)}” — delivers to ${routineDestination(routine)}`
         : `    routine ${routineName(id, routine)}`,
     );
-  for (const other of uses.others) lines.push(`    consumer: ${other.label}`);
-  if (uses.hidden > 0) lines.push(`    and ${unnamedConsumers(uses.hidden)}`);
+  if (uses.hidden > 0) lines.push(`    and ${unnamedRoutines(uses.hidden)}`);
   if (lines.length === 1) lines.push('    nothing takes its events yet');
   return lines.join('\n');
 }
@@ -131,23 +119,17 @@ function describeInput({ input, latest, ...uses }: InputListing): string {
 export const NO_INPUTS_VISIBLE = 'There are no incoming events inputs visible from here.';
 
 export async function listInputs(
-  services: DaemonInputs,
+  services: InputServices,
   origin: TriggerOrigin,
   lookups: InventoryLookups,
 ): Promise<InputListing[]> {
   const listings: InputListing[] = [];
   for (const { input } of services.store.inputSummaries()) {
     if (input.state === 'deleted') continue;
-    const scope = await scopeOf(input, origin, services, lookups);
+    const scope = await scopeOf(input, origin, lookups);
     if (!scope) continue;
-    const { routines, others, hidden } = scope;
-    listings.push({
-      input,
-      routines,
-      others,
-      hidden,
-      latest: services.store.latestReceipt(input.id),
-    });
+    const { routines, hidden } = scope;
+    listings.push({ input, routines, hidden, latest: services.store.latestReceipt(input.id) });
   }
   return listings;
 }
@@ -204,15 +186,6 @@ async function routineOutcome(
     : `skipped: ${name} did not run — ${why}`;
 }
 
-function otherOutcome(handoff: DeliveryHandoff): string {
-  const name = `consumer ${handoff.consumerKind}/${handoff.consumerId}`;
-  if (handoff.state === 'pending') return `received: ${name} has not taken it yet`;
-  if (handoff.state === 'accepted') return `handed off: ${name} took it`;
-  return `skipped: ${name} did not take it — ${
-    ENDED_BECAUSE[handoff.reason ?? ''] ?? handoff.reason ?? 'no reason was recorded'
-  }`;
-}
-
 async function deliveryLines(
   delivery: DeliveryRecord,
   scope: InputScope,
@@ -231,11 +204,7 @@ async function deliveryLines(
   const lines: string[] = [];
   let hidden = 0;
   for (const handoff of delivery.handoffs) {
-    if (handoff.consumerKind !== ROUTINE_CONSUMER_KIND) {
-      if (scope.whole) lines.push(at + otherOutcome(handoff));
-      else hidden += 1;
-      continue;
-    }
+    if (handoff.consumerKind !== ROUTINE_CONSUMER_KIND) continue;
     const routine = await scope.shows(handoff.consumerId);
     if (routine === undefined) hidden += 1;
     else
@@ -244,20 +213,20 @@ async function deliveryLines(
       );
   }
   if (lines.length === 0)
-    return [`${at}received${hidden > 0 ? `: taken by ${unnamedConsumers(hidden)}` : ''}`];
-  if (hidden > 0) lines.push(`    and ${unnamedConsumers(hidden)}`);
+    return [`${at}received${hidden > 0 ? `: taken by ${unnamedRoutines(hidden)}` : ''}`];
+  if (hidden > 0) lines.push(`    and ${unnamedRoutines(hidden)}`);
   return lines;
 }
 
 export async function describeInputHistory(
-  services: DaemonInputs,
+  services: InputServices,
   inputId: string,
   origin: TriggerOrigin,
   lookups: InventoryLookups,
 ): Promise<string> {
   const input = services.store.input(inputId);
   if (!input) return `No input ${inputId} found.`;
-  const scope = await scopeOf(input, origin, services, lookups);
+  const scope = await scopeOf(input, origin, lookups);
   if (!scope)
     return `Input ${inputId} isn't visible from here, so its history can't be read from this conversation.`;
 

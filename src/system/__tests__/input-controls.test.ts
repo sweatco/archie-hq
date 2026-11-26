@@ -77,8 +77,7 @@ function clickCard(
   });
 }
 
-const panel = () =>
-  inputsPanelBlocks([{ input, routines: [], others: [], hidden: 0, latest: null }]);
+const panel = () => inputsPanelBlocks([{ input, routines: [], hidden: 0, latest: null }]);
 
 /** A click on a button inside the Settings window. */
 function clickWindow(

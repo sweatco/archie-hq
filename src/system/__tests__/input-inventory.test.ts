@@ -10,7 +10,7 @@ vi.mock('../logger.js', () => ({
 vi.mock('../shutdown.js', () => ({ getIsShuttingDown: () => false }));
 
 import { IncomingStore, type MatchedConsumer } from '../../incoming/store.js';
-import type { IncomingConsumer, Input } from '../../incoming/types.js';
+import type { Input } from '../../incoming/types.js';
 import type { TaskMetadata } from '../../types/task.js';
 import type { Trigger } from '../../types/trigger.js';
 import {
@@ -23,7 +23,7 @@ import {
 import { triggerVisibleFrom, type TriggerOrigin } from '../trigger-visibility.js';
 
 const SHARED = 'inp-SHAREDAAAAAAAAAAAAAAAA';
-const DIGEST_ONLY = 'inp-DIGESTAAAAAAAAAAAAAAAA';
+const NO_ROUTINE = 'inp-NOROUTINEAAAAAAAAAAAAA';
 const OPERATOR_MADE = 'inp-OPERATORAAAAAAAAAAAAAA';
 const NOTES = 'trg-20261124-0900-notes1';
 const LEADS = 'trg-20261124-0900-leads1';
@@ -66,14 +66,6 @@ function routine(id: string, over: Partial<Trigger> = {}): Trigger {
   };
 }
 
-/** Stands in for a consumer of another kind, as proactivity will be. */
-const digest: IncomingConsumer = {
-  kind: 'proactivity',
-  match: () => [],
-  handle: () => Promise.resolve({ state: 'accepted' }),
-  uses: (of) => (of.id === DIGEST_ONLY ? [{ consumerId: 'digest', label: 'Daily digest' }] : []),
-};
-
 let root: string;
 let store: IncomingStore;
 let routines: Map<string, Trigger>;
@@ -90,21 +82,10 @@ function lookupsFrom(origin: TriggerOrigin): InventoryLookups {
 }
 
 const listFrom = async (origin: TriggerOrigin) =>
-  describeInputs(
-    await listInputs(
-      { store, secrets: unusedVault, consumers: [digest] },
-      origin,
-      lookupsFrom(origin),
-    ),
-  );
+  describeInputs(await listInputs({ store, secrets: unusedVault }, origin, lookupsFrom(origin)));
 
 const historyFrom = (origin: TriggerOrigin, inputId = SHARED) =>
-  describeInputHistory(
-    { store, secrets: unusedVault, consumers: [digest] },
-    inputId,
-    origin,
-    lookupsFrom(origin),
-  );
+  describeInputHistory({ store, secrets: unusedVault }, inputId, origin, lookupsFrom(origin));
 
 const unusedVault = {
   create: () => Promise.reject(new Error('unused')),
@@ -158,7 +139,7 @@ beforeEach(() => {
     ],
   ]);
   store.insertInput(input(SHARED, { routines: [NOTES, LEADS] }), at(8));
-  store.insertInput(input(DIGEST_ONLY, { purpose: 'Deploys', auth: 'bearer' }), at(8));
+  store.insertInput(input(NO_ROUTINE, { purpose: 'Deploys', auth: 'bearer' }), at(8));
   store.insertInput(input(OPERATOR_MADE, { owner: null, purpose: '' }), at(8));
 });
 
@@ -168,7 +149,7 @@ afterEach(() => {
 });
 
 describe('the inventory', () => {
-  it("shows the owner's inputs whole in their own DM, a shared one and one only another consumer takes", async () => {
+  it("shows the owner's inputs whole in their own DM, also one nothing takes events from", async () => {
     deliver(at(9), []);
 
     expect(await listFrom(DANA_DM)).toBe(
@@ -177,8 +158,8 @@ describe('the inventory', () => {
         `• [${SHARED}] “Meeting recordings” — enabled, signed, owned by <@U0DANA>; last delivery 2026-11-24 09:00 UTC`,
         `    routine [${NOTES}] (enabled) “Meeting notes” — delivers to #notes`,
         `    routine [${LEADS}] (paused) “Lead alerts” — delivers to #leads`,
-        `• [${DIGEST_ONLY}] “Deploys” — enabled, bearer, owned by <@U0DANA>; no delivery on record`,
-        '    consumer: Daily digest',
+        `• [${NO_ROUTINE}] “Deploys” — enabled, bearer, owned by <@U0DANA>; no delivery on record`,
+        '    nothing takes its events yet',
       ].join('\n'),
     );
   });
@@ -188,10 +169,10 @@ describe('the inventory', () => {
 
     expect(listed).toContain('Inputs visible here (1):');
     expect(listed).toContain(`routine [${NOTES}] (enabled) “Meeting notes”`);
-    expect(listed).toContain('and 1 other consumer not visible from here');
+    expect(listed).toContain('and 1 other routine not visible from here');
     expect(listed).not.toContain('Lead alerts');
     expect(listed).not.toContain(LEADS);
-    expect(listed).not.toContain(DIGEST_ONLY);
+    expect(listed).not.toContain(NO_ROUTINE);
   });
 
   it("shows a private channel's routine from that channel", async () => {
@@ -207,7 +188,7 @@ describe('the inventory', () => {
 
     expect(listed).toContain(`routine [${NOTES}]`);
     expect(listed).not.toContain('Lead alerts');
-    expect(listed).not.toContain('Daily digest');
+    expect(listed).not.toContain(NO_ROUTINE);
   });
 
   it('shows the operator every input, including one nothing takes events from', async () => {
@@ -223,13 +204,13 @@ describe('the inventory', () => {
     routines.delete(LEADS);
 
     expect(await listFrom(DANA_DM)).toContain(`routine [${LEADS}] (no longer exists)`);
-    expect(await listFrom(GENERAL)).toContain('and 1 other consumer not visible from here');
+    expect(await listFrom(GENERAL)).toContain('and 1 other routine not visible from here');
   });
 
   it('leaves out a deleted input', async () => {
-    store.markInputDeleted(DIGEST_ONLY);
+    store.markInputDeleted(NO_ROUTINE);
 
-    expect(await listFrom(DANA_DM)).not.toContain(DIGEST_ONLY);
+    expect(await listFrom(DANA_DM)).not.toContain(NO_ROUTINE);
   });
 
   it('says so when nothing is visible', async () => {
@@ -311,9 +292,9 @@ describe('the history of an input', () => {
     expect(shown).not.toContain('Lead alerts');
     expect(shown).not.toContain(LEADS);
     expect(shown).toContain(
-      '• 2026-11-24 09:30 UTC — received: taken by 1 other consumer not visible from here',
+      '• 2026-11-24 09:30 UTC — received: taken by 1 other routine not visible from here',
     );
-    expect(shown).toContain('p1795530309733459\n    and 1 other consumer not visible from here');
+    expect(shown).toContain('p1795530309733459\n    and 1 other routine not visible from here');
   });
 
   it("shows a private channel's routine from that channel", async () => {
@@ -331,19 +312,20 @@ describe('the history of an input', () => {
     expect(await historyFrom(DANA_DM)).toContain('did not run — something_new');
   });
 
-  it('names a handoff of another kind only where the input is seen whole', async () => {
-    deliver(at(9), [{ kind: 'proactivity', consumerId: 'digest', snapshot: '{}' }], DIGEST_ONLY);
+  it("reports only routines' handoffs", async () => {
+    deliver(at(9), [{ kind: 'proactivity', consumerId: 'digest', snapshot: '{}' }], NO_ROUTINE);
 
-    expect(await historyFrom(DANA_DM, DIGEST_ONLY)).toContain(
-      'received: consumer proactivity/digest has not taken it yet',
-    );
+    const shown = await historyFrom(DANA_DM, NO_ROUTINE);
+
+    expect(shown).toContain('• 2026-11-24 09:00 UTC — received');
+    expect(shown).not.toContain('proactivity');
   });
 
   it('refuses an input with no routine visible from here', async () => {
-    deliver(at(9), [], DIGEST_ONLY);
+    deliver(at(9), [], NO_ROUTINE);
 
-    expect(await historyFrom(GENERAL, DIGEST_ONLY)).toBe(
-      `Input ${DIGEST_ONLY} isn't visible from here, so its history can't be read from this conversation.`,
+    expect(await historyFrom(GENERAL, NO_ROUTINE)).toBe(
+      `Input ${NO_ROUTINE} isn't visible from here, so its history can't be read from this conversation.`,
     );
   });
 

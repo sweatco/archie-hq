@@ -179,7 +179,7 @@ it("lists an input from a public channel without a private channel's routine", a
   const listed = await call('list_inputs', taskIn('C0GENERAL'));
 
   expect(listed).toContain(`routine [${NOTES}] (enabled) “Meeting notes” — delivers to #notes`);
-  expect(listed).toContain('and 1 other consumer not visible from here');
+  expect(listed).toContain('and 1 other routine not visible from here');
   expect(listed).not.toContain('Lead alerts');
 });
 
@@ -199,7 +199,7 @@ it("posts a panel that names only what the conversation may see, with the owner'
   const panel = JSON.stringify(blocks);
   expect(panel).toContain('Meeting recordings');
   expect(panel).toContain('Meeting notes → #notes');
-  expect(panel).toContain('and 1 other consumer not visible from here');
+  expect(panel).toContain('and 1 other routine not visible from here');
   expect(panel).not.toContain('Lead alerts');
   expect(panel).toContain(`"action_id":"input_settings","value":"${INPUT_ID}"`);
 });

@@ -188,7 +188,6 @@ describe('the inputs panel', () => {
   const listing = (changes: Partial<InputListing> = {}): InputListing => ({
     input: INPUT,
     routines: [{ id: NOTES.id, routine: NOTES }],
-    others: [],
     hidden: 0,
     latest: null,
     ...changes,
@@ -219,7 +218,7 @@ describe('the inputs panel', () => {
     );
 
     expect(row?.text.text).toContain('• Meeting notes → #notes _(paused)_');
-    expect(row?.text.text).toContain('_and 2 other consumers not visible from here_');
+    expect(row?.text.text).toContain('_and 2 other routines not visible from here_');
   });
 
   it("says so when nothing takes an input's events", () => {
@@ -277,7 +276,7 @@ describe('the inputs panel', () => {
 
 describe('a panel row after its input is paused', () => {
   it('shows the new state and keeps the rest of the row', () => {
-    const listing = { input: INPUT, routines: [], others: [], hidden: 0, latest: null };
+    const listing = { input: INPUT, routines: [], hidden: 0, latest: null };
     const blocks = inputsPanelBlocks([listing]);
 
     const after = text(withInputState(blocks, { ...INPUT, state: 'paused' }));
