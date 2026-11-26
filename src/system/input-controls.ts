@@ -17,6 +17,7 @@ import {
   connectionStatus,
   deleteInputAs,
   revealKey,
+  rotateKey,
   setInputPaused,
   type InputServices,
 } from '../incoming/inputs.js';
@@ -149,7 +150,7 @@ async function redrawSettings(
   const view = body.view;
   if (!view) return;
   const owned = ownedInput(body.user.id, action.value ?? '');
-  if ('refusal' in owned) return;
+  if ('refusal' in owned) return owned.gone ? showNotice(view, owned.refusal) : undefined;
   const { services, input } = owned;
 
   let key: string | undefined;
@@ -211,6 +212,39 @@ async function pauseFromSettings(args: ButtonClick, paused: boolean): Promise<vo
   await rewriteOrigin(view, (blocks) => withInputState(blocks, input));
 }
 
+/** Slack's confirmation dialog ran before this click arrives. The new key is shown in the window and nowhere else. */
+async function rotateFromSettings(args: ButtonClick): Promise<void> {
+  const view = args.body.view;
+  if (!view) return;
+  const owned = await inputToChange(args, view);
+  if (!owned) return;
+  const { services } = owned;
+  const rotation = await rotateKey(
+    services,
+    { kind: 'slack_user', userId: args.body.user.id },
+    owned.input.id,
+  );
+  if (rotation.status === 'refused')
+    return showNotice(view, 'The key could not be rotated. The input may be gone.');
+  const { input } = rotation;
+  logger.system(`Incoming events: input ${input.id} had its key rotated by its owner`);
+  if (rotation.leftBehind.length > 0)
+    logger.warn(
+      'incoming',
+      `Input ${input.id} has a new key, but an old secret file could not be removed and is unused: ${rotation.leftBehind.join(', ')}`,
+    );
+  await getSlackClient().views.update({
+    view_id: view.id,
+    view: settingsView({
+      input,
+      callback: inputCallback(input.id),
+      status: await connectionStatus(services, input),
+      key: rotation.secret,
+      from: settingsOrigin(view.private_metadata),
+    }),
+  });
+}
+
 /** Slack's confirmation dialog ran before this click arrives. */
 async function deleteFromSettings(args: ButtonClick): Promise<void> {
   const view = args.body.view;
@@ -264,5 +298,6 @@ export function registerInputControlHandlers(boltApp: Pick<App, 'action'>): void
   onClick(INPUT_ACTIONS.checkConnection, (args) => redrawSettings(args, 'status'));
   onClick(INPUT_ACTIONS.pause, (args) => pauseFromSettings(args, true));
   onClick(INPUT_ACTIONS.resume, (args) => pauseFromSettings(args, false));
+  onClick(INPUT_ACTIONS.rotateKey, rotateFromSettings);
   onClick(INPUT_ACTIONS.delete, deleteFromSettings);
 }

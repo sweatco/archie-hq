@@ -13,6 +13,7 @@ export const INPUT_ACTIONS = {
   checkConnection: 'input_check_connection',
   pause: 'input_pause',
   resume: 'input_resume',
+  rotateKey: 'input_rotate_key',
   delete: 'input_delete',
 } as const;
 
@@ -215,6 +216,20 @@ export function settingsView(panel: SettingsPanel): ModalView {
                 action_id: INPUT_ACTIONS.pause,
                 value: input.id,
               },
+          {
+            type: 'button',
+            text: plainText('Rotate key'),
+            action_id: INPUT_ACTIONS.rotateKey,
+            value: input.id,
+            confirm: {
+              title: plainText('Rotate the key?'),
+              text: plainText(
+                'The current key stops working at once. The sender needs the new one before its next delivery.',
+              ),
+              confirm: plainText('Rotate'),
+              deny: plainText('Cancel'),
+            },
+          },
           {
             type: 'button',
             text: plainText('Delete'),

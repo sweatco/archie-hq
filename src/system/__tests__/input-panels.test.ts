@@ -157,8 +157,10 @@ describe('the Settings window', () => {
     const view = settingsView({ input: INPUT, callback: CALLBACK, status: QUIET });
 
     const last = view.blocks.at(-1);
-    const [pause, remove] = last && 'elements' in last ? last.elements : [];
+    const [pause, rotate, remove] = last && 'elements' in last ? last.elements : [];
     expect(pause).toMatchObject({ action_id: 'input_pause', value: INPUT.id });
+    expect(rotate).toMatchObject({ action_id: 'input_rotate_key', value: INPUT.id });
+    expect(text(rotate)).toContain('The current key stops working at once.');
     expect(remove).toMatchObject({ action_id: 'input_delete', value: INPUT.id, style: 'danger' });
     expect(text(remove)).toContain('Delete this input?');
     expect(text(remove)).toContain(

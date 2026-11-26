@@ -291,6 +291,54 @@ describe('Pause and Resume', () => {
   });
 });
 
+describe('Rotate key', () => {
+  it('replaces the key for the owner and shows the new one in the window alone', async () => {
+    await clickWindow('input_rotate_key', input.id, 'U0DANA');
+
+    const [next] = store.input(input.id)?.secretRefs ?? [];
+    const fresh = await secrets.read(next ?? '');
+    expect(fresh).not.toBe(secret);
+    const [updated] = slack.update.mock.calls[0] as [{ view: unknown }];
+    expect(shown(updated.view)).toContain(fresh);
+    expect(shown(updated.view)).not.toContain(secret);
+    expect(shown(vi.mocked(logger.system).mock.calls)).toContain(
+      'had its key rotated by its owner',
+    );
+    expect(shown(vi.mocked(logger.system).mock.calls)).not.toContain(fresh);
+    expect(slack.updateMessage).not.toHaveBeenCalled();
+  });
+
+  it('keeps the key for anyone else and for an owner who left the workspace', async () => {
+    await clickWindow('input_rotate_key', input.id, 'U0EVE');
+    slack.members.delete('U0DANA');
+    await clickWindow('input_rotate_key', input.id, 'U0DANA');
+
+    expect(await secrets.read(input.secretRefs[0] ?? '')).toBe(secret);
+    expect(shown(slack.update.mock.calls)).not.toContain('whsec_');
+  });
+});
+
+describe('a window that outlived its input', () => {
+  it.each([
+    'input_show_key',
+    'input_check_connection',
+    'input_pause',
+    'input_resume',
+    'input_rotate_key',
+    'input_delete',
+  ])('says the input is gone on %s, and shows no key', async (actionId) => {
+    await deleteInput({ store, secrets }, input.id);
+
+    await clickWindow(actionId, input.id, 'U0DANA');
+
+    const [updated] = slack.update.mock.calls[0] as [{ view: unknown }];
+    expect(shown(updated.view)).toContain('This input no longer exists.');
+    expect(shown(updated.view)).not.toContain('whsec_');
+    expect(shown(updated.view)).not.toContain('action_id');
+    expect(store.input(input.id)?.state).toBe('deleted');
+  });
+});
+
 describe('Delete', () => {
   const deliveryStatus = () => store.input(input.id)?.state;
 
