@@ -41,7 +41,7 @@ Usage:
   --auth    signed (default): Standard Webhooks signature. bearer: Authorization header.
   --filter  JSON list of conditions an event must meet, for example
             '[{"pointer":"/type","op":"equals","value":"meeting.ended"}]'
-  link      Lets a trigger with a condition for the input receive its events.
+  link      Lets a trigger with a condition for the input receive its events. An input takes one.
             A trigger receives nothing until it is linked.
   unlink    Stops the trigger receiving the input's events.
   history   The newest events handed to triggers: how each ended, why, and its Task.
@@ -215,7 +215,12 @@ async function link(
     );
 
   const change = linkRoutine(services.store, OPERATOR, input.id, triggerId);
-  if (change.status === 'refused') throw new Error(`Input ${inputId} was deleted`);
+  if (change.status === 'refused')
+    throw new Error(
+      change.reason === 'input_taken'
+        ? `Input ${inputId} already has a trigger, and an input takes one. Create another input for ${triggerId}`
+        : `Input ${inputId} was deleted`,
+    );
   print(
     change.status === 'unchanged'
       ? `Trigger ${triggerId} is already linked to input ${inputId}.`

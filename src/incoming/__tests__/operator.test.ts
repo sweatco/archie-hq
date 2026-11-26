@@ -240,19 +240,29 @@ it('says when a linked trigger does not receive events yet', async () => {
   ]);
 });
 
-it('unlinks a trigger whose record is gone, and leaves other links in place', async () => {
+it('unlinks a trigger whose record is gone', async () => {
   const { id } = await created();
   routineFor(id);
-  routineFor(id, { id: 'trg-20261121-0900-ticket' });
   await run('link', id, ROUTINE_ID);
-  await run('link', id, 'trg-20261121-0900-ticket');
   triggers.clear();
 
   await run('unlink', id, ROUTINE_ID);
 
   expect(printed.at(-1)).toBe(`Unlinked trigger ${ROUTINE_ID} from input ${id}.`);
-  expect(store.input(id)).toMatchObject({ routines: ['trg-20261121-0900-ticket'], revision: 4 });
+  expect(store.input(id)).toMatchObject({ routines: [], revision: 3 });
   await expect(run('unlink', id, ROUTINE_ID)).rejects.toThrow(/is not linked/);
+});
+
+it('refuses a second trigger on an input, which takes one', async () => {
+  const { id } = await created();
+  routineFor(id);
+  routineFor(id, { id: 'trg-20261121-0900-ticket' });
+  await run('link', id, ROUTINE_ID);
+
+  await expect(run('link', id, 'trg-20261121-0900-ticket')).rejects.toThrow(
+    /already has a trigger/,
+  );
+  expect(store.input(id)?.routines).toEqual([ROUTINE_ID]);
 });
 
 it('refuses a link that would deliver nothing, and changes no input', async () => {

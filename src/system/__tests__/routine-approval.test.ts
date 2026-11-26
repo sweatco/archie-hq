@@ -76,7 +76,7 @@ import { IncomingStore } from '../../incoming/store.js';
 import type { InputActor } from '../../incoming/types.js';
 import { Task } from '../../tasks/task.js';
 import type { Trigger, TriggerCondition } from '../../types/trigger.js';
-import type { RoutineApproval } from '../routine-approval.js';
+import { routineInputRefusal, type RoutineApproval } from '../routine-approval.js';
 import { routineDigest } from '../routine-review.js';
 import { loadTrigger, saveTrigger, updatePendingTrigger } from '../trigger-store.js';
 
@@ -341,6 +341,15 @@ describe('who may approve', () => {
 
     expect(store.input(input.id)?.routines).toEqual([]);
     expect((await stored(trigger)).status).toBe('pending');
+  });
+
+  it('refuses a routine that names an operator-made input another routine uses', async () => {
+    const input = await existingInput(null);
+    store.linkRoutine(input.id, 'trg-20261124-0900-other1');
+    const trigger = await proposed([{ type: 'incoming_event', input_id: input.id }]);
+
+    expect(routineInputRefusal(trigger.conditions)).toMatch(/already belongs to a routine/);
+    expect(refusal(await approve(trigger, DANA)).reason).toBe('input_taken');
   });
 
   it('enables a routine on an operator-made input and leaves the link to the operator', async () => {

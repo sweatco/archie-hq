@@ -111,9 +111,12 @@ export function setInputPaused(
 
 export type LinkChange =
   | { status: 'changed' | 'unchanged'; input: Input }
-  | { status: 'refused'; reason: 'unknown_input' | 'input_deleted' | 'not_owner' };
+  | {
+      status: 'refused';
+      reason: 'unknown_input' | 'input_deleted' | 'not_owner' | 'input_taken';
+    };
 
-/** Lets a trigger receive the input's events, when the actor manages the input. `unchanged` means it was linked already. */
+/** Lets a trigger receive the input's events, when the actor manages the input. An input takes one trigger. `unchanged` means it was linked already. */
 export function linkRoutine(
   store: IncomingStore,
   actor: InputActor,
@@ -145,6 +148,7 @@ function changeLink(
   if (input.state === 'deleted') return { status: 'refused', reason: 'input_deleted' };
   if (!mayManageInput(input, actor)) return { status: 'refused', reason: 'not_owner' };
   if (input.routines.includes(triggerId) === linked) return { status: 'unchanged', input };
+  if (linked && input.routines.length > 0) return { status: 'refused', reason: 'input_taken' };
 
   const changed = linked
     ? store.linkRoutine(inputId, triggerId)
