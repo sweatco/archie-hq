@@ -4,6 +4,11 @@
 
 <!-- This file is generated automatically — do NOT edit it by hand. The `.github/workflows/daily-changelog.yml` workflow summarizes each day's merged PRs into a dated entry and commits it to `main` on its own. To shape how a change reads here, write a clear PR description — that is the source the automation reads. Quiet days with nothing merged are intentionally skipped (no entry), so gaps between dates are expected. Hand edits drift from the automation and may be overwritten; the only reason to touch this file directly is to repair a mistake the automation made. -->
 
+## 2026-11-25
+
+- _Technical: engine-side git commands (clone, fetch, checkout, branch switch) now run via `execFile` with an argument array instead of a shell string, and branch/ref inputs from task metadata, config or tool calls are validated before reaching git — rejecting characters such as `#` or `=` that git itself would accept — closing a shell-injection surface through ref-like strings; `switch_branch` now refuses some branch names it previously passed through unchecked. Verified via `npm run check` (2,696 tests) and tests using local temporary repos confirming shell-syntax refs have no side effect. PR #461._
+- _Technical: sandboxed Bash commands can no longer read the Anthropic API key — `buildSandboxConfig` denies `ANTHROPIC_API_KEY` as an env var so the CLI unsets it for sandboxed processes while the session itself keeps it, and the live egress check now also fails if Bash can read the key from its own environment or a process under `/proc`. Commits a89289b, 257fbea._
+
 ## 2026-11-23
 
 - _Technical: builds the ground truth for grading how Archie actually behaves — a session record (replies, tool calls, terminal state, cost) assembled from a finished task folder, replayed through promptfoo with Archie-specific assertions (terminal state, call order, approval-before-mutation), plus a privacy-wrapped per-task pull from production so real sessions can be graded offline with no model call. Stage 0 of the behaviour evals plan, part of #393. PR #419._
