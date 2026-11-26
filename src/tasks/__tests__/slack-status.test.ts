@@ -18,44 +18,61 @@ const TaskCtor = Task as unknown as new (
   pmDef: AgentDef,
 ) => Task;
 const PM_DEF = { id: 'pm-agent', key: 'pm', role: 'PM', isPm: true } as AgentDef;
-const DM = 'D1';
 const THREAD = '1750000000.000100';
 
-function newDmTask(): Task {
-  const key = `slack:${DM}:${THREAD}`;
+function newTask(channelId: string, muted = false): Task {
+  const key = `slack:${channelId}:${THREAD}`;
   const metadata = {
     task_id: 't1',
     channels: {
       [key]: {
         type: 'slack',
         thread_id: THREAD,
-        channel_id: DM,
-        channel_name: 'DM',
+        channel_id: channelId,
+        channel_name: 'thread',
         last_processed_ts: THREAD,
+        muted,
       },
     },
     default_channel: key,
-    memory_destination: { channel_id: DM },
+    memory_destination: { channel_id: channelId },
     agent_sessions: {},
     repositories: [],
   } as unknown as TaskMetadata;
   return new TaskCtor('t1', metadata, PM_DEF);
 }
 
+function statusOf(task: Task): TaskStatusController {
+  return (task as unknown as { statusController: TaskStatusController }).statusController;
+}
+
 describe('the Slack working indicator', () => {
-  beforeEach(() => vi.useFakeTimers());
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.mocked(setSlackThreadStatus).mockClear();
+  });
   afterEach(() => vi.useRealTimers());
 
   it('is not shown again when a stopped task’s agent wakes', async () => {
-    const task = newDmTask();
-    const status = (task as unknown as { statusController: TaskStatusController }).statusController;
+    const task = newTask('D1');
+    const status = statusOf(task);
     status.clear();
-    await vi.waitFor(() => expect(setSlackThreadStatus).toHaveBeenLastCalledWith(DM, THREAD, ''));
+    await vi.waitFor(() => expect(setSlackThreadStatus).toHaveBeenLastCalledWith('D1', THREAD, ''));
 
     status.setActive();
     status.note('running some checks');
     await vi.advanceTimersByTimeAsync(5_000);
     expect(setSlackThreadStatus).toHaveBeenCalledOnce();
+    status.dispose();
+  });
+
+  it('is not shown on a muted thread', async () => {
+    const task = newTask('C1', true);
+    task.isActive = true;
+    const status = statusOf(task);
+    status.note('running some checks');
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(setSlackThreadStatus).not.toHaveBeenCalled();
     status.dispose();
   });
 });

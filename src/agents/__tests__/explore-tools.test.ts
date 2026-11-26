@@ -91,6 +91,8 @@ vi.mock('../../connectors/slack/channel-canvas.js', () => ({
 vi.mock('../../connectors/slack/channel-pins.js', () => ({
   collectPinnedFileAllowlist,
 }));
+const { setSlackThreadStatus } = vi.hoisted(() => ({ setSlackThreadStatus: vi.fn() }));
+vi.mock('../../connectors/slack/status.js', () => ({ setSlackThreadStatus }));
 
 import { createCommsMcpServer } from '../tools.js';
 import { DmPostError } from '../../connectors/slack/client.js';
@@ -385,6 +387,11 @@ describe('mute blocks outbound posts, not just inbound routing', () => {
 
     expect(task.postToUser).not.toHaveBeenCalled();
     expect(out).toMatch(/muted/i);
+  });
+
+  it("mute_channel ends the thread's working indicator", async () => {
+    await getHandler('mute_channel', makeTask('C123'))({});
+    expect(setSlackThreadStatus).toHaveBeenCalledWith('C123', '1.0', '');
   });
 
   it('post_to_user still works when the channel is not muted', async () => {
