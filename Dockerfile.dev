@@ -17,17 +17,13 @@ RUN apt-get update && \
     { ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null || true; } && \
     rm -rf /var/lib/apt/lists/*
 
-# GitHub CLI for agents, pinned and checksum-verified.
-RUN gh_version=2.97.0 && \
-    gh_package="gh_${gh_version}_linux_$(dpkg --print-architecture).deb" && \
-    gh_release="https://github.com/cli/cli/releases/download/v${gh_version}" && \
-    mkdir -p /tmp/gh-install && \
-    curl --fail --location --retry 3 "$gh_release/$gh_package" -o "/tmp/gh-install/$gh_package" && \
-    curl --fail --location --retry 3 "$gh_release/gh_${gh_version}_checksums.txt" -o /tmp/gh-install/checksums.txt && \
-    (cd /tmp/gh-install && sha256sum --check --ignore-missing checksums.txt) && \
+# GitHub CLI from GitHub's apt repository: Debian's own 2.46 prints nothing for `gh run view --log-failed`.
+ADD --chmod=644 https://cli.github.com/packages/githubcli-archive-keyring.gpg /etc/apt/keyrings/githubcli.gpg
+RUN echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli.gpg] https://cli.github.com/packages stable main" \
+      > /etc/apt/sources.list.d/github-cli.list && \
     apt-get update && \
-    apt-get install -y --no-install-recommends "/tmp/gh-install/$gh_package" && \
-    rm -rf /tmp/gh-install /var/lib/apt/lists/*
+    apt-get install -y --no-install-recommends gh && \
+    rm -rf /var/lib/apt/lists/*
 
 # Optional: trust an operator-supplied extra CA (corporate root, or a
 # TLS-intercepting egress proxy). Drop a PEM at ./secrets/extra-ca.crt before
