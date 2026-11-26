@@ -4,8 +4,7 @@
  * Calls `agents.sessions.setStatus`: a non-empty status sets `processing`, an
  * empty one `active`, and Slack shows only "<App> is working". The bridged
  * `assistant.threads.setStatus` offers no stop button. A posted reply does not
- * end `processing`, so the app must send `active` itself. `@slack/web-api` has
- * no typed `agents.*` methods, hence `apiCall`.
+ * end `processing`, so the app must send `active` itself.
  *
  * Best-effort: errors — and an uninitialised client (e.g. CLI-only runs) — are
  * logged and swallowed so a failed status update never breaks the work it
@@ -29,7 +28,7 @@ export async function setSlackThreadStatus(
     return;
   }
   try {
-    await getSlackClient().apiCall('agents.sessions.setStatus', {
+    await getSlackClient().agents.sessions.setStatus({
       channel_id,
       thread_ts,
       status: status ? 'processing' : 'active',

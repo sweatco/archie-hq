@@ -6,18 +6,20 @@ import { setSlackThreadStatus } from '../status.js';
 vi.mock('../client.js', () => ({ getSlackClient: vi.fn(), isSlackDryRun: vi.fn() }));
 vi.mock('../../../system/logger.js', () => ({ logger: { debug: vi.fn(), warn: vi.fn() } }));
 
-const apiCall = vi.fn();
+const setStatus = vi.fn();
 
 beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(isSlackDryRun).mockReturnValue(false);
-  vi.mocked(getSlackClient).mockReturnValue({ apiCall } as unknown as WebClient);
+  vi.mocked(getSlackClient).mockReturnValue({
+    agents: { sessions: { setStatus } },
+  } as unknown as WebClient);
 });
 
 describe('setSlackThreadStatus', () => {
   it('marks the agent session as working for any status text', async () => {
     await setSlackThreadStatus('D123', '123.456', 'is checking Jira…');
-    expect(apiCall).toHaveBeenCalledExactlyOnceWith('agents.sessions.setStatus', {
+    expect(setStatus).toHaveBeenCalledExactlyOnceWith({
       channel_id: 'D123',
       thread_ts: '123.456',
       status: 'processing',
@@ -26,7 +28,7 @@ describe('setSlackThreadStatus', () => {
 
   it('ends the working state for an empty status', async () => {
     await setSlackThreadStatus('D123', '123.456', '');
-    expect(apiCall).toHaveBeenCalledExactlyOnceWith('agents.sessions.setStatus', {
+    expect(setStatus).toHaveBeenCalledExactlyOnceWith({
       channel_id: 'D123',
       thread_ts: '123.456',
       status: 'active',
@@ -36,11 +38,11 @@ describe('setSlackThreadStatus', () => {
   it('does not call Slack in dry-run mode', async () => {
     vi.mocked(isSlackDryRun).mockReturnValue(true);
     await setSlackThreadStatus('D123', '123.456', '');
-    expect(apiCall).not.toHaveBeenCalled();
+    expect(setStatus).not.toHaveBeenCalled();
   });
 
   it('keeps Slack failures non-fatal', async () => {
-    apiCall.mockRejectedValueOnce(new Error('not_allowed'));
+    setStatus.mockRejectedValueOnce(new Error('not_allowed'));
     await expect(setSlackThreadStatus('D123', '123.456', '')).resolves.toBeUndefined();
   });
 });
