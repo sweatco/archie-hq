@@ -11,6 +11,7 @@ import {
   linkRoutine,
   mayManageInput,
   revealKey,
+  rotateKey,
   unlinkRoutine,
 } from '../inputs.js';
 import { noteRefusedDelivery } from '../refusals.js';
@@ -188,4 +189,65 @@ it('reports the newest delivery and the last refusal of an input, and nothing fo
     },
     lastRefusedAt: 3000,
   });
+});
+
+it('replaces the key for the owner and for the operator, and removes the old one', async () => {
+  const { input, secret } = await createInput(
+    { store, secrets },
+    { auth: 'standard_webhooks', owner: 'U0DANA' },
+  );
+  const [oldRef] = input.secretRefs;
+
+  const byOwner = await rotateKey({ store, secrets }, DANA, input.id);
+  const byOperator = await rotateKey({ store, secrets }, OPERATOR, input.id);
+
+  if (byOwner.status !== 'rotated' || byOperator.status !== 'rotated')
+    throw new Error('expected both rotations to succeed');
+  expect(byOwner.secret).toMatch(/^whsec_/);
+  expect(new Set([secret, byOwner.secret, byOperator.secret]).size).toBe(3);
+  expect(await secrets.read(oldRef ?? '')).toBeNull();
+  expect(readdirSync(secretsDir)).toHaveLength(1);
+  expect(store.input(input.id)).toMatchObject({ revision: input.revision + 2 });
+  expect(await revealKey({ store, secrets }, DANA, input.id)).toEqual({
+    status: 'revealed',
+    secret: byOperator.secret,
+  });
+});
+
+it('rotates nothing for anyone else, or for an input that is unknown or deleted', async () => {
+  const { input, secret } = await createInput(
+    { store, secrets },
+    { auth: 'bearer', owner: 'U0DANA' },
+  );
+
+  expect(await rotateKey({ store, secrets }, EVE, input.id)).toEqual({
+    status: 'refused',
+    reason: 'not_owner',
+  });
+  expect(await revealKey({ store, secrets }, DANA, input.id)).toEqual({
+    status: 'revealed',
+    secret,
+  });
+  expect(await rotateKey({ store, secrets }, DANA, 'inp-NOSUCHAAAAAAAAAAAAAAAA')).toEqual({
+    status: 'refused',
+    reason: 'unknown_input',
+  });
+
+  await deleteInput({ store, secrets }, input.id);
+  expect(await rotateKey({ store, secrets }, DANA, input.id)).toEqual({
+    status: 'refused',
+    reason: 'input_deleted',
+  });
+  expect(readdirSync(secretsDir)).toEqual([]);
+});
+
+it('still hands over the new key when the old file cannot be removed', async () => {
+  const { input } = await createInput({ store, secrets }, { auth: 'bearer', owner: 'U0DANA' });
+  const [oldRef] = input.secretRefs;
+  vi.spyOn(secrets, 'remove').mockRejectedValueOnce(new Error('file is busy'));
+
+  const rotation = await rotateKey({ store, secrets }, DANA, input.id);
+
+  expect(rotation).toMatchObject({ status: 'rotated', leftBehind: [oldRef] });
+  expect(store.input(input.id)?.secretRefs).not.toContain(oldRef);
 });

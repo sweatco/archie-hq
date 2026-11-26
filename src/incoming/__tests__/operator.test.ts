@@ -181,6 +181,30 @@ it('pauses, resumes and deletes an input, and removes its secret on delete', asy
   expect(store.input(id)?.state).toBe('deleted');
 });
 
+it('rotates a key, prints the new one once and removes the old one', async () => {
+  const { id, secret } = await created();
+  printed = [];
+
+  await run('rotate', id);
+
+  const [rotated, shown] = printed;
+  expect(rotated).toBe(`Rotated the key of input ${id}. The old key no longer works.`);
+  const next = shown?.replace('Secret:        ', '');
+  expect(next).toMatch(/^whsec_/);
+  expect(next).not.toBe(secret);
+  expect(readdirSync(secretsDir)).toHaveLength(1);
+  expect(await secrets.read(store.input(id)?.secretRefs[0] ?? '')).toBe(next);
+});
+
+it('rotates no key of an input that is deleted or unknown', async () => {
+  const { id } = await created();
+  await run('delete', id);
+
+  await expect(run('rotate', id)).rejects.toThrow(/was deleted/);
+  await expect(run('rotate', 'inp-NOSUCHAAAAAAAAAAAAAAAA')).rejects.toThrow(/No input/);
+  await expect(run('rotate')).rejects.toThrow(/Usage: incoming rotate/);
+});
+
 it('says the input is already deleted when only the secret cleanup failed', async () => {
   const { id } = await created();
   vi.spyOn(secrets, 'remove').mockRejectedValueOnce(new Error('file is busy'));

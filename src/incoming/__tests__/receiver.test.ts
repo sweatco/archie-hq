@@ -19,7 +19,7 @@ vi.mock('../../system/shutdown.js', () => ({ getIsShuttingDown: vi.fn() }));
 
 import { logger } from '../../system/logger.js';
 import { getIsShuttingDown } from '../../system/shutdown.js';
-import { createInput, deleteInput } from '../inputs.js';
+import { createInput, deleteInput, rotateKey } from '../inputs.js';
 import { lastRefusedDelivery } from '../refusals.js';
 import { mountIncomingReceiver } from '../receiver.js';
 import { vaultInputSecrets, type InputSecrets } from '../secrets.js';
@@ -264,6 +264,18 @@ describe('an authenticated delivery', () => {
     const response = await deliverSigned(sender, '{"__proto__":{"kind":"x"}}');
 
     expect(response.status).toBe(202);
+  });
+
+  it('needs the new key from the first delivery after a rotation', async () => {
+    const sender = await signedSender();
+    const rotation = await rotateKey({ store, secrets }, { kind: 'operator' }, sender.input.id);
+    if (rotation.status !== 'rotated') throw new Error('expected the rotation to succeed');
+
+    const withOldKey = await deliverSigned(sender, EVENT);
+    const withNewKey = await deliverSigned({ ...sender, secret: rotation.secret }, EVENT, 'msg_2');
+
+    expect(withOldKey.status).toBe(401);
+    expect(withNewKey.status).toBe(202);
   });
 
   it('gets one handoff per matching consumer and a single payload', async () => {

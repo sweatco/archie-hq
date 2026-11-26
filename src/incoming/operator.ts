@@ -6,6 +6,7 @@ import {
   createInput,
   deleteInput,
   linkRoutine,
+  rotateKey,
   unlinkRoutine,
   type InputServices,
 } from './inputs.js';
@@ -34,6 +35,7 @@ Usage:
   npm run incoming -- pause <input-id>
   npm run incoming -- resume <input-id>
   npm run incoming -- delete <input-id>
+  npm run incoming -- rotate <input-id>
   npm run incoming -- link <input-id> <trigger-id>
   npm run incoming -- unlink <input-id> <trigger-id>
   npm run incoming -- history [<input-id>]
@@ -44,6 +46,7 @@ Usage:
   link      Lets a trigger with a condition for the input receive its events. An input takes one.
             A trigger receives nothing until it is linked.
   unlink    Stops the trigger receiving the input's events.
+  rotate    Replaces the input's key and prints the new one. The old key stops working at once.
   history   The newest events handed to triggers: how each ended, why, and its Task.
 
 Environment:
@@ -62,6 +65,7 @@ const COMMANDS: readonly string[] = [
   'pause',
   'resume',
   'delete',
+  'rotate',
   'link',
   'unlink',
   'history',
@@ -106,6 +110,8 @@ export async function runIncomingCommand(
     case 'resume':
     case 'delete':
       return changeState(command, rest, services, print);
+    case 'rotate':
+      return rotate(rest, services, print);
     case 'link':
       return link(rest, services, print);
     case 'unlink':
@@ -144,6 +150,24 @@ async function create(
   );
   print(`Secret:        ${secret}`);
   print('The secret is shown this once. Store it with the sender now.');
+}
+
+async function rotate(
+  args: readonly string[],
+  services: InputServices,
+  print: (line: string) => void,
+): Promise<void> {
+  const [id] = args;
+  if (!id || args.length !== 1) throw new Error('Usage: incoming rotate <input-id>');
+  const rotation = await rotateKey(services, OPERATOR, liveInput(services, id).id);
+  if (rotation.status === 'refused') throw new Error(`Input ${id} was deleted`);
+  print(`Rotated the key of input ${id}. The old key no longer works.`);
+  print(`Secret:        ${rotation.secret}`);
+  print('The secret is shown this once. Store it with the sender now.');
+  if (rotation.leftBehind.length > 0)
+    print(
+      `An old secret file could not be removed and is unused: ${rotation.leftBehind.join(', ')}`,
+    );
 }
 
 type Row = readonly [string, string, string, string, string, string, string];

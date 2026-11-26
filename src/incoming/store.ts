@@ -255,6 +255,23 @@ export class IncomingStore {
     return this.moveInput(id, 'deleted', now);
   }
 
+  /** Points the input at one new key and returns the references it held. A deleted input keeps its keys. */
+  replaceSecret(id: string, ref: string): { input: Input; replaced: string[] } | null {
+    return inTransaction(this.db, () => {
+      const input = this.input(id);
+      if (!input) return null;
+      if (input.state === 'deleted') return { input, replaced: [] };
+      const revision = input.revision + 1;
+      this.run(
+        'UPDATE inputs SET secret_refs=?,revision=? WHERE id=?',
+        JSON.stringify([ref]),
+        revision,
+        id,
+      );
+      return { input: { ...input, secretRefs: [ref], revision }, replaced: input.secretRefs };
+    });
+  }
+
   /** Lets a trigger receive this input's events. A deleted input is returned unchanged. */
   linkRoutine(id: string, triggerId: string): Input | null {
     return this.changeRoutines(id, (linked) =>

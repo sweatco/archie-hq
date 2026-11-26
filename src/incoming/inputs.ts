@@ -178,6 +178,38 @@ export async function revealKey(
   return secret ? { status: 'revealed', secret } : { status: 'refused', reason: 'unreadable' };
 }
 
+export type KeyRotation =
+  | { status: 'rotated'; input: Input; secret: string; leftBehind: string[] }
+  | { status: 'refused'; reason: 'unknown_input' | 'input_deleted' | 'not_owner' };
+
+/** The new key is sealed before the input points at it, so an interruption leaves an unused file, never an input without a key. */
+export async function rotateKey(
+  services: InputServices,
+  actor: InputActor,
+  inputId: string,
+): Promise<KeyRotation> {
+  const input = services.store.input(inputId);
+  if (!input) return { status: 'refused', reason: 'unknown_input' };
+  if (input.state === 'deleted') return { status: 'refused', reason: 'input_deleted' };
+  if (!mayManageInput(input, actor)) return { status: 'refused', reason: 'not_owner' };
+
+  const { ref, secret } = await services.secrets.create(input.auth);
+  const change = services.store.replaceSecret(inputId, ref);
+  if (!change || change.input.state === 'deleted') {
+    await services.secrets.remove(ref);
+    return { status: 'refused', reason: change ? 'input_deleted' : 'unknown_input' };
+  }
+  const leftBehind: string[] = [];
+  for (const old of change.replaced) {
+    try {
+      await services.secrets.remove(old);
+    } catch {
+      leftBehind.push(old);
+    }
+  }
+  return { status: 'rotated', input: change.input, secret, leftBehind };
+}
+
 /** What Archie holds about an input's sender. Reading it starts nothing and writes nothing. */
 export interface ConnectionStatus {
   keyReadable: boolean;
