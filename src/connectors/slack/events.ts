@@ -744,7 +744,7 @@ export function registerMergeActionHandlers(boltApp: Pick<AppType, 'action'>): v
  *
  * Generates a Haiku-authored title for the task and persists it on metadata.
  * For DM-originated tasks, also pushes the title to Slack via
- * `assistant.threads.setTitle` so the bot's DM list shows a meaningful name.
+ * `agents.sessions.rename` so the bot's DM list shows a meaningful name.
  *
  * Errors are swallowed by the called helpers — title is best-effort.
  */
