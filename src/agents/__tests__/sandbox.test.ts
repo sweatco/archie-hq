@@ -167,10 +167,10 @@ describe('buildSandboxGitHubEnv', () => {
     });
   });
 
-  it('keeps the gh cache inside the task workspace', () => {
-    expect(buildSandboxGitHubEnv('ghs_example', base.cwd).XDG_CACHE_HOME).toBe(
-      `${base.cwd}/.cache`,
-    );
+  it('keeps the gh cache inside the task workspace, for Bash only', () => {
+    const env = buildSandboxGitHubEnv('ghs_example', base.cwd);
+    expect(env.ARCHIE_BASH_CACHE_HOME).toBe(`${base.cwd}/.cache`);
+    expect(env).not.toHaveProperty('XDG_CACHE_HOME');
   });
 });
 

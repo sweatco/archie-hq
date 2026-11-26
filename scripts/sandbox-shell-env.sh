@@ -21,4 +21,10 @@ if [ -n "${HTTPS_PROXY:-}${ALL_PROXY:-}" ]; then
   unset _archie_proxy
 fi
 
+# Set by spawn.ts for sessions with gh. Exported here, not in the session
+# environment, so only Bash moves its cache.
+if [ -n "${ARCHIE_BASH_CACHE_HOME:-}" ]; then
+  export XDG_CACHE_HOME="$ARCHIE_BASH_CACHE_HOME"
+fi
+
 : # always succeed

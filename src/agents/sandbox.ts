@@ -70,7 +70,8 @@ export function buildSandboxGitHubEnv(token: string, workspace: string): Record<
     // The telemetry host is not on the allowlist.
     GH_TELEMETRY: 'false',
     // `gh run view --log` keeps the log archive in its cache and $HOME is read-only. Per task, so one task cannot alter logs another reads.
-    XDG_CACHE_HOME: resolve(workspace, '.cache'),
+    // sandbox-shell-env.sh turns this into XDG_CACHE_HOME for Bash only; set here it would also move the CLI's and MCP servers' caches.
+    ARCHIE_BASH_CACHE_HOME: resolve(workspace, '.cache'),
   };
 }
 
