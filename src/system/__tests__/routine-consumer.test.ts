@@ -243,27 +243,6 @@ it('records one handoff per linked routine, each under its own filter', async ()
   ]);
 });
 
-it('keeps handing events to the other routine of an input while one is paused', async () => {
-  const from = await sender();
-  const notes = linked(from, routine([on(from.inputId)]));
-  linked(from, routine([on(from.inputId)], { id: OTHER_ID, action: { prompt: 'File a ticket.' } }));
-
-  await deliver(from);
-  // A pause and a resume both index the changed record, as the trigger tools do.
-  indexTrigger({ ...notes, status: 'paused' });
-  expect(await deliver(from)).toMatchObject({ status: 'accepted' });
-  indexTrigger(notes);
-  await deliver(from);
-
-  expect(handoffs().map((handoff) => handoff.consumer_id)).toEqual([
-    ROUTINE_ID,
-    OTHER_ID,
-    OTHER_ID,
-    ROUTINE_ID,
-    OTHER_ID,
-  ]);
-});
-
 it.each<[string, (from: Sender, other: Sender) => void]>([
   [
     'is approved but not linked by the operator',

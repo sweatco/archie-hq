@@ -3449,7 +3449,7 @@ const INCOMING_UNAVAILABLE = 'Incoming events are not available on this instance
 function createListInputsTool(task: Task) {
   return tool(
     'list_inputs',
-    "List the incoming-event inputs visible from this conversation, each with its owner, state, last delivery and what takes its events. An input is shown whole in its owner's DM. Anywhere else only the routines visible from this conversation are named, and anything else is a count. An input with no routine visible here is not listed. No key or callback address is ever shown.",
+    "List the incoming-event inputs visible from this conversation, each with its owner, state, last delivery and what takes its events. Every input is listed in its owner's DM. Anywhere else an input is listed only if its routine is visible from this conversation. No key or callback address is ever shown.",
     {},
     async () => {
       const services = inputServices();
@@ -3495,7 +3495,7 @@ function createShowInputsTool(task: Task) {
 function createGetInputHistoryTool(task: Task) {
   return tool(
     'get_input_history',
-    'Read what became of the newest deliveries to one incoming-event input: received (waiting), handed off (a task started), delivered (that task posted, with a link), skipped (with the reason) or uncertain. Use it when someone asks whether an event arrived or why a routine did not run. Scoped like `list_inputs`: routines not visible from this conversation appear only as a count. No event content is kept, so none can be shown or replayed.',
+    'Read what became of the newest deliveries to one incoming-event input: received (waiting), handed off (a task started), delivered (that task posted, with a link), skipped (with the reason) or uncertain. Use it when someone asks whether an event arrived or why a routine did not run. Scoped like `list_inputs`. No event content is kept, so none can be shown or replayed.',
     {
       input_id: z.string().describe('Input ID (from list_inputs or get_trigger).'),
     },

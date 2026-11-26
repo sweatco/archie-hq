@@ -71,6 +71,7 @@ import type { Agent } from '../agent.js';
 import type { Task } from '../../tasks/task.js';
 
 const INPUT_ID = 'inp-AAAAAAAAAAAAAAAAAAAAAA';
+const PRIVATE_INPUT = 'inp-BBBBBBBBBBBBBBBBBBBBBB';
 const NOTES = 'trg-20261124-0900-notes1';
 const LEADS = 'trg-20261124-0900-leads1';
 const THREAD_URL = 'https://example.slack.com/archives/C0NOTES/p1795530309733459';
@@ -132,10 +133,24 @@ beforeEach(() => {
       auth: 'standard_webhooks',
       secretRefs: ['sec-1'],
       filter: [],
-      routines: [NOTES, LEADS],
+      routines: [NOTES],
       revision: 1,
       owner: 'U0DANA',
       purpose: 'Meeting recordings',
+    },
+    1000,
+  );
+  store.insertInput(
+    {
+      id: PRIVATE_INPUT,
+      state: 'enabled',
+      auth: 'standard_webhooks',
+      secretRefs: ['sec-2'],
+      filter: [],
+      routines: [LEADS],
+      revision: 1,
+      owner: 'U0DANA',
+      purpose: 'Lead forms',
     },
     1000,
   );
@@ -175,15 +190,15 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-it("lists an input from a public channel without a private channel's routine", async () => {
+it("lists from a public channel no input of a private channel's routine", async () => {
   const listed = await call('list_inputs', taskIn('C0GENERAL'));
 
   expect(listed).toContain(`routine [${NOTES}] (enabled) “Meeting notes” — delivers to #notes`);
-  expect(listed).toContain('and 1 other routine not visible from here');
-  expect(listed).not.toContain('Lead alerts');
+  expect(listed).not.toContain('Lead');
+  expect(listed).not.toContain(PRIVATE_INPUT);
 });
 
-it("lists the input whole in its owner's DM", async () => {
+it('lists every input of the owner in their DM', async () => {
   const listed = await call('list_inputs', taskIn('D0DANA'));
 
   expect(listed).toContain('Meeting notes');
@@ -199,15 +214,13 @@ it("posts a panel that names only what the conversation may see, with the owner'
   const panel = JSON.stringify(blocks);
   expect(panel).toContain('Meeting recordings');
   expect(panel).toContain('Meeting notes → #notes');
-  expect(panel).toContain('and 1 other routine not visible from here');
-  expect(panel).not.toContain('Lead alerts');
+  expect(panel).not.toContain('Lead');
   expect(panel).toContain(`"action_id":"input_settings","value":"${INPUT_ID}"`);
 });
 
 it('posts no panel where no input is visible', async () => {
   loadTrigger.mockResolvedValue(null);
   store.unlinkRoutine(INPUT_ID, NOTES);
-  store.unlinkRoutine(INPUT_ID, LEADS);
 
   expect(await call('show_inputs', taskIn('C0GENERAL'))).toBe(
     'There are no incoming events inputs visible from here.',

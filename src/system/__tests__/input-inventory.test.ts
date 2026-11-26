@@ -22,7 +22,8 @@ import {
 } from '../input-inventory.js';
 import { triggerVisibleFrom, type TriggerOrigin } from '../trigger-visibility.js';
 
-const SHARED = 'inp-SHAREDAAAAAAAAAAAAAAAA';
+const MEETINGS = 'inp-MEETINGSAAAAAAAAAAAAAA';
+const LEADS_INPUT = 'inp-LEADSAAAAAAAAAAAAAAAAA';
 const NO_ROUTINE = 'inp-NOROUTINEAAAAAAAAAAAAA';
 const OPERATOR_MADE = 'inp-OPERATORAAAAAAAAAAAAAA';
 const NOTES = 'trg-20261124-0900-notes1';
@@ -59,7 +60,7 @@ function routine(id: string, over: Partial<Trigger> = {}): Trigger {
     created_at: '2026-11-24T09:00:00.000Z',
     approved_by: 'U0DANA',
     binding: { type: 'channel', channel_id: 'C0NOTES', channel_name: 'notes' },
-    conditions: [{ type: 'incoming_event', input_id: SHARED }],
+    conditions: [{ type: 'incoming_event', input_id: MEETINGS }],
     action: { prompt: 'Summarize the meeting.' },
     summary: 'Meeting notes',
     ...over,
@@ -84,7 +85,7 @@ function lookupsFrom(origin: TriggerOrigin): InventoryLookups {
 const listFrom = async (origin: TriggerOrigin) =>
   describeInputs(await listInputs({ store, secrets: unusedVault }, origin, lookupsFrom(origin)));
 
-const historyFrom = (origin: TriggerOrigin, inputId = SHARED) =>
+const historyFrom = (origin: TriggerOrigin, inputId = MEETINGS) =>
   describeInputHistory({ store, secrets: unusedVault }, inputId, origin, lookupsFrom(origin));
 
 const unusedVault = {
@@ -99,7 +100,7 @@ const forRoutine = (id: string): MatchedConsumer => ({
   snapshot: '{}',
 });
 
-function deliver(receivedAt: number, consumers: MatchedConsumer[], inputId = SHARED): void {
+function deliver(receivedAt: number, consumers: MatchedConsumer[], inputId = MEETINGS): void {
   deliveries += 1;
   store.receive(
     {
@@ -138,7 +139,8 @@ beforeEach(() => {
       }),
     ],
   ]);
-  store.insertInput(input(SHARED, { routines: [NOTES, LEADS] }), at(8));
+  store.insertInput(input(MEETINGS, { routines: [NOTES] }), at(8));
+  store.insertInput(input(LEADS_INPUT, { routines: [LEADS], purpose: 'Lead forms' }), at(8));
   store.insertInput(input(NO_ROUTINE, { purpose: 'Deploys', auth: 'bearer' }), at(8));
   store.insertInput(input(OPERATOR_MADE, { owner: null, purpose: '' }), at(8));
 });
@@ -149,14 +151,15 @@ afterEach(() => {
 });
 
 describe('the inventory', () => {
-  it("shows the owner's inputs whole in their own DM, also one nothing takes events from", async () => {
+  it('shows the owner every input of theirs in their own DM, also one nothing takes events from', async () => {
     deliver(at(9), []);
 
     expect(await listFrom(DANA_DM)).toBe(
       [
-        'Inputs visible here (2):',
-        `• [${SHARED}] “Meeting recordings” — enabled, signed, owned by <@U0DANA>; last delivery 2026-11-24 09:00 UTC`,
+        'Inputs visible here (3):',
+        `• [${MEETINGS}] “Meeting recordings” — enabled, signed, owned by <@U0DANA>; last delivery 2026-11-24 09:00 UTC`,
         `    routine [${NOTES}] (enabled) “Meeting notes” — delivers to #notes`,
+        `• [${LEADS_INPUT}] “Lead forms” — enabled, signed, owned by <@U0DANA>; no delivery on record`,
         `    routine [${LEADS}] (paused) “Lead alerts” — delivers to #leads`,
         `• [${NO_ROUTINE}] “Deploys” — enabled, bearer, owned by <@U0DANA>; no delivery on record`,
         '    nothing takes its events yet',
@@ -164,47 +167,46 @@ describe('the inventory', () => {
     );
   });
 
-  it('names only the routines visible from another conversation and counts the rest', async () => {
+  it('lists from another conversation only an input whose routine is visible there', async () => {
     const listed = await listFrom(GENERAL);
 
     expect(listed).toContain('Inputs visible here (1):');
     expect(listed).toContain(`routine [${NOTES}] (enabled) “Meeting notes”`);
-    expect(listed).toContain('and 1 other routine not visible from here');
-    expect(listed).not.toContain('Lead alerts');
-    expect(listed).not.toContain(LEADS);
+    expect(listed).not.toContain('Lead');
+    expect(listed).not.toContain(LEADS_INPUT);
     expect(listed).not.toContain(NO_ROUTINE);
   });
 
-  it("shows a private channel's routine from that channel", async () => {
+  it("lists a private channel's input from that channel", async () => {
     const listed = await listFrom(LEADS_CHANNEL);
 
+    expect(listed).toContain('Inputs visible here (2):');
     expect(listed).toContain(`routine [${LEADS}] (paused) “Lead alerts” — delivers to #leads`);
     expect(listed).toContain(`routine [${NOTES}]`);
-    expect(listed).not.toContain('not visible from here');
   });
 
   it("gives another person's DM no more than a channel would get", async () => {
     const listed = await listFrom(EVE_DM);
 
     expect(listed).toContain(`routine [${NOTES}]`);
-    expect(listed).not.toContain('Lead alerts');
+    expect(listed).not.toContain('Lead');
     expect(listed).not.toContain(NO_ROUTINE);
   });
 
   it('shows the operator every input, including one nothing takes events from', async () => {
     const listed = await listFrom(OPERATOR);
 
-    expect(listed).toContain('Inputs visible here (3):');
+    expect(listed).toContain('Inputs visible here (4):');
     expect(listed).toContain(
       `• [${OPERATOR_MADE}] (no purpose set) — enabled, signed, managed by the operator; no delivery on record\n    nothing takes its events yet`,
     );
   });
 
-  it('marks a linked routine that no longer exists, for those who see the input whole', async () => {
+  it('marks a linked routine that no longer exists, for those who see every input', async () => {
     routines.delete(LEADS);
 
     expect(await listFrom(DANA_DM)).toContain(`routine [${LEADS}] (no longer exists)`);
-    expect(await listFrom(GENERAL)).toContain('and 1 other routine not visible from here');
+    expect(await listFrom(LEADS_CHANNEL)).not.toContain(LEADS_INPUT);
   });
 
   it('leaves out a deleted input', async () => {
@@ -223,9 +225,9 @@ describe('the inventory', () => {
 describe('the history of an input', () => {
   function everyOutcome(): void {
     deliver(at(9, 0), []);
-    store.pauseInput(SHARED);
+    store.pauseInput(MEETINGS);
     deliver(at(9, 5), [forRoutine(NOTES)]);
-    store.resumeInput(SHARED);
+    store.resumeInput(MEETINGS);
 
     deliver(at(9, 10), [forRoutine(NOTES)]);
     finish('skipped', 'routine_paused');
@@ -238,9 +240,8 @@ describe('the history of an input', () => {
     finish('accepted', undefined, 'task-quiet');
     tasks.set('task-quiet', { status: 'in_progress', default_channel: null, channels: {} });
 
-    deliver(at(9, 25), [forRoutine(NOTES), forRoutine(LEADS)]);
+    deliver(at(9, 25), [forRoutine(NOTES)]);
     finish('accepted', undefined, 'task-posted');
-    finish('skipped', 'routine_paused');
     tasks.set('task-posted', {
       status: 'completed',
       default_channel: 'C0NOTES',
@@ -256,9 +257,6 @@ describe('the history of an input', () => {
       },
     });
 
-    deliver(at(9, 30), [forRoutine(LEADS)]);
-    finish('skipped', 'routine_paused');
-
     // Left waiting, so it is made last: a claim takes the oldest waiting handoff.
     deliver(at(9, 35), [forRoutine(NOTES)]);
   }
@@ -266,15 +264,12 @@ describe('the history of an input', () => {
   it("tells the outcomes apart in the owner's DM", async () => {
     everyOutcome();
     const notes = `[${NOTES}] “Meeting notes”`;
-    const leads = `[${LEADS}] “Lead alerts”`;
 
     expect(await historyFrom(DANA_DM)).toBe(
       [
-        `History of input [${SHARED}] “Meeting recordings”, newest first. Deliveries stay on record for 30 days. No event content is kept.`,
+        `History of input [${MEETINGS}] “Meeting recordings”, newest first. Deliveries stay on record for 30 days. No event content is kept.`,
         `• 2026-11-24 09:35 UTC — received: ${notes} has not started yet`,
-        `• 2026-11-24 09:30 UTC — skipped: ${leads} did not run — the routine was paused`,
         `• 2026-11-24 09:25 UTC — delivered: ${notes} ran as task-posted and posted in its conversation — https://example.slack.com/archives/C0NOTES/p1795530309733459`,
-        `• 2026-11-24 09:25 UTC — skipped: ${leads} did not run — the routine was paused`,
         `• 2026-11-24 09:20 UTC — handed off: ${notes} started task-quiet (in_progress); it has not posted yet`,
         `• 2026-11-24 09:15 UTC — uncertain: ${notes} was not recorded as started (starting it failed too many times), yet task-uncertain exists (completed)`,
         `• 2026-11-24 09:10 UTC — skipped: ${notes} did not run — the routine was paused`,
@@ -284,24 +279,15 @@ describe('the history of an input', () => {
     );
   });
 
-  it('shows only a count for routines not visible from the asking conversation', async () => {
-    everyOutcome();
+  it("reads a private channel's input from that channel, and refuses it elsewhere", async () => {
+    deliver(at(9), [forRoutine(LEADS)], LEADS_INPUT);
+    finish('skipped', 'routine_paused');
 
-    const shown = await historyFrom(GENERAL);
-
-    expect(shown).not.toContain('Lead alerts');
-    expect(shown).not.toContain(LEADS);
-    expect(shown).toContain(
-      '• 2026-11-24 09:30 UTC — received: taken by 1 other routine not visible from here',
+    expect(await historyFrom(LEADS_CHANNEL, LEADS_INPUT)).toContain(
+      `• 2026-11-24 09:00 UTC — skipped: [${LEADS}] “Lead alerts” did not run — the routine was paused`,
     );
-    expect(shown).toContain('p1795530309733459\n    and 1 other routine not visible from here');
-  });
-
-  it("shows a private channel's routine from that channel", async () => {
-    everyOutcome();
-
-    expect(await historyFrom(LEADS_CHANNEL)).toContain(
-      `• 2026-11-24 09:30 UTC — skipped: [${LEADS}] “Lead alerts” did not run — the routine was paused`,
+    expect(await historyFrom(GENERAL, LEADS_INPUT)).toBe(
+      `Input ${LEADS_INPUT} isn't visible from here, so its history can't be read from this conversation.`,
     );
   });
 
@@ -334,7 +320,7 @@ describe('the history of an input', () => {
       'No input inp-NOSUCHAAAAAAAAAAAAAAAA found.',
     );
     expect(await historyFrom(DANA_DM)).toBe(
-      `Input [${SHARED}] “Meeting recordings” has no delivery on record. Deliveries stay on record for 30 days. No event content is kept.`,
+      `Input [${MEETINGS}] “Meeting recordings” has no delivery on record. Deliveries stay on record for 30 days. No event content is kept.`,
     );
   });
 

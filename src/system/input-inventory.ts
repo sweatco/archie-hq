@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-/**
- * Scope follows trigger listings. The owner's own DM and the operator see an input whole.
- * Any other conversation sees the routines visible from it, and everything else as a count.
- */
+/** Scope follows trigger listings. The owner's own DM and the operator see every input; any other conversation sees one whose routine is visible from it. */
 import { DEFAULT_DISPATCH_POLICY } from '../incoming/dispatcher.js';
 import type { InputServices } from '../incoming/inputs.js';
 import type { DeliveryRecord } from '../incoming/store.js';
@@ -48,19 +45,17 @@ function routineLookup(whole: boolean, lookups: InventoryLookups): RoutineLookup
   };
 }
 
-export interface InputUses {
-  /** A null routine no longer exists. */
-  routines: Array<{ id: string; routine: Trigger | null }>;
-  /** Routines that stay unnamed. */
-  hidden: number;
-}
+/** An input takes one routine. A null routine no longer exists. */
+type ShownRoutines = Array<{ id: string; routine: Trigger | null }>;
 
-interface InputScope extends InputUses {
+interface InputScope {
+  routines: ShownRoutines;
   shows: RoutineLookup;
 }
 
-export interface InputListing extends InputUses {
+export interface InputListing {
   input: Input;
+  routines: ShownRoutines;
   latest: Receipt | null;
 }
 
@@ -72,20 +67,15 @@ async function scopeOf(
 ): Promise<InputScope | null> {
   const whole = seesWhole(input, origin);
   const shows = routineLookup(whole, lookups);
-  const routines: InputScope['routines'] = [];
-  let hidden = 0;
+  const routines: ShownRoutines = [];
   for (const id of input.routines) {
     const routine = await shows(id);
-    if (routine === undefined) hidden += 1;
-    else routines.push({ id, routine });
+    if (routine !== undefined) routines.push({ id, routine });
   }
-  return whole || routines.length > 0 ? { routines, hidden, shows } : null;
+  return whole || routines.length > 0 ? { routines, shows } : null;
 }
 
 const utc = (at: number) => `${new Date(at).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
-
-export const unnamedRoutines = (count: number) =>
-  `${count} other routine${count === 1 ? '' : 's'} not visible from here`;
 
 const inputName = (input: Input) =>
   `[${input.id}] ${input.purpose ? `“${input.purpose}”` : '(no purpose set)'}`;
@@ -99,19 +89,18 @@ export function routineDestination(routine: Trigger): string {
     : `a DM with <@${routine.binding.user_id}>`;
 }
 
-function describeInput({ input, latest, ...uses }: InputListing): string {
+function describeInput({ input, latest, routines }: InputListing): string {
   const lines = [
     `• ${inputName(input)} — ${input.state}, ${input.auth === 'bearer' ? 'bearer' : 'signed'}, ${
       input.owner ? `owned by <@${input.owner}>` : 'managed by the operator'
     }; ${latest ? `last delivery ${utc(latest.receivedAt)}` : 'no delivery on record'}`,
   ];
-  for (const { id, routine } of uses.routines)
+  for (const { id, routine } of routines)
     lines.push(
       routine
         ? `    routine [${id}] (${routine.status}) “${triggerWhat(routine)}” — delivers to ${routineDestination(routine)}`
         : `    routine ${routineName(id, routine)}`,
     );
-  if (uses.hidden > 0) lines.push(`    and ${unnamedRoutines(uses.hidden)}`);
   if (lines.length === 1) lines.push('    nothing takes its events yet');
   return lines.join('\n');
 }
@@ -128,8 +117,11 @@ export async function listInputs(
     if (input.state === 'deleted') continue;
     const scope = await scopeOf(input, origin, lookups);
     if (!scope) continue;
-    const { routines, hidden } = scope;
-    listings.push({ input, routines, hidden, latest: services.store.latestReceipt(input.id) });
+    listings.push({
+      input,
+      routines: scope.routines,
+      latest: services.store.latestReceipt(input.id),
+    });
   }
   return listings;
 }
@@ -202,20 +194,15 @@ async function deliveryLines(
     ];
 
   const lines: string[] = [];
-  let hidden = 0;
   for (const handoff of delivery.handoffs) {
     if (handoff.consumerKind !== ROUTINE_CONSUMER_KIND) continue;
     const routine = await scope.shows(handoff.consumerId);
-    if (routine === undefined) hidden += 1;
-    else
+    if (routine !== undefined)
       lines.push(
         at + (await routineOutcome(handoff, routineName(handoff.consumerId, routine), lookups)),
       );
   }
-  if (lines.length === 0)
-    return [`${at}received${hidden > 0 ? `: taken by ${unnamedRoutines(hidden)}` : ''}`];
-  if (hidden > 0) lines.push(`    and ${unnamedRoutines(hidden)}`);
-  return lines;
+  return lines.length > 0 ? lines : [`${at}received`];
 }
 
 export async function describeInputHistory(
