@@ -31,7 +31,7 @@ import {
 import { ensureChannelCanvas } from './channel-canvas.js';
 import { ensureChannelPins } from './channel-pins.js';
 import { shouldCreateNewTask, shouldForwardMessageEvent, isAckableEvent } from './task-routing.js';
-import { Task } from '../../tasks/task.js';
+import { Task, activeTasks } from '../../tasks/task.js';
 import { registerMemoryPreferenceHandlers } from '../../memory/slack-approval.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { logger } from '../../system/logger.js';
@@ -54,6 +54,7 @@ import {
   attachInitiativeOrigin,
 } from '../../proactivity/index.js';
 import { setAssistantThreadTitle } from './title.js';
+import { setSlackThreadStatus } from './status.js';
 import type { SlackThread, SlackAuthor } from '../../types/task.js';
 
 /**
@@ -886,9 +887,11 @@ export async function handleAgentSessionStopped(event: {
   user: string;
 }): Promise<void> {
   const taskId = await findTaskByThread(event.thread_ts);
-  if (!taskId) return;
-  const task = await Task.get(taskId);
-  if (!task.isActive) return;
+  const task = taskId ? activeTasks.get(taskId) : undefined;
+  if (!task?.isActive) {
+    await setSlackThreadStatus(event.channel, event.thread_ts, '');
+    return;
+  }
 
   try {
     const userInfo = await getUserInfo(event.user);

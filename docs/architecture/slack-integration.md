@@ -83,7 +83,7 @@ The server registers three Bolt event handlers:
 
    The `message` handler also branches on the **`message_changed`** subtype (a user editing a message) and routes it to `handleSlackEdit` — see [Message Edits](#message-edits) below.
 
-3. **`agent_session_stopped`** -- Fires when a person presses the stop button on an agent session; `handleAgentSessionStopped` calls `Task.stop()` on the thread's task, and the next message in the thread resumes it. An unknown thread, a task that is not running and an external or guest presser are ignored.
+3. **`agent_session_stopped`** -- Fires when a person presses the stop button on an agent session; `handleAgentSessionStopped` calls `Task.stop()` on the thread's task, and the next message in the thread resumes it. For an unknown thread or a task that is not running it only ends the session; an external or guest presser is ignored.
 
 The `app_mention` and `message` handlers run the same pipeline:
 

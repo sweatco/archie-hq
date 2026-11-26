@@ -7,6 +7,7 @@ vi.mock('../client.js', () => ({
   getBotId: vi.fn(),
   getSlackClient: vi.fn(),
 }));
+vi.mock('../status.js', () => ({ setSlackThreadStatus: vi.fn() }));
 vi.mock('../channel-canvas.js', () => ({ ensureChannelCanvas: vi.fn() }));
 vi.mock('../channel-pins.js', () => ({ ensureChannelPins: vi.fn() }));
 vi.mock('../title.js', () => ({ setAssistantThreadTitle: vi.fn() }));
@@ -19,21 +20,23 @@ vi.mock('../../../system/logger.js', () => ({
 }));
 
 import { handleAgentSessionStopped } from '../events.js';
-import { Task } from '../../../tasks/task.js';
+import { activeTasks, type Task } from '../../../tasks/task.js';
 import { getUserInfo } from '../client.js';
+import { setSlackThreadStatus } from '../status.js';
 import { findTaskByThread } from '../../../tasks/persistence.js';
 
 const STOP = { channel: 'D1', thread_ts: '1750000000.000100', user: 'U1' };
 const stop = vi.fn();
 
-function taskThatIs(running: boolean): Task {
-  return { isActive: running, stop } as unknown as Task;
+function runTask(running: boolean): void {
+  activeTasks.set('t1', { isActive: running, stop } as unknown as Task);
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
+  activeTasks.clear();
   vi.mocked(findTaskByThread).mockResolvedValue('t1');
-  vi.mocked(Task.get).mockResolvedValue(taskThatIs(true));
+  runTask(true);
   vi.mocked(getUserInfo).mockResolvedValue({ name: 'dana', realName: 'Dana' } as never);
 });
 
@@ -44,16 +47,17 @@ describe('handleAgentSessionStopped', () => {
     expect(stop).toHaveBeenCalledOnce();
   });
 
-  it('ignores a thread with no task', async () => {
+  it('ends the session of a thread with no task', async () => {
     vi.mocked(findTaskByThread).mockResolvedValue(null);
     await handleAgentSessionStopped(STOP);
-    expect(Task.get).not.toHaveBeenCalled();
+    expect(setSlackThreadStatus).toHaveBeenCalledWith(STOP.channel, STOP.thread_ts, '');
     expect(stop).not.toHaveBeenCalled();
   });
 
-  it('ignores a task that is not running', async () => {
-    vi.mocked(Task.get).mockResolvedValue(taskThatIs(false));
+  it('ends the session of a task that is not running', async () => {
+    runTask(false);
     await handleAgentSessionStopped(STOP);
+    expect(setSlackThreadStatus).toHaveBeenCalledWith(STOP.channel, STOP.thread_ts, '');
     expect(stop).not.toHaveBeenCalled();
   });
 
@@ -61,5 +65,6 @@ describe('handleAgentSessionStopped', () => {
     vi.mocked(getUserInfo).mockResolvedValue({ name: 'guest', isRestricted: true } as never);
     await handleAgentSessionStopped(STOP);
     expect(stop).not.toHaveBeenCalled();
+    expect(setSlackThreadStatus).not.toHaveBeenCalled();
   });
 });
