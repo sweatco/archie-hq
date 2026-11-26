@@ -9,7 +9,6 @@
 #      Archie selects Socket Mode automatically when this var is present.
 # The `request_url` fields are ignored by Slack when Socket Mode is on,
 # so they can stay as-is for environments that toggle between modes.
-# Switching an existing app from `assistant_view` to `agent_view` is one-way.
 
 display_information:
   name: Archie
