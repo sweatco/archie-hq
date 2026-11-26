@@ -33,7 +33,6 @@ export interface SandboxOptions {
   denyReadPaths?: string[];
   /** Domains Bash can reach (empty = deny all, default) */
   allowedNetworkDomains?: string[];
-  /** The session env carries GH_TOKEN; Bash must see a placeholder instead. */
   maskGitHubToken?: boolean;
 }
 
@@ -51,26 +50,24 @@ export interface SandboxOptions {
  */
 export const TRUSTED_PACKAGE_REGISTRY_DOMAINS = ['registry.npmjs.org', 'registry.yarnpkg.com'];
 
-/** `github.com` is deliberately absent, so `git push` from Bash stays blocked by the network. */
+/** No `github.com`: `git push` from Bash must stay blocked. */
 const GITHUB_API_DOMAIN = 'api.github.com';
 
-/** `gh run view --log` is redirected here for the log archive; the token is not injected on this host. */
+/** `gh run view --log` downloads the log archive from here. */
 const GITHUB_ACTIONS_LOG_DOMAIN = 'results-receiver.actions.githubusercontent.com';
 
 export const SANDBOX_GITHUB_DOMAINS = [GITHUB_API_DOMAIN, GITHUB_ACTIONS_LOG_DOMAIN];
 
 const GITHUB_TOKEN_ENV = 'GH_TOKEN';
 
-/** Only for a session whose SandboxOptions set `maskGitHubToken`. `workspace` must be writable in the sandbox. */
+/** Only with `maskGitHubToken`; otherwise Bash reads the real token. */
 export function buildSandboxGitHubEnv(token: string, workspace: string): Record<string, string> {
   return {
     [GITHUB_TOKEN_ENV]: token,
     GH_PROMPT_DISABLED: '1',
     GH_NO_UPDATE_NOTIFIER: '1',
-    // The telemetry host is not on the allowlist.
     GH_TELEMETRY: 'false',
-    // `gh run view --log` keeps the log archive in its cache and $HOME is read-only. Per task, so one task cannot alter logs another reads.
-    // sandbox-shell-env.sh turns this into XDG_CACHE_HOME for Bash only; set here it would also move the CLI's and MCP servers' caches.
+    // gh needs a writable cache. sandbox-shell-env.sh exports this as XDG_CACHE_HOME, for Bash only.
     ARCHIE_BASH_CACHE_HOME: resolve(workspace, '.cache'),
   };
 }

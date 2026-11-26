@@ -41,9 +41,7 @@ export interface ProbeVerdicts {
   /** Whether the sandbox proxy reached Yarn Berry's own config keys (BASH_ENV wiring). */
   yarnProxy: 'mapped' | 'unset';
   apiKey: 'hidden' | 'visible' | 'unknown';
-  /** What sandboxed Bash reads from GH_TOKEN: the placeholder or the real value. */
   githubToken: 'masked' | 'exposed' | 'unknown';
-  /** Whether `gh` gets an answer from GitHub's API through the TLS-terminating proxy. */
   githubApi: Reachability;
 }
 

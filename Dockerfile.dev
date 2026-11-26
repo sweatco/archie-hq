@@ -17,7 +17,7 @@ RUN apt-get update && \
     { ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null || true; } && \
     rm -rf /var/lib/apt/lists/*
 
-# GitHub CLI from GitHub's apt repository: Debian's own 2.46 prints nothing for `gh run view --log-failed`.
+# Debian's own gh (2.46) prints nothing for `gh run view --log-failed`.
 ADD --chmod=644 https://cli.github.com/packages/githubcli-archive-keyring.gpg /etc/apt/keyrings/githubcli.gpg
 RUN echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli.gpg] https://cli.github.com/packages stable main" \
       > /etc/apt/sources.list.d/github-cli.list && \

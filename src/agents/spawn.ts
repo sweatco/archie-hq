@@ -174,7 +174,6 @@ function assertPluginsLoaded(
   }
 }
 
-/** Undefined leaves `gh` unauthenticated; the session still starts. */
 async function mintSandboxGitHubToken(): Promise<string | undefined> {
   const client = getGitHubClient();
   if (!client) return undefined;
@@ -722,7 +721,6 @@ Shared folder: ${sharedPath} [READ-ONLY]
       // one of them. The SDK sets it per plugin as it loads each one.
       // Commit authorship — see commitAuthorEnv above.
       ...commitAuthorEnv,
-      // Masked for Bash: sandboxOpts.maskGitHubToken.
       ...(sandboxGitHubToken ? buildSandboxGitHubEnv(sandboxGitHubToken, workspace) : {}),
     },
     resume: sessionId,

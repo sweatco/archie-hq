@@ -1183,7 +1183,7 @@ export class GitHubClient {
     return results;
   }
 
-  /** For `gh` in the sandbox. The cached installation token must never reach a session. */
+  /** Never hand a session the cached installation token: it can write. */
   async mintSandboxReadToken(): Promise<string> {
     const installation = await this.app.octokit.request(
       'GET /app/installations/{installation_id}',

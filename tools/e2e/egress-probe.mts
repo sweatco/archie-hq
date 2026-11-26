@@ -37,7 +37,7 @@ const DENIED_HOST = 'https://example.com';
 const ALLOWED_HOST = `https://${TRUSTED_PACKAGE_REGISTRY_DOMAINS[0]}/npm`;
 
 const WORKSPACE = '/tmp/egress-check-ws';
-/** A dummy: GitHub answers 401 for it, which is all step 6 needs. */
+/** A dummy: a 401 from GitHub shows the API is reachable. */
 const GITHUB_TOKEN = 'archie-egress-probe-token';
 
 // Package-manager caches live in one shared directory outside the workspace, so
@@ -151,7 +151,6 @@ function apiKey(t: string): 'hidden' | 'visible' | 'unknown' {
   return 'unknown';
 }
 
-/** Any sight of the real value counts as exposed, wherever it appears. */
 function githubToken(t: string): 'masked' | 'exposed' | 'unknown' {
   if (t.includes(GITHUB_TOKEN)) return 'exposed';
   if (/GHTOKEN=fake_value_/.test(t)) return 'masked';

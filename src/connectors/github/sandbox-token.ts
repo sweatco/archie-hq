@@ -1,4 +1,4 @@
-/** Read-only: the sandbox's egress proxy injects this token into any request an agent sends to api.github.com. */
+/** Read-only: the proxy adds this token to whatever an agent sends to api.github.com. */
 
 import type { Endpoints } from '@octokit/types';
 
@@ -15,7 +15,6 @@ const REQUIRED_READ_PERMISSIONS: InstallationPermissions = {
   actions: 'read',
 };
 
-/** Optional for the App (docs/guides/github-setup.md). */
 const OPTIONAL_READ_PERMISSIONS = ['security_events', 'issues'] as const;
 
 export function sandboxReadPermissions(granted: InstallationPermissions): InstallationPermissions {
