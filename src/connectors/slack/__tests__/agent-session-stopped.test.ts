@@ -1,9 +1,3 @@
-/**
- * Slack's stop button on an agent session stops the thread's running task. An
- * unknown thread, a task that is not running and an external or guest presser
- * change nothing.
- */
-
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../client.js', () => ({

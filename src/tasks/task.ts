@@ -1378,18 +1378,15 @@ export class Task {
    */
   private onStatusRendered(status: string): void {
     if (!isStatusEnabled()) return;
-    // A stopped or completed task never shows the indicator again, even when its
-    // agent wakes once more before exiting (e.g. a background shell finishing
-    // after Slack's stop button). Nothing would clear it, and Slack keeps a
-    // working session for up to an hour.
+    // A stopped task's agent may wake once more; nothing would clear what it shows.
     if (status && !this.isActive) return;
     emitEvent('status', this.taskId, { status });
     this.pushSlackStatus(status);
   }
 
   /**
-   * Set (or clear, with an empty string) the working indicator on every linked
-   * Slack thread. Fire-and-forget and best-effort — each call
+   * Push (or clear, with an empty string) the "Archie is …" loading indicator
+   * on every linked Slack thread. Fire-and-forget and best-effort — each call
    * swallows its own errors. Muted channels are skipped so a thread the PM has
    * gone quiet in doesn't keep shimmering. No-op when there are no Slack
    * channels (e.g. CLI-only tasks), where the CLI shows the status instead.

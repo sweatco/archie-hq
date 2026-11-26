@@ -200,7 +200,7 @@ To enable Slack integration, use the app manifest at [`slack-manifest.yaml`](../
    SLACK_APP_TOKEN=xapp-...
    ```
 
-The manifest declares Slack's Agent surface (`agent_view`), so a new app gets it from the start: Archie answers DMs in the app's Messages tab and shows a working indicator with a stop button. Moving an existing app from `assistant_view` is one-way; after it, people must hard-refresh Slack. See [Agent Surface](../architecture/slack-integration.md#agent-surface).
+Re-importing this manifest into an existing app moves it to Slack's Agent surface, which cannot be undone.
 
 The bot needs these permissions:
 

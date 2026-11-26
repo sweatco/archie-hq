@@ -302,7 +302,6 @@ export async function mountSlackApp(
     }).catch((err: unknown) => logger.error('Server', 'Error processing Slack event', err));
   });
 
-  // The stop button Slack shows on an agent session while Archie is working.
   boltApp.event('agent_session_stopped', async ({ event: rawEvent }) => {
     if (getIsShuttingDown()) return;
     const parsedEvent = agentSessionStoppedSchema.safeParse(rawEvent);
@@ -880,12 +879,7 @@ function routeSlackEvent(event: {
 // Stop Button
 // ============================================================================
 
-/**
- * Stop the thread's task when a person presses Slack's stop button. Slack does
- * not end the session itself: `Task.stop()` ends the work, and its status clear
- * sets the session back to active. The next message in the thread resumes the
- * task, as after any stop.
- */
+/** Slack does not end the session itself; `Task.stop()`'s status clear does. */
 export async function handleAgentSessionStopped(event: {
   channel: string;
   thread_ts: string;
@@ -896,8 +890,6 @@ export async function handleAgentSessionStopped(event: {
   const task = await Task.get(taskId);
   if (!task.isActive) return;
 
-  // The same external/guest bail-out as inbound messages, applied to whoever
-  // pressed stop.
   try {
     const userInfo = await getUserInfo(event.user);
     if (isExternalUser(userInfo)) {

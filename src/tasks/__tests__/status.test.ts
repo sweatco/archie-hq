@@ -68,8 +68,6 @@ describe('TaskStatusController', () => {
     expect(pushed.at(-1)).toBe('');
   });
 
-  // A posted reply does not end Slack's working state, and this controller may
-  // be newer than what Slack shows, so parking and stopping always send it.
   it('sends the clear on suspend and clear even when nothing was pushed', () => {
     ctl.suspend();
     expect(pushed).toEqual(['']);
@@ -80,7 +78,7 @@ describe('TaskStatusController', () => {
     fresh.dispose();
   });
 
-  it('re-asserts the status on an interval to beat Slack’s ~2-min timeout', () => {
+  it('re-asserts the status on an interval', () => {
     ctl.note('researching');
     flush();
     expect(pushed).toEqual(['is researching…']);
