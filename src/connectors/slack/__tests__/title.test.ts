@@ -22,7 +22,9 @@ describe('setAssistantThreadTitle', () => {
   });
 
   it('updates the title outside dry-run mode', async () => {
-    await setAssistantThreadTitle(client, 'D123', '123.456', 'Test title');
+    await expect(setAssistantThreadTitle(client, 'D123', '123.456', 'Test title')).resolves.toBe(
+      true,
+    );
     expect(rename).toHaveBeenCalledExactlyOnceWith({
       channel_id: 'D123',
       thread_ts: '123.456',
@@ -32,8 +34,8 @@ describe('setAssistantThreadTitle', () => {
 
   it('keeps Slack failures non-fatal', async () => {
     rename.mockRejectedValueOnce(new Error('Slack unavailable'));
-    await expect(
-      setAssistantThreadTitle(client, 'D123', '123.456', 'Test title'),
-    ).resolves.toBeUndefined();
+    await expect(setAssistantThreadTitle(client, 'D123', '123.456', 'Test title')).resolves.toBe(
+      false,
+    );
   });
 });

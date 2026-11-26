@@ -16,16 +16,16 @@ import { logger } from '../../system/logger.js';
 
 /**
  * Set (or, with an empty string, clear) the loading status on a Slack thread.
- * Never throws.
+ * Never throws; resolves to whether Slack accepted the call.
  */
 export async function setSlackThreadStatus(
   channel_id: string,
   thread_ts: string,
   status: string,
-): Promise<void> {
+): Promise<boolean> {
   if (isSlackDryRun()) {
     logger.debug('slack-status', `[DRY RUN] setStatus ${channel_id}/${thread_ts} — "${status}"`);
-    return;
+    return false;
   }
   try {
     await getSlackClient().agents.sessions.setStatus({
@@ -33,7 +33,9 @@ export async function setSlackThreadStatus(
       thread_ts,
       status: status ? 'processing' : 'active',
     });
+    return true;
   } catch (err) {
     logger.warn('slack-status', `setStatus failed for ${channel_id}/${thread_ts}: ${err}`);
+    return false;
   }
 }

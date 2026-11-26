@@ -18,7 +18,7 @@ beforeEach(() => {
 
 describe('setSlackThreadStatus', () => {
   it('marks the agent session as working for any status text', async () => {
-    await setSlackThreadStatus('D123', '123.456', 'is checking Jira…');
+    await expect(setSlackThreadStatus('D123', '123.456', 'is checking Jira…')).resolves.toBe(true);
     expect(setStatus).toHaveBeenCalledExactlyOnceWith({
       channel_id: 'D123',
       thread_ts: '123.456',
@@ -43,6 +43,6 @@ describe('setSlackThreadStatus', () => {
 
   it('keeps Slack failures non-fatal', async () => {
     setStatus.mockRejectedValueOnce(new Error('not_allowed'));
-    await expect(setSlackThreadStatus('D123', '123.456', '')).resolves.toBeUndefined();
+    await expect(setSlackThreadStatus('D123', '123.456', '')).resolves.toBe(false);
   });
 });

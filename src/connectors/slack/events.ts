@@ -25,7 +25,6 @@ import {
   isExternalUser,
   isChannelShared,
   postEphemeral,
-  getSlackClient,
   invalidateMemoryMemberTrust,
 } from './client.js';
 import { ensureChannelCanvas } from './channel-canvas.js';
@@ -53,7 +52,6 @@ import {
   initiativeOrigin,
   attachInitiativeOrigin,
 } from '../../proactivity/index.js';
-import { setAssistantThreadTitle } from './title.js';
 import { setSlackThreadStatus } from './status.js';
 import type { SlackThread, SlackAuthor } from '../../types/task.js';
 
@@ -757,7 +755,7 @@ async function generateTitleAndSync(task: Task, thread: SlackThread): Promise<vo
   logger.system(`Task ${task.taskId} title set: "${title}"`);
 
   if (thread.channel.id.startsWith('D')) {
-    await setAssistantThreadTitle(getSlackClient(), thread.channel.id, thread.threadId, title);
+    await task.sendSlackTitle(thread.channel.id, thread.threadId);
   }
 }
 

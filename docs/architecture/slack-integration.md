@@ -52,7 +52,7 @@ The manifest declares Slack's Agent surface (`agent_view`). Switching an existin
 
 - Each top-level DM message opens its own thread, and so its own task.
 - Each thread Archie works in is an agent session: Slack shows "Archie is working" with a stop button (see [Live Status Indicator](#live-status-indicator)).
-- DM titles go through `agents.sessions.rename`, which works once the status indicator has created the session.
+- DM titles go through `agents.sessions.rename`, which works once the status indicator has created the session, so with `ARCHIE_LIVE_STATUS=false` a DM gets no title.
 
 ## Bot Identity Detection
 

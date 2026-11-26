@@ -18,12 +18,14 @@ export async function setAssistantThreadTitle(
   channel_id: string,
   thread_ts: string,
   title: string,
-): Promise<void> {
-  if (isSlackDryRun()) return;
+): Promise<boolean> {
+  if (isSlackDryRun()) return false;
   try {
     await client.agents.sessions.rename({ channel_id, thread_ts, title });
     logger.system(`Slack DM title synced (${channel_id}/${thread_ts})`);
+    return true;
   } catch (err) {
     logger.warn('slack-title', `rename failed for ${channel_id}/${thread_ts}: ${err}`);
+    return false;
   }
 }

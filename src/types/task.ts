@@ -299,6 +299,7 @@ export interface TaskMetadata {
     requested_at: string;
   };
   title?: string; // AI-generated one-line summary; absent on pre-feature tasks
+  slack_title_pending?: string; // channel key of the DM thread whose session has not taken `title` yet
   slack_threads?: SlackThreadRef[]; // Legacy — only present on old tasks loaded from disk, removed after migration
   agent_sessions: Record<string, AgentSessionState | string>; // union handles legacy string values on disk
   /**
