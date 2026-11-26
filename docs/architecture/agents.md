@@ -30,7 +30,7 @@ Six in-process MCP servers are attached at spawn, plus every server in the plugi
 | `comms-tools` | `post_to_user`, `post_files_to_user`, `find_slack_user`, `find_slack_channel`, `list_channels`, `read_channel_history`, `read_thread`, `post_to_channel`, `mute_channel`, `react_to_message`, `unreact_from_message`, `get_message_reactions`, `fetch_slack_reference` |
 | `orchestration-tools` | `report_completion`, `request_edit_mode`, `request_max_mode`, `get_task_usage`, `list_available_repos`, `mount_repo`, and the five trigger tools |
 | `scheduling-tools` | `parse_datetime`, `set_reminder`, `cancel_reminder` |
-| `repo-tools` | git and PR lifecycle against clones this task mounted — read side always, write side only in edit mode (see [edit-mode.md](edit-mode.md)) |
+| `repo-tools` | git and PR writes against clones this task mounted — branch tools always, write side only in edit mode (see [edit-mode.md](edit-mode.md)). GitHub reads go through `gh` in Bash |
 | `research-tools` | `web_research` |
 | `file-bridge` | forwards a local file's bytes into another MCP server's call without routing them through the model; always attached |
 

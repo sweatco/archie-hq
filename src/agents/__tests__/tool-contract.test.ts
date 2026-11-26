@@ -167,18 +167,6 @@ const SPAWN_REPO_TOOLS = [
   'mcp__repo-tools__switch_branch',
   'mcp__repo-tools__create_branch',
   'mcp__repo-tools__list_branches',
-  // PR read
-  'mcp__repo-tools__list_prs',
-  'mcp__repo-tools__get_pr',
-  'mcp__repo-tools__get_pr_status',
-  'mcp__repo-tools__get_pr_checks',
-  'mcp__repo-tools__get_check_run',
-  'mcp__repo-tools__get_pr_reviews',
-  'mcp__repo-tools__get_pr_comments',
-  'mcp__repo-tools__get_review_threads',
-  // Security / code scanning
-  'mcp__repo-tools__list_code_scanning_alerts',
-  'mcp__repo-tools__get_code_scanning_alert',
   // PR write
   'mcp__repo-tools__push_branch',
   'mcp__repo-tools__create_pull_request',

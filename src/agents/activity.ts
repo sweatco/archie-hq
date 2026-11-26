@@ -182,15 +182,6 @@ function repoToolPhrase(tool: string): string {
     case 'resolve_review_thread':
     case 'request_re_review':
       return 'updating the pull request';
-    case 'list_prs':
-    case 'get_pr':
-    case 'get_pr_status':
-    case 'get_pr_checks':
-    case 'get_check_run':
-    case 'get_pr_reviews':
-    case 'get_pr_comments':
-    case 'get_review_threads':
-      return 'reviewing the pull request';
     case 'fetch':
     case 'switch_branch':
     case 'list_branches':

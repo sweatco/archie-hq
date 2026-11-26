@@ -384,7 +384,7 @@ describe('debounced handlers', () => {
     expect(appendGitHubEvent).toHaveBeenCalledWith(TASK_ID, REPO, {
       from: 'ci',
       destination: 'PR #42',
-      message: 'checks updated — call get_pr_checks(42) to inspect',
+      message: `checks updated — run \`gh pr checks 42 -R ${REPO}\` to inspect`,
     });
     expect(sendMessage).toHaveBeenCalledTimes(2);
     expect(sendMessage).toHaveBeenCalledWith(expect.stringContaining('recorded line'));

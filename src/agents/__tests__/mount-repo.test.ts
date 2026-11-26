@@ -23,7 +23,6 @@ import type { AttachedRepo } from '../../types/task.js';
 vi.mock('../../connectors/github/client.js', async (original) => ({
   GitHubClient: (await original<typeof import('../../connectors/github/client.js')>()).GitHubClient,
   getGitHubClient: vi.fn(),
-  parseCheckRef: vi.fn(),
   fetchOrigin: vi.fn().mockResolvedValue(undefined),
   getArchieAttributionIdentity: vi.fn().mockReturnValue(null),
 }));
