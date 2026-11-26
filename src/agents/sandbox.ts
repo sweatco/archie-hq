@@ -92,6 +92,9 @@ export function buildSandboxConfig(opts: SandboxOptions) {
     network: {
       allowedDomains: opts.allowedNetworkDomains ?? [],
     },
+    credentials: {
+      envVars: [{ name: 'ANTHROPIC_API_KEY', mode: 'deny' as const }],
+    },
   };
 }
 

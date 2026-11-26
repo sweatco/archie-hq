@@ -111,6 +111,15 @@ describe('buildSandboxConfig', () => {
   it('defaults to network deny-all', () => {
     expect(buildSandboxConfig(base).network.allowedDomains).toEqual([]);
   });
+
+  it('hides the Anthropic API key from Bash whatever else the options grant', () => {
+    const deny = { name: 'ANTHROPIC_API_KEY', mode: 'deny' };
+    expect(buildSandboxConfig(base).credentials.envVars).toContainEqual(deny);
+    expect(
+      buildSandboxConfig({ ...base, allowedNetworkDomains: [...TRUSTED_PACKAGE_REGISTRY_DOMAINS] })
+        .credentials.envVars,
+    ).toContainEqual(deny);
+  });
 });
 
 describe('buildRepoGrants', () => {

@@ -19,6 +19,7 @@ const PROBE_PASS = [
   'EGRESS_ALLOWED_HOST=reachable',
   'EGRESS_PKG_INSTALL=ok',
   'EGRESS_YARN_PROXY=mapped',
+  'EGRESS_API_KEY=hidden',
 ].join('\n');
 
 function makeIo() {
@@ -52,6 +53,7 @@ describe('parseProbeOutput', () => {
       allowedHost: 'reachable',
       packageInstall: 'ok',
       yarnProxy: 'mapped',
+      apiKey: 'hidden',
     });
   });
 
@@ -79,6 +81,7 @@ describe('decideEgress', () => {
         allowedHost: 'reachable',
         packageInstall: 'ok',
         yarnProxy: 'mapped',
+        apiKey: 'hidden',
       }).pass,
     ).toBe(true);
   });
@@ -90,6 +93,7 @@ describe('decideEgress', () => {
       allowedHost: 'reachable',
       packageInstall: 'ok',
       yarnProxy: 'mapped',
+      apiKey: 'hidden',
     });
     expect(d.pass).toBe(false);
     expect(d.reasons.join(' ')).toMatch(/NOT on the allowlist was reachable/);
@@ -102,6 +106,7 @@ describe('decideEgress', () => {
       allowedHost: 'blocked',
       packageInstall: 'failed',
       yarnProxy: 'mapped',
+      apiKey: 'hidden',
     });
     expect(d.pass).toBe(false);
     expect(d.reasons.join(' ')).toMatch(/egress is broken rather than filtered/);
@@ -115,6 +120,7 @@ describe('decideEgress', () => {
         allowedHost: 'unknown',
         packageInstall: 'unknown',
         yarnProxy: 'unset',
+        apiKey: 'unknown',
       }).pass,
     ).toBe(false);
   });
@@ -128,6 +134,7 @@ describe('decideEgress', () => {
       allowedHost: 'reachable',
       packageInstall: 'ok',
       yarnProxy: 'unset',
+      apiKey: 'hidden',
     });
     expect(d.pass).toBe(false);
     expect(d.reasons.join(' ')).toMatch(/Yarn Berry/);
@@ -142,9 +149,23 @@ describe('decideEgress', () => {
       allowedHost: 'reachable',
       packageInstall: 'failed',
       yarnProxy: 'mapped',
+      apiKey: 'hidden',
     });
     expect(d.pass).toBe(false);
     expect(d.reasons.join(' ')).toMatch(/npm install` failed inside the sandbox/);
+  });
+
+  it('fails when sandboxed Bash can read the Anthropic API key', () => {
+    const d = decideEgress({
+      cliVersion: 'x',
+      deniedHost: 'blocked',
+      allowedHost: 'reachable',
+      packageInstall: 'ok',
+      yarnProxy: 'mapped',
+      apiKey: 'visible',
+    });
+    expect(d.pass).toBe(false);
+    expect(d.reasons.join(' ')).toMatch(/can read ANTHROPIC_API_KEY/);
   });
 });
 
