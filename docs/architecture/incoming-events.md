@@ -2,7 +2,7 @@
 
 Incoming events let a system other than Slack or GitHub tell Archie that something happened. A sender posts a JSON webhook to a callback URL. Archie authenticates it, records it durably, and later hands it to whatever acts on it.
 
-**Status:** the receiver, the inbox, the dispatcher and event routines are implemented behind `ARCHIE_INCOMING_EVENTS`, which is off by default. An event starts a Task only for a routine linked to its input. A person can set a routine up in Slack with a new input, which they then own, connect a sender, and ask Archie which inputs exist and what became of each delivery. Rotating a key and transferring an input in Slack are still to come ([#403](https://github.com/sweatco/archie-hq/issues/403)). The feature design is in the [incoming events plan](../plans/20261116-incoming-events-shared-receiver.md).
+**Status:** the receiver, the inbox, the dispatcher and event routines are implemented behind `ARCHIE_INCOMING_EVENTS`, which is off by default. An event starts a Task only for a routine linked to its input. A person can set a routine up in Slack with a new input, which they then own, connect a sender, and ask Archie which inputs exist and what became of each delivery. The feature design is in the [incoming events plan](../plans/20261116-incoming-events-shared-receiver.md).
 
 The inbox is in `src/incoming/`. The routine consumer is `src/system/routine-consumer.ts`, beside the trigger code it uses.
 
@@ -130,11 +130,11 @@ The pure parts are in `src/system/routine-review.ts`: the card, the digest and t
 
 When an approval links a routine to an input the approver manages, the approval line keeps a **Settings** button. Everyone in the conversation sees it. The button carries an id only, and each click is checked against the input as it is then: only the owner gets a window, anyone else is told who owns the input, and only they see that.
 
-**Settings** opens a window with the callback URL, the key behind a **Show key** button, the connection status, **Pause** or **Resume**, and **Delete**. These do what the CLI's commands do. The URL is built from `ARCHIE_PUBLIC_URL`; without it the window shows the path alone.
+**Settings** opens a window with the callback URL, the key behind a **Show key** button, the connection status, **Pause** or **Resume**, **Rotate key** and **Delete**. These do what the CLI's commands do. A rotation replaces the key at once: the old one stops working from the next delivery, and the window shows the new one. The URL is built from `ARCHIE_PUBLIC_URL`; without it the window shows the path alone.
 
 - **The key is shown to the owner alone,** and only after they ask. A Slack window is visible to the person who opened it, which makes it the one place in Slack a key may appear. The key never reaches model context, a card, an action value or a log. It does pass through Slack.
 - **An owner who is no longer a member of the workspace** is refused the key.
-- **The operator cannot read a key.** The CLI prints one only for an input it creates.
+- **The operator cannot read a key.** The CLI prints one only when it creates an input or rotates its key.
 
 **The connection status** reads two things and starts nothing:
 
@@ -212,6 +212,7 @@ npm run incoming -- list
 npm run incoming -- pause <input-id>
 npm run incoming -- resume <input-id>
 npm run incoming -- delete <input-id>
+npm run incoming -- rotate <input-id>
 npm run incoming -- link <input-id> <trigger-id>
 npm run incoming -- unlink <input-id> <trigger-id>
 npm run incoming -- history [<input-id>]
@@ -248,7 +249,6 @@ These are starting defaults, named constants in `receiver.ts`, `store.ts` and `d
 ## Not built yet
 
 - Proactivity as a second consumer ([#406](https://github.com/sweatco/archie-hq/issues/406)).
-- Rotating a key, transferring an input and disconnecting a routine in Slack ([#403](https://github.com/sweatco/archie-hq/issues/403)).
 - Choosing which event fields a Task receives ([#451](https://github.com/sweatco/archie-hq/issues/451)), and how long the event file is kept ([#407](https://github.com/sweatco/archie-hq/issues/407)).
 - An overlap of two keys during rotation ([#449](https://github.com/sweatco/archie-hq/issues/449)), matching a delivery against the input as committed ([#450](https://github.com/sweatco/archie-hq/issues/450)), and an audit log of input changes ([#454](https://github.com/sweatco/archie-hq/issues/454)).
 - A review of the tools an event-started Task may use, with the event as untrusted input ([#439](https://github.com/sweatco/archie-hq/issues/439)). Required before production use.
