@@ -105,15 +105,14 @@ One function, `routineMayUseInput` in `src/incoming/access.ts`, answers "may thi
 
 ### Approving an event routine
 
-A proposal names an existing input or asks for a new one, with a purpose and a scheme. Nothing is written to the inbox, and no key exists, until a person approves.
+A proposal asks for a new input, with a purpose and a scheme, or names one the operator made. Nothing is written to the inbox, and no key exists, until a person approves.
 
 The approval card is a review: the source, its owner, the filter, the audience and the instructions in full. Its Approve button carries a digest of what the card shows.
 
 | The proposal names | Who approves | Result |
 |---|---|---|
 | A new input | A member of the workspace | The input is created with that person as owner; the routine is enabled and linked |
-| An existing input | Its owner | The routine is enabled and linked |
-| An existing input | Someone else | Refused; the proposal stays pending |
+| An input someone owns | Anyone | Refused when proposed: a routine gets its own input |
 | An operator-made input | A member of the workspace | The routine is enabled; the operator links it |
 | Any | A guest, or a person from another organisation | Refused |
 

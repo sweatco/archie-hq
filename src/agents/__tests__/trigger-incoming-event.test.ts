@@ -4,6 +4,9 @@
  *
  * Mock shape and handler extraction follow trigger-detail.test.ts.
  */
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { MessageQueue } from '../message-queue.js';
 import { mcpToolHandler } from '../../test-support/mcp.js';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -70,6 +73,8 @@ vi.mock('../../connectors/slack/channel-canvas.js', () => ({
 }));
 vi.mock('../../connectors/slack/channel-pins.js', () => ({ collectPinnedFileAllowlist: vi.fn() }));
 
+import { setInputServices } from '../../incoming/access.js';
+import { IncomingStore } from '../../incoming/store.js';
 import { createOrchestrationMcpServer } from '../tools.js';
 import type { Agent } from '../agent.js';
 import type { Task } from '../../tasks/task.js';
@@ -259,5 +264,72 @@ describe('an existing event routine', () => {
 
     expect(out).toMatch(/cannot share a trigger/);
     expect(saveTrigger).not.toHaveBeenCalled();
+  });
+});
+
+describe('an input that already belongs to a routine', () => {
+  const OTHER_TRIGGER = 'trg-20261121-0900-other1';
+  let root: string;
+  let store: IncomingStore;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'archie-trigger-input-'));
+    store = new IncomingStore(join(root, 'state.sqlite'));
+    store.insertInput(
+      {
+        id: INPUT_ID,
+        state: 'enabled',
+        auth: 'standard_webhooks',
+        secretRefs: ['sec-1'],
+        filter: [],
+        routines: [TRIGGER_ID],
+        revision: 1,
+        owner: 'U0DANA',
+        purpose: 'Meeting recordings',
+      },
+      1000,
+    );
+    setInputServices({
+      store,
+      secrets: {
+        create: () => Promise.reject(new Error('unused')),
+        read: () => Promise.reject(new Error('unused')),
+        remove: () => Promise.reject(new Error('unused')),
+      },
+    });
+  });
+  afterEach(() => {
+    setInputServices(null);
+    store.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('cannot be named by a new proposal', async () => {
+    const out = await call('propose_trigger', makeTask(), proposal([ON_EVENT]));
+
+    expect(out).toMatch(/Could not create the trigger: that input already belongs to a routine/);
+    expect(saveTrigger).not.toHaveBeenCalled();
+  });
+
+  it('cannot be taken over by another routine through an edit', async () => {
+    loadTrigger.mockResolvedValue(routine({ id: OTHER_TRIGGER, conditions: [] }));
+
+    const out = await call('update_trigger', makeTask(), {
+      id: OTHER_TRIGGER,
+      conditions: [ON_EVENT],
+    });
+
+    expect(out).toMatch(/Could not update the trigger: that input already belongs to a routine/);
+  });
+
+  it('can still be named by its own routine in an edit', async () => {
+    loadTrigger.mockResolvedValue(routine());
+
+    const out = await call('update_trigger', makeTask(), {
+      id: TRIGGER_ID,
+      conditions: [{ ...ON_EVENT, event_filter: [ENDED] }],
+    });
+
+    expect(out).not.toMatch(/already belongs to a routine/);
   });
 });

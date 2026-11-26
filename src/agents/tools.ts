@@ -186,6 +186,7 @@ import { inputsPanelBlocks } from '../system/input-panels.js';
 import { INPUT_ID_PATTERN, inputFilterSchema, inputPurposeSchema } from '../incoming/types.js';
 import {
   routineDestinationRefusal,
+  routineInputRefusal,
   routineRefusalText,
   routineReviewBlocks,
 } from '../system/routine-approval.js';
@@ -2825,7 +2826,7 @@ const triggerConditionObject = z.object({
     .string()
     .optional()
     .describe(
-      "Existing input whose events fire the trigger (incoming_event), as `inp-…`. Only the input's owner can approve the trigger; for an input an operator made, the operator links the trigger after approval. Pass this or `new_input`, not both. Cannot be combined with schedule or channel_message conditions.",
+      'An input the operator made, whose events fire the trigger (incoming_event), as `inp-…`. The operator links the trigger after approval. An input set up in Slack belongs to its one routine and cannot be named here: use `new_input`. Pass this or `new_input`, not both. Cannot be combined with schedule or channel_message conditions.',
     ),
   new_input: z
     .object({
@@ -3237,6 +3238,8 @@ function createProposeTriggerTool(task: Task) {
 
       const built = buildConditions(args.conditions, defaultTz, binding.type, true);
       if ('error' in built) return ok(`Could not create the trigger: ${built.error}`);
+      const inputRefusal = routineInputRefusal(built.conditions);
+      if (inputRefusal) return ok(`Could not create the trigger: ${inputRefusal}.`);
       const routineRefusal = built.conditions.some(isEventCondition)
         ? await routineDestinationRefusal(binding)
         : null;
@@ -3586,6 +3589,8 @@ function createUpdateTriggerTool(task: Task) {
           trigger.status === 'pending',
         );
         if ('error' in built) return ok(`Could not update the trigger: ${built.error}`);
+        const inputRefusal = routineInputRefusal(built.conditions, trigger.id);
+        if (inputRefusal) return ok(`Could not update the trigger: ${inputRefusal}.`);
         nextConditions = built.conditions;
       }
 

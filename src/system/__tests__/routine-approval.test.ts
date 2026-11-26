@@ -332,29 +332,15 @@ describe('who may approve', () => {
     expect((await stored(trigger)).status).toBe('pending');
   });
 
-  it('refuses a person who does not own the input the routine names', async () => {
+  it('refuses a routine that names an input someone owns, its owner included', async () => {
     const input = await existingInput('U0DANA');
     const trigger = await proposed([{ type: 'incoming_event', input_id: input.id }]);
 
-    const approval = await approve(trigger, EVE);
+    for (const approver of [EVE, DANA])
+      expect(refusal(await approve(trigger, approver)).reason).toBe('input_taken');
 
-    expect(refusal(approval)).toMatchObject({ reason: 'not_owner', owner: 'U0DANA' });
     expect(store.input(input.id)?.routines).toEqual([]);
     expect((await stored(trigger)).status).toBe('pending');
-  });
-
-  it('lets the owner approve a second routine on their input', async () => {
-    const input = await existingInput('U0DANA');
-    const first = await proposed([{ type: 'incoming_event', input_id: input.id }]);
-    const second = await proposed([
-      { type: 'incoming_event', input_id: input.id, filter: [ENDED] },
-    ]);
-
-    await approve(first, DANA);
-    const approval = await approve(second, DANA);
-
-    expect(approval).toMatchObject({ status: 'approved', linked: [input.id], created: [] });
-    expect(store.input(input.id)?.routines).toEqual([first.id, second.id]);
   });
 
   it('enables a routine on an operator-made input and leaves the link to the operator', async () => {
@@ -378,7 +364,7 @@ describe('who may approve', () => {
 
     const approval = await approve(trigger, DANA);
 
-    expect(refusal(approval).reason).toBe('not_owner');
+    expect(refusal(approval).reason).toBe('input_taken');
     expect(inputs()).toHaveLength(1);
   });
 });
