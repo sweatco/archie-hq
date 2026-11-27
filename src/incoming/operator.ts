@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { statSync } from 'node:fs';
-import { z } from 'zod';
+import { reservedTaskId } from '../system/routine-handoff.js';
 import type { Trigger } from '../types/trigger.js';
 import { createInput, deleteInput, linkRoutine, rotateKey, type InputServices } from './inputs.js';
 import { inputCallback } from './receiver.js';
@@ -271,7 +271,6 @@ function unlink(
 
 const HISTORY_LIMIT = 50;
 const HISTORY_WIDTHS = [16, 26, 24, 9, 22] as const;
-const reservedTaskSchema = z.object({ task_id: z.string() });
 
 async function history(
   args: readonly string[],
@@ -312,21 +311,12 @@ async function reservedTask(
   state: string,
   reservation: string | null,
 ): Promise<string> {
-  const reserved = reservedTaskSchema.safeParse(parsedJson(reservation));
-  if (!reserved.success) return '-';
-  const status = await services.taskStatus(reserved.data.task_id);
+  const taskId = reservation === null ? undefined : reservedTaskId(reservation);
+  if (!taskId) return '-';
+  const status = await services.taskStatus(taskId);
   if (status === null) return '-';
   const uncertain = state === 'cancelled' || state === 'failed';
-  return `${reserved.data.task_id} ${status}${uncertain ? ' (uncertain)' : ''}`;
-}
-
-function parsedJson(text: string | null): unknown {
-  if (text === null) return null;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
+  return `${taskId} ${status}${uncertain ? ' (uncertain)' : ''}`;
 }
 
 function liveInput(services: InputServices, id: string): Input {
