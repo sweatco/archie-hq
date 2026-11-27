@@ -70,43 +70,29 @@ export function mayManageInput(input: Input, actor: InputActor): boolean {
   return actor.kind === 'operator' || (input.owner !== null && input.owner === actor.userId);
 }
 
-export type InputRemoval =
-  | { status: 'deleted'; input: Input }
-  | { status: 'refused'; reason: 'unknown_input' | 'input_deleted' | 'not_owner' };
+/** Null unless the input exists, is not deleted and the actor may manage it. */
+function managedInput(store: IncomingStore, actor: InputActor, inputId: string): Input | null {
+  const input = store.input(inputId);
+  return input && input.state !== 'deleted' && mayManageInput(input, actor) ? input : null;
+}
 
 export async function deleteInputAs(
   services: InputServices,
   actor: InputActor,
   inputId: string,
-): Promise<InputRemoval> {
-  const input = services.store.input(inputId);
-  if (!input) return { status: 'refused', reason: 'unknown_input' };
-  if (input.state === 'deleted') return { status: 'refused', reason: 'input_deleted' };
-  if (!mayManageInput(input, actor)) return { status: 'refused', reason: 'not_owner' };
-  const deleted = await deleteInput(services, inputId);
-  return deleted
-    ? { status: 'deleted', input: deleted }
-    : { status: 'refused', reason: 'unknown_input' };
+): Promise<Input | null> {
+  return managedInput(services.store, actor, inputId) ? deleteInput(services, inputId) : null;
 }
-
-export type PauseChange =
-  | { status: 'changed'; input: Input }
-  | { status: 'refused'; reason: 'unknown_input' | 'input_deleted' | 'not_owner' };
 
 export function setInputPaused(
   store: IncomingStore,
   actor: InputActor,
   inputId: string,
   paused: boolean,
-): PauseChange {
-  const input = store.input(inputId);
-  if (!input) return { status: 'refused', reason: 'unknown_input' };
-  if (input.state === 'deleted') return { status: 'refused', reason: 'input_deleted' };
-  if (!mayManageInput(input, actor)) return { status: 'refused', reason: 'not_owner' };
+): Input | null {
+  if (!managedInput(store, actor, inputId)) return null;
   const changed = paused ? store.pauseInput(inputId) : store.resumeInput(inputId);
-  if (!changed || changed.state === 'deleted')
-    return { status: 'refused', reason: 'input_deleted' };
-  return { status: 'changed', input: changed };
+  return changed && changed.state !== 'deleted' ? changed : null;
 }
 
 export type LinkChange =
@@ -156,26 +142,27 @@ export async function revealKey(
   return secret ? { status: 'revealed', secret } : { status: 'refused', reason: 'unreadable' };
 }
 
-export type KeyRotation =
-  | { status: 'rotated'; input: Input; secret: string; leftBehind: string[] }
-  | { status: 'refused'; reason: 'unknown_input' | 'input_deleted' | 'not_owner' };
+export interface KeyRotation {
+  input: Input;
+  secret: string;
+  /** Old secret files that could not be removed. They are unused. */
+  leftBehind: string[];
+}
 
 /** The new key is sealed before the input points at it, so an interruption leaves an unused file, never an input without a key. */
 export async function rotateKey(
   services: InputServices,
   actor: InputActor,
   inputId: string,
-): Promise<KeyRotation> {
-  const input = services.store.input(inputId);
-  if (!input) return { status: 'refused', reason: 'unknown_input' };
-  if (input.state === 'deleted') return { status: 'refused', reason: 'input_deleted' };
-  if (!mayManageInput(input, actor)) return { status: 'refused', reason: 'not_owner' };
+): Promise<KeyRotation | null> {
+  const input = managedInput(services.store, actor, inputId);
+  if (!input) return null;
 
   const { ref, secret } = await services.secrets.create(input.auth);
   const change = services.store.replaceSecret(inputId, ref);
   if (!change || change.input.state === 'deleted') {
     await services.secrets.remove(ref);
-    return { status: 'refused', reason: change ? 'input_deleted' : 'unknown_input' };
+    return null;
   }
   const leftBehind: string[] = [];
   for (const old of change.replaced) {
@@ -185,7 +172,7 @@ export async function rotateKey(
       leftBehind.push(old);
     }
   }
-  return { status: 'rotated', input: change.input, secret, leftBehind };
+  return { input: change.input, secret, leftBehind };
 }
 
 /** What Archie holds about an input's sender. Reading it starts nothing and writes nothing. */

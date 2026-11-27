@@ -189,14 +189,13 @@ async function pauseFromSettings(args: ButtonClick, paused: boolean): Promise<vo
   const owned = await inputToChange(args, view);
   if (!owned) return;
   const { services } = owned;
-  const change = setInputPaused(
+  const input = setInputPaused(
     services.store,
     { kind: 'slack_user', userId: args.body.user.id },
     owned.input.id,
     paused,
   );
-  if (change.status === 'refused') return;
-  const { input } = change;
+  if (!input) return;
   logger.system(
     `Incoming events: input ${input.id} was ${paused ? 'paused' : 'resumed'} by its owner`,
   );
@@ -224,8 +223,7 @@ async function rotateFromSettings(args: ButtonClick): Promise<void> {
     { kind: 'slack_user', userId: args.body.user.id },
     owned.input.id,
   );
-  if (rotation.status === 'refused')
-    return showNotice(view, 'The key could not be rotated. The input may be gone.');
+  if (!rotation) return showNotice(view, 'The key could not be rotated. The input may be gone.');
   const { input } = rotation;
   logger.system(`Incoming events: input ${input.id} had its key rotated by its owner`);
   if (rotation.leftBehind.length > 0)
@@ -254,12 +252,12 @@ async function deleteFromSettings(args: ButtonClick): Promise<void> {
   const { services, input } = owned;
 
   try {
-    const removal = await deleteInputAs(
+    const deleted = await deleteInputAs(
       services,
       { kind: 'slack_user', userId: args.body.user.id },
       input.id,
     );
-    if (removal.status === 'refused')
+    if (!deleted)
       return showNotice(view, 'This input could not be deleted. It may be gone already.');
   } catch (error) {
     // The input is marked deleted before its secrets go, so a failure after that leaves only a file behind.

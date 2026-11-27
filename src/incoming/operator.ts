@@ -153,7 +153,7 @@ async function rotate(
   const [id] = args;
   if (!id || args.length !== 1) throw new Error('Usage: incoming rotate <input-id>');
   const rotation = await rotateKey(services, OPERATOR, liveInput(services, id).id);
-  if (rotation.status === 'refused') throw new Error(`Input ${id} was deleted`);
+  if (!rotation) throw new Error(`Input ${id} was deleted`);
   print(`Rotated the key of input ${id}. The old key no longer works.`);
   print(`Secret:        ${rotation.secret}`);
   print('The secret is shown this once. Store it with the sender now.');

@@ -188,8 +188,7 @@ it('replaces the key for the owner and for the operator, and removes the old one
   const byOwner = await rotateKey({ store, secrets }, DANA, input.id);
   const byOperator = await rotateKey({ store, secrets }, OPERATOR, input.id);
 
-  if (byOwner.status !== 'rotated' || byOperator.status !== 'rotated')
-    throw new Error('expected both rotations to succeed');
+  if (!byOwner || !byOperator) throw new Error('expected both rotations to succeed');
   expect(byOwner.secret).toMatch(/^whsec_/);
   expect(new Set([secret, byOwner.secret, byOperator.secret]).size).toBe(3);
   expect(await secrets.read(oldRef ?? '')).toBeNull();
@@ -207,24 +206,15 @@ it('rotates nothing for anyone else, or for an input that is unknown or deleted'
     { auth: 'bearer', owner: 'U0DANA' },
   );
 
-  expect(await rotateKey({ store, secrets }, EVE, input.id)).toEqual({
-    status: 'refused',
-    reason: 'not_owner',
-  });
+  expect(await rotateKey({ store, secrets }, EVE, input.id)).toBeNull();
   expect(await revealKey({ store, secrets }, DANA, input.id)).toEqual({
     status: 'revealed',
     secret,
   });
-  expect(await rotateKey({ store, secrets }, DANA, 'inp-NOSUCHAAAAAAAAAAAAAAAA')).toEqual({
-    status: 'refused',
-    reason: 'unknown_input',
-  });
+  expect(await rotateKey({ store, secrets }, DANA, 'inp-NOSUCHAAAAAAAAAAAAAAAA')).toBeNull();
 
   await deleteInput({ store, secrets }, input.id);
-  expect(await rotateKey({ store, secrets }, DANA, input.id)).toEqual({
-    status: 'refused',
-    reason: 'input_deleted',
-  });
+  expect(await rotateKey({ store, secrets }, DANA, input.id)).toBeNull();
   expect(readdirSync(secretsDir)).toEqual([]);
 });
 
@@ -235,6 +225,6 @@ it('still hands over the new key when the old file cannot be removed', async () 
 
   const rotation = await rotateKey({ store, secrets }, DANA, input.id);
 
-  expect(rotation).toMatchObject({ status: 'rotated', leftBehind: [oldRef] });
+  expect(rotation).toMatchObject({ leftBehind: [oldRef] });
   expect(store.input(input.id)?.secretRefs).not.toContain(oldRef);
 });

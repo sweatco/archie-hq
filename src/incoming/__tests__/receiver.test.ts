@@ -269,7 +269,7 @@ describe('an authenticated delivery', () => {
   it('needs the new key from the first delivery after a rotation', async () => {
     const sender = await signedSender();
     const rotation = await rotateKey({ store, secrets }, { kind: 'operator' }, sender.input.id);
-    if (rotation.status !== 'rotated') throw new Error('expected the rotation to succeed');
+    if (!rotation) throw new Error('expected the rotation to succeed');
 
     const withOldKey = await deliverSigned(sender, EVENT);
     const withNewKey = await deliverSigned({ ...sender, secret: rotation.secret }, EVENT, 'msg_2');
