@@ -1013,6 +1013,29 @@ describe('reconciling', () => {
     expect(reconcile).toHaveBeenCalledTimes(2);
   });
 
+  it('claims nothing when it is stopped during the sweep', async () => {
+    const handle = vi.fn<Handle>().mockResolvedValue({ state: 'accepted' });
+    const consumer: IncomingConsumer = {
+      kind: 'routine',
+      match: () => [],
+      handle,
+      // Not awaited here: stop waits for the pass this runs in.
+      reconcile: () => {
+        stopping = running.stop();
+        return Promise.resolve();
+      },
+    };
+    let stopping: Promise<void> | undefined;
+    const running = new IncomingDispatcher(store, [consumer], POLICY, () => now);
+    receive('msg_a');
+
+    await running.runOnce();
+    await stopping;
+
+    expect(handle).not.toHaveBeenCalled();
+    expect(inbox().handoffs).toMatchObject([{ state: 'pending', attempts: 0 }]);
+  });
+
   it('keeps delivering when a consumer fails to reconcile', async () => {
     const consumer: IncomingConsumer = {
       kind: 'routine',
