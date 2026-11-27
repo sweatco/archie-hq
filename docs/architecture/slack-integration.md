@@ -171,6 +171,15 @@ What a channel pins is standing context about that channel, in the same way the 
 
 Opening a pin needs no new tool: the PM already has `read_thread` for a message, whose `channel` and `thread_ts` parameters take the pin's `channel_id` and `ts`, and `fetch_slack_reference` accepts a pinned file id as well as a canvas-referenced one. Only the PM sees the pin index, so a worker that needs a pin's content gets it in its brief — exactly as with a canvas file reference.
 
+## Conversation Record
+
+With `ARCHIE_CONVERSATION_RECORD=true` (off by default), every task with a Slack destination gets a `<conversation_record>` block at spawn, built by `src/connectors/slack/conversation-record.ts`:
+
+- **Recent messages.** The last 20 top-level messages of the conversation, read live with `fetchChannelHistory`, each cut to 400 characters. In a channel this includes messages that did not address Archie. They are read only when a task spawns; they never wake one.
+- **Other tasks.** Up to 10 rows from the conversation's [work index](persistence.md#work-index): thread, state, title, requester and the last thing the task told the user.
+
+The record covers only the task's own fixed destination (`memory_destination`), so nothing crosses conversations. Messages follow the ingestion redaction policy (`shouldRedact`): an external author in a shared channel is reduced to the placeholder, name included. Every value is XML-escaped and the block's `note` marks it as untrusted context. If Slack cannot be read the block says the stream is unavailable and still lists the tasks.
+
 ## Multi-Channel Support
 
 A single task can be linked to multiple destinations — Slack threads (channel or DM) and the CLI. The `TaskMetadata` type (`src/types/task.ts`) holds a `channels` record keyed by `slack:<channelId>:<threadTs>` (or `cli` for the CLI channel). The relevant Slack entry shape is:
