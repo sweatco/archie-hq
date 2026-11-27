@@ -536,6 +536,16 @@ describe('work that may no longer run is skipped with its reason', () => {
     ],
   ];
 
+  it('retries, and skips nothing, when an enabled routine is not in the index yet', async () => {
+    await routine();
+    deliver();
+    deindexTrigger(ROUTINE_ID);
+
+    await dispatch();
+
+    expect(inbox().handoffs).toMatchObject([{ state: 'pending', attempts: 1 }]);
+  });
+
   it.each(cases)('%s', async (reason, change) => {
     await routine();
     deliver();

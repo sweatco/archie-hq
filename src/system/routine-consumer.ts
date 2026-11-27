@@ -140,10 +140,12 @@ async function liveRoutine(
 
   const routine = getEnabledTrigger(snapshot.trigger_id);
   // The index holds enabled triggers only, so the record tells a paused routine from a deleted one.
-  if (!routine)
-    return {
-      stop: (await loadTrigger(snapshot.trigger_id)) ? 'routine_paused' : 'routine_deleted',
-    };
+  if (!routine) {
+    const stored = await loadTrigger(snapshot.trigger_id);
+    if (stored?.status === 'enabled')
+      throw new Error(`Routine ${snapshot.trigger_id} is enabled but not indexed yet`);
+    return { stop: stored ? 'routine_paused' : 'routine_deleted' };
+  }
   const namesInput = routine.conditions.some(
     (condition) => condition.type === 'incoming_event' && condition.input_id === snapshot.input_id,
   );
