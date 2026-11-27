@@ -318,6 +318,17 @@ describe('Rotate key', () => {
   });
 });
 
+it('says so in the window when a control inside it fails', async () => {
+  slack.update.mockRejectedValueOnce(new Error('hash_conflict'));
+
+  await clickWindow('input_pause', input.id, 'U0DANA');
+
+  expect(logger.error).toHaveBeenCalled();
+  const [notice] = slack.update.mock.calls[1] as [{ view_id: string; view: unknown }];
+  expect(notice.view_id).toBe('V0SETTINGS');
+  expect(shown(notice.view)).toContain('That could not be done. Please try again.');
+});
+
 describe('a window that outlived its input', () => {
   it.each([
     'input_show_key',

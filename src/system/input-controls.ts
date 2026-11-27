@@ -273,11 +273,12 @@ async function deleteFromSettings(args: ButtonClick): Promise<void> {
   await rewriteOrigin(view, (blocks) => withInputDeleted(blocks, input.id));
 }
 
-/** Logs a failed control and, where there is a card to answer under, says so to the person who clicked. */
-function reportFailure(args: ButtonClick): (error: unknown) => Promise<void> {
+/** Logs a failed control and says so to the person who clicked: in the window it was clicked in, or under its card. */
+function reportFailure({ action, body }: ButtonClick): (error: unknown) => Promise<void> {
   return async (error) => {
-    logger.error('incoming', `Input control ${args.action.action_id} failed`, error);
-    await tell(args.body, 'That could not be done. Please try again.').catch((failure: unknown) =>
+    logger.error('incoming', `Input control ${action.action_id} failed`, error);
+    const said = 'That could not be done. Please try again.';
+    await (body.view ? showNotice(body.view, said) : tell(body, said)).catch((failure: unknown) =>
       logger.warn('incoming', 'Could not report a failed control', failure),
     );
   };
