@@ -439,12 +439,14 @@ describe('an interrupted start is continued by the retry', () => {
     await routine();
     deliver();
     let failWake: (error: Error) => void = () => undefined;
-    fixture.spawn.mockImplementationOnce(
-      () => new Promise<void>((_resolve, reject) => (failWake = reject)),
-    );
+    const spawned = new Promise<void>((reached) => {
+      fixture.spawn.mockImplementationOnce(() => {
+        reached();
+        return new Promise<void>((_resolve, reject) => (failWake = reject));
+      });
+    });
     const attempt = dispatch();
-    for (let turn = 0; turn < 200 && fixture.spawn.mock.calls.length === 0; turn += 1)
-      await new Promise((resolve) => setImmediate(resolve));
+    await spawned;
     expect(await onlyTask()).toMatchObject({ triggered_start: { phase: 'ready' } });
 
     const started = Task.startedFor(
