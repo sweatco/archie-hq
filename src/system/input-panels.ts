@@ -4,7 +4,7 @@ import type { ModalView } from '@slack/web-api';
 import { z } from 'zod';
 import type { ConnectionStatus } from '../incoming/inputs.js';
 import type { Input } from '../incoming/types.js';
-import { routineDestination, type InputListing } from './input-inventory.js';
+import { routineDestination, unnamedRoutines, type InputListing } from './input-inventory.js';
 import { triggerWhat } from './trigger-scheduler.js';
 
 export const INPUT_ACTIONS = {
@@ -19,6 +19,7 @@ export const INPUT_ACTIONS = {
 
 /** A message holds 50 blocks; each input takes two. */
 export const PANEL_LIMIT = 20;
+const USES_SHOWN = 8;
 
 const plainText = (text: string) => ({ type: 'plain_text' as const, text });
 const markdown = (text: string) => ({ type: 'mrkdwn' as const, text });
@@ -53,15 +54,21 @@ const STATE_WORD: Record<Input['state'], string> = {
   deleted: 'Deleted',
 };
 
-function usesLines({ routines }: InputListing): string[] {
-  if (routines.length === 0) return ['_Nothing takes its events yet_'];
-  return routines.map(({ id, routine }) =>
+function usesLines({ routines, hidden }: InputListing): string[] {
+  const lines = routines.map(({ id, routine }) =>
     routine
       ? `• ${triggerWhat(routine)} → ${routineDestination(routine)}${
           routine.status === 'enabled' ? '' : ` _(${routine.status})_`
         }`
       : `• A routine that no longer exists (\`${id}\`)`,
   );
+  const shown = lines.slice(0, USES_SHOWN);
+  const unnamed = hidden + lines.length - shown.length;
+  if (unnamed > 0)
+    shown.push(
+      shown.length > 0 ? `_and ${unnamedRoutines(unnamed)}_` : `_${unnamedRoutines(unnamed)}_`,
+    );
+  return shown.length > 0 ? shown : ['_Nothing takes its events yet_'];
 }
 
 function panelRow(listing: InputListing): unknown {

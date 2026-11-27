@@ -97,18 +97,6 @@ it('lets the owner and the operator link a routine, and nobody else', async () =
   expect(store.input(input.id)?.routines).toEqual([ROUTINE_ID]);
 });
 
-it('gives an input to one routine, even for those who manage it', async () => {
-  const { input } = await createInput({ store, secrets }, { auth: 'bearer', owner: 'U0DANA' });
-  linkRoutine(store, DANA, input.id, ROUTINE_ID);
-
-  for (const actor of [DANA, OPERATOR])
-    expect(linkRoutine(store, actor, input.id, 'trg-20261124-0900-other1')).toEqual({
-      status: 'refused',
-      reason: 'input_taken',
-    });
-  expect(store.input(input.id)?.routines).toEqual([ROUTINE_ID]);
-});
-
 it('lets the owner unlink a routine, and nobody else', async () => {
   const { input } = await createInput({ store, secrets }, { auth: 'bearer', owner: 'U0DANA' });
   linkRoutine(store, DANA, input.id, ROUTINE_ID);

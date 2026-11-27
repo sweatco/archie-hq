@@ -190,6 +190,7 @@ describe('the inputs panel', () => {
   const listing = (changes: Partial<InputListing> = {}): InputListing => ({
     input: INPUT,
     routines: [{ id: NOTES.id, routine: NOTES }],
+    hidden: 0,
     latest: null,
     ...changes,
   });
@@ -208,14 +209,18 @@ describe('the inputs panel', () => {
     expect(row?.accessory).toMatchObject({ action_id: 'input_settings', value: INPUT.id });
   });
 
-  it('marks a routine that is not enabled', () => {
+  it('marks a routine that is not enabled and counts what stays unnamed', () => {
     const [, row] = rows(
       inputsPanelBlocks([
-        listing({ routines: [{ id: NOTES.id, routine: { ...NOTES, status: 'paused' } }] }),
+        listing({
+          routines: [{ id: NOTES.id, routine: { ...NOTES, status: 'paused' } }],
+          hidden: 2,
+        }),
       ]),
     );
 
     expect(row?.text.text).toContain('• Meeting notes → #notes _(paused)_');
+    expect(row?.text.text).toContain('_and 2 other routines not visible from here_');
   });
 
   it("says so when nothing takes an input's events", () => {
@@ -273,7 +278,7 @@ describe('the inputs panel', () => {
 
 describe('a panel row after its input is paused', () => {
   it('shows the new state and keeps the rest of the row', () => {
-    const listing = { input: INPUT, routines: [], latest: null };
+    const listing = { input: INPUT, routines: [], hidden: 0, latest: null };
     const blocks = inputsPanelBlocks([listing]);
 
     const after = text(withInputState(blocks, { ...INPUT, state: 'paused' }));
