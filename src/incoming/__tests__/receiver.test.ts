@@ -414,7 +414,7 @@ describe('a rejected delivery starts no work', () => {
     {
       name: 'a zero-length body',
       status: 400,
-      error: 'invalid_json',
+      error: 'empty_body',
       send: (_signed, bearer) => deliverBearer(bearer, undefined),
     },
     {

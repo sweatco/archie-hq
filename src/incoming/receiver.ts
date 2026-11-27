@@ -153,10 +153,10 @@ function readBody(parseRawJson: RawBodyParser, req: Request, res: Response): Pro
     parseRawJson(req, res, (error?: unknown) => {
       if (error !== undefined) return resolve({ ok: false, reply: bodyRejection(error) });
       const body: unknown = req.body;
-      if (Buffer.isBuffer(body)) return resolve({ ok: true, body });
-      // The parser passes a request with no body or another media type through untouched.
+      if (Buffer.isBuffer(body) && body.length > 0) return resolve({ ok: true, body });
+      // The parser passes a request with no body or another media type through untouched, and reads `Content-Length: 0` as an empty buffer.
       const reply =
-        req.is('application/json') === null
+        Buffer.isBuffer(body) || req.is('application/json') === null
           ? rejected(400, 'empty_body')
           : rejected(415, 'unsupported_media_type');
       resolve({ ok: false, reply });
