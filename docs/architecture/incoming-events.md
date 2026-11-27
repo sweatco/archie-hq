@@ -99,7 +99,7 @@ Two things must hold before a routine receives anything:
 - **The conversation approved it.** The routine is proposed and approved in the conversation it delivers to, like any trigger.
 - **It is linked to the input.** The approval links it when the approver may manage the input. Otherwise the operator links it with the CLI. Removing the link is how access is revoked.
 
-An input id appears in the callback URL and in logs, so the id alone grants nothing. An input takes one routine, which gets a Task for each event that passes its filter.
+An input id appears in the callback URL and in logs, so the id alone grants nothing. An input takes one routine, which gets a Task for each event that passes its filter. A link to a deleted routine does not hold the input: the next link replaces it.
 
 One function, `routineMayUseInput` in `src/incoming/access.ts`, answers "may this routine still use this input?" for every check below. `mayManageInput` in `src/incoming/inputs.ts` answers who may change an input: the operator always, a Slack user only as its owner.
 

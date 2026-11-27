@@ -102,20 +102,36 @@ export type LinkChange =
       reason: 'unknown_input' | 'input_deleted' | 'not_owner' | 'input_taken';
     };
 
-/** Lets a trigger receive the input's events, when the actor manages the input. An input takes one trigger. `unchanged` means it was linked already. */
+/** The linked routines that no longer exist. A deleted routine keeps its link, so a Task of it that still runs can post, but it does not hold the input. */
+export async function goneRoutines(
+  input: Input,
+  load: (triggerId: string) => Promise<unknown>,
+): Promise<string[]> {
+  const gone: string[] = [];
+  for (const id of input.routines) if (!(await load(id))) gone.push(id);
+  return gone;
+}
+
+/**
+ * Lets a trigger receive the input's events, when the actor manages the input. An input takes one trigger. `unchanged` means it was linked already.
+ * `gone` names linked routines that no longer exist, which the new link replaces.
+ */
 export function linkRoutine(
   store: IncomingStore,
   actor: InputActor,
   inputId: string,
   triggerId: string,
+  gone: readonly string[] = [],
 ): LinkChange {
   const input = store.input(inputId);
   if (!input) return { status: 'refused', reason: 'unknown_input' };
   if (input.state === 'deleted') return { status: 'refused', reason: 'input_deleted' };
   if (!mayManageInput(input, actor)) return { status: 'refused', reason: 'not_owner' };
   if (input.routines.includes(triggerId)) return { status: 'unchanged', input };
-  if (input.routines.length > 0) return { status: 'refused', reason: 'input_taken' };
+  if (input.routines.some((id) => !gone.includes(id)))
+    return { status: 'refused', reason: 'input_taken' };
 
+  for (const id of gone) store.unlinkRoutine(inputId, id);
   const changed = store.linkRoutine(inputId, triggerId);
   // The input was read a moment ago in the same tick, so only a deletion by another process can land in between.
   if (!changed || changed.state === 'deleted')

@@ -2,7 +2,14 @@
 import { statSync } from 'node:fs';
 import { reservedTaskId, startedUnrecorded } from '../system/routine-handoff.js';
 import type { Trigger } from '../types/trigger.js';
-import { createInput, deleteInput, linkRoutine, rotateKey, type InputServices } from './inputs.js';
+import {
+  createInput,
+  deleteInput,
+  goneRoutines,
+  linkRoutine,
+  rotateKey,
+  type InputServices,
+} from './inputs.js';
 import { inputCallback } from './receiver.js';
 import {
   inputFilterSchema,
@@ -231,7 +238,8 @@ async function link(
       `Trigger ${triggerId} has no condition for input ${inputId}, so a link would deliver nothing`,
     );
 
-  const change = linkRoutine(services.store, OPERATOR, input.id, triggerId);
+  const gone = await goneRoutines(input, services.loadTrigger);
+  const change = linkRoutine(services.store, OPERATOR, input.id, triggerId, gone);
   if (change.status === 'refused')
     throw new Error(
       change.reason === 'input_taken'

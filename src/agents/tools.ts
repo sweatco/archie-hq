@@ -3239,7 +3239,7 @@ function createProposeTriggerTool(task: Task) {
 
       const built = buildConditions(args.conditions, defaultTz, binding.type, true);
       if ('error' in built) return ok(`Could not create the trigger: ${built.error}`);
-      const inputRefusal = routineInputRefusal(built.conditions);
+      const inputRefusal = await routineInputRefusal(built.conditions);
       if (inputRefusal) return ok(`Could not create the trigger: ${inputRefusal}.`);
       const routineRefusal = built.conditions.some(isEventCondition)
         ? await routineDestinationRefusal(binding)
@@ -3590,7 +3590,7 @@ function createUpdateTriggerTool(task: Task) {
           trigger.status === 'pending',
         );
         if ('error' in built) return ok(`Could not update the trigger: ${built.error}`);
-        const inputRefusal = routineInputRefusal(built.conditions, trigger.id);
+        const inputRefusal = await routineInputRefusal(built.conditions, trigger.id);
         if (inputRefusal) return ok(`Could not update the trigger: ${inputRefusal}.`);
         // Taking events needs the review an event routine gets at approval.
         if (

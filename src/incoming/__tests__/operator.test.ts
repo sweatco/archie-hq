@@ -289,6 +289,18 @@ it('refuses a second trigger on an input, which takes one', async () => {
   expect(store.input(id)?.routines).toEqual([ROUTINE_ID]);
 });
 
+it('links a trigger to an input whose earlier trigger was deleted', async () => {
+  const { id } = await created();
+  routineFor(id);
+  routineFor(id, { id: 'trg-20261121-0900-ticket' });
+  await run('link', id, ROUTINE_ID);
+  triggers.delete(ROUTINE_ID);
+
+  await run('link', id, 'trg-20261121-0900-ticket');
+
+  expect(store.input(id)?.routines).toEqual(['trg-20261121-0900-ticket']);
+});
+
 it('refuses a link that would deliver nothing, and changes no input', async () => {
   const { id } = await created();
   const other = await created();

@@ -344,11 +344,25 @@ describe('who may approve', () => {
 
   it('refuses a routine that names an operator-made input another routine uses', async () => {
     const input = await existingInput(null);
-    store.linkRoutine(input.id, 'trg-20261124-0900-other1');
+    const other = await proposed([{ type: 'incoming_event', input_id: input.id }]);
+    store.linkRoutine(input.id, other.id);
     const trigger = await proposed([{ type: 'incoming_event', input_id: input.id }]);
 
-    expect(routineInputRefusal(trigger.conditions)).toMatch(/already belongs to a routine/);
+    expect(await routineInputRefusal(trigger.conditions)).toMatch(/already belongs to a routine/);
     expect(refusal(await approve(trigger, DANA)).reason).toBe('input_taken');
+  });
+
+  it('gives an operator-made input to a new routine once the routine it was linked to is deleted', async () => {
+    const input = await existingInput(null);
+    store.linkRoutine(input.id, 'trg-20261124-0900-gone01');
+    const trigger = await proposed([{ type: 'incoming_event', input_id: input.id }]);
+
+    expect(await routineInputRefusal(trigger.conditions)).toBeNull();
+    expect(await approve(trigger, OPERATOR)).toMatchObject({
+      status: 'approved',
+      linked: [input.id],
+    });
+    expect(store.input(input.id)?.routines).toEqual([trigger.id]);
   });
 
   it('enables a routine on an operator-made input and leaves the link to the operator', async () => {
