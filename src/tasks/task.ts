@@ -413,6 +413,16 @@ export class Task {
     });
   }
 
+  /** Whether the Task prepared for `origin` has started. A start still in flight is waited for, since it may yet be rolled back. */
+  static async startedFor(taskId: string, origin: string): Promise<boolean> {
+    return activationLock(taskId, async () => {
+      const start = (await loadMetadata(taskId))?.triggered_start;
+      if (start && start.origin !== origin)
+        throw new Error(`Task ${taskId} was started for another handoff`);
+      return start?.phase === 'ready';
+    });
+  }
+
   private static async createInternal(
     preparation?: Pick<
       TaskMetadata,

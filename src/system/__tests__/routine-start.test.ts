@@ -435,6 +435,28 @@ describe('an interrupted start is continued by the retry', () => {
     expect(wakes).toHaveBeenCalledTimes(1);
   });
 
+  it('does not call a Task started while its first wake can still fail', async () => {
+    await routine();
+    deliver();
+    let failWake: (error: Error) => void = () => undefined;
+    fixture.spawn.mockImplementationOnce(
+      () => new Promise<void>((_resolve, reject) => (failWake = reject)),
+    );
+    const attempt = dispatch();
+    for (let turn = 0; turn < 200 && fixture.spawn.mock.calls.length === 0; turn += 1)
+      await new Promise((resolve) => setImmediate(resolve));
+    expect(await onlyTask()).toMatchObject({ triggered_start: { phase: 'ready' } });
+
+    const started = Task.startedFor(
+      expectDefined(reservedTaskId()),
+      expectDefined(inbox().handoffs[0]).id,
+    );
+    failWake(new Error('spawn failed'));
+    await attempt;
+
+    await expect(started).resolves.toBe(false);
+  });
+
   it('gives up after the last attempt with the reason and no Task', async () => {
     await routine();
     deliver();

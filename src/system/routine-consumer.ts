@@ -90,7 +90,7 @@ async function startRoutine(work: HandoffWork): Promise<HandleResult> {
   let taskId = handoff.reservation
     ? routineReservationSchema.parse(JSON.parse(handoff.reservation)).task_id
     : undefined;
-  if (taskId && (await startedFor(taskId, handoff.id))) return ACCEPTED;
+  if (taskId && (await Task.startedFor(taskId, handoff.id))) return ACCEPTED;
 
   const skip = async (reason: string): Promise<HandleResult> => {
     if (taskId) await discardUnstarted(taskId, handoff.id);
@@ -126,13 +126,6 @@ async function discardUnstarted(taskId: string, origin: string): Promise<boolean
   const gone = await Task.discardPrepared(taskId, origin);
   if (gone) releaseEventSlot(taskId);
   return gone;
-}
-
-async function startedFor(taskId: string, origin: string): Promise<boolean> {
-  const start = (await loadMetadata(taskId))?.triggered_start;
-  if (start && start.origin !== origin)
-    throw new Error(`Task ${taskId} was started for another handoff`);
-  return start?.phase === 'ready';
 }
 
 /** The routine as it runs now, or why unstarted work for it stops. */
