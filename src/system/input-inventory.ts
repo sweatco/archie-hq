@@ -37,7 +37,9 @@ function routineLookup(whole: boolean, lookups: InventoryLookups): RoutineLookup
     if (!found) {
       found = lookups.loadTrigger(id).then(async (routine) => {
         if (whole) return routine;
-        return routine && (await lookups.visible(routine)) ? routine : undefined;
+        // A proposal stays with the conversation that made it, as in trigger listings.
+        if (!routine || routine.status === 'pending') return undefined;
+        return (await lookups.visible(routine)) ? routine : undefined;
       });
       known.set(id, found);
     }
@@ -193,15 +195,18 @@ async function deliveryLines(
     ];
 
   const lines: string[] = [];
+  let hidden = false;
   for (const handoff of delivery.handoffs) {
     if (handoff.consumerKind !== ROUTINE_CONSUMER_KIND) continue;
     const routine = await scope.shows(handoff.consumerId);
-    if (routine !== undefined)
+    if (routine === undefined) hidden = true;
+    else
       lines.push(
         at + (await routineOutcome(handoff, routineName(handoff.consumerId, routine), lookups)),
       );
   }
-  return lines.length > 0 ? lines : [`${at}received`];
+  if (lines.length > 0) return lines;
+  return [at + (hidden ? 'taken by a routine not visible from here' : 'received')];
 }
 
 export async function describeInputHistory(

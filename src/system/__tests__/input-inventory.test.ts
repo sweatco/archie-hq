@@ -209,6 +209,15 @@ describe('the inventory', () => {
     expect(await listFrom(LEADS_CHANNEL)).not.toContain(LEADS_INPUT);
   });
 
+  it('keeps a proposal that is not approved yet out of other conversations', async () => {
+    const proposal = 'trg-20261124-0900-propo1';
+    routines.set(proposal, routine(proposal, { status: 'pending', summary: 'Deploy notes' }));
+    store.linkRoutine(OPERATOR_MADE, proposal);
+
+    expect(await listFrom(GENERAL)).not.toContain('Deploy notes');
+    expect(await listFrom(OPERATOR)).toContain(`routine [${proposal}] (pending) “Deploy notes”`);
+  });
+
   it('leaves out a deleted input', async () => {
     store.markInputDeleted(NO_ROUTINE);
 
@@ -305,6 +314,16 @@ describe('the history of an input', () => {
     finish('skipped', 'something_new');
 
     expect(await historyFrom(DANA_DM)).toContain('did not run — something_new');
+  });
+
+  it('does not call a delivery waiting when its routine is hidden from here', async () => {
+    deliver(at(9), [forRoutine(LEADS)]);
+    finish('accepted', undefined, 'task-leads');
+
+    const shown = await historyFrom(GENERAL);
+
+    expect(shown).toContain('• 2026-11-24 09:00 UTC — taken by a routine not visible from here');
+    expect(shown).not.toContain('Lead');
   });
 
   it("reports only routines' handoffs", async () => {
