@@ -693,6 +693,25 @@ describe('a handoff the inbox ends by itself', () => {
     expect(taskIds()).toEqual([]);
   });
 
+  it('removes a prepared Task listed after one that cannot be removed', async () => {
+    await routine();
+    for (const key of ['msg_1', 'msg_2']) {
+      deliver(key);
+      vi.spyOn(Task.prototype, 'startTriggered').mockRejectedValueOnce(
+        new Error('process stopped'),
+      );
+      await dispatch();
+    }
+    expect(taskIds()).toHaveLength(2);
+    vi.spyOn(Task, 'discardPrepared').mockRejectedValueOnce(new Error('EBUSY'));
+
+    store.pauseInput(INPUT_ID, now);
+    now += HOUR;
+    await dispatch();
+
+    expect(taskIds()).toHaveLength(1);
+  });
+
   it('keeps a Task that had already started', async () => {
     await routine();
     deliver();

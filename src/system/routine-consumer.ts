@@ -157,8 +157,16 @@ async function discardAbandoned(inbox: InboxView): Promise<void> {
   for (const { handoffId, reservation } of inbox.abandonedReservations(ROUTINE_CONSUMER_KIND)) {
     const taskId = reservedTaskId(reservation);
     if (!taskId) continue;
-    const prepared = (await loadMetadata(taskId))?.status === 'preparing';
-    if ((await discardUnstarted(taskId, handoffId)) && prepared)
-      logger.system(`Discarded task ${taskId}: its handoff ${handoffId} ended before it started`);
+    try {
+      const prepared = (await loadMetadata(taskId))?.status === 'preparing';
+      if ((await discardUnstarted(taskId, handoffId)) && prepared)
+        logger.system(`Discarded task ${taskId}: its handoff ${handoffId} ended before it started`);
+    } catch (error) {
+      logger.warn(
+        'incoming',
+        `Could not discard task ${taskId} of ended handoff ${handoffId}`,
+        error,
+      );
+    }
   }
 }
