@@ -27,6 +27,7 @@ vi.mock('@slack/web-api', () => ({
 }));
 vi.mock('../../system/workdir.js', async (original) => ({
   ...(await original<typeof import('../../system/workdir.js')>()),
+  WORKDIR: fixture.root,
   SESSIONS_DIR: fixture.root,
 }));
 vi.mock('../../system/plugin-sync.js', () => ({ syncPlugins: vi.fn() }));

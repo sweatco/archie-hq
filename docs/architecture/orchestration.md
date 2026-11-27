@@ -276,6 +276,7 @@ Both `stop()` and `complete()`:
 5. Remove the task's clones when `edit_allowed !== true`
 6. Clear the `:eyes:` acks and the Slack status indicator
 7. Flush metadata with the new status
+8. Update the task's row in the conversation's [work index](persistence.md#work-index)
 
 ### Deferred teardown
 
