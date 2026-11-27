@@ -3132,12 +3132,7 @@ function eventApprovalNote(conditions: readonly TriggerCondition[]): string {
         ' Approving it creates the input, and the person who approves becomes the owner of that input.',
       );
     } else if (condition.type === 'incoming_event') {
-      const owner = inputServices()?.store.input(condition.input_id)?.owner;
-      notes.add(
-        owner
-          ? ` Only <@${owner}>, who owns the input, can approve it.`
-          : ' After approval it receives events only once an operator links it to the input.',
-      );
+      notes.add(' After approval it receives events only once an operator links it to the input.');
     }
   }
   return [...notes].join('');

@@ -155,12 +155,7 @@ export interface SettingsPanel {
 
 const WINDOW_TITLE = plainText('Input settings');
 
-function routinesLeft(count: number): string {
-  if (count === 0) return '';
-  return count === 1
-    ? ' Its routine receives nothing more.'
-    : ` Its ${count} routines receive nothing more.`;
-}
+const routinesLeft = (count: number) => (count > 0 ? ' Its routine receives nothing more.' : '');
 
 /**
  * The window an owner manages an input in. Slack shows a modal only to the person who opened it,

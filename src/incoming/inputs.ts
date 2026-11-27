@@ -123,36 +123,14 @@ export function linkRoutine(
   inputId: string,
   triggerId: string,
 ): LinkChange {
-  return changeLink(store, actor, inputId, triggerId, true);
-}
-
-/** Stops the trigger receiving the input's events. `unchanged` means it was not linked. */
-export function unlinkRoutine(
-  store: IncomingStore,
-  actor: InputActor,
-  inputId: string,
-  triggerId: string,
-): LinkChange {
-  return changeLink(store, actor, inputId, triggerId, false);
-}
-
-function changeLink(
-  store: IncomingStore,
-  actor: InputActor,
-  inputId: string,
-  triggerId: string,
-  linked: boolean,
-): LinkChange {
   const input = store.input(inputId);
   if (!input) return { status: 'refused', reason: 'unknown_input' };
   if (input.state === 'deleted') return { status: 'refused', reason: 'input_deleted' };
   if (!mayManageInput(input, actor)) return { status: 'refused', reason: 'not_owner' };
-  if (input.routines.includes(triggerId) === linked) return { status: 'unchanged', input };
-  if (linked && input.routines.length > 0) return { status: 'refused', reason: 'input_taken' };
+  if (input.routines.includes(triggerId)) return { status: 'unchanged', input };
+  if (input.routines.length > 0) return { status: 'refused', reason: 'input_taken' };
 
-  const changed = linked
-    ? store.linkRoutine(inputId, triggerId)
-    : store.unlinkRoutine(inputId, triggerId);
+  const changed = store.linkRoutine(inputId, triggerId);
   // The input was read a moment ago in the same tick, so only a deletion by another process can land in between.
   if (!changed || changed.state === 'deleted')
     return { status: 'refused', reason: 'input_deleted' };

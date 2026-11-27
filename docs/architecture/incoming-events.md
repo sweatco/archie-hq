@@ -19,7 +19,7 @@ An input is one callback URL with its own secret.
 - **State:** `enabled`, `paused` or `deleted`. A deleted input answers `410` and cannot be resumed.
 - **Authentication:** `signed` uses the [Standard Webhooks](https://www.standardwebhooks.com/) headers `webhook-id`, `webhook-timestamp` and `webhook-signature`, with a five-minute tolerance. `bearer` uses `Authorization: Bearer <secret>`, plus an optional `Idempotency-Key`.
 - **Filter:** a list of conditions on the event JSON, such as "`/type` equals `meeting.ended`". An event that fails one is recorded as ignored.
-- **Owner:** the Slack user who approved the proposal that created the input. Only the owner approves another routine on it. An input the operator made has no owner and is managed from the CLI alone.
+- **Owner:** the Slack user who approved the proposal that created the input. An input the operator made has no owner and is managed from the CLI alone.
 - **Purpose:** a short label for cards and listings, such as "Meeting recordings".
 - **Linked routine:** the one trigger allowed to receive this input's events, by its owner's approval or by the operator. See [Event routines](#event-routines).
 
@@ -99,7 +99,7 @@ Two things must hold before a routine receives anything:
 - **The conversation approved it.** The routine is proposed and approved in the conversation it delivers to, like any trigger.
 - **It is linked to the input.** The approval links it when the approver may manage the input. Otherwise the operator links it with the CLI. Removing the link is how access is revoked.
 
-An input id appears in the callback URL and in logs, so the id alone grants nothing. Several routines can be linked to one input; each gets its own Task for an event that passes its filter.
+An input id appears in the callback URL and in logs, so the id alone grants nothing. An input takes one routine, which gets a Task for each event that passes its filter.
 
 One function, `routineMayUseInput` in `src/incoming/access.ts`, answers "may this routine still use this input?" for every check below. `mayManageInput` in `src/incoming/inputs.ts` answers who may change an input: the operator always, a Slack user only as its owner.
 

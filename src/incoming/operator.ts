@@ -2,14 +2,7 @@
 import { statSync } from 'node:fs';
 import { z } from 'zod';
 import type { Trigger } from '../types/trigger.js';
-import {
-  createInput,
-  deleteInput,
-  linkRoutine,
-  rotateKey,
-  unlinkRoutine,
-  type InputServices,
-} from './inputs.js';
+import { createInput, deleteInput, linkRoutine, rotateKey, type InputServices } from './inputs.js';
 import { inputCallback } from './receiver.js';
 import {
   inputFilterSchema,
@@ -269,10 +262,10 @@ function unlink(
   if (!inputId || !triggerId || args.length !== 2)
     throw new Error('Usage: incoming unlink <input-id> <trigger-id>');
   const input = liveInput(services, inputId);
-  const change = unlinkRoutine(services.store, OPERATOR, input.id, triggerId);
-  if (change.status === 'refused') throw new Error(`Input ${inputId} was deleted`);
-  if (change.status === 'unchanged')
+  if (!input.routines.includes(triggerId))
     throw new Error(`Trigger ${triggerId} is not linked to input ${inputId}`);
+  const changed = services.store.unlinkRoutine(input.id, triggerId);
+  if (!changed || changed.state === 'deleted') throw new Error(`Input ${inputId} was deleted`);
   print(`Unlinked trigger ${triggerId} from input ${inputId}.`);
 }
 

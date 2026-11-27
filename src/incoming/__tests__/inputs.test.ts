@@ -12,7 +12,6 @@ import {
   mayManageInput,
   revealKey,
   rotateKey,
-  unlinkRoutine,
 } from '../inputs.js';
 import { noteRefusedDelivery } from '../refusals.js';
 import { vaultInputSecrets, type InputSecrets } from '../secrets.js';
@@ -107,18 +106,6 @@ it('gives an input to one routine, even for those who manage it', async () => {
       reason: 'input_taken',
     });
   expect(store.input(input.id)?.routines).toEqual([ROUTINE_ID]);
-});
-
-it('lets the owner unlink a routine, and nobody else', async () => {
-  const { input } = await createInput({ store, secrets }, { auth: 'bearer', owner: 'U0DANA' });
-  linkRoutine(store, DANA, input.id, ROUTINE_ID);
-
-  expect(unlinkRoutine(store, EVE, input.id, ROUTINE_ID).status).toBe('refused');
-  expect(store.input(input.id)?.routines).toEqual([ROUTINE_ID]);
-
-  expect(unlinkRoutine(store, DANA, input.id, ROUTINE_ID).status).toBe('changed');
-  expect(unlinkRoutine(store, DANA, input.id, ROUTINE_ID).status).toBe('unchanged');
-  expect(store.input(input.id)?.routines).toEqual([]);
 });
 
 it('refuses a link to an input that is unknown or deleted', async () => {
