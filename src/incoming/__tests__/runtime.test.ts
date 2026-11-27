@@ -213,6 +213,14 @@ describe('with the flag on', () => {
     expect(afterClose.status).toBe(503);
   });
 
+  it('closes once when it is asked twice, as on a second shutdown signal', async () => {
+    const running = mountIncomingEvents(express());
+
+    await running?.close();
+
+    await expect(running?.close()).resolves.toBeUndefined();
+  });
+
   it('closes after five seconds even when a handoff attempt is still running', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
     const started = vi.fn();

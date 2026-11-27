@@ -76,18 +76,21 @@ export function mountIncomingEvents(
   setInputServices({ store, secrets });
   mountIncomingReceiver(app, { store, secrets, consumers });
   const dispatcher = new IncomingDispatcher(store, consumers);
+  const close = async () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const waitedLongEnough = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, SHUTDOWN_GRACE_MS);
+    });
+    await Promise.race([dispatcher.stop(), waitedLongEnough]);
+    clearTimeout(timer);
+    setOpenInbox(null);
+    setInputServices(null);
+    store.close();
+  };
+  // A second shutdown signal asks again, and the database throws on a second close.
+  let closing: Promise<void> | undefined;
   return {
     start: () => dispatcher.start(),
-    async close() {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const waitedLongEnough = new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, SHUTDOWN_GRACE_MS);
-      });
-      await Promise.race([dispatcher.stop(), waitedLongEnough]);
-      clearTimeout(timer);
-      setOpenInbox(null);
-      setInputServices(null);
-      store.close();
-    },
+    close: () => (closing ??= close()),
   };
 }
