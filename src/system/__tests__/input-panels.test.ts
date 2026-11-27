@@ -102,9 +102,23 @@ describe('the Settings window', () => {
           receivedAt: 1_800_000_000_000,
           outcome: 'closed',
           ignoredReason: null,
+          started: true,
         },
       },
       /Last received <!date\^1800000000\^.* · handed to its routine/,
+    ],
+    [
+      'a delivery whose routine did not run',
+      {
+        ...QUIET,
+        lastReceipt: {
+          receivedAt: 1_800_000_000_000,
+          outcome: 'closed',
+          ignoredReason: null,
+          started: false,
+        },
+      },
+      /Last received <!date\^1800000000\^.* · its routine did not run/,
     ],
     [
       'a delivery that authenticated while the routine was paused',
@@ -114,6 +128,7 @@ describe('the Settings window', () => {
           receivedAt: 1_800_000_000_000,
           outcome: 'ignored',
           ignoredReason: 'filtered',
+          started: false,
         },
       },
       /not acted on: filtered out or no routine/,

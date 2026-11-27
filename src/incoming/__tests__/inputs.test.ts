@@ -173,9 +173,32 @@ it('reports the newest delivery and the last refusal of an input, and nothing fo
       receivedAt: 2000,
       outcome: 'ignored',
       ignoredReason: 'filtered',
+      started: false,
     },
     lastRefusedAt: 3000,
   });
+});
+
+it('tells a delivery that started its routine from one that was skipped', async () => {
+  const { input } = await createInput({ store, secrets }, { auth: 'bearer', owner: 'U0DANA' });
+  const routine = [{ kind: 'routine', consumerId: 'trg-20261121-0900-notes1', snapshot: '{}' }];
+  const delivered = async (eventKey: string, state: 'accepted' | 'skipped') => {
+    const delivery = {
+      inputId: input.id,
+      binding: 'generic',
+      digest: 'd1',
+      body: Buffer.from('{}'),
+    };
+    const receivedAt = Date.now();
+    store.receive({ ...delivery, eventKey, receivedAt }, routine);
+    const claimed = store.claimHandoff(receivedAt + 60_000, 1000);
+    if (!claimed) throw new Error('Expected a waiting handoff');
+    store.finishHandoff(claimed.handoff.id, claimed.token, state, null);
+    return (await connectionStatus({ store, secrets }, input)).lastReceipt;
+  };
+
+  expect(await delivered('msg_1', 'accepted')).toMatchObject({ outcome: 'closed', started: true });
+  expect(await delivered('msg_2', 'skipped')).toMatchObject({ outcome: 'closed', started: false });
 });
 
 it('replaces the key for the owner and for the operator, and removes the old one', async () => {

@@ -106,7 +106,9 @@ function describeReceipt(receipt: NonNullable<ConnectionStatus['lastReceipt']>):
       ? `not acted on: ${receipt.ignoredReason === 'paused' ? 'input paused' : 'filtered out or no routine'}`
       : receipt.outcome === 'open'
         ? 'starting its routine'
-        : 'handed to its routine';
+        : receipt.started
+          ? 'handed to its routine'
+          : 'its routine did not run';
   return `Last received ${slackTime(receipt.receivedAt)} · ${what}`;
 }
 

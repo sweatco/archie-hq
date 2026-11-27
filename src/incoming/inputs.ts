@@ -179,7 +179,12 @@ export async function rotateKey(
 export interface ConnectionStatus {
   keyReadable: boolean;
   /** The newest delivery that authenticated, recorded or not acted on. */
-  lastReceipt: Pick<Receipt, 'receivedAt' | 'outcome' | 'ignoredReason'> | null;
+  lastReceipt:
+    | (Pick<Receipt, 'receivedAt' | 'outcome' | 'ignoredReason'> & {
+        /** A routine took it. False for a delivery whose handoff was skipped, cancelled or failed. */
+        started: boolean;
+      })
+    | null;
   /** The newest delivery whose signature or token did not verify, since the daemon started. */
   lastRefusedAt: number | null;
 }
@@ -188,14 +193,17 @@ export async function connectionStatus(
   services: InputServices,
   input: Input,
 ): Promise<ConnectionStatus> {
-  const receipt = services.store.latestReceipt(input.id);
+  const [newest] = services.store.deliveryHistory(input.id, 1);
   return {
     keyReadable: (await readKey(services, input)) !== null,
-    lastReceipt: receipt && {
-      receivedAt: receipt.receivedAt,
-      outcome: receipt.outcome,
-      ignoredReason: receipt.ignoredReason,
-    },
+    lastReceipt: newest
+      ? {
+          receivedAt: newest.receivedAt,
+          outcome: newest.outcome,
+          ignoredReason: newest.ignoredReason,
+          started: newest.handoffs.some((handoff) => handoff.state === 'accepted'),
+        }
+      : null,
     lastRefusedAt: lastRefusedDelivery(input.id),
   };
 }
