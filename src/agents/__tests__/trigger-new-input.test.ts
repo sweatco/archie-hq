@@ -386,6 +386,26 @@ describe('the review card of a proposal that is edited', () => {
     expect(pending.review_card).toEqual(SECOND_CARD);
   });
 
+  it('retires the review card when an edit makes the proposal another kind of trigger', async () => {
+    const pending = stored({ status: 'pending', review_card: FIRST_CARD });
+    loadTrigger.mockResolvedValue(pending);
+    storeHolding(pending);
+    const task = makeTask();
+
+    await call('update_trigger', task, {
+      id: TRIGGER_ID,
+      conditions: [{ type: 'schedule', cron: '0 9 * * *', tz: 'UTC' }],
+    });
+
+    expect(task.updateSlackMessageSafely).toHaveBeenCalledWith(
+      'C0NOTES',
+      FIRST_CARD.ts,
+      expect.stringMatching(/This card is out of date/),
+      [],
+    );
+    expect(pending.review_card).toBeUndefined();
+  });
+
   it('keeps the earlier card when no new card reached Slack', async () => {
     const pending = stored({ status: 'pending', review_card: FIRST_CARD });
     loadTrigger.mockResolvedValue(pending);

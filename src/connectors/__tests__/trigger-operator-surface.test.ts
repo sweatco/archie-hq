@@ -616,6 +616,19 @@ describe('POST /tasks/:id/approve — an event routine', () => {
     );
   });
 
+  it('calls a reference out of date when its proposal is pending as another kind of trigger', async () => {
+    const task = { approveEventRoutine: vi.fn().mockResolvedValue({ status: 'not_pending' }) };
+    loadTrigger.mockResolvedValue(pending());
+
+    const res = await resolve(true, task);
+
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.json.mock.calls[0][0]).toHaveProperty(
+      'error',
+      expect.stringMatching(/was not enabled — This card is out of date/),
+    );
+  });
+
   it('declines by the trigger id alone', async () => {
     const task = { handleTriggerDenial: vi.fn().mockResolvedValue({ outcome: 'withdrawn' }) };
 

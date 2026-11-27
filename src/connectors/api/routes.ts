@@ -341,13 +341,18 @@ export function mountApiRoutes(app: Application): void {
             // A refusal leaves the proposal approvable, so the CLI keeps its prompt, as for a cap.
             const stillPending = approval.status === 'refused';
             if (!stillPending) emitEvent('approval:resolved', taskId, { type, approve });
+            // A proposal edited into another kind of trigger is still pending, under a new reference.
+            const outdated =
+              !stillPending && (await loadTrigger(routine.triggerId))?.status === 'pending';
             res.status(409).json({
               ok: false,
               stale: true,
               capBlocked: stillPending,
               error: stillPending
                 ? `Trigger ${routine.triggerId} was not enabled — ${routineRefusalText(approval)}`
-                : `Trigger ${routine.triggerId} was not enabled — it is already active or was withdrawn.`,
+                : outdated
+                  ? `Trigger ${routine.triggerId} was not enabled — ${routineRefusalText({ status: 'refused', reason: 'stale_card' })}`
+                  : `Trigger ${routine.triggerId} was not enabled — it is already active or was withdrawn.`,
             });
             return;
           }

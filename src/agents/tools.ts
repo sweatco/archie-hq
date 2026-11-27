@@ -3075,8 +3075,8 @@ async function postTriggerApprovalCard(task: Task, trigger: Trigger): Promise<bo
   const when = triggerWhen(trigger);
   const where = triggerWhere(trigger);
   const text = `Set up this automation? ${what} · ${when} · ${where}`;
-  if (!isEventRoutine(trigger))
-    return task.postInteractiveToUser(
+  if (!isEventRoutine(trigger)) {
+    const posted = await task.postInteractiveToUser(
       text,
       buildTriggerApprovalBlocks(trigger),
       'trigger',
@@ -3084,6 +3084,10 @@ async function postTriggerApprovalCard(task: Task, trigger: Trigger): Promise<bo
       undefined,
       trigger.id,
     );
+    // A proposal edited out of being an event routine leaves a review card behind.
+    if (posted && trigger.review_card) await replaceReviewCard(task, trigger, undefined);
+    return posted;
+  }
 
   // An event routine's card shows the whole review, and its reference says which review was shown.
   const landed: SlackMessageRef[] = [];
@@ -3101,11 +3105,11 @@ async function postTriggerApprovalCard(task: Task, trigger: Trigger): Promise<bo
   return posted;
 }
 
-/** Remembers the proposal's newest review card and retires the one before it, which can no longer approve anything. */
+/** Remembers the proposal's newest review card, if it has one, and retires the one before it, which can no longer approve anything. */
 async function replaceReviewCard(
   task: Task,
   trigger: Trigger,
-  card: SlackMessageRef,
+  card: SlackMessageRef | undefined,
 ): Promise<void> {
   const previous = trigger.review_card;
   await updatePendingTrigger(trigger.id, (stored) => {

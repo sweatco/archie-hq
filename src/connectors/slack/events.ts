@@ -595,6 +595,9 @@ export async function mountSlackApp(
         } else if (isEventRoutine(existing)) {
           // A card from before reviews carried a digest cannot say what it showed.
           text = `ℹ️ This card is out of date, so nothing was set up. Ask me to post the review again.`;
+        } else if (shown !== undefined) {
+          // A review card of a proposal that was edited into another kind of trigger.
+          text = `ℹ️ ${routineRefusalText({ status: 'refused', reason: 'stale_card' })}`;
         } else {
           // Still pending after a cap refusal: keep the buttons so it can be approved later.
           text = `⚠️ Approved by <@${userId}>, but the automation couldn't be enabled — the active-trigger limit was reached. Remove or pause another automation, then click Approve again.`;

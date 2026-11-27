@@ -562,6 +562,16 @@ describe('approve_trigger — an event routine is approved from the card that wa
     expect(vi.mocked(postEphemeral).mock.calls[0]?.[2]).toMatch(/is now on/);
   });
 
+  it('retires a review card whose proposal was edited into another kind of trigger', async () => {
+    taskThatAnswers({ status: 'not_pending' });
+    loadTrigger.mockResolvedValue(makeTrigger('pending'));
+
+    await clickCard(`${TRIGGER_ID}|${DIGEST}`);
+
+    expect(cardText()).toMatch(/This card is out of date/);
+    expect(cardBlocks()).toEqual([]);
+  });
+
   it('retires a card that carries no digest', async () => {
     const task = taskThatAnswers({ status: 'not_pending' });
     loadTrigger.mockResolvedValue(eventRoutine());
