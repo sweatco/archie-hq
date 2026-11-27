@@ -17,13 +17,18 @@ let store: IncomingStore;
 let secrets: InputSecrets;
 let printed: string[];
 let triggers: Map<string, Trigger>;
+/** Triggers whose record is on disk and cannot be read. */
+let unreadable: Set<string>;
 let taskStatuses: Map<string, string>;
 
 function run(...args: string[]): Promise<void> {
   const loadTrigger = (id: string) => Promise.resolve(triggers.get(id) ?? null);
   const taskStatus = (id: string) => Promise.resolve(taskStatuses.get(id) ?? null);
-  return runIncomingCommand(args, { store, secrets, loadTrigger, taskStatus }, (line) =>
-    printed.push(line),
+  const triggerExists = (id: string) => triggers.has(id) || unreadable.has(id);
+  return runIncomingCommand(
+    args,
+    { store, secrets, loadTrigger, triggerExists, taskStatus },
+    (line) => printed.push(line),
   );
 }
 
@@ -64,6 +69,7 @@ beforeEach(() => {
   secrets = vaultInputSecrets(secretsDir);
   printed = [];
   triggers = new Map();
+  unreadable = new Set();
   taskStatuses = new Map();
 });
 afterEach(() => {
@@ -315,6 +321,20 @@ it('links a trigger to an input whose earlier trigger was deleted', async () => 
   await run('link', id, 'trg-20261121-0900-ticket');
 
   expect(store.input(id)?.routines).toEqual(['trg-20261121-0900-ticket']);
+});
+
+it('keeps the link of a trigger whose record cannot be read', async () => {
+  const { id } = await created();
+  routineFor(id);
+  routineFor(id, { id: 'trg-20261121-0900-ticket' });
+  await run('link', id, ROUTINE_ID);
+  triggers.delete(ROUTINE_ID);
+  unreadable.add(ROUTINE_ID);
+
+  await expect(run('link', id, 'trg-20261121-0900-ticket')).rejects.toThrow(
+    /already has a trigger/,
+  );
+  expect(store.input(id)?.routines).toEqual([ROUTINE_ID]);
 });
 
 it('refuses a link that would deliver nothing, and changes no input', async () => {

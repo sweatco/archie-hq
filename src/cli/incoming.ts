@@ -12,7 +12,7 @@ import {
 import { incomingEventsEnabled, incomingSecrets, openIncomingStore } from '../incoming/runtime.js';
 import { validateMasterKey } from '../system/secrets-vault.js';
 import { loadMetadata } from '../tasks/persistence.js';
-import { loadTrigger } from '../system/trigger-store.js';
+import { loadTrigger, triggerExists } from '../system/trigger-store.js';
 import { SECRETS_DIR, WORKDIR } from '../system/workdir.js';
 
 async function main(): Promise<void> {
@@ -33,7 +33,7 @@ async function main(): Promise<void> {
     const taskStatus = async (taskId: string) => (await loadMetadata(taskId))?.status ?? null;
     await runIncomingCommand(
       args,
-      { store, secrets: incomingSecrets(), loadTrigger, taskStatus },
+      { store, secrets: incomingSecrets(), loadTrigger, triggerExists, taskStatus },
       (line) => {
         process.stdout.write(`${line}\n`);
       },

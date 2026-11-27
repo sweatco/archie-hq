@@ -6,7 +6,7 @@
  * The workdir module reads `ARCHIE_WORKDIR` once, when it is first imported, so the variable is set in a hoisted block.
  */
 import { randomBytes } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -78,7 +78,12 @@ import { Task } from '../../tasks/task.js';
 import type { Trigger, TriggerCondition } from '../../types/trigger.js';
 import { routineInputRefusal, type RoutineApproval } from '../routine-approval.js';
 import { routineDigest } from '../routine-review.js';
-import { loadTrigger, saveTrigger, updatePendingTrigger } from '../trigger-store.js';
+import {
+  getTriggerPath,
+  loadTrigger,
+  saveTrigger,
+  updatePendingTrigger,
+} from '../trigger-store.js';
 
 const DANA: InputActor = { kind: 'slack_user', userId: 'U0DANA' };
 const EVE: InputActor = { kind: 'slack_user', userId: 'U0EVE' };
@@ -348,8 +353,20 @@ describe('who may approve', () => {
     store.linkRoutine(input.id, other.id);
     const trigger = await proposed([{ type: 'incoming_event', input_id: input.id }]);
 
-    expect(await routineInputRefusal(trigger.conditions)).toMatch(/already belongs to a routine/);
+    expect(routineInputRefusal(trigger.conditions)).toMatch(/already belongs to a routine/);
     expect(refusal(await approve(trigger, DANA)).reason).toBe('input_taken');
+  });
+
+  it('keeps an operator-made input with a routine whose record cannot be read', async () => {
+    const input = await existingInput(null);
+    const other = await proposed([{ type: 'incoming_event', input_id: input.id }]);
+    store.linkRoutine(input.id, other.id);
+    writeFileSync(getTriggerPath(other.id), '{"id":');
+    const trigger = await proposed([{ type: 'incoming_event', input_id: input.id }]);
+
+    expect(routineInputRefusal(trigger.conditions)).toMatch(/already belongs to a routine/);
+    expect(refusal(await approve(trigger, OPERATOR)).reason).toBe('input_taken');
+    expect(store.input(input.id)?.routines).toEqual([other.id]);
   });
 
   it('gives an operator-made input to a new routine once the routine it was linked to is deleted', async () => {
@@ -357,7 +374,7 @@ describe('who may approve', () => {
     store.linkRoutine(input.id, 'trg-20261124-0900-gone01');
     const trigger = await proposed([{ type: 'incoming_event', input_id: input.id }]);
 
-    expect(await routineInputRefusal(trigger.conditions)).toBeNull();
+    expect(routineInputRefusal(trigger.conditions)).toBeNull();
     expect(await approve(trigger, OPERATOR)).toMatchObject({
       status: 'approved',
       linked: [input.id],

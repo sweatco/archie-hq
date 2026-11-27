@@ -21,6 +21,8 @@ import {
 
 export interface OperatorServices extends InputServices {
   loadTrigger(id: string): Promise<Trigger | null>;
+  /** True also for a trigger whose record cannot be read. */
+  triggerExists(id: string): boolean;
   /** Null when the Task has no folder. */
   taskStatus(taskId: string): Promise<string | null>;
 }
@@ -251,7 +253,7 @@ async function link(
   print(`Does:        ${printable(trigger.summary?.trim() || '(no summary)')}`);
   print(`Status:      ${trigger.status}${STATUS_NOTE[trigger.status]}`);
 
-  const gone = await goneRoutines(input, services.loadTrigger);
+  const gone = goneRoutines(input, services.triggerExists);
   const change = linkRoutine(services.store, OPERATOR, input.id, triggerId, gone);
   if (change.status === 'refused')
     throw new Error(

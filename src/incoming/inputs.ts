@@ -103,13 +103,8 @@ export type LinkChange =
     };
 
 /** The linked routines that no longer exist. A deleted routine keeps its link, so a Task of it that still runs can post, but it does not hold the input. */
-export async function goneRoutines(
-  input: Input,
-  load: (triggerId: string) => Promise<unknown>,
-): Promise<string[]> {
-  const gone: string[] = [];
-  for (const id of input.routines) if (!(await load(id))) gone.push(id);
-  return gone;
+export function goneRoutines(input: Input, exists: (triggerId: string) => boolean): string[] {
+  return input.routines.filter((id) => !exists(id));
 }
 
 /**

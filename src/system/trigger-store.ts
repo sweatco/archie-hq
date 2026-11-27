@@ -166,6 +166,11 @@ export async function loadTrigger(id: string): Promise<Trigger | null> {
   }
 }
 
+/** Whether a trigger's record is on disk, readable or not: a record that cannot be read is not a trigger that is gone. */
+export function triggerExists(id: string): boolean {
+  return isValidTriggerId(id) && existsSync(getTriggerPath(id));
+}
+
 /** List all triggers on disk (any status). */
 export async function listTriggers(): Promise<Trigger[]> {
   await ensureTriggersDir();

@@ -23,7 +23,7 @@ import {
   isEventCondition,
   type RoutineSource,
 } from './routine-review.js';
-import { loadTrigger, updatePendingTrigger } from './trigger-store.js';
+import { triggerExists, updatePendingTrigger } from './trigger-store.js';
 
 export type RoutineRefusalReason =
   /** The card that was clicked no longer shows what the proposal says. */
@@ -64,16 +64,16 @@ export async function routineDestinationRefusal(binding: TriggerBinding): Promis
 }
 
 /** An input takes one routine, so a routine can name only an operator-made input nothing uses yet, or the input it is linked to already. */
-export async function routineInputRefusal(
+export function routineInputRefusal(
   conditions: TriggerCondition[],
   triggerId?: string,
-): Promise<string | null> {
+): string | null {
   const store = inputServices()?.store;
   for (const condition of conditions) {
     if (condition.type !== 'incoming_event') continue;
     const input = store?.input(condition.input_id);
     if (!input || (triggerId && input.routines.includes(triggerId))) continue;
-    if (input.owner || input.routines.length > (await goneRoutines(input, loadTrigger)).length)
+    if (input.owner || input.routines.length > goneRoutines(input, triggerExists).length)
       return 'that input already belongs to a routine; set this one up with `new_input`, which gives it its own input';
   }
   return null;
@@ -103,7 +103,7 @@ export async function prepareRoutineInputs(
     if (condition.type !== 'incoming_event') continue;
     const input = services.store.input(condition.input_id);
     if (!input || input.state === 'deleted') return { status: 'refused', reason: 'input_gone' };
-    const gone = await goneRoutines(input, loadTrigger);
+    const gone = goneRoutines(input, triggerExists);
     if (
       input.owner !== null ||
       input.routines.some((id) => id !== pending.id && !gone.includes(id))
@@ -132,7 +132,7 @@ export async function prepareRoutineInputs(
   const linked: string[] = [];
   const awaitingOperator: string[] = [];
   for (const input of inputs) {
-    const gone = await goneRoutines(input, loadTrigger);
+    const gone = goneRoutines(input, triggerExists);
     const change = linkRoutine(services.store, approver, input.id, pending.id, gone);
     if (change.status !== 'refused') linked.push(input.id);
     else if (change.reason === 'not_owner') awaitingOperator.push(input.id);
