@@ -126,12 +126,11 @@ async function proposed(conditions: TriggerCondition[], over: Partial<Trigger> =
 
 /** Approves from the card that shows `card`, which is the proposal itself unless a test shows an older one. */
 function approve(trigger: Trigger, approver: InputActor, card: Trigger = trigger) {
-  const shown = approver.kind === 'operator' ? undefined : routineDigest(card);
   return Task.prototype.approveEventRoutine.call(
     fakeTask(trigger.id) as unknown as Task,
     approver,
     trigger.id,
-    shown,
+    routineDigest(card),
   );
 }
 

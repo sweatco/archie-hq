@@ -171,13 +171,12 @@ async function createReservedInput(
 }
 
 /** The review card of an event routine, with its inputs read from the inbox and its audience from Slack as they are now. */
-export async function routineReviewBlocks(trigger: Trigger, notice?: string): Promise<unknown[]> {
+export async function routineReviewBlocks(trigger: Trigger): Promise<unknown[]> {
   const sources = trigger.conditions.filter(isEventCondition).map(reviewSource);
-  return buildRoutineReviewBlocks(
-    trigger,
-    { sources, audience: await reviewAudience(trigger.binding) },
-    notice,
-  );
+  return buildRoutineReviewBlocks(trigger, {
+    sources,
+    audience: await reviewAudience(trigger.binding),
+  });
 }
 
 function reviewSource(

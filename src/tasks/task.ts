@@ -2582,13 +2582,13 @@ export class Task {
 
   /**
    * Approve an event routine from its review card. `shown` is the digest the clicked card carried, and must
-   * match the proposal as it is now; the operator's API may omit it. Enabling also creates the input a
-   * new-input condition asks for and links the routine, as far as the approver may.
+   * match the proposal as it is now. Enabling also creates the input a new-input condition asks for and
+   * links the routine, as far as the approver may.
    */
   async approveEventRoutine(
     approver: InputActor,
     triggerId: string,
-    shown?: string,
+    shown: string,
   ): Promise<RoutineApproval> {
     const { loadTrigger, enableProposedTrigger } = await import('../system/trigger-store.js');
     const { bindNewInputs, isEventRoutine, routineDigest } =
@@ -2599,8 +2599,7 @@ export class Task {
     if (!pending || pending.status !== 'pending' || !isEventRoutine(pending))
       return { status: 'not_pending' };
     const digest = routineDigest(pending);
-    const cardIsCurrent = shown === digest || (shown === undefined && approver.kind === 'operator');
-    if (!cardIsCurrent) return { status: 'refused', reason: 'stale_card' };
+    if (shown !== digest) return { status: 'refused', reason: 'stale_card' };
     const blocked = await refusedBeforeEnabling(this, triggerId, pending);
     if (blocked) return { status: 'refused', reason: blocked };
 

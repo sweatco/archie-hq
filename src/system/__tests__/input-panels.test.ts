@@ -68,7 +68,7 @@ describe('the Settings window', () => {
   it('keeps the key out of what Slack sends back with a click', () => {
     const view = settingsView({ input: INPUT, callback: CALLBACK, status: QUIET, key: KEY });
 
-    expect(view.private_metadata).toBe(JSON.stringify({ input_id: INPUT.id }));
+    expect(view.private_metadata).toBe('{}');
     expect(text(view.blocks.filter((block) => block.type === 'actions'))).not.toContain(KEY);
   });
 

@@ -84,7 +84,7 @@ function clickWindow(
   actionId: string,
   value: string,
   userId: string,
-  metadata: object = { input_id: value, from: PANEL },
+  metadata: object = { from: PANEL },
 ): Promise<void> {
   const handler = actions.get(actionId);
   if (!handler) throw new Error(`${actionId} was never registered`);
@@ -152,7 +152,7 @@ describe('Settings', () => {
 
     const [opened] = slack.open.mock.calls[0] as [{ view: { private_metadata: string } }];
     const [redrawn] = slack.update.mock.calls[0] as [{ view: { private_metadata: string } }];
-    expect(JSON.parse(opened.view.private_metadata)).toEqual({ input_id: input.id, from: PANEL });
+    expect(JSON.parse(opened.view.private_metadata)).toEqual({ from: PANEL });
     expect(redrawn.view.private_metadata).toBe(opened.view.private_metadata);
   });
 
@@ -384,7 +384,7 @@ describe('Delete', () => {
   });
 
   it('touches no message when the window was not opened from one', async () => {
-    await clickWindow('input_delete', input.id, 'U0DANA', { input_id: input.id });
+    await clickWindow('input_delete', input.id, 'U0DANA', {});
 
     expect(deliveryStatus()).toBe('deleted');
     expect(slack.fetchMessage).not.toHaveBeenCalled();

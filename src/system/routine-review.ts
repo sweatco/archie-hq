@@ -154,15 +154,8 @@ function instructionSections(prompt: string): unknown[] {
   return sections;
 }
 
-/**
- * The approval card of an event routine: source, owner, filter, audience and the instructions in full.
- * `notice` replaces the heading and keeps the buttons, as it does on other trigger cards.
- */
-export function buildRoutineReviewBlocks(
-  trigger: Trigger,
-  review: RoutineReview,
-  notice?: string,
-): unknown[] {
+/** The approval card of an event routine: source, owner, filter, audience and the instructions in full. */
+export function buildRoutineReviewBlocks(trigger: Trigger, review: RoutineReview): unknown[] {
   const several = review.sources.length > 1;
   const sourceFields = review.sources.flatMap((source, index) => {
     const suffix = several ? ` ${index + 1}` : '';
@@ -173,7 +166,7 @@ export function buildRoutineReviewBlocks(
     ];
   });
   return [
-    { type: 'section', text: { type: 'mrkdwn', text: notice ?? '*Set up this automation?*' } },
+    { type: 'section', text: { type: 'mrkdwn', text: '*Set up this automation?*' } },
     {
       type: 'section',
       fields: [

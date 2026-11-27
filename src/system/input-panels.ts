@@ -169,7 +169,7 @@ export function settingsView(panel: SettingsPanel): ModalView {
     type: 'modal',
     title: WINDOW_TITLE,
     close: plainText('Close'),
-    private_metadata: JSON.stringify({ input_id: input.id, from: panel.from }),
+    private_metadata: JSON.stringify({ from: panel.from }),
     blocks: [
       { type: 'section', text: markdown(title) },
       { type: 'section', text: markdown(`*Callback URL*\n\`${address}\``) },

@@ -160,13 +160,6 @@ describe('the review card', () => {
       ['deny_trigger', trigger.id],
     ]);
   });
-
-  it('keeps the buttons under a notice', () => {
-    const blocks = buildRoutineReviewBlocks(proposal(), REVIEW, 'The limit was reached.');
-
-    expect(text(blocks[0] ? [blocks[0]] : [])).toContain('The limit was reached.');
-    expect(text(blocks)).toContain('approve_trigger');
-  });
 });
 
 it('tells an event routine from other triggers', () => {
