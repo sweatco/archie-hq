@@ -348,9 +348,12 @@ it('shows how each handed-off event ended, why, and the Task it reserved', async
   end('failed', 'attempts_exhausted', 'task-ran-anyway');
   receive(id, 'msg_4', at + 3);
   end('failed', 'interrupted', 'task-discarded');
-  receive(other.id, 'msg_5', at + 4);
+  receive(id, 'msg_5', at + 4);
+  end('failed', 'interrupted', 'task-prepared');
+  receive(other.id, 'msg_6', at + 5);
   taskStatuses.set('task-started', 'completed');
   taskStatuses.set('task-ran-anyway', 'in_progress');
+  taskStatuses.set('task-prepared', 'preparing');
   printed = [];
 
   await run('history', id);
@@ -358,6 +361,7 @@ it('shows how each handed-off event ended, why, and the Task it reserved', async
   const cells = printed.map((line) => line.trim().split(/\s{2,}/));
   expect(cells).toEqual([
     ['Received (UTC)', 'Input', 'Trigger', 'State', 'Reason', 'Task'],
+    ['2026-11-21 09:30', id, ROUTINE_ID, 'failed', 'interrupted', 'task-prepared preparing'],
     ['2026-11-21 09:30', id, ROUTINE_ID, 'failed', 'interrupted', '-'],
     [
       '2026-11-21 09:30',
@@ -373,7 +377,7 @@ it('shows how each handed-off event ended, why, and the Task it reserved', async
 
   printed = [];
   await run('history');
-  expect(printed).toHaveLength(6);
+  expect(printed).toHaveLength(7);
   expect(printed[1]).toMatch(new RegExp(`${other.id}\\s+${ROUTINE_ID}\\s+pending`));
   await expect(run('history', 'inp-missing')).rejects.toThrow(/No input inp-missing/);
 });

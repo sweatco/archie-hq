@@ -279,6 +279,15 @@ describe('the history of an input', () => {
     );
   });
 
+  it('calls a run skipped when its Task was prepared and never started', async () => {
+    deliver(at(9, 15), [forRoutine(NOTES)]);
+    finish('failed', 'interrupted', 'task-prepared');
+    tasks.set('task-prepared', { status: 'preparing', default_channel: null, channels: {} });
+
+    expect(await historyFrom(DANA_DM)).toContain('skipped: ');
+    expect(await historyFrom(DANA_DM)).not.toContain('uncertain');
+  });
+
   it("reads a private channel's input from that channel, and refuses it elsewhere", async () => {
     deliver(at(9), [forRoutine(LEADS)], LEADS_INPUT);
     finish('skipped', 'routine_paused');

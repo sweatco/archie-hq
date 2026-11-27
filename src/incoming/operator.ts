@@ -314,7 +314,7 @@ async function reservedTask(
   if (!taskId) return '-';
   const status = await services.taskStatus(taskId);
   if (status === null) return '-';
-  return `${taskId} ${status}${startedUnrecorded(state) ? ' (uncertain)' : ''}`;
+  return `${taskId} ${status}${startedUnrecorded(state, status) ? ' (uncertain)' : ''}`;
 }
 
 function liveInput(services: InputServices, id: string): Input {

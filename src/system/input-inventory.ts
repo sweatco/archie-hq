@@ -172,7 +172,7 @@ async function routineOutcome(
   }
 
   const why = ENDED_BECAUSE[handoff.reason ?? ''] ?? handoff.reason ?? 'no reason was recorded';
-  return taskId && task && startedUnrecorded(handoff.state)
+  return taskId && task && startedUnrecorded(handoff.state, task.status)
     ? `uncertain: ${name} was not recorded as started (${why}), yet ${taskId} exists (${task.status})`
     : `skipped: ${name} did not run — ${why}`;
 }
