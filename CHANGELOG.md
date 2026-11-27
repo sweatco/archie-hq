@@ -4,6 +4,10 @@
 
 <!-- This file is generated automatically — do NOT edit it by hand. The `.github/workflows/daily-changelog.yml` workflow summarizes each day's merged PRs into a dated entry and commits it to `main` on its own. To shape how a change reads here, write a clear PR description — that is the source the automation reads. Quiet days with nothing merged are intentionally skipped (no entry), so gaps between dates are expected. Hand edits drift from the automation and may be overwritten; the only reason to touch this file directly is to repair a mistake the automation made. -->
 
+## 2026-11-26
+
+- _Technical: locked down the API-key sandbox deny entry with regression coverage — unit tests now pin that `buildSandboxConfig` lists `ANTHROPIC_API_KEY` as a denied env var and pin the live egress check's verdict, and the egress check itself was verified to actually fail (not just warn) when sandboxed Bash can read the key from its own environment or a process under `/proc`; confirmed on a live eval instance (CLI 2.1.321) that the key stays hidden while the session still reaches the API, and that removing the deny entry makes the same check fail, showing the probe can tell the difference; the archie-e2e skill doc gained one line describing the new check. `npm run check` passed (2,682 tests). PR #463._
+
 ## 2026-11-25
 
 - _Technical: engine-side git commands (clone, fetch, checkout, branch switch) now run via `execFile` with an argument array instead of a shell string, and branch/ref inputs from task metadata, config or tool calls are validated before reaching git — rejecting characters such as `#` or `=` that git itself would accept — closing a shell-injection surface through ref-like strings; `switch_branch` now refuses some branch names it previously passed through unchecked. Verified via `npm run check` (2,696 tests) and tests using local temporary repos confirming shell-syntax refs have no side effect. PR #461._
