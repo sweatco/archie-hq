@@ -60,16 +60,12 @@ export interface InputSummary {
 
 /** One ended or waiting handoff, for the operator. */
 export interface HandoffRecord {
-  id: string;
-  receiptId: string;
   inputId: string;
   receivedAt: number;
-  consumerKind: string;
   consumerId: string;
   state: HandoffState;
   /** Set when the handoff ended any way other than `accepted`. */
   reason: string | null;
-  attempts: number;
   reservation: string | null;
 }
 
@@ -80,7 +76,9 @@ export interface DeliveryRecord {
   outcome: Receipt['outcome'];
   ignoredReason: IgnoredReason | null;
   handoffs: Array<
-    Pick<HandoffRecord, 'consumerKind' | 'consumerId' | 'state' | 'reason' | 'reservation'>
+    Pick<HandoffRecord, 'consumerId' | 'state' | 'reason' | 'reservation'> & {
+      consumerKind: string;
+    }
   >;
 }
 
@@ -147,15 +145,11 @@ const deliveryHandoffSchema = z.object({
 });
 
 const handoffRecordSchema = z.object({
-  id: z.string(),
-  receipt_id: z.string(),
   input_id: z.string(),
   received_at: z.number(),
-  consumer_kind: z.string(),
   consumer_id: z.string(),
   state: handoffStateSchema,
   reason: z.string().nullable(),
-  attempts: z.number(),
   reservation: z.string().nullable(),
 });
 
@@ -528,8 +522,7 @@ export class IncomingStore {
   handoffHistory(limit: number, inputId?: string): HandoffRecord[] {
     return this.db
       .prepare(
-        `SELECT h.id, h.receipt_id, r.input_id, r.received_at, h.consumer_kind, h.consumer_id,
-                h.state, h.reason, h.attempts, h.reservation
+        `SELECT r.input_id, r.received_at, h.consumer_id, h.state, h.reason, h.reservation
            FROM handoffs h JOIN receipts r ON r.id=h.receipt_id
           WHERE ?1 IS NULL OR r.input_id=?1
           ORDER BY r.received_at DESC, h.rowid DESC LIMIT ?2`,
@@ -538,15 +531,11 @@ export class IncomingStore {
       .map((row) => {
         const stored = handoffRecordSchema.parse(row);
         return {
-          id: stored.id,
-          receiptId: stored.receipt_id,
           inputId: stored.input_id,
           receivedAt: stored.received_at,
-          consumerKind: stored.consumer_kind,
           consumerId: stored.consumer_id,
           state: stored.state,
           reason: stored.reason,
-          attempts: stored.attempts,
           reservation: stored.reservation,
         };
       });

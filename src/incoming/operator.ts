@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { statSync } from 'node:fs';
-import { reservedTaskId } from '../system/routine-handoff.js';
+import { reservedTaskId, startedUnrecorded } from '../system/routine-handoff.js';
 import type { Trigger } from '../types/trigger.js';
 import { createInput, deleteInput, linkRoutine, rotateKey, type InputServices } from './inputs.js';
 import { inputCallback } from './receiver.js';
@@ -305,7 +305,6 @@ async function history(
   if (records.length === HISTORY_LIMIT) print(`Showing the newest ${HISTORY_LIMIT}.`);
 }
 
-/** A Task that outlived a cancelled or failed handoff started without the handoff recording it. */
 async function reservedTask(
   services: OperatorServices,
   state: string,
@@ -315,8 +314,7 @@ async function reservedTask(
   if (!taskId) return '-';
   const status = await services.taskStatus(taskId);
   if (status === null) return '-';
-  const uncertain = state === 'cancelled' || state === 'failed';
-  return `${taskId} ${status}${uncertain ? ' (uncertain)' : ''}`;
+  return `${taskId} ${status}${startedUnrecorded(state) ? ' (uncertain)' : ''}`;
 }
 
 function liveInput(services: InputServices, id: string): Input {

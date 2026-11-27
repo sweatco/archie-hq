@@ -6,7 +6,7 @@ import type { DeliveryRecord } from '../incoming/store.js';
 import type { Input, Receipt } from '../incoming/types.js';
 import type { TaskMetadata } from '../types/task.js';
 import type { Trigger } from '../types/trigger.js';
-import { reservedTaskId, ROUTINE_CONSUMER_KIND } from './routine-handoff.js';
+import { reservedTaskId, ROUTINE_CONSUMER_KIND, startedUnrecorded } from './routine-handoff.js';
 import { triggerWhat } from './trigger-scheduler.js';
 import type { TriggerOrigin } from './trigger-visibility.js';
 
@@ -172,8 +172,7 @@ async function routineOutcome(
   }
 
   const why = ENDED_BECAUSE[handoff.reason ?? ''] ?? handoff.reason ?? 'no reason was recorded';
-  // A Task that outlived a cancelled or failed handoff started without the handoff recording it.
-  return taskId && task && handoff.state !== 'skipped'
+  return taskId && task && startedUnrecorded(handoff.state)
     ? `uncertain: ${name} was not recorded as started (${why}), yet ${taskId} exists (${task.status})`
     : `skipped: ${name} did not run — ${why}`;
 }

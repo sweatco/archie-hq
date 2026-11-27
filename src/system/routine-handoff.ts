@@ -7,6 +7,10 @@ export const ROUTINE_CONSUMER_KIND = 'routine';
 /** Exists once a run slot was taken; names the Task every later attempt continues. */
 export const routineReservationSchema = z.object({ task_id: z.string() });
 
+/** A Task that outlived a cancelled or failed handoff started without the handoff recording it. */
+export const startedUnrecorded = (state: string): boolean =>
+  state === 'cancelled' || state === 'failed';
+
 /** The Task a reservation names, or undefined when the stored text is not a reservation. */
 export function reservedTaskId(reservation: string): string | undefined {
   try {
