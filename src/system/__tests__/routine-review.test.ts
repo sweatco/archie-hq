@@ -34,15 +34,13 @@ function proposal(over: Partial<Trigger> = {}): Trigger {
 }
 
 const REVIEW: RoutineReview = {
-  sources: [
-    {
-      label: 'New input “Meeting recordings”',
-      scheme: 'standard_webhooks',
-      owner: { kind: 'approver' },
-      inputFilter: [],
-      routineFilter: [ENDED],
-    },
-  ],
+  source: {
+    label: 'New input “Meeting recordings”',
+    scheme: 'standard_webhooks',
+    owner: { kind: 'approver' },
+    inputFilter: [],
+    routineFilter: [ENDED],
+  },
   audience: '#notes, a private channel',
 };
 

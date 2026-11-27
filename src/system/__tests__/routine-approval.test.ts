@@ -366,14 +366,15 @@ describe('who may approve', () => {
     expect((await stored(trigger)).status).toBe('enabled');
   });
 
-  it('checks every input before it creates one', async () => {
-    const theirs = await existingInput('U0EVE');
-    const trigger = await proposed([NEW_INPUT, { type: 'incoming_event', input_id: theirs.id }]);
+  it('refuses a stored proposal that names more than one input, and creates nothing', async () => {
+    const unused = await existingInput(null);
+    const trigger = await proposed([NEW_INPUT, { type: 'incoming_event', input_id: unused.id }]);
 
     const approval = await approve(trigger, DANA);
 
-    expect(refusal(approval).reason).toBe('input_taken');
+    expect(refusal(approval).reason).toBe('several_inputs');
     expect(inputs()).toHaveLength(1);
+    expect((await stored(trigger)).status).toBe('pending');
   });
 });
 

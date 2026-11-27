@@ -92,7 +92,7 @@ Every handoff that ends any way other than `accepted` records why:
 
 ## Event routines
 
-An event routine is an ordinary [trigger](triggers.md) whose conditions are all `incoming_event`. Each condition names an input and may add its own filter. The routine's binding is where the result goes.
+An event routine is an ordinary [trigger](triggers.md) with one `incoming_event` condition, which names an input and may add its own filter. The routine's binding is where the result goes.
 
 Two things must hold before a routine receives anything:
 

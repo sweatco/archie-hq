@@ -225,7 +225,12 @@ describe('propose_trigger with a new input', () => {
       [{ ...NEW_INPUT, input_id: 'inp-AAAAAAAAAAAAAAAAAAAAAA' }],
       /either `input_id` or `new_input`/,
     ],
-    ['two new inputs', [NEW_INPUT, NEW_INPUT], /one new input/],
+    ['two new inputs', [NEW_INPUT, NEW_INPUT], /takes events from one input/],
+    [
+      'a new input beside an existing one',
+      [NEW_INPUT, { type: 'incoming_event', input_id: 'inp-AAAAAAAAAAAAAAAAAAAAAA' }],
+      /takes events from one input/,
+    ],
     [
       'a schedule beside it',
       [NEW_INPUT, { type: 'schedule', cron: '0 9 * * *', tz: 'UTC' }],

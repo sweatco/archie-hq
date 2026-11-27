@@ -255,7 +255,7 @@ Every **configuration change** to a **channel**-bound trigger — created/enable
 | `src/system/trigger-scheduler.ts` | In-memory index, 60s tick, cron math, `fireTrigger`, `fireEvent`, announcements |
 | `src/system/routine-consumer.ts` | Event routines: the snapshot at receipt, and one Task per handoff |
 | `src/system/routine-review.ts` | An event routine's review card, its digest, and the approval reference |
-| `src/system/routine-approval.ts` | Who may approve an event routine; creating and linking its inputs |
+| `src/system/routine-approval.ts` | Who may approve an event routine; creating and linking its input |
 | `src/system/input-panels.ts`, `input-controls.ts` | The inputs panel, the owner's **Settings** button, and the window it opens |
 | `src/system/trigger-visibility.ts` | Pure visibility decision (privacy injected) |
 | `src/system/trigger-match.ts` | Pure channel-message match decision — author-id shape, the `contains`/`from_user` predicate |

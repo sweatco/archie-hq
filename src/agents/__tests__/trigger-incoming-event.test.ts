@@ -265,6 +265,21 @@ describe('an existing event routine', () => {
     expect(out).toMatch(/cannot share a trigger/);
     expect(saveTrigger).not.toHaveBeenCalled();
   });
+
+  it.each(['enabled', 'pending'] as const)(
+    'cannot gain a second input through an edit while %s',
+    async (status) => {
+      loadTrigger.mockResolvedValue(routine({ status }));
+
+      const out = await call('update_trigger', makeTask(), {
+        id: TRIGGER_ID,
+        conditions: [ON_EVENT, { type: 'incoming_event', input_id: 'inp-BBBBBBBBBBBBBBBBBBBBBB' }],
+      });
+
+      expect(out).toMatch(/Could not update the trigger: A trigger takes events from one input/);
+      expect(saveTrigger).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('an input that already belongs to a routine', () => {

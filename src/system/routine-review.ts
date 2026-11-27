@@ -73,7 +73,7 @@ export type SourceOwner =
   | { kind: 'operator' }
   | { kind: 'unknown' };
 
-/** One input a routine listens to, as its review names it. */
+/** The input a routine listens to, as its review names it. */
 export interface RoutineSource {
   label: string;
   /** Null when the input could not be read. */
@@ -84,7 +84,7 @@ export interface RoutineSource {
 }
 
 export interface RoutineReview {
-  sources: readonly RoutineSource[];
+  source: RoutineSource;
   /** The conversation the results go to and who can read it, e.g. "#notes, a private channel". */
   audience: string;
 }
@@ -156,15 +156,7 @@ function instructionSections(prompt: string): unknown[] {
 
 /** The approval card of an event routine: source, owner, filter, audience and the instructions in full. */
 export function buildRoutineReviewBlocks(trigger: Trigger, review: RoutineReview): unknown[] {
-  const several = review.sources.length > 1;
-  const sourceFields = review.sources.flatMap((source, index) => {
-    const suffix = several ? ` ${index + 1}` : '';
-    return [
-      field(`Source${suffix}`, describeSource(source)),
-      field(`Owner${suffix}`, describeOwner(source.owner)),
-      field(`Filter${suffix}`, describeFilter(source)),
-    ];
-  });
+  const { source } = review;
   return [
     { type: 'section', text: { type: 'mrkdwn', text: '*Set up this automation?*' } },
     {
@@ -172,8 +164,9 @@ export function buildRoutineReviewBlocks(trigger: Trigger, review: RoutineReview
       fields: [
         field('What', plain(trigger.summary?.trim() || '(no summary)')),
         field('Audience', plain(review.audience)),
-        // Slack allows ten fields in a section.
-        ...sourceFields.slice(0, 8),
+        field('Source', describeSource(source)),
+        field('Owner', describeOwner(source.owner)),
+        field('Filter', describeFilter(source)),
       ],
     },
     { type: 'section', text: { type: 'mrkdwn', text: '*Instructions*' } },

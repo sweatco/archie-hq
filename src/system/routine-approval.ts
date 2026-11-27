@@ -32,6 +32,7 @@ export type RoutineRefusalReason =
   | 'inbox_closed'
   | 'input_gone'
   | 'input_taken'
+  | 'several_inputs'
   | 'not_owner'
   | 'destination'
   | 'cap';
@@ -91,6 +92,9 @@ export async function prepareRoutineInputs(
     return { status: 'refused', reason: 'not_internal' };
   if (await routineDestinationRefusal(pending.binding))
     return { status: 'refused', reason: 'shared_channel' };
+  // The card shows one source, so more would be approved unseen.
+  if (pending.conditions.filter(isEventCondition).length > 1)
+    return { status: 'refused', reason: 'several_inputs' };
 
   // Every existing input is checked before anything is created.
   const inputs: Input[] = [];
@@ -170,11 +174,12 @@ async function createReservedInput(
   }
 }
 
-/** The review card of an event routine, with its inputs read from the inbox and its audience from Slack as they are now. */
+/** The review card of an event routine, with its input read from the inbox and its audience from Slack as they are now. */
 export async function routineReviewBlocks(trigger: Trigger): Promise<unknown[]> {
-  const sources = trigger.conditions.filter(isEventCondition).map(reviewSource);
+  const condition = trigger.conditions.find(isEventCondition);
+  if (!condition) throw new Error(`Trigger ${trigger.id} is not an event routine`);
   return buildRoutineReviewBlocks(trigger, {
-    sources,
+    source: reviewSource(condition),
     audience: await reviewAudience(trigger.binding),
   });
 }
@@ -235,6 +240,8 @@ export function routineRefusalText(
       return 'The input this routine listens to no longer exists, so nothing was set up.';
     case 'input_taken':
       return 'This routine names an input that already belongs to another routine, so nothing was set up. Ask me to set it up with its own input.';
+    case 'several_inputs':
+      return 'This proposal takes events from more than one input, which a routine cannot do. Ask me to propose it again with one input.';
     case 'not_owner':
       return refusal.owner
         ? `Only <@${refusal.owner}>, who owns the input, can approve this routine.`

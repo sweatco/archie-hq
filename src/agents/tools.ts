@@ -3047,8 +3047,10 @@ function buildConditions(
         'An incoming_event condition cannot share a trigger with a schedule or channel_message condition. Propose a separate trigger for each.',
     };
   }
-  if (conditions.filter((c) => c.type === 'new_input_event').length > 1)
-    return { error: 'A trigger can set up one new input. Propose a separate trigger for each.' };
+  if (conditions.filter(isEventCondition).length > 1)
+    return {
+      error: 'A trigger takes events from one input. Propose a separate trigger for each.',
+    };
   return { conditions };
 }
 
