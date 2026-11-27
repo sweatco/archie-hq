@@ -224,16 +224,16 @@ it('links a trigger to an input, shows what was allowed, and lists the link', as
   await run('link', id, ROUTINE_ID);
 
   expect(printed).toEqual([
-    `Linked trigger ${ROUTINE_ID} to input ${id}.`,
-    'Delivers to: #notes (C0NOTES)',
+    'Delivers to: channel C0NOTES',
     'Does:        Meeting notes',
     'Status:      enabled',
+    `Linked trigger ${ROUTINE_ID} to input ${id}.`,
   ]);
   expect(store.input(id)).toMatchObject({ routines: [ROUTINE_ID], revision: 2 });
 
   printed = [];
   await run('link', id, ROUTINE_ID);
-  expect(printed[0]).toBe(`Trigger ${ROUTINE_ID} is already linked to input ${id}.`);
+  expect(printed.at(-1)).toBe(`Trigger ${ROUTINE_ID} is already linked to input ${id}.`);
   expect(store.input(id)).toMatchObject({ routines: [ROUTINE_ID], revision: 2 });
 
   printed = [];
@@ -247,6 +247,22 @@ it('links a trigger to an input, shows what was allowed, and lists the link', as
   expect(printed[2]).toBe(`  linked: ${ROUTINE_ID} (no longer exists)`);
 });
 
+it('prints what the proposer wrote without its control characters or its name for the channel', async () => {
+  const { id } = await created();
+  routineFor(id, {
+    summary: 'Notes\u001b[2K\rLinked trigger trg-other to input inp-other.',
+    binding: { type: 'channel', channel_id: 'C0NOTES', channel_name: 'general (C0GENERAL)' },
+  });
+  printed = [];
+
+  await run('link', id, ROUTINE_ID);
+
+  expect(printed.slice(0, 2)).toEqual([
+    'Delivers to: channel C0NOTES',
+    'Does:        Notes [2K Linked trigger trg-other to input inp-other.',
+  ]);
+});
+
 it('says when a linked trigger does not receive events yet', async () => {
   const { id } = await created();
   routineFor(id, {
@@ -257,7 +273,7 @@ it('says when a linked trigger does not receive events yet', async () => {
 
   await run('link', id, ROUTINE_ID);
 
-  expect(printed.slice(1)).toEqual([
+  expect(printed.slice(0, 3)).toEqual([
     'Delivers to: a DM with U0DANA (D0DANA)',
     'Does:        Meeting notes',
     'Status:      pending — it receives events once it is approved',

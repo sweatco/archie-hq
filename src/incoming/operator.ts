@@ -216,6 +216,9 @@ async function list(services: OperatorServices, print: (line: string) => void): 
   }
 }
 
+/** A trigger's text comes from whoever proposed it; a control character in it could redraw the operator's terminal. */
+const printable = (text: string) => text.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ');
+
 const STATUS_NOTE: Record<Trigger['status'], string> = {
   enabled: '',
   pending: ' — it receives events once it is approved',
@@ -238,6 +241,16 @@ async function link(
       `Trigger ${triggerId} has no condition for input ${inputId}, so a link would deliver nothing`,
     );
 
+  // Shown before the link is made. The channel's name is whatever the proposer passed, so only its id is printed.
+  const { binding } = trigger;
+  print(
+    binding.type === 'channel'
+      ? `Delivers to: channel ${printable(binding.channel_id)}`
+      : `Delivers to: a DM with ${printable(binding.user_id)} (${printable(binding.channel_id)})`,
+  );
+  print(`Does:        ${printable(trigger.summary?.trim() || '(no summary)')}`);
+  print(`Status:      ${trigger.status}${STATUS_NOTE[trigger.status]}`);
+
   const gone = await goneRoutines(input, services.loadTrigger);
   const change = linkRoutine(services.store, OPERATOR, input.id, triggerId, gone);
   if (change.status === 'refused')
@@ -251,14 +264,6 @@ async function link(
       ? `Trigger ${triggerId} is already linked to input ${inputId}.`
       : `Linked trigger ${triggerId} to input ${inputId}.`,
   );
-  const { binding } = trigger;
-  print(
-    binding.type === 'channel'
-      ? `Delivers to: #${binding.channel_name} (${binding.channel_id})`
-      : `Delivers to: a DM with ${binding.user_id} (${binding.channel_id})`,
-  );
-  print(`Does:        ${trigger.summary?.trim() || '(no summary)'}`);
-  print(`Status:      ${trigger.status}${STATUS_NOTE[trigger.status]}`);
 }
 
 function unlink(
