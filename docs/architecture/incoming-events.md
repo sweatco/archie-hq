@@ -21,7 +21,7 @@ An input is one callback URL with its own secret.
 - **Filter:** a list of conditions on the event JSON, such as "`/type` equals `meeting.ended`". An event that fails one is recorded as ignored.
 - **Owner:** the Slack user who approved the proposal that created the input. Only the owner approves another routine on it. An input the operator made has no owner and is managed from the CLI alone.
 - **Purpose:** a short label for cards and listings, such as "Meeting recordings".
-- **Linked routine:** the one trigger allowed to receive this input's events, by its owner's approval or by the operator. See [Event routines](#event-routines).
+- **Linked routines:** the triggers allowed to receive this input's events, by its owner's approval or by the operator. See [Event routines](#event-routines).
 
 The secret is generated on the host and sealed with the [secrets vault](secrets.md) under `SECRETS_DIR/incoming/`. The database holds only a reference to it.
 
@@ -105,14 +105,15 @@ One function, `routineMayUseInput` in `src/incoming/access.ts`, answers "may thi
 
 ### Approving an event routine
 
-A proposal asks for a new input, with a purpose and a scheme, or names one the operator made. Nothing is written to the inbox, and no key exists, until a person approves.
+A proposal names an existing input or asks for a new one, with a purpose and a scheme. Nothing is written to the inbox, and no key exists, until a person approves.
 
 The approval card is a review: the source, its owner, the filter, the audience and the instructions in full. Its Approve button carries a digest of what the card shows.
 
 | The proposal names | Who approves | Result |
 |---|---|---|
 | A new input | A member of the workspace | The input is created with that person as owner; the routine is enabled and linked |
-| An input someone owns | Anyone | Refused when proposed: a routine gets its own input |
+| An existing input | Its owner | The routine is enabled and linked |
+| An existing input | Someone else | Refused; the proposal stays pending |
 | An operator-made input | A member of the workspace | The routine is enabled; the operator links it |
 | Any | A guest, or a person from another organisation | Refused |
 
@@ -147,7 +148,7 @@ The layout is in `src/system/input-panels.ts` and the handlers are in `src/syste
 
 ### The inventory and the history
 
-The PM reads inputs with `list_inputs` and an input's newest 50 deliveries with `get_input_history`. `show_inputs` posts the listing as a panel, with a **Settings** button on each input that has an owner. All three are scoped like trigger listings: the owner's own DM and the operator see every input, and any other conversation sees an input only if its routine is visible from it.
+The PM reads inputs with `list_inputs` and an input's newest 50 deliveries with `get_input_history`. `show_inputs` posts the listing as a panel, with a **Settings** button on each input that has an owner. All three are scoped like trigger listings: the owner's own DM and the operator see an input whole, and any other conversation sees only the routines visible from it, with the rest as a count.
 
 History tells a delivery as received, handed off, delivered, skipped or uncertain. It holds no event content, and a delivery that failed authentication has no receipt, so it does not appear.
 
@@ -219,7 +220,7 @@ npm run incoming -- history [<input-id>]
 ```
 
 - `create` prints the callback URL, built from `ARCHIE_PUBLIC_URL`, and the secret. The secret is shown only then.
-- `link` refuses a trigger with no condition for that input, and an input that has a trigger already. It then prints its destination, summary and status. `list` shows each input's links and marks one whose trigger no longer exists. For an input made in Slack it also shows the owner and the purpose.
+- `link` refuses a trigger with no condition for that input, then prints its destination, summary and status. `list` shows each input's links and marks one whose trigger no longer exists. For an input made in Slack it also shows the owner and the purpose.
 - The key of an input made in Slack is shown to its owner in Slack, under [Settings](#connecting-a-sender). The CLI cannot read it.
 - `history` shows the newest 50 handoffs: state, reason and the Task each reserved.
 

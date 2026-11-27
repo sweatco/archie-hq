@@ -31,7 +31,6 @@ export type RoutineRefusalReason =
   | 'shared_channel'
   | 'inbox_closed'
   | 'input_gone'
-  | 'input_taken'
   | 'not_owner'
   | 'destination'
   | 'cap';
@@ -61,22 +60,6 @@ export async function routineDestinationRefusal(binding: TriggerBinding): Promis
   return 'an event routine cannot run in a channel shared with another organisation';
 }
 
-/** An input takes one routine, so a routine can name only an operator-made input nothing uses yet, or the input it is linked to already. */
-export function routineInputRefusal(
-  conditions: TriggerCondition[],
-  triggerId?: string,
-): string | null {
-  const store = inputServices()?.store;
-  for (const condition of conditions) {
-    if (condition.type !== 'incoming_event') continue;
-    const input = store?.input(condition.input_id);
-    if (!input || (triggerId && input.routines.includes(triggerId))) continue;
-    if (input.owner || input.routines.length > 0)
-      return 'that input already belongs to a routine; set this one up with `new_input`, which gives it its own input';
-  }
-  return null;
-}
-
 /**
  * Checks the approver against every input the proposal names, creates the input a new-input condition asks for, and links the routine.
  * Each step can repeat: the proposal records the id reserved for a new input before the input is created, so a second approval continues the first.
@@ -98,8 +81,8 @@ export async function prepareRoutineInputs(
     if (condition.type !== 'incoming_event') continue;
     const input = services.store.input(condition.input_id);
     if (!input || input.state === 'deleted') return { status: 'refused', reason: 'input_gone' };
-    if (input.owner !== null || input.routines.some((id) => id !== pending.id))
-      return { status: 'refused', reason: 'input_taken' };
+    if (input.owner !== null && !mayManageInput(input, approver))
+      return { status: 'refused', reason: 'not_owner', owner: input.owner };
     inputs.push(input);
   }
 
@@ -126,11 +109,7 @@ export async function prepareRoutineInputs(
     const change = linkRoutine(services.store, approver, input.id, pending.id);
     if (change.status !== 'refused') linked.push(input.id);
     else if (change.reason === 'not_owner') awaitingOperator.push(input.id);
-    else
-      return {
-        status: 'refused',
-        reason: change.reason === 'input_taken' ? 'input_taken' : 'input_gone',
-      };
+    else return { status: 'refused', reason: 'input_gone' };
   }
   return { status: 'ready', linked, awaitingOperator, created };
 }
@@ -234,8 +213,6 @@ export function routineRefusalText(
       return 'Incoming events are not available right now, so nothing was set up. Try again later.';
     case 'input_gone':
       return 'The input this routine listens to no longer exists, so nothing was set up.';
-    case 'input_taken':
-      return 'This routine names an input that already belongs to another routine, so nothing was set up. Ask me to set it up with its own input.';
     case 'not_owner':
       return refusal.owner
         ? `Only <@${refusal.owner}>, who owns the input, can approve this routine.`
