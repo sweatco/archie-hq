@@ -215,6 +215,11 @@ async function setupAgentWorkspace(taskId: string, agent: Agent): Promise<string
   return agentWorkspace;
 }
 
+/** Cuts a long brief in its middle, the routine's own prompt: the lines after it name the event file and where to post. */
+export function triggeredBriefCopy(brief: string): string {
+  return brief.length <= 8000 ? brief : `${brief.slice(0, 6000)}\n[…]\n${brief.slice(-2000)}`;
+}
+
 // ---- Audience helpers ----
 
 /**
@@ -232,11 +237,6 @@ async function setupAgentWorkspace(taskId: string, agent: Agent): Promise<string
  * parameters, not paragraphs. Returns '' when there is nobody to name (CLI tasks,
  * Slack unavailable) — an empty roster invites the model to invent one.
  */
-/** Cuts a long brief in its middle, the routine's own prompt: the lines after it name the event file and where to post. */
-export function triggeredBriefCopy(brief: string): string {
-  return brief.length <= 8000 ? brief : `${brief.slice(0, 6000)}\n[…]\n${brief.slice(-2000)}`;
-}
-
 export async function buildTaskPeopleSection(taskId: string): Promise<string> {
   let people: Awaited<ReturnType<typeof resolvePeopleFromTranscript>>;
   try {
