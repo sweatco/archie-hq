@@ -200,6 +200,8 @@ To enable Slack integration, use the app manifest at [`slack-manifest.yaml`](../
    SLACK_APP_TOKEN=xapp-...
    ```
 
+Re-importing this manifest into an existing app moves it to Slack's Agent surface, which cannot be undone.
+
 The bot needs these permissions:
 
 - `app_mentions:read` — receive @mentions

@@ -114,6 +114,12 @@ describe('generateTaskTitle', () => {
     expect(title).toBe('Fix auth flow on Android');
   });
 
+  it('replaces symbols Slack rejects in a session title', async () => {
+    state.queryEvents = [successEvent('Release: iOS/Android #42 — “ready”?')];
+    const title = await generateTaskTitle(makeThread());
+    expect(title).toBe('Release iOS Android 42 — “ready”');
+  });
+
   it('truncates titles longer than 60 chars', async () => {
     state.queryEvents = [successEvent('A'.repeat(120))];
     const title = await generateTaskTitle(makeThread());

@@ -15,11 +15,16 @@ display_information:
   description: 'Autonomous Responsive and Collaborative Hyper Intelligent Employee'
   background_color: '#2c2d30'
 features:
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+    agent_tasks_enabled: false
   bot_user:
     display_name: Archie
     always_online: true
-  assistant_view:
-    assistant_description: 'Autonomous Responsive and Collaborative Hyper Intelligent Employee'
+  agent_view:
+    agent_description: 'Autonomous Responsive and Collaborative Hyper Intelligent Employee'
     suggested_prompts: []
 oauth_config:
   scopes:
@@ -51,8 +56,8 @@ settings:
   event_subscriptions:
     request_url: https://your-domain.example.com/webhooks/slack
     bot_events:
+      - agent_session_stopped
       - app_mention
-      - assistant_thread_started
       - member_joined_channel
       - message.channels
       - message.groups

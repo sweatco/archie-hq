@@ -1,12 +1,12 @@
 /**
  * Slack assistant thread title wrapper.
  *
- * Wraps `assistant.threads.setTitle` for DM-originated tasks. Errors are
- * logged and swallowed — title is still persisted in metadata even if Slack
+ * Wraps `agents.sessions.rename` for DM-originated tasks. It fails with
+ * `not_authorized` until the status indicator has created the session. Errors
+ * are logged and swallowed — title is still persisted in metadata even if Slack
  * sync fails.
  *
- * Required Slack scope: `assistant:write`. The Agents & AI Apps feature
- * toggle must be enabled on the bot.
+ * Required Slack scope: `chat:write`.
  */
 
 import type { WebClient } from '@slack/web-api';
@@ -18,12 +18,14 @@ export async function setAssistantThreadTitle(
   channel_id: string,
   thread_ts: string,
   title: string,
-): Promise<void> {
-  if (isSlackDryRun()) return;
+): Promise<boolean> {
+  if (isSlackDryRun()) return false;
   try {
-    await client.assistant.threads.setTitle({ channel_id, thread_ts, title });
+    await client.agents.sessions.rename({ channel_id, thread_ts, title });
     logger.system(`Slack DM title synced (${channel_id}/${thread_ts})`);
+    return true;
   } catch (err) {
-    logger.warn('slack-title', `setTitle failed for ${channel_id}/${thread_ts}: ${err}`);
+    logger.warn('slack-title', `rename failed for ${channel_id}/${thread_ts}: ${err}`);
+    return false;
   }
 }

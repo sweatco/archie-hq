@@ -31,6 +31,7 @@ Rules:
 - Maximum 60 characters
 - Free-form style (imperative, noun phrase, question — whatever fits)
 - No quotes, no trailing punctuation
+- Letters, digits, spaces and simple punctuation only; spell out any symbol (2+2 → 2 plus 2, 50% → 50 percent, C# → C sharp)
 - Match the conversation's primary language
 - Capture the actual subject, not generic phrases
 
@@ -56,6 +57,9 @@ function buildTranscript(thread: SlackThread): { transcript: string; hasUsableCo
   return { transcript: lines.join('\n'), hasUsableContent };
 }
 
+// Slack's agents.sessions.rename rejects other symbols (e.g. : / # @ * $) with invalid_name.
+const RENAME_UNSAFE = /[^\p{L}\p{M}\p{N}\s.,'"&|_!=?()\-–—‘’“”…«»]/gu;
+
 function cleanTitle(raw: string): string | null {
   let t = raw.trim();
   if (!t) return null;
@@ -72,6 +76,7 @@ function cleanTitle(raw: string): string | null {
       break;
     }
   }
+  t = t.replace(RENAME_UNSAFE, ' ').replace(/\s+/g, ' ').trim();
   // Strip trailing punctuation
   t = t.replace(/[.!?…]+$/u, '').trim();
   if (!t) return null;

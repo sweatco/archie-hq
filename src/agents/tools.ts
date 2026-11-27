@@ -58,6 +58,7 @@ import {
   buildOtherChannelContextSection,
 } from '../connectors/slack/channel-canvas.js';
 import { collectPinnedFileAllowlist } from '../connectors/slack/channel-pins.js';
+import { setSlackThreadStatus } from '../connectors/slack/status.js';
 import {
   isDmOrUserId,
   findMutedTarget,
@@ -961,6 +962,8 @@ function createMuteChannelTool(agent: Agent, task: Task) {
 
       ch.muted = true;
       task.debouncedSave();
+      // A post no longer ends Slack's working state, and a muted thread gets no later clear.
+      await setSlackThreadStatus(ch.channel_id, ch.thread_id, '');
       await appendAgentFinding(
         task.taskId,
         agentName,

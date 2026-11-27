@@ -861,6 +861,30 @@ describe('fetchSlackThread — unrendered-content backstop', () => {
     expect(thread.messages[0].ownText).toContain('[unparsed: Deploy 4.2 rolled back]');
   });
 
+  it("ignores the agent_session state Slack adds to a session's root message", async () => {
+    loggerWarn.mockClear();
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [
+        rawMsg({
+          ts: '602.0',
+          user: 'UHUMAN',
+          text: 'what is 2+2?',
+          agent_session: {
+            status: 'active',
+            agent_bot_user_ids: ['UBOT'],
+            title: 'Staging check what is 2 plus 2',
+            agent_statuses: [{ agent_bot_user_id: 'UBOT', status: 'active', is_stoppable: false }],
+          },
+        }),
+      ],
+    });
+
+    const thread = await client.fetchSlackThread('C_res', '602.0', '602.0');
+
+    expect(thread.messages[0].ownText).toBe('what is 2+2?');
+    expect(JSON.stringify(loggerWarn.mock.calls)).not.toContain('Unrendered');
+  });
+
   it('stays quiet when Slack merely restates the body in its legacy dialect', async () => {
     slackApi.conversations.replies.mockResolvedValue({
       messages: [

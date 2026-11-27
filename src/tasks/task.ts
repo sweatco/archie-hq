@@ -98,6 +98,7 @@ import {
   getBotUserId,
   getChannelInfo,
   isInternalMemoryUser,
+  getSlackClient,
 } from '../connectors/slack/client.js';
 import type { SlackReactionsResult } from '../connectors/slack/client.js';
 import { renderMessageBody, shouldRedact } from '../connectors/slack/message-body.js';
@@ -107,6 +108,7 @@ import { logger } from '../system/logger.js';
 import { emitEvent } from '../system/event-bus.js';
 import { TaskStatusController, isStatusEnabled } from './status.js';
 import { setSlackThreadStatus } from '../connectors/slack/status.js';
+import { setAssistantThreadTitle } from '../connectors/slack/title.js';
 import { deriveActivityFromEvent } from '../agents/activity.js';
 import {
   deriveMemoryDestination,
@@ -225,6 +227,8 @@ export class Task {
   private pendingMigrationNote?: string;
   /** Drives the "Archie is …" Slack loading indicator from agent activity. */
   private statusController: TaskStatusController;
+  /** Threads whose agent session a status push has confirmed in this activation. */
+  private slackSessions = new Set<string>();
 
   private constructor(taskId: string, metadata: TaskMetadata, pmDef: AgentDef) {
     this.taskId = taskId;
@@ -1070,9 +1074,6 @@ export class Task {
     appendMessageToUser(this.taskId, sender, message, logDest).catch((error: unknown) =>
       logger.error('task', 'Could not record outgoing message', error),
     );
-    // The app just posted into the thread — Slack auto-clears the loading
-    // indicator, so sync our notion of what's shown (re-pushes if work continues).
-    this.statusController.notePosted();
   }
 
   /**
@@ -1376,11 +1377,13 @@ export class Task {
    * Single sink for a rendered status line ('' clears it). Delivers it to every
    * surface so the indicator can be observed without Slack:
    *   - a `status` event on the bus → SSE → the CLI shows the same line live
-   *   - the Slack assistant-thread indicator (best-effort)
+   *   - the Slack agent-session working indicator (best-effort)
    * Gated as a whole by ARCHIE_LIVE_STATUS so the feature has one off switch.
    */
   private onStatusRendered(status: string): void {
     if (!isStatusEnabled()) return;
+    // A stopped task's agent may wake once more; nothing would clear what it shows.
+    if (status && !this.isActive) return;
     emitEvent('status', this.taskId, { status });
     this.pushSlackStatus(status);
   }
@@ -1403,12 +1406,43 @@ export class Task {
               (ch): ch is SlackChannel =>
                 ch.type === 'slack' && !ch.muted && ch.channel_id === destination.channel_id,
             )
-            .map((ch) => setSlackThreadStatus(ch.channel_id, ch.thread_id, status)),
+            .map(async (ch) => {
+              if (await setSlackThreadStatus(ch.channel_id, ch.thread_id, status))
+                await this.noteSlackSession(ch.channel_id, ch.thread_id);
+            }),
         ),
       )
       .catch((error) =>
         logger.warn('task', `Slack status suppressed for ${this.taskId}: ${error}`),
       );
+  }
+
+  /**
+   * Send the generated title to a DM thread now, or after the first status push
+   * that confirms its agent session (Slack rejects a rename before that). The
+   * pending marker survives a restart and is cleared only once Slack took it.
+   */
+  async sendSlackTitle(channelId: string, threadTs: string): Promise<void> {
+    const key = `slack:${channelId}:${threadTs}`;
+    this.metadata.slack_title_pending = key;
+    this.debouncedSave();
+    if (this.slackSessions.has(key)) await this.renameSlackSession(channelId, threadTs);
+  }
+
+  private async noteSlackSession(channelId: string, threadTs: string): Promise<void> {
+    const key = `slack:${channelId}:${threadTs}`;
+    if (this.slackSessions.has(key)) return;
+    this.slackSessions.add(key);
+    if (this.metadata.slack_title_pending === key)
+      await this.renameSlackSession(channelId, threadTs);
+  }
+
+  private async renameSlackSession(channelId: string, threadTs: string): Promise<void> {
+    const title = this.metadata.title;
+    if (!title || !(await setAssistantThreadTitle(getSlackClient(), channelId, threadTs, title)))
+      return;
+    delete this.metadata.slack_title_pending;
+    this.debouncedSave();
   }
 
   /**
@@ -2623,6 +2657,7 @@ export class Task {
    */
   private async activate(): Promise<void> {
     this.isActive = true;
+    this.slackSessions.clear();
     // A fresh activation (new task or reopen of a parked one) starts a new cycle —
     // any completion intent from a prior cycle is stale. Clearing here covers
     // reopens routed to a specialist (which don't pass through PM's active edge);

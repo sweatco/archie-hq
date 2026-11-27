@@ -25,13 +25,12 @@ import {
   isExternalUser,
   isChannelShared,
   postEphemeral,
-  getSlackClient,
   invalidateMemoryMemberTrust,
 } from './client.js';
 import { ensureChannelCanvas } from './channel-canvas.js';
 import { ensureChannelPins } from './channel-pins.js';
 import { shouldCreateNewTask, shouldForwardMessageEvent, isAckableEvent } from './task-routing.js';
-import { Task } from '../../tasks/task.js';
+import { Task, activeTasks } from '../../tasks/task.js';
 import { registerMemoryPreferenceHandlers } from '../../memory/slack-approval.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { logger } from '../../system/logger.js';
@@ -53,7 +52,7 @@ import {
   initiativeOrigin,
   attachInitiativeOrigin,
 } from '../../proactivity/index.js';
-import { setAssistantThreadTitle } from './title.js';
+import { setSlackThreadStatus } from './status.js';
 import type { SlackThread, SlackAuthor } from '../../types/task.js';
 
 /**
@@ -110,6 +109,15 @@ const editedMessageSchema = z.object({
     .passthrough(),
   previous_message: z.object({ text: z.string().optional() }).passthrough().optional(),
 });
+
+const agentSessionStoppedSchema = z
+  .object({
+    type: z.literal('agent_session_stopped'),
+    channel: z.string(),
+    thread_ts: z.string(),
+    user: z.string(),
+  })
+  .passthrough();
 
 let app: AppType | null = null;
 
@@ -291,6 +299,15 @@ export async function mountSlackApp(
       ts: event.ts,
       thread_ts: event.thread_ts,
     }).catch((err: unknown) => logger.error('Server', 'Error processing Slack event', err));
+  });
+
+  boltApp.event('agent_session_stopped', async ({ event: rawEvent }) => {
+    if (getIsShuttingDown()) return;
+    const parsedEvent = agentSessionStoppedSchema.safeParse(rawEvent);
+    if (!parsedEvent.success) return;
+    handleAgentSessionStopped(parsedEvent.data).catch((err: unknown) =>
+      logger.error('Server', 'Error handling Slack stop button', err),
+    );
   });
 
   boltApp.action<BlockAction<ButtonAction>>(/^initiative_/, async ({ ack, body, action }) => {
@@ -725,7 +742,7 @@ export function registerMergeActionHandlers(boltApp: Pick<AppType, 'action'>): v
  *
  * Generates a Haiku-authored title for the task and persists it on metadata.
  * For DM-originated tasks, also pushes the title to Slack via
- * `assistant.threads.setTitle` so the bot's DM list shows a meaningful name.
+ * `agents.sessions.rename` so the bot's DM list shows a meaningful name.
  *
  * Errors are swallowed by the called helpers — title is best-effort.
  */
@@ -738,7 +755,7 @@ async function generateTitleAndSync(task: Task, thread: SlackThread): Promise<vo
   logger.system(`Task ${task.taskId} title set: "${title}"`);
 
   if (thread.channel.id.startsWith('D')) {
-    await setAssistantThreadTitle(getSlackClient(), thread.channel.id, thread.threadId, title);
+    await task.sendSlackTitle(thread.channel.id, thread.threadId);
   }
 }
 
@@ -855,6 +872,38 @@ function routeSlackEvent(event: {
   }
 
   return { action: 'process' };
+}
+
+// ============================================================================
+// Stop Button
+// ============================================================================
+
+/** Slack does not end the session itself; `Task.stop()`'s status clear does. */
+export async function handleAgentSessionStopped(event: {
+  channel: string;
+  thread_ts: string;
+  user: string;
+}): Promise<void> {
+  const taskId = await findTaskByThread(event.thread_ts);
+  const task = taskId ? activeTasks.get(taskId) : undefined;
+  if (!task?.isActive) {
+    await setSlackThreadStatus(event.channel, event.thread_ts, '');
+    return;
+  }
+
+  try {
+    const userInfo = await getUserInfo(event.user);
+    if (isExternalUser(userInfo)) {
+      logger.system(`Ignoring stop from external/guest user ${event.user}`);
+      return;
+    }
+  } catch (error) {
+    // Fail open, as inbound messages do.
+    logger.warn('Slack', `Failed to classify stop requester ${event.user}`, error);
+  }
+
+  logger.system(`Task ${taskId} stopped from Slack by ${event.user}`);
+  await task.stop();
 }
 
 // ============================================================================
