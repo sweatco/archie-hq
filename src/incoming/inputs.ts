@@ -126,8 +126,8 @@ export function linkRoutine(
   const input = store.input(inputId);
   if (!input) return { status: 'refused', reason: 'unknown_input' };
   if (input.state === 'deleted') return { status: 'refused', reason: 'input_deleted' };
-  if (!mayManageInput(input, actor)) return { status: 'refused', reason: 'not_owner' };
   if (input.routines.includes(triggerId)) return { status: 'unchanged', input };
+  if (!mayManageInput(input, actor)) return { status: 'refused', reason: 'not_owner' };
   if (input.routines.some((id) => !gone.includes(id)))
     return { status: 'refused', reason: 'input_taken' };
 

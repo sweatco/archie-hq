@@ -380,6 +380,18 @@ describe('who may approve', () => {
     expect((await stored(trigger)).status).toBe('enabled');
   });
 
+  it('counts an input the operator linked before the approval as linked', async () => {
+    const input = await existingInput(null);
+    const trigger = await proposed([{ type: 'incoming_event', input_id: input.id }]);
+    store.linkRoutine(input.id, trigger.id);
+
+    expect(await approve(trigger, DANA)).toMatchObject({
+      status: 'approved',
+      linked: [input.id],
+      awaitingOperator: [],
+    });
+  });
+
   it('refuses a stored proposal that names more than one input, and creates nothing', async () => {
     const unused = await existingInput(null);
     const trigger = await proposed([NEW_INPUT, { type: 'incoming_event', input_id: unused.id }]);
