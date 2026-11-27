@@ -31,7 +31,7 @@ Rules:
 - Maximum 60 characters
 - Free-form style (imperative, noun phrase, question — whatever fits)
 - No quotes, no trailing punctuation
-- No colons, slashes or symbols such as # @ * $ % +
+- Letters, digits, spaces and simple punctuation only; spell out any symbol (2+2 → 2 plus 2, 50% → 50 percent, C# → C sharp)
 - Match the conversation's primary language
 - Capture the actual subject, not generic phrases
 
