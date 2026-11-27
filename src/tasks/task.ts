@@ -2587,7 +2587,13 @@ export class Task {
       if (await refusedBeforeEnabling(this, id, pending)) return null;
     }
 
-    return finishTriggerApproval(this, id, await enableProposedTrigger(id, approverId));
+    // Checked again inside the store's lock: an edit since the read may have made it an event routine.
+    const enabled = await enableProposedTrigger(
+      id,
+      approverId,
+      (stored) => !isEventRoutine(stored),
+    );
+    return finishTriggerApproval(this, id, enabled);
   }
 
   /**

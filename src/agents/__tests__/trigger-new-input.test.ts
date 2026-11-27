@@ -282,6 +282,23 @@ describe('update_trigger', () => {
     expect(saveTrigger).not.toHaveBeenCalled();
   });
 
+  it('refuses an event condition on an approved trigger that takes no events', async () => {
+    loadTrigger.mockResolvedValue(
+      stored({
+        conditions: [
+          { type: 'schedule', cron: '0 9 * * *', tz: 'UTC', next_run_at: '2026-11-25T09:00:00Z' },
+        ],
+      }),
+    );
+
+    const out = await call('update_trigger', makeTask(), {
+      id: TRIGGER_ID,
+      conditions: [{ type: 'incoming_event', input_id: 'inp-AAAAAAAAAAAAAAAAAAAAAA' }],
+    });
+
+    expect(out).toMatch(/Could not update the trigger: .*Propose another trigger/);
+  });
+
   it('accepts a new input on a proposal and posts the new review', async () => {
     const pending = stored({ status: 'pending' });
     loadTrigger.mockResolvedValue(pending);

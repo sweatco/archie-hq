@@ -144,4 +144,22 @@ describe('handleTriggerApproval — cap reached', () => {
     expect(announceTriggerChange).toHaveBeenCalledOnce();
     expect(task.metadata.pending_trigger_id).toBeUndefined();
   });
+
+  it('does not enable a proposal that became an event routine after it was read', async () => {
+    loadTrigger.mockResolvedValue(pending());
+    countActiveTriggers.mockResolvedValue(0);
+    enableProposedTrigger.mockResolvedValue(null);
+
+    await approve(makeFakeTask());
+
+    const [, , finalize] = enableProposedTrigger.mock.calls[0] as [
+      string,
+      string,
+      (stored: Trigger) => boolean,
+    ];
+    expect(finalize(pending())).toBe(true);
+    expect(
+      finalize({ ...pending(), conditions: [{ type: 'incoming_event', input_id: 'inp-1' }] }),
+    ).toBe(false);
+  });
 });

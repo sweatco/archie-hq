@@ -3592,6 +3592,15 @@ function createUpdateTriggerTool(task: Task) {
         if ('error' in built) return ok(`Could not update the trigger: ${built.error}`);
         const inputRefusal = routineInputRefusal(built.conditions, trigger.id);
         if (inputRefusal) return ok(`Could not update the trigger: ${inputRefusal}.`);
+        // Taking events needs the review an event routine gets at approval.
+        if (
+          trigger.status !== 'pending' &&
+          !isEventRoutine(trigger) &&
+          built.conditions.some(isEventCondition)
+        )
+          return ok(
+            'Could not update the trigger: an approved trigger that takes no incoming events cannot start taking them. Propose another trigger for that.',
+          );
         nextConditions = built.conditions;
       }
 
