@@ -902,6 +902,7 @@ const PLUMBING_SUBTREES = new Set([
   'shares',
   'pinned_info',
   'pinned_to',
+  'agent_session',
   // Interactive-control chrome, not message content: an app's overflow menu and
   // select options ("More actions…", "Why am I seeing this?").
   'placeholder',
