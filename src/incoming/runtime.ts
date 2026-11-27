@@ -8,7 +8,7 @@ import { validateMasterKey } from '../system/secrets-vault.js';
 import { INCOMING_DIR, INCOMING_SECRETS_DIR } from '../system/workdir.js';
 import { setInputServices, setOpenInbox } from './access.js';
 import { IncomingDispatcher } from './dispatcher.js';
-import { INCOMING_ROUTE, mountIncomingReceiver } from './receiver.js';
+import { answerIncomingRouteErrors, INCOMING_ROUTE, mountIncomingReceiver } from './receiver.js';
 import { vaultInputSecrets, type InputSecrets } from './secrets.js';
 import { IncomingStore } from './store.js';
 import type { IncomingConsumer } from './types.js';
@@ -67,6 +67,7 @@ export function mountIncomingEvents(
     app.post(INCOMING_ROUTE, (_req: Request, res: Response) => {
       res.status(503).json({ error: 'unavailable' });
     });
+    answerIncomingRouteErrors(app);
     return null;
   }
 

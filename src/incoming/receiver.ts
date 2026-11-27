@@ -2,7 +2,7 @@
 /** Incoming events receiver: authenticates a JSON webhook and commits its receipt before replying. */
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
-import type { Application, Request, Response } from 'express';
+import type { Application, NextFunction, Request, Response } from 'express';
 
 import { logger } from '../system/logger.js';
 import { getIsShuttingDown } from '../system/shutdown.js';
@@ -43,6 +43,20 @@ type BodyRead = { ok: true; body: Buffer } | { ok: false; reply: Reply };
 
 const rejected = (status: number, error: string): Reply => ({ status, body: { error } });
 
+/** Express refuses a malformed path before any handler runs, and its own error page carries a stack. Mounted after the route. */
+export function answerIncomingRouteErrors(app: Application): void {
+  app.use(
+    INCOMING_ROUTE.replace('/:inputId', ''),
+    (error: unknown, _req: Request, res: Response, _next: NextFunction) => {
+      const status: unknown =
+        typeof error === 'object' && error !== null && 'status' in error ? error.status : null;
+      if (typeof status === 'number' && status >= 400 && status < 500)
+        res.status(status).json({ error: 'invalid_request' });
+      else res.status(500).json({ error: 'unavailable' });
+    },
+  );
+}
+
 export function mountIncomingReceiver(app: Application, services: ReceiverServices): void {
   logger.plain(`Incoming events: POST ${INCOMING_ROUTE}`);
   const parseRawJson = express.raw({
@@ -63,6 +77,7 @@ export function mountIncomingReceiver(app: Application, services: ReceiverServic
     }
     res.status(reply.status).json(reply.body);
   });
+  answerIncomingRouteErrors(app);
 }
 
 async function receiveDelivery(

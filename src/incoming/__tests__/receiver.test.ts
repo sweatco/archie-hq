@@ -542,6 +542,19 @@ describe('a rejected delivery starts no work', () => {
   });
 });
 
+it('answers a malformed input id in JSON, with no stack', async () => {
+  const response = await rawRequest([
+    'POST /webhooks/incoming/%E0%A4%A HTTP/1.1',
+    'Host: localhost',
+    'Content-Type: application/json',
+    'Connection: close',
+  ]);
+
+  expect(response).toMatch(/^HTTP\/1\.1 400 /);
+  expect(response).toContain('{"error":"invalid_request"}');
+  expect(response).not.toMatch(/node_modules|\bat /);
+});
+
 describe('a retry with the same event key', () => {
   it('returns the original receipt and writes nothing', async () => {
     const sender = await signedSender();
