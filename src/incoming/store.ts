@@ -48,7 +48,7 @@ export type ReceiveResult =
   | { status: 'ignored'; receiptId: string; reason: IgnoredReason }
   | { status: 'conflict'; receiptId: string }
   | { status: 'full' }
-  | { status: 'unavailable'; reason: 'unknown' | 'deleted' };
+  | { status: 'deleted' };
 
 export interface InputSummary {
   input: Input;
@@ -143,6 +143,8 @@ const deliveryHandoffSchema = z.object({
   reason: z.string().nullable(),
   reservation: z.string().nullable(),
 });
+
+const storedBytesSchema = z.object({ workspace: z.number(), input: z.number() });
 
 const handoffRecordSchema = z.object({
   input_id: z.string(),
@@ -312,8 +314,8 @@ export class IncomingStore {
   receive(delivery: Delivery, consumers: readonly MatchedConsumer[]): ReceiveResult {
     return inTransaction(this.db, () => {
       const input = this.input(delivery.inputId);
-      if (!input) return { status: 'unavailable', reason: 'unknown' };
-      if (input.state === 'deleted') return { status: 'unavailable', reason: 'deleted' };
+      // The receiver answers for an unknown input before it calls this, and rows are never removed.
+      if (!input || input.state === 'deleted') return { status: 'deleted' };
 
       const wanted = input.state === 'enabled' && consumers.length > 0;
       const known =
@@ -403,15 +405,17 @@ export class IncomingStore {
   }
 
   private wouldExceedCapacity(inputId: string, incomingBytes: number): boolean {
-    const stored = this.requiredRow(
-      `SELECT COALESCE(SUM(length(p.body)),0) AS workspace,
-              COALESCE(SUM(CASE WHEN r.input_id=? THEN length(p.body) END),0) AS input
-         FROM payloads p JOIN receipts r ON r.id=p.receipt_id`,
-      inputId,
+    const stored = storedBytesSchema.parse(
+      this.row(
+        `SELECT COALESCE(SUM(length(p.body)),0) AS workspace,
+                COALESCE(SUM(CASE WHEN r.input_id=? THEN length(p.body) END),0) AS input
+           FROM payloads p JOIN receipts r ON r.id=p.receipt_id`,
+        inputId,
+      ),
     );
     return (
-      Number(stored.input) + incomingBytes > this.limits.inputCapacityBytes ||
-      Number(stored.workspace) + incomingBytes > this.limits.workspaceCapacityBytes
+      stored.input + incomingBytes > this.limits.inputCapacityBytes ||
+      stored.workspace + incomingBytes > this.limits.workspaceCapacityBytes
     );
   }
 
@@ -716,12 +720,6 @@ export class IncomingStore {
 
   private row(sql: string, ...args: SQLInputValue[]) {
     return this.db.prepare(sql).get(...args);
-  }
-
-  private requiredRow(sql: string, ...args: SQLInputValue[]) {
-    const row = this.row(sql, ...args);
-    if (!row) throw new Error('SQLite returned no row where one must exist');
-    return row;
   }
 
   /** Returns the number of rows changed. */

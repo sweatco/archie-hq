@@ -213,9 +213,7 @@ function replyTo(input: Input, result: ReceiveResult): Reply {
     case 'full':
       logger.warn('incoming', `Inbox is full; refused a delivery for input ${input.id}`);
       return rejected(429, 'inbox_full');
-    case 'unavailable':
-      return result.reason === 'deleted'
-        ? rejected(410, 'input_deleted')
-        : rejected(404, 'unknown_input');
+    case 'deleted':
+      return rejected(410, 'input_deleted');
   }
 }

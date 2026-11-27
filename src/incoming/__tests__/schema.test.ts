@@ -173,7 +173,7 @@ it('refuses a delivery for an input that does not exist', () => {
     receivedAt: Date.now(),
   };
 
-  expect(store.receive(delivery, [])).toEqual({ status: 'unavailable', reason: 'unknown' });
+  expect(store.receive(delivery, [])).toEqual({ status: 'deleted' });
   store.close();
 });
 
