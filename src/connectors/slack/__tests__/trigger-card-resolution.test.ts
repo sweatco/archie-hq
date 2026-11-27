@@ -191,6 +191,7 @@ vi.mock('../../../system/logger.js', () => ({
 
 import { mountSlackApp } from '../events.js';
 import { postEphemeral } from '../client.js';
+import { setInputServices } from '../../../incoming/access.js';
 import { expectDefined } from '../../../test-support/assertions.js';
 
 const TRIGGER_ID = 'trg-20260729-1056-6nd69p';
@@ -521,6 +522,44 @@ describe('approve_trigger — an event routine is approved from the card that wa
     await clickCard(`${TRIGGER_ID}|${DIGEST}`);
 
     expect(cardText()).toMatch(/is now on\. It receives events once an operator links it/);
+  });
+
+  it('keeps the Settings button when the card of a routine that is already on is clicked again', async () => {
+    taskThatAnswers({ status: 'not_pending' });
+    loadTrigger.mockResolvedValue({ ...eventRoutine(), status: 'enabled' });
+    const input = {
+      id: 'inp-AAAAAAAAAAAAAAAAAAAAAA',
+      state: 'enabled',
+      owner: 'U_OWNER',
+      routines: [TRIGGER_ID],
+    };
+    setInputServices({ store: { input: () => input } } as never);
+
+    try {
+      await clickCard(`${TRIGGER_ID}|${DIGEST}`);
+    } finally {
+      setInputServices(null);
+    }
+
+    expect(cardText()).toMatch(/is already on/);
+    const [, controls] = cardBlocks() as [unknown, { elements: Array<{ action_id: string }> }];
+    expect(controls.elements.map((button) => button.action_id)).toEqual(['input_settings']);
+  });
+
+  it('reports the approval, not a failure, when the card cannot be rewritten', async () => {
+    taskThatAnswers({
+      status: 'approved',
+      trigger: { ...eventRoutine(), status: 'enabled' },
+      created: [],
+      linked: ['inp-AAAAAAAAAAAAAAAAAAAAAA'],
+      awaitingOperator: [],
+    });
+    updateSlackMessageSafely.mockRejectedValueOnce(new Error('message_not_found'));
+
+    await clickCard(`${TRIGGER_ID}|${DIGEST}`);
+
+    expect(postEphemeral).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(postEphemeral).mock.calls[0]?.[2]).toMatch(/is now on/);
   });
 
   it('retires a card that carries no digest', async () => {

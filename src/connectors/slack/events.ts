@@ -33,6 +33,7 @@ import { ensureChannelPins } from './channel-pins.js';
 import { shouldCreateNewTask, shouldForwardMessageEvent, isAckableEvent } from './task-routing.js';
 import { Task } from '../../tasks/task.js';
 import { registerMemoryPreferenceHandlers } from '../../memory/slack-approval.js';
+import { inputServices, routineMayUseInput } from '../../incoming/access.js';
 import { registerInputControlHandlers } from '../../system/input-controls.js';
 import { inputControlBlocks } from '../../system/input-panels.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
@@ -48,7 +49,11 @@ import {
 } from '../../system/trigger-scheduler.js';
 import { messageMatchesTrigger } from '../../system/trigger-match.js';
 import { routineRefusalText, type RoutineInputs } from '../../system/routine-approval.js';
-import { isEventRoutine, parseApprovalReference } from '../../system/routine-review.js';
+import {
+  isEventCondition,
+  isEventRoutine,
+  parseApprovalReference,
+} from '../../system/routine-review.js';
 import type { Trigger } from '../../types/trigger.js';
 import { generateTaskTitle } from '../../tasks/title-generator.js';
 import {
@@ -116,6 +121,13 @@ const editedMessageSchema = z.object({
 });
 
 let app: AppType | null = null;
+
+/** The input whose Settings button the card of an event routine carries: one a person owns and the routine is linked to. */
+function controlledInput(routine: Trigger): string | undefined {
+  const inputId = routine.conditions.find(isEventCondition)?.input_id;
+  const input = inputId ? inputServices()?.store.input(inputId) : null;
+  return input?.owner && routineMayUseInput(input, routine.id) ? input.id : undefined;
+}
 
 async function updateTaskApprovalMessage(
   taskId: string | null,
@@ -574,6 +586,8 @@ export async function mountSlackApp(
         const existing = await loadTrigger(triggerId);
         if (existing?.status === 'enabled') {
           text = `✅ *${triggerWhat(existing)}* is already on — this was an earlier prompt for the same automation, so nothing changed.`;
+          const inputId = controlledInput(existing);
+          if (inputId) blocks = inputControlBlocks(text, inputId);
         } else if (existing?.status === 'paused') {
           text = `ℹ️ *${triggerWhat(existing)}* was already approved and is currently paused — this was an earlier prompt for it, so nothing changed. Ask me to resume it if you want it running.`;
         } else if (!existing) {
@@ -587,7 +601,17 @@ export async function mountSlackApp(
           blocks = buildTriggerApprovalBlocks(existing, text);
         }
       }
-      await updateTaskApprovalMessage(taskId, body, text, blocks);
+      try {
+        await updateTaskApprovalMessage(taskId, body, text, blocks);
+      } catch (failure) {
+        // The decision stands; only its card could not be rewritten.
+        logger.warn(
+          'Slack',
+          `Could not rewrite the approval card of trigger ${triggerId}`,
+          failure,
+        );
+        await tellApprover(text);
+      }
     } catch (error) {
       logger.error('Server', 'Error handling trigger approval', error);
       if (shown !== undefined)
