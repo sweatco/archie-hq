@@ -182,7 +182,7 @@ The instruction names the event file and says its content is untrusted data, nev
 - **A channel that Slack could not be asked about is not a skip.** The attempt fails and is retried. Only a channel that Slack reports missing or archived pauses the routine and skips the event as `destination_unreachable`.
 - **Timing.** A stopped routine's waiting work is skipped at its next attempt, which can be 30 minutes away. The body stays in the inbox until then.
 - **A running Task** is checked against the inbox before every post and file share, by the same gate that holds it to its [destination](memory.md). Explicit memory writes and completion extraction ask the same question, and extraction asks again just before it writes. With incoming events off, or an inbox that could not be opened, the answer is no and the refusal says so: such a Task stays silent in its thread until the inbox is open again. Context the agent already loaded is not taken back.
-- **Two writes pass without the check,** as they pass the destination check: the notice a Task's trigger tools post to a trigger's bound channel, and the removal of an acknowledgement reaction. The notice carries a summary the PM wrote, which is one reason the tool review under [Not built yet](#not-built-yet) comes before production use.
+- **Two writes pass without the check,** as they pass the destination check: the notice a Task's trigger tools post to a trigger's bound channel, and the removal of an acknowledgement reaction. The notice carries a summary the PM wrote, which the tool review under [Not built yet](#not-built-yet) covers.
 - **An uncertain run** is a Task that outlived a cancelled or failed handoff: it started, and the handoff did not record it. `history` marks it.
 
 ## Design choices
@@ -251,6 +251,6 @@ These are starting defaults, named constants in `receiver.ts`, `store.ts` and `d
 - Proactivity as a second consumer ([#406](https://github.com/sweatco/archie-hq/issues/406)).
 - Choosing which event fields a Task receives ([#451](https://github.com/sweatco/archie-hq/issues/451)), and how long the event file is kept ([#407](https://github.com/sweatco/archie-hq/issues/407)).
 - An overlap of two keys during rotation ([#449](https://github.com/sweatco/archie-hq/issues/449)), matching a delivery against the input as committed ([#450](https://github.com/sweatco/archie-hq/issues/450)), and an audit log of input changes ([#454](https://github.com/sweatco/archie-hq/issues/454)).
-- A review of the tools an event-started Task may use, with the event as untrusted input ([#439](https://github.com/sweatco/archie-hq/issues/439)). Required before production use.
+- A review of the tools an event-started Task may use, with the event as untrusted input ([#439](https://github.com/sweatco/archie-hq/issues/439)).
 - MCP event subscriptions ([#404](https://github.com/sweatco/archie-hq/issues/404), [#405](https://github.com/sweatco/archie-hq/issues/405)).
 - A per-input rate limit ([#448](https://github.com/sweatco/archie-hq/issues/448)). Until then, the edge in front of Archie is the only defence against a flood.
