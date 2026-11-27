@@ -592,8 +592,7 @@ export interface EventFire {
   prepare(input: Parameters<typeof Task.prepareTriggered>[0]): Promise<TriggeredTask>;
 }
 
-export type FireResult =
-  { status: 'fired'; taskId: string } | { status: 'skipped'; reason: string };
+export type FireResult = { status: 'fired' } | { status: 'skipped'; reason: string };
 
 const skipped = (reason: string): FireResult => ({ status: 'skipped', reason });
 
@@ -669,7 +668,7 @@ export async function fireEvent(routine: Trigger, fire: EventFire): Promise<Fire
     });
     emitEvent('trigger:fired', taskId, { trigger_id: routine.id });
   }
-  return { status: 'fired', taskId };
+  return { status: 'fired' };
 }
 
 // ---- Announcements (config changes only — never firing) ----
