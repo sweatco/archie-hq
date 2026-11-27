@@ -629,6 +629,34 @@ describe('POST /tasks/:id/approve — an event routine', () => {
     );
   });
 
+  it('asks for the reference of the approval event when given the trigger id alone', async () => {
+    vi.mocked(Task.get).mockResolvedValue({
+      handleTriggerApproval: vi.fn().mockResolvedValue(null),
+    } as unknown as Task);
+    loadTrigger.mockResolvedValue(
+      pending({ conditions: [{ type: 'incoming_event', input_id: 'inp-AAAAAAAAAAAAAAAAAAAAAA' }] }),
+    );
+    const res = makeRes();
+
+    await captureRoute('/tasks/:id/approve', 'post')(
+      {
+        params: { id: TASK_ID },
+        body: { type: 'trigger', approve: true, ref: TRIGGER_ID },
+      } as unknown as Request,
+      res,
+    );
+
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.json.mock.calls[0][0]).toHaveProperty(
+      'error',
+      expect.stringMatching(/reference from its approval event/),
+    );
+    expect(res.json.mock.calls[0][0]).toHaveProperty(
+      'error',
+      expect.not.stringMatching(/limit was reached/),
+    );
+  });
+
   it('declines by the trigger id alone', async () => {
     const task = { handleTriggerDenial: vi.fn().mockResolvedValue({ outcome: 'withdrawn' }) };
 

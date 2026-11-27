@@ -42,7 +42,7 @@ import {
 } from '../../system/trigger-scheduler.js';
 import type { Trigger } from '../../types/trigger.js';
 import { routineRefusalText } from '../../system/routine-approval.js';
-import { parseApprovalReference } from '../../system/routine-review.js';
+import { isEventRoutine, parseApprovalReference } from '../../system/routine-review.js';
 import { cancelReminder } from '../../system/reminder-scheduler.js';
 
 /**
@@ -368,9 +368,11 @@ export function mountApiRoutes(app: Application): void {
               ok: false,
               stale: true,
               capBlocked,
-              error: capBlocked
-                ? `Trigger ${ref ?? '(none)'} was not enabled — the active-trigger limit was reached. Remove or pause another automation, then approve again.`
-                : `Trigger ${ref ?? '(none)'} was not enabled — it is already active or was withdrawn.`,
+              error: !capBlocked
+                ? `Trigger ${ref ?? '(none)'} was not enabled — it is already active or was withdrawn.`
+                : isEventRoutine(existing)
+                  ? `Trigger ${ref ?? '(none)'} was not enabled — an event routine is approved with the reference from its approval event, not with its id alone.`
+                  : `Trigger ${ref ?? '(none)'} was not enabled — the active-trigger limit was reached. Remove or pause another automation, then approve again.`,
             });
             return;
           }
