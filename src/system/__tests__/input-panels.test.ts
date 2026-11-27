@@ -233,6 +233,31 @@ describe('the inputs panel', () => {
     expect(row?.text.text).toContain('• Meeting notes → #notes _(paused)_');
   });
 
+  it('shows what a proposer wrote as text, never as a link or a mention', () => {
+    const routine = {
+      ...NOTES,
+      summary: '<https://example.test|Renew your key here> <!channel>',
+      binding: { ...NOTES.binding, channel_name: 'notes <!here>' },
+    };
+
+    const [, row] = rows(inputsPanelBlocks([listing({ routines: [{ id: NOTES.id, routine }] })]));
+
+    expect(row?.text.text).toContain(
+      '• &lt;https://example.test|Renew your key here&gt; &lt;!channel&gt; → #notes &lt;!here&gt;',
+    );
+  });
+
+  it('still mentions the person a DM routine delivers to', () => {
+    const routine = {
+      ...NOTES,
+      binding: { type: 'user', user_id: 'U0DANA', channel_id: 'D0DANA', channel_name: 'Dana' },
+    } as const;
+
+    const [, row] = rows(inputsPanelBlocks([listing({ routines: [{ id: NOTES.id, routine }] })]));
+
+    expect(row?.text.text).toContain('→ a DM with <@U0DANA>');
+  });
+
   it("says so when nothing takes an input's events", () => {
     const [, row] = rows(inputsPanelBlocks([listing({ routines: [] })]));
 

@@ -95,7 +95,7 @@ const FIELD_TEXT_MAX = 1900;
 const INSTRUCTION_SECTIONS_MAX = 10;
 
 /** Slack reads `<…>` as a mention or a link and `&` as an entity; escaped, model-written text stays text. */
-function plain(text: string): string {
+export function plain(text: string): string {
   return text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 }
 

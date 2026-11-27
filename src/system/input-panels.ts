@@ -5,6 +5,7 @@ import { z } from 'zod';
 import type { ConnectionStatus } from '../incoming/inputs.js';
 import type { Input } from '../incoming/types.js';
 import { routineDestination, type InputListing } from './input-inventory.js';
+import { plain } from './routine-review.js';
 import { triggerWhat } from './trigger-scheduler.js';
 
 export const INPUT_ACTIONS = {
@@ -57,9 +58,12 @@ function usesLines({ routines }: InputListing): string[] {
   if (routines.length === 0) return ['_Nothing takes its events yet_'];
   return routines.map(({ id, routine }) =>
     routine
-      ? `• ${triggerWhat(routine)} → ${routineDestination(routine)}${
-          routine.status === 'enabled' ? '' : ` _(${routine.status})_`
-        }`
+      ? `• ${plain(triggerWhat(routine))} → ${
+          // A DM's destination is a mention Archie built; a channel's name is whatever the proposer passed.
+          routine.binding.type === 'channel'
+            ? plain(routineDestination(routine))
+            : routineDestination(routine)
+        }${routine.status === 'enabled' ? '' : ` _(${routine.status})_`}`
       : `• A routine that no longer exists (\`${id}\`)`,
   );
 }
