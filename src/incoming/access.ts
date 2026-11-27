@@ -39,15 +39,20 @@ export function taskMayUseItsInput(metadata: EventStart): boolean {
   return inputRefusal(metadata) === null;
 }
 
+/** True while the input of a Task that an event started cannot be checked: the answer may differ once the inbox is open. */
+export function inputUnchecked(metadata: EventStart): boolean {
+  return metadata.triggered_start !== undefined && !openInbox;
+}
+
 /** Why such a Task is refused, or null when it may go on. A closed inbox is named apart from a lost link. */
 export function inputRefusal(metadata: EventStart): string | null {
   const start = metadata.triggered_start;
   if (!start) return null;
-  if (!openInbox)
+  if (inputUnchecked(metadata))
     return 'the incoming events inbox is not open, so the input that started this task cannot be checked';
   if (
     !metadata.triggered_by ||
-    !routineMayUseInput(openInbox.input(start.input_id), metadata.triggered_by)
+    !routineMayUseInput(openInbox?.input(start.input_id) ?? null, metadata.triggered_by)
   )
     return 'this task may no longer use the incoming events input that started it';
   return null;

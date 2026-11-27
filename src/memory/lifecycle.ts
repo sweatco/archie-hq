@@ -20,7 +20,7 @@ import type { TaskMetadata } from '../types/task.js';
 import { writeTaskSummary } from './task-summaries.js';
 import { classifySlackMemoryScope } from '../connectors/slack/client.js';
 import { isAuthorizedMemoryScope, scopeForSlackChannel } from '../tasks/memory-scope.js';
-import { taskMayUseItsInput } from '../incoming/access.js';
+import { inputUnchecked, taskMayUseItsInput } from '../incoming/access.js';
 
 // ============================================================================
 // Housekeeping note queue (consumed by buildSummaryMarkdown)
@@ -94,6 +94,12 @@ export function rescheduleTaskCompleted(taskId: string): void {
 // processExtraction
 // ============================================================================
 
+/** Throws while the inbox is closed, so the entry stays pending for a later boot; a lost link answers false. */
+function mayWriteForItsInput(metadata: TaskMetadata): boolean {
+  if (inputUnchecked(metadata)) throw new Error('the incoming events inbox is not open');
+  return taskMayUseItsInput(metadata);
+}
+
 async function processExtraction(taskId: string): Promise<void> {
   const metadata = await loadMetadata(taskId);
   if (!metadata) {
@@ -103,7 +109,7 @@ async function processExtraction(taskId: string): Promise<void> {
 
   const destination = metadata.memory_destination;
   if (!destination) return;
-  if (!taskMayUseItsInput(metadata)) return;
+  if (!mayWriteForItsInput(metadata)) return;
   const classify = async () =>
     scopeForSlackChannel(
       await classifySlackMemoryScope(destination.channel_id),
@@ -133,7 +139,7 @@ async function processExtraction(taskId: string): Promise<void> {
     if (!outcome) return;
     const current = await classify();
     if (
-      !taskMayUseItsInput(metadata) ||
+      !mayWriteForItsInput(metadata) ||
       !isAuthorizedMemoryScope(destination, current) ||
       current.kind !== scope.kind ||
       (scope.kind === 'user' && current.kind === 'user' && current.user_id !== scope.user_id)
@@ -212,7 +218,7 @@ async function processExtraction(taskId: string): Promise<void> {
   }
   const current = await classify();
   if (
-    !taskMayUseItsInput(metadata) ||
+    !mayWriteForItsInput(metadata) ||
     !isAuthorizedMemoryScope(destination, current) ||
     current.kind !== 'public'
   )

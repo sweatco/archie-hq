@@ -294,9 +294,14 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
       'utf-8',
     );
 
-    handleTaskCompleted(TASK_ID);
-    // Runs after the completion's own work on the same queue.
-    await enqueueMemoryWrite(() => Promise.resolve());
+    setOpenInbox({ input: () => null });
+    try {
+      handleTaskCompleted(TASK_ID);
+      // Runs after the completion's own work on the same queue.
+      await enqueueMemoryWrite(() => Promise.resolve());
+    } finally {
+      setOpenInbox(null);
+    }
 
     expect(classifySlackMemoryScope).not.toHaveBeenCalled();
     expect(runExtraction).not.toHaveBeenCalled();
@@ -304,6 +309,24 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     expect(existsSync(join(publicTasksDir, `${TASK_ID}.md`))).toBe(false);
     expect(existsSync(activityPath)).toBe(false);
     expect(await readPending()).toEqual([]);
+  });
+
+  it('keeps the extraction pending while the inbox is closed', async () => {
+    await writeFile(
+      join(sessionsDir, TASK_ID, 'shared', 'metadata.json'),
+      JSON.stringify({
+        ...METADATA,
+        triggered_by: 'trg-20261121-0900-notes1',
+        triggered_start: { origin: 'hnd-1', input_id: 'inp-1', phase: 'ready', brief: '' },
+      }),
+      'utf-8',
+    );
+
+    handleTaskCompleted(TASK_ID);
+    await enqueueMemoryWrite(() => Promise.resolve());
+
+    expect(runExtraction).not.toHaveBeenCalled();
+    expect(await readPending()).toEqual([TASK_ID]);
   });
 
   it('writes nothing when the routine loses its input while the extraction runs', async () => {
