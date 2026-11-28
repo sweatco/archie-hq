@@ -2598,8 +2598,9 @@ export class Task {
 
   /**
    * Approve an event routine from its review card. `shown` is the digest the clicked card carried, and must
-   * match the proposal as it is now. Enabling also creates the input a new-input condition asks for and
-   * links the routine, as far as the approver may.
+   * match the proposal as it is now. It creates the input a new-input condition asks for, owned by the
+   * approver, and links the routine as far as the approver may. An input it created is removed again
+   * unless the routine was enabled.
    */
   async approveEventRoutine(
     approver: InputActor,
@@ -2609,7 +2610,7 @@ export class Task {
     const { loadTrigger, enableProposedTrigger } = await import('../system/trigger-store.js');
     const { bindNewInputs, isEventRoutine, routineDigest } =
       await import('../system/routine-review.js');
-    const { prepareRoutineInputs } = await import('../system/routine-approval.js');
+    const { discardInputs, prepareRoutineInputs } = await import('../system/routine-approval.js');
 
     const pending = await loadTrigger(triggerId);
     if (!pending || pending.status !== 'pending' || !isEventRoutine(pending))
@@ -2622,16 +2623,22 @@ export class Task {
     const prepared = await prepareRoutineInputs(pending, approver);
     if (prepared.status !== 'ready') return prepared;
 
-    // Checked again inside the store's lock: an edit that landed since the click must not be approved unseen.
-    const enabled = await enableProposedTrigger(
-      triggerId,
-      approver.kind === 'operator' ? 'cli' : approver.userId,
-      (stored) => {
-        if (routineDigest(stored) !== digest || !bindNewInputs(stored)) return false;
-        stored.review_card = undefined;
-        return true;
-      },
-    );
+    let enabled: Trigger | null = null;
+    try {
+      // Checked again inside the store's lock: an edit that landed since the click must not be approved unseen.
+      enabled = await enableProposedTrigger(
+        triggerId,
+        approver.kind === 'operator' ? 'cli' : approver.userId,
+        (stored) => {
+          if (routineDigest(stored) !== digest || !bindNewInputs(stored, prepared.created))
+            return false;
+          stored.review_card = undefined;
+          return true;
+        },
+      );
+    } finally {
+      if (!enabled) await discardInputs(prepared.created);
+    }
     if (!enabled && (await loadTrigger(triggerId))?.status === 'pending')
       return { status: 'refused', reason: 'stale_card' };
     const trigger = await finishTriggerApproval(this, triggerId, enabled);

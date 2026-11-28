@@ -15,10 +15,7 @@ export function isEventRoutine(trigger: Pick<Trigger, 'conditions'>): boolean {
   return trigger.conditions.some(isEventCondition);
 }
 
-/**
- * Identifies what a review card shows: instructions, summary, destination and conditions.
- * The id reserved for a new input is left out, so a repeated click on the same card still matches.
- */
+/** Identifies what a review card shows: instructions, summary, destination and conditions. */
 export function routineDigest(trigger: Trigger): string {
   const { binding } = trigger;
   const shown = {
@@ -47,18 +44,20 @@ export function parseApprovalReference(reference: string): { triggerId: string; 
   return shown ? { triggerId, shown } : { triggerId };
 }
 
-/** Turns each new-input condition into a condition on the input reserved for it. False, changing nothing, when one has no reserved input. */
-export function bindNewInputs(trigger: Trigger): boolean {
+/** Turns each new-input condition into a condition on the input created for it, in order. False, changing nothing, when one has no input. */
+export function bindNewInputs(trigger: Trigger, created: readonly string[]): boolean {
   const bound: TriggerCondition[] = [];
+  let next = 0;
   for (const condition of trigger.conditions) {
     if (condition.type !== 'new_input_event') {
       bound.push(condition);
       continue;
     }
-    if (!condition.input_id) return false;
+    const inputId = created[next++];
+    if (!inputId) return false;
     bound.push({
       type: 'incoming_event',
-      input_id: condition.input_id,
+      input_id: inputId,
       ...(condition.filter?.length ? { filter: condition.filter } : {}),
     });
   }

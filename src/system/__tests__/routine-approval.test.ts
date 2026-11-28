@@ -6,7 +6,7 @@
  * The workdir module reads `ARCHIE_WORKDIR` once, when it is first imported, so the variable is set in a hoisted block.
  */
 import { randomBytes } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -32,12 +32,19 @@ vi.mock('../../tasks/persistence.js', async (importOriginal) => {
 const slack = vi.hoisted(() => ({
   internal: new Set<string>(),
   shared: new Set<string>(),
+  /** Runs once during the approver's lookup, standing in for whatever lands while Slack is asked. */
+  duringLookup: null as null | (() => Promise<unknown>),
 }));
 vi.mock('../../connectors/slack/client.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../connectors/slack/client.js')>();
   return {
     ...actual,
-    getUserInfo: vi.fn((userId: string) => Promise.resolve({ id: userId })),
+    getUserInfo: vi.fn(async (userId: string) => {
+      const run = slack.duringLookup;
+      slack.duringLookup = null;
+      if (run) await run();
+      return { id: userId };
+    }),
     isInternalMemoryUser: vi.fn((user: { id: string }) => slack.internal.has(user.id)),
     isChannelShared: vi.fn((channelId: string) => Promise.resolve(slack.shared.has(channelId))),
     fetchChannelIsPrivate: vi.fn().mockResolvedValue(true),
@@ -83,6 +90,7 @@ import {
   loadTrigger,
   saveTrigger,
   updatePendingTrigger,
+  withdrawPendingTrigger,
 } from '../trigger-store.js';
 
 const DANA: InputActor = { kind: 'slack_user', userId: 'U0DANA' };
@@ -163,6 +171,7 @@ beforeEach(() => {
   vi.stubEnv('ARCHIE_SECRETS_KEY', randomBytes(32).toString('base64'));
   slack.internal = new Set(['U0DANA', 'U0EVE']);
   slack.shared = new Set();
+  slack.duringLookup = null;
   scheduler.triggerCapExceeded.mockResolvedValue(false);
   scheduler.announceTriggerChange.mockResolvedValue(undefined);
   beforeEnabling.run = null;
@@ -221,7 +230,7 @@ describe('a proposal that asks for a new input', () => {
     expect(scheduler.indexTrigger).toHaveBeenCalledOnce();
   });
 
-  it('continues an approval that stopped before the input was created', async () => {
+  it('can be approved again after an approval that stopped before the input was created', async () => {
     const trigger = await proposed([NEW_INPUT]);
     vi.spyOn(secrets, 'create').mockRejectedValueOnce(new Error('disk is full'));
     await expect(approve(trigger, DANA)).rejects.toThrow('disk is full');
@@ -234,33 +243,42 @@ describe('a proposal that asks for a new input', () => {
     expect(inputs()[0]?.routines).toEqual([trigger.id]);
   });
 
-  it('continues an approval that stopped after the input was created and linked', async () => {
+  it('removes the input when enabling fails, and anyone may approve afterwards', async () => {
     const trigger = await proposed([NEW_INPUT]);
-    beforeEnabling.run = () => Promise.reject(new Error('process died'));
-    await expect(approve(trigger, DANA)).rejects.toThrow('process died');
-    const [interrupted] = inputs();
+    beforeEnabling.run = () => Promise.reject(new Error('disk is full'));
+    await expect(approve(trigger, DANA)).rejects.toThrow('disk is full');
+    expect(inputs()).toEqual([]);
+    expect(readdirSync(join(root, 'secrets'))).toEqual([]);
     expect((await stored(trigger)).status).toBe('pending');
-
-    const approval = await approve(trigger, DANA);
-
-    expect(approval).toMatchObject({ status: 'approved', created: [] });
-    expect(inputs()).toHaveLength(1);
-    expect(inputs()[0]?.routines).toEqual([trigger.id]);
-    expect((await stored(trigger)).conditions).toEqual([
-      { type: 'incoming_event', input_id: interrupted?.id, filter: [ENDED] },
-    ]);
-  });
-
-  it('lets nobody else finish an approval another person began', async () => {
-    const trigger = await proposed([NEW_INPUT]);
-    beforeEnabling.run = () => Promise.reject(new Error('process died'));
-    await expect(approve(trigger, DANA)).rejects.toThrow('process died');
 
     const approval = await approve(trigger, EVE);
 
-    expect(refusal(approval)).toMatchObject({ reason: 'not_owner', owner: 'U0DANA' });
-    expect(inputs()).toHaveLength(1);
-    expect((await stored(trigger)).status).toBe('pending');
+    expect(approval.status).toBe('approved');
+    expect(inputs()).toMatchObject([{ owner: 'U0EVE', routines: [trigger.id] }]);
+  });
+
+  it('leaves no input when a denial lands while it is being approved', async () => {
+    const trigger = await proposed([NEW_INPUT]);
+    beforeEnabling.run = () => withdrawPendingTrigger(trigger.id).then(() => undefined);
+
+    await expect(approve(trigger, DANA)).resolves.toEqual({ status: 'not_pending' });
+
+    expect(inputs()).toEqual([]);
+    expect(readdirSync(join(root, 'secrets'))).toEqual([]);
+  });
+
+  it('keeps one input when two people approve at once', async () => {
+    const trigger = await proposed([NEW_INPUT]);
+
+    const approvals = await Promise.all([approve(trigger, DANA), approve(trigger, EVE)]);
+
+    expect(approvals.map((approval) => approval.status).sort()).toEqual([
+      'approved',
+      'not_pending',
+    ]);
+    const { conditions, approved_by: winner } = await stored(trigger);
+    expect(inputs()).toMatchObject([{ owner: winner, routines: [trigger.id] }]);
+    expect(conditions).toMatchObject([{ type: 'incoming_event', input_id: inputs()[0]?.id }]);
   });
 
   it('forgets where the review card was once the proposal is approved', async () => {
@@ -314,14 +332,23 @@ describe('a card that no longer shows the proposal', () => {
       action: { prompt: 'Do something else.' },
     });
     expect(scheduler.indexTrigger).not.toHaveBeenCalled();
+    expect(inputs()).toEqual([]);
   });
 
-  it('still matches after an earlier click reserved the input', async () => {
-    const trigger = await proposed([NEW_INPUT]);
-    vi.spyOn(secrets, 'create').mockRejectedValueOnce(new Error('disk is full'));
-    await expect(approve(trigger, DANA)).rejects.toThrow('disk is full');
+  it('leaves the edited proposal for another person when the edit lands during the click', async () => {
+    const card = await proposed([NEW_INPUT]);
+    slack.duringLookup = () =>
+      updatePendingTrigger(card.id, (pending) => {
+        pending.conditions = [{ ...NEW_INPUT, purpose: 'Deploys', auth: 'bearer' }];
+      });
 
-    expect(routineDigest(await stored(trigger))).toBe(routineDigest(trigger));
+    expect(refusal(await approve(card, DANA)).reason).toBe('stale_card');
+    expect(inputs()).toEqual([]);
+
+    const approval = await approve(await stored(card), EVE);
+
+    expect(approval.status).toBe('approved');
+    expect(inputs()).toMatchObject([{ owner: 'U0EVE', purpose: 'Deploys', auth: 'bearer' }]);
   });
 });
 

@@ -61,14 +61,6 @@ describe('routineDigest', () => {
   ])('changes with %s', (_what, change) => {
     expect(routineDigest(proposal(change))).not.toBe(routineDigest(proposal()));
   });
-
-  it('ignores the id reserved for a new input', () => {
-    const reserved = proposal({
-      conditions: [{ ...NEW_INPUT, input_id: 'inp-AAAAAAAAAAAAAAAAAAAAAA' }],
-    });
-
-    expect(routineDigest(reserved)).toBe(routineDigest(proposal()));
-  });
 });
 
 describe('an approval reference', () => {
@@ -89,21 +81,19 @@ describe('an approval reference', () => {
 });
 
 describe('bindNewInputs', () => {
-  it('turns a reserved new-input condition into a condition on that input', () => {
-    const trigger = proposal({
-      conditions: [{ ...NEW_INPUT, input_id: 'inp-AAAAAAAAAAAAAAAAAAAAAA' }],
-    });
+  it('turns a new-input condition into a condition on the input created for it', () => {
+    const trigger = proposal();
 
-    expect(bindNewInputs(trigger)).toBe(true);
+    expect(bindNewInputs(trigger, ['inp-AAAAAAAAAAAAAAAAAAAAAA'])).toBe(true);
     expect(trigger.conditions).toEqual([
       { type: 'incoming_event', input_id: 'inp-AAAAAAAAAAAAAAAAAAAAAA', filter: [ENDED] },
     ]);
   });
 
-  it('changes nothing when no input was reserved', () => {
+  it('changes nothing when no input was created', () => {
     const trigger = proposal();
 
-    expect(bindNewInputs(trigger)).toBe(false);
+    expect(bindNewInputs(trigger, [])).toBe(false);
     expect(trigger.conditions).toEqual([NEW_INPUT]);
   });
 });

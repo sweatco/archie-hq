@@ -20,13 +20,13 @@ export interface InputServices {
 export interface NewInput {
   auth: InputAuth;
   filter?: PointerCheck[];
-  /** Reserved beforehand by a caller that must find the same input again after an interruption. */
-  id?: string;
   owner?: string | null;
   purpose?: string;
+  /** The trigger it is created for, linked from the start. */
+  routine?: string;
 }
 
-export function newInputId(): string {
+function newInputId(): string {
   return `inp-${randomBytes(16).toString('base64url')}`;
 }
 
@@ -38,12 +38,12 @@ export async function createInput(
   const filter = inputFilterSchema.parse(spec.filter ?? []);
   const { ref, secret } = await services.secrets.create(spec.auth);
   const input: Input = {
-    id: spec.id ?? newInputId(),
+    id: newInputId(),
     state: 'enabled',
     auth: spec.auth,
     secretRefs: [ref],
     filter,
-    routines: [],
+    routines: spec.routine ? [spec.routine] : [],
     revision: 1,
     owner: spec.owner ?? null,
     purpose: spec.purpose ?? '',

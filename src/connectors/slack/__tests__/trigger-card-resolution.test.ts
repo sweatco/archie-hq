@@ -461,14 +461,14 @@ describe('approve_trigger — an event routine is approved from the card that wa
   });
 
   it('tells only the clicker about a refusal and leaves the card as it is', async () => {
-    taskThatAnswers({ status: 'refused', reason: 'not_owner', owner: 'U_OWNER' });
+    taskThatAnswers({ status: 'refused', reason: 'not_internal' });
 
     await clickCard(`${TRIGGER_ID}|${DIGEST}`);
 
     expect(postEphemeral).toHaveBeenCalledWith(
       'C_THREAD',
       'U_CLICKER',
-      'Only <@U_OWNER>, who owns the input, can approve this routine.',
+      'Only a member of this workspace can approve an event routine.',
       '1722249000.000100',
     );
     expect(updateSlackMessageSafely).not.toHaveBeenCalled();

@@ -49,11 +49,7 @@ import {
 } from '../../system/trigger-scheduler.js';
 import { messageMatchesTrigger } from '../../system/trigger-match.js';
 import { routineRefusalText, type RoutineInputs } from '../../system/routine-approval.js';
-import {
-  isEventCondition,
-  isEventRoutine,
-  parseApprovalReference,
-} from '../../system/routine-review.js';
+import { isEventRoutine, parseApprovalReference } from '../../system/routine-review.js';
 import type { Trigger } from '../../types/trigger.js';
 import { generateTaskTitle } from '../../tasks/title-generator.js';
 import {
@@ -124,8 +120,8 @@ let app: AppType | null = null;
 
 /** The input whose Settings button the card of an event routine carries: one a person owns and the routine is linked to. */
 function controlledInput(routine: Trigger): string | undefined {
-  const inputId = routine.conditions.find(isEventCondition)?.input_id;
-  const input = inputId ? inputServices()?.store.input(inputId) : null;
+  const condition = routine.conditions.find((c) => c.type === 'incoming_event');
+  const input = condition ? inputServices()?.store.input(condition.input_id) : null;
   return input?.owner && routineMayUseInput(input, routine.id) ? input.id : undefined;
 }
 

@@ -8,14 +8,7 @@ import {
 } from '../connectors/slack/client.js';
 import { formatConversationLabel } from '../connectors/slack/channel-ids.js';
 import { inputServices } from '../incoming/access.js';
-import {
-  createInput,
-  goneRoutines,
-  linkRoutine,
-  mayManageInput,
-  newInputId,
-  type InputServices,
-} from '../incoming/inputs.js';
+import { createInput, discardInput, goneRoutines, linkRoutine } from '../incoming/inputs.js';
 import type { Input, InputActor } from '../incoming/types.js';
 import type { Trigger, TriggerBinding, TriggerCondition } from '../types/trigger.js';
 import {
@@ -23,7 +16,8 @@ import {
   isEventCondition,
   type RoutineSource,
 } from './routine-review.js';
-import { triggerExists, updatePendingTrigger } from './trigger-store.js';
+import { logger } from './logger.js';
+import { triggerExists } from './trigger-store.js';
 
 export type RoutineRefusalReason =
   /** The card that was clicked no longer shows what the proposal says. */
@@ -34,14 +28,12 @@ export type RoutineRefusalReason =
   | 'input_gone'
   | 'input_taken'
   | 'several_inputs'
-  | 'not_owner'
   | 'destination'
   | 'cap';
 
 /** A refusal leaves the proposal pending. `not_pending` means it was approved or withdrawn meanwhile. */
 export type RoutineRefusal =
-  | { status: 'refused'; reason: RoutineRefusalReason; owner?: string | null }
-  | { status: 'not_pending' };
+  { status: 'refused'; reason: RoutineRefusalReason } | { status: 'not_pending' };
 
 export type RoutineApproval =
   ({ status: 'approved'; trigger: Trigger } & RoutineInputs) | RoutineRefusal;
@@ -54,8 +46,6 @@ export interface RoutineInputs {
   /** Inputs this approval created. */
   created: string[];
 }
-
-type NewInputCondition = Extract<TriggerCondition, { type: 'new_input_event' }>;
 
 /** Why an event routine may not be set up in this conversation, or null. Asked at proposal and again at approval. */
 export async function routineDestinationRefusal(binding: TriggerBinding): Promise<string | null> {
@@ -80,8 +70,8 @@ export function routineInputRefusal(
 }
 
 /**
- * Checks the approver against every input the proposal names, creates the input a new-input condition asks for, and links the routine.
- * Each step can repeat: the proposal records the id reserved for a new input before the input is created, so a second approval continues the first.
+ * Checks the approver against the input the proposal names and links the routine to it, or creates the input a new-input condition asks for.
+ * A created input exists before the routine is enabled, so the caller removes it when the routine is not enabled after all: `discardInputs`.
  */
 export async function prepareRoutineInputs(
   pending: Trigger,
@@ -112,23 +102,6 @@ export async function prepareRoutineInputs(
     inputs.push(input);
   }
 
-  const reserved = await reserveNewInputs(pending);
-  if (!reserved) return { status: 'not_pending' };
-  const created: string[] = [];
-  for (const condition of reserved.conditions) {
-    if (condition.type !== 'new_input_event' || !condition.input_id) continue;
-    let input = services.store.input(condition.input_id);
-    if (!input) {
-      input = await createReservedInput(services, condition, condition.input_id, approver);
-      created.push(input.id);
-    }
-    if (input.state === 'deleted') return { status: 'refused', reason: 'input_gone' };
-    // An input that exists already was made by an approval that did not finish; only its owner continues it.
-    if (!mayManageInput(input, approver))
-      return { status: 'refused', reason: 'not_owner', owner: input.owner };
-    inputs.push(input);
-  }
-
   const linked: string[] = [];
   const awaitingOperator: string[] = [];
   for (const input of inputs) {
@@ -142,41 +115,31 @@ export async function prepareRoutineInputs(
         reason: change.reason === 'input_taken' ? 'input_taken' : 'input_gone',
       };
   }
-  return { status: 'ready', linked, awaitingOperator, created };
-}
 
-/** The proposal with an input id on every new-input condition, or null when it is no longer pending. */
-async function reserveNewInputs(pending: Trigger): Promise<Trigger | null> {
-  const unreserved = (condition: TriggerCondition) =>
-    condition.type === 'new_input_event' && !condition.input_id;
-  if (!pending.conditions.some(unreserved)) return pending;
-  const update = await updatePendingTrigger(pending.id, (stored) => {
-    for (const condition of stored.conditions)
-      if (condition.type === 'new_input_event' && !condition.input_id)
-        condition.input_id = newInputId();
-  });
-  return update.outcome === 'updated' ? update.trigger : null;
-}
-
-async function createReservedInput(
-  services: InputServices,
-  condition: NewInputCondition,
-  id: string,
-  approver: InputActor,
-): Promise<Input> {
-  try {
+  const created: string[] = [];
+  for (const condition of pending.conditions) {
+    if (condition.type !== 'new_input_event') continue;
     const { input } = await createInput(services, {
-      id,
       auth: condition.auth,
       purpose: condition.purpose,
       owner: approver.kind === 'slack_user' ? approver.userId : null,
+      routine: pending.id,
     });
-    return input;
-  } catch (error) {
-    // A second click that ran beside this one may have created it first.
-    const raced = services.store.input(id);
-    if (!raced) throw error;
-    return raced;
+    created.push(input.id);
+  }
+  return { status: 'ready', linked: [...linked, ...created], awaitingOperator, created };
+}
+
+/** Removes the inputs an approval created for a routine that was not enabled after all. */
+export async function discardInputs(ids: readonly string[]): Promise<void> {
+  for (const id of ids) {
+    try {
+      const services = inputServices();
+      if (!services) throw new Error('the inbox is not open');
+      await discardInput(services, id);
+    } catch (error) {
+      logger.error('routine-approval', `Could not remove input ${id}, left by an approval`, error);
+    }
   }
 }
 
@@ -248,10 +211,6 @@ export function routineRefusalText(
       return 'This routine names an input that already belongs to another routine, so nothing was set up. Ask me to set it up with its own input.';
     case 'several_inputs':
       return 'This proposal takes events from more than one input, which a routine cannot do. Ask me to propose it again with one input.';
-    case 'not_owner':
-      return refusal.owner
-        ? `Only <@${refusal.owner}>, who owns the input, can approve this routine.`
-        : 'Only the operator can approve this routine, because an approval that did not finish left its input without an owner.';
     case 'destination':
       return 'This routine can no longer deliver to its conversation, so it was not enabled.';
     case 'cap':

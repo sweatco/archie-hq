@@ -42,8 +42,6 @@ export type TriggerBinding =
  *    two types, and receives events only while it is linked to the input.
  *  - `new_input_event` — on a proposal only: an event condition whose input does not
  *    exist yet. Approval creates the input and turns this into `incoming_event`.
- *    `input_id` is the id reserved for that input once an approval has begun, so a
- *    repeated approval finds the same input.
  */
 export type TriggerCondition =
   | { type: 'schedule'; tz: string; next_run_at: string; cron?: string }
@@ -57,7 +55,6 @@ export type TriggerCondition =
       type: 'new_input_event';
       purpose: string;
       auth: InputAuth;
-      input_id?: string;
       filter?: PointerCheck[];
     };
 

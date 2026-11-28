@@ -65,14 +65,17 @@ const DANA: InputActor = { kind: 'slack_user', userId: 'U0DANA' };
 const EVE: InputActor = { kind: 'slack_user', userId: 'U0EVE' };
 const ROUTINE_ID = 'trg-20261124-0900-notes1';
 
-it('keeps the owner, the purpose and a reserved id it was given', async () => {
+it('keeps the owner, the purpose and the routine it was created for', async () => {
   const { input } = await createInput(
     { store, secrets },
-    { auth: 'bearer', id: 'inp-RESERVEDRESERVEDRESERV', owner: 'U0DANA', purpose: 'Deploys' },
+    { auth: 'bearer', owner: 'U0DANA', purpose: 'Deploys', routine: ROUTINE_ID },
   );
 
-  expect(input).toMatchObject({ id: 'inp-RESERVEDRESERVEDRESERV', owner: 'U0DANA' });
-  expect(store.input(input.id)).toMatchObject({ owner: 'U0DANA', purpose: 'Deploys' });
+  expect(store.input(input.id)).toMatchObject({
+    owner: 'U0DANA',
+    purpose: 'Deploys',
+    routines: [ROUTINE_ID],
+  });
 });
 
 it('discards an input no delivery reached, leaving no record and no secret', async () => {
