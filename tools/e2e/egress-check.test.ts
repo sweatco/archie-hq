@@ -20,6 +20,8 @@ const PROBE_PASS = [
   'EGRESS_PKG_INSTALL=ok',
   'EGRESS_YARN_PROXY=mapped',
   'EGRESS_API_KEY=hidden',
+  'EGRESS_GITHUB_TOKEN=masked',
+  'EGRESS_GITHUB_API=reachable',
 ].join('\n');
 
 function makeIo() {
@@ -54,6 +56,8 @@ describe('parseProbeOutput', () => {
       packageInstall: 'ok',
       yarnProxy: 'mapped',
       apiKey: 'hidden',
+      githubToken: 'masked',
+      githubApi: 'reachable',
     });
   });
 
@@ -82,6 +86,8 @@ describe('decideEgress', () => {
         packageInstall: 'ok',
         yarnProxy: 'mapped',
         apiKey: 'hidden',
+        githubToken: 'masked',
+        githubApi: 'reachable',
       }).pass,
     ).toBe(true);
   });
@@ -94,6 +100,8 @@ describe('decideEgress', () => {
       packageInstall: 'ok',
       yarnProxy: 'mapped',
       apiKey: 'hidden',
+      githubToken: 'masked',
+      githubApi: 'reachable',
     });
     expect(d.pass).toBe(false);
     expect(d.reasons.join(' ')).toMatch(/NOT on the allowlist was reachable/);
@@ -107,6 +115,8 @@ describe('decideEgress', () => {
       packageInstall: 'failed',
       yarnProxy: 'mapped',
       apiKey: 'hidden',
+      githubToken: 'masked',
+      githubApi: 'reachable',
     });
     expect(d.pass).toBe(false);
     expect(d.reasons.join(' ')).toMatch(/egress is broken rather than filtered/);
@@ -121,6 +131,8 @@ describe('decideEgress', () => {
         packageInstall: 'unknown',
         yarnProxy: 'unset',
         apiKey: 'unknown',
+        githubToken: 'masked',
+        githubApi: 'reachable',
       }).pass,
     ).toBe(false);
   });
@@ -135,9 +147,41 @@ describe('decideEgress', () => {
       packageInstall: 'ok',
       yarnProxy: 'unset',
       apiKey: 'hidden',
+      githubToken: 'masked',
+      githubApi: 'reachable',
     });
     expect(d.pass).toBe(false);
     expect(d.reasons.join(' ')).toMatch(/Yarn Berry/);
+  });
+
+  it('fails when Bash reads the real GitHub token', () => {
+    const d = decideEgress({
+      cliVersion: 'x',
+      deniedHost: 'blocked',
+      allowedHost: 'reachable',
+      packageInstall: 'ok',
+      yarnProxy: 'mapped',
+      apiKey: 'hidden',
+      githubToken: 'exposed',
+      githubApi: 'reachable',
+    });
+    expect(d.pass).toBe(false);
+    expect(d.reasons.join(' ')).toMatch(/credential masking is not being applied/);
+  });
+
+  it('fails when gh gets no answer from the GitHub API', () => {
+    const d = decideEgress({
+      cliVersion: 'x',
+      deniedHost: 'blocked',
+      allowedHost: 'reachable',
+      packageInstall: 'ok',
+      yarnProxy: 'mapped',
+      apiKey: 'hidden',
+      githubToken: 'masked',
+      githubApi: 'blocked',
+    });
+    expect(d.pass).toBe(false);
+    expect(d.reasons.join(' ')).toMatch(/no answer from api\.github\.com/);
   });
 
   it('fails when the boundary holds but npm install is broken', () => {
@@ -150,6 +194,8 @@ describe('decideEgress', () => {
       packageInstall: 'failed',
       yarnProxy: 'mapped',
       apiKey: 'hidden',
+      githubToken: 'masked',
+      githubApi: 'reachable',
     });
     expect(d.pass).toBe(false);
     expect(d.reasons.join(' ')).toMatch(/npm install` failed inside the sandbox/);
@@ -163,6 +209,8 @@ describe('decideEgress', () => {
       packageInstall: 'ok',
       yarnProxy: 'mapped',
       apiKey: 'visible',
+      githubToken: 'masked',
+      githubApi: 'reachable',
     });
     expect(d.pass).toBe(false);
     expect(d.reasons.join(' ')).toMatch(/can read ANTHROPIC_API_KEY/);

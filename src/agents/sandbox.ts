@@ -33,6 +33,7 @@ export interface SandboxOptions {
   denyReadPaths?: string[];
   /** Domains Bash can reach (empty = deny all, default) */
   allowedNetworkDomains?: string[];
+  maskGitHubToken?: boolean;
 }
 
 /**
@@ -48,6 +49,28 @@ export interface SandboxOptions {
  * compromised orchestrator. A broader "trusted" list is tracked separately.
  */
 export const TRUSTED_PACKAGE_REGISTRY_DOMAINS = ['registry.npmjs.org', 'registry.yarnpkg.com'];
+
+/** No `github.com`: `git push` from Bash must stay blocked. */
+const GITHUB_API_DOMAIN = 'api.github.com';
+
+/** `gh run view --log` downloads the log archive from here. */
+const GITHUB_ACTIONS_LOG_DOMAIN = 'results-receiver.actions.githubusercontent.com';
+
+export const SANDBOX_GITHUB_DOMAINS = [GITHUB_API_DOMAIN, GITHUB_ACTIONS_LOG_DOMAIN];
+
+const GITHUB_TOKEN_ENV = 'GH_TOKEN';
+
+/** Only with `maskGitHubToken`; otherwise Bash reads the real token. */
+export function buildSandboxGitHubEnv(token: string, workspace: string): Record<string, string> {
+  return {
+    [GITHUB_TOKEN_ENV]: token,
+    GH_PROMPT_DISABLED: '1',
+    GH_NO_UPDATE_NOTIFIER: '1',
+    GH_TELEMETRY: 'false',
+    // gh needs a writable cache. sandbox-shell-env.sh exports this as XDG_CACHE_HOME, for Bash only.
+    ARCHIE_BASH_CACHE_HOME: resolve(workspace, '.cache'),
+  };
+}
 
 // ---- Sandbox config (OS-level, Bash only) ----
 
@@ -91,9 +114,17 @@ export function buildSandboxConfig(opts: SandboxOptions) {
     },
     network: {
       allowedDomains: opts.allowedNetworkDomains ?? [],
+      // Masking needs TLS termination.
+      ...(opts.maskGitHubToken ? { tlsTerminate: {} } : {}),
     },
+    // Enforced by the CLI, so version-coupled like the egress allowlist.
     credentials: {
-      envVars: [{ name: 'ANTHROPIC_API_KEY', mode: 'deny' as const }],
+      envVars: [
+        { name: 'ANTHROPIC_API_KEY', mode: 'deny' as const },
+        ...(opts.maskGitHubToken
+          ? [{ name: GITHUB_TOKEN_ENV, mode: 'mask' as const, injectHosts: [GITHUB_API_DOMAIN] }]
+          : []),
+      ],
     },
   };
 }

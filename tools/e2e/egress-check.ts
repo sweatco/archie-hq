@@ -41,6 +41,8 @@ export interface ProbeVerdicts {
   /** Whether the sandbox proxy reached Yarn Berry's own config keys (BASH_ENV wiring). */
   yarnProxy: 'mapped' | 'unset';
   apiKey: 'hidden' | 'visible' | 'unknown';
+  githubToken: 'masked' | 'exposed' | 'unknown';
+  githubApi: Reachability;
 }
 
 function readReachability(output: string, key: string): Reachability {
@@ -56,6 +58,7 @@ export function parseProbeOutput(output: string): ProbeVerdicts {
   const version = output.match(/^CLI_VERSION=(.+)$/m);
   const pkg = output.match(/^EGRESS_PKG_INSTALL=(ok|failed|unknown)$/m);
   const key = output.match(/^EGRESS_API_KEY=(hidden|visible|unknown)$/m);
+  const token = output.match(/^EGRESS_GITHUB_TOKEN=(masked|exposed|unknown)$/m);
   return {
     cliVersion: version ? version[1].trim() : 'unknown',
     deniedHost: readReachability(output, 'EGRESS_DENIED_HOST'),
@@ -63,6 +66,8 @@ export function parseProbeOutput(output: string): ProbeVerdicts {
     packageInstall: pkg ? (pkg[1] as ProbeVerdicts['packageInstall']) : 'unknown',
     yarnProxy: /^EGRESS_YARN_PROXY=mapped$/m.test(output) ? 'mapped' : 'unset',
     apiKey: key ? (key[1] as ProbeVerdicts['apiKey']) : 'unknown',
+    githubToken: token ? (token[1] as ProbeVerdicts['githubToken']) : 'unknown',
+    githubApi: readReachability(output, 'EGRESS_GITHUB_API'),
   };
 }
 
@@ -105,6 +110,20 @@ export function decideEgress(v: ProbeVerdicts): EgressDecision {
       v.apiKey === 'visible'
         ? 'sandboxed Bash can read ANTHROPIC_API_KEY — check the credentials deny entry in buildSandboxConfig'
         : 'could not determine whether sandboxed Bash can read ANTHROPIC_API_KEY (probe output unreadable)',
+    );
+  }
+  if (v.githubToken !== 'masked') {
+    reasons.push(
+      v.githubToken === 'exposed'
+        ? 'sandboxed Bash read the real GH_TOKEN — credential masking is not being applied'
+        : 'could not determine what sandboxed Bash reads from GH_TOKEN (probe output unreadable)',
+    );
+  }
+  if (v.githubApi !== 'reachable') {
+    reasons.push(
+      v.githubApi === 'blocked'
+        ? '`gh` got no answer from api.github.com — check the allowlist entry and TLS termination'
+        : 'could not determine whether `gh` reaches api.github.com (probe output unreadable)',
     );
   }
   return { pass: reasons.length === 0, reasons };
@@ -171,6 +190,8 @@ export async function runEgressCheck(exec: ExecFn, io: EgressCheckIo): Promise<n
   io.log(`  npm install:          ${verdicts.packageInstall} (expected ok)`);
   io.log(`  yarn berry proxy:     ${verdicts.yarnProxy} (expected mapped)`);
   io.log(`  Anthropic API key:    ${verdicts.apiKey} (expected hidden)`);
+  io.log(`  GH_TOKEN in Bash:     ${verdicts.githubToken} (expected masked)`);
+  io.log(`  gh to api.github.com: ${verdicts.githubApi} (expected reachable)`);
 
   if (!decision.pass) {
     io.error('EGRESS CHECK FAILED — the documented network boundary does not hold:');
@@ -182,7 +203,7 @@ export async function runEgressCheck(exec: ExecFn, io: EgressCheckIo): Promise<n
   }
 
   io.log(
-    'Egress check passed: sandboxed Bash reaches allowlisted hosts only and cannot read the API key.',
+    'Egress check passed: sandboxed Bash reaches allowlisted hosts only, cannot read the API key and sees a placeholder for GH_TOKEN.',
   );
   return 0;
 }

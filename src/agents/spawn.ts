@@ -56,7 +56,7 @@ import { appendDeploymentContext } from './registry.js';
 import { ensureTriggerDataDir } from '../system/trigger-store.js';
 import { createRecoverableInputGenerator } from './message-queue.js';
 import { buildSessionResetNotice } from './prompts.js';
-import { getArchieAttributionIdentity } from '../connectors/github/client.js';
+import { getArchieAttributionIdentity, getGitHubClient } from '../connectors/github/client.js';
 import { formatConversationLabel } from '../connectors/slack/channel-ids.js';
 import { buildChannelCanvasPromptSection } from '../connectors/slack/channel-canvas.js';
 import { buildChannelPinsPromptSection } from '../connectors/slack/channel-pins.js';
@@ -70,8 +70,10 @@ import {
   buildManagedNetworkPolicy,
   buildPackageManagerCacheEnv,
   buildRepoGrants,
+  buildSandboxGitHubEnv,
   createFilesystemGuardHooks,
   createPmOnlyToolGuardHooks,
+  SANDBOX_GITHUB_DOMAINS,
   TRUSTED_PACKAGE_REGISTRY_DOMAINS,
   type SandboxOptions,
 } from './sandbox.js';
@@ -169,6 +171,17 @@ function assertPluginsLoaded(
       agentId,
       `Plugins loaded: ${(loaded ?? []).map((p) => p.name).join(', ') || 'none'}`,
     );
+  }
+}
+
+async function mintSandboxGitHubToken(): Promise<string | undefined> {
+  const client = getGitHubClient();
+  if (!client) return undefined;
+  try {
+    return await client.mintSandboxReadToken();
+  } catch (error) {
+    logger.warn('github', `Could not mint the sandbox token, gh will be unauthenticated: ${error}`);
+    return undefined;
   }
 }
 
@@ -400,6 +413,7 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   // pattern the sandbox does not support (the lists are prefix-matched, so no
   // path expresses "`.git/HEAD` under any clone") or a respawn on mount_repo.
   const cloneGitHeads = clonePaths.map((c) => join(c, '.git', 'HEAD'));
+  const sandboxGitHubToken = await mintSandboxGitHubToken();
   let sandboxOpts: SandboxOptions = {
     cwd,
     denyReadPaths: [WORKDIR],
@@ -422,7 +436,9 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     allowedNetworkDomains: [
       ...(def.allowedNetworkDomains ?? []),
       ...(editAllowed ? TRUSTED_PACKAGE_REGISTRY_DOMAINS : []),
+      ...(sandboxGitHubToken ? SANDBOX_GITHUB_DOMAINS : []),
     ],
+    maskGitHubToken: sandboxGitHubToken !== undefined,
   };
   const mcpServers: Record<string, McpServerConfig> = {
     ...(def.mcpServers || {}),
@@ -705,6 +721,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
       // one of them. The SDK sets it per plugin as it loads each one.
       // Commit authorship — see commitAuthorEnv above.
       ...commitAuthorEnv,
+      ...(sandboxGitHubToken ? buildSandboxGitHubEnv(sandboxGitHubToken, workspace) : {}),
     },
     resume: sessionId,
     ...(sessionId && refusalCheckpoint

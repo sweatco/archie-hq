@@ -14,8 +14,10 @@ import {
   buildManagedNetworkPolicy,
   buildPackageManagerCacheEnv,
   buildRepoGrants,
+  buildSandboxGitHubEnv,
   createPmOnlyToolGuardHooks,
   PM_ONLY_MCP_SERVERS,
+  SANDBOX_GITHUB_DOMAINS,
   TRUSTED_PACKAGE_REGISTRY_DOMAINS,
   type SandboxOptions,
 } from '../sandbox.js';
@@ -119,6 +121,56 @@ describe('buildSandboxConfig', () => {
       buildSandboxConfig({ ...base, allowedNetworkDomains: [...TRUSTED_PACKAGE_REGISTRY_DOMAINS] })
         .credentials.envVars,
     ).toContainEqual(deny);
+  });
+
+  it('masks no credential and terminates no TLS unless a GitHub token is in the session', () => {
+    const cfg = buildSandboxConfig(base);
+    expect(cfg.credentials.envVars.map((entry) => entry.mode)).toEqual(['deny']);
+    expect(cfg.network).not.toHaveProperty('tlsTerminate');
+  });
+
+  it('masks the GitHub token for Bash and injects it at the API host only', () => {
+    const cfg = buildSandboxConfig({
+      ...base,
+      allowedNetworkDomains: ['sheets.googleapis.com', ...SANDBOX_GITHUB_DOMAINS],
+      maskGitHubToken: true,
+    });
+    expect(cfg.credentials.envVars).toContainEqual({
+      name: 'GH_TOKEN',
+      mode: 'mask',
+      injectHosts: ['api.github.com'],
+    });
+    expect(cfg.network.tlsTerminate).toEqual({});
+  });
+
+  it('keeps github.com off the hosts sandboxed gh may reach', () => {
+    expect(SANDBOX_GITHUB_DOMAINS).not.toContain('github.com');
+  });
+});
+
+describe('buildSandboxGitHubEnv', () => {
+  it('names the token with the variable the mask covers', () => {
+    const env = buildSandboxGitHubEnv('ghs_example', base.cwd);
+    const masked = buildSandboxConfig({
+      ...base,
+      maskGitHubToken: true,
+    }).credentials.envVars.filter((entry) => entry.mode === 'mask');
+    expect(masked.map((entry) => entry.name)).toEqual(['GH_TOKEN']);
+    expect(env.GH_TOKEN).toBe('ghs_example');
+  });
+
+  it('keeps gh non-interactive and off hosts the allowlist refuses', () => {
+    expect(buildSandboxGitHubEnv('ghs_example', base.cwd)).toMatchObject({
+      GH_PROMPT_DISABLED: '1',
+      GH_NO_UPDATE_NOTIFIER: '1',
+      GH_TELEMETRY: 'false',
+    });
+  });
+
+  it('keeps the gh cache inside the task workspace, for Bash only', () => {
+    const env = buildSandboxGitHubEnv('ghs_example', base.cwd);
+    expect(env.ARCHIE_BASH_CACHE_HOME).toBe(`${base.cwd}/.cache`);
+    expect(env).not.toHaveProperty('XDG_CACHE_HOME');
   });
 });
 

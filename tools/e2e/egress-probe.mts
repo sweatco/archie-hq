@@ -26,6 +26,8 @@ const {
   buildSandboxConfig,
   buildManagedNetworkPolicy,
   buildPackageManagerCacheEnv,
+  buildSandboxGitHubEnv,
+  SANDBOX_GITHUB_DOMAINS,
   TRUSTED_PACKAGE_REGISTRY_DOMAINS,
 } = (await import(sandboxPath)) as typeof import('../../src/agents/sandbox.js');
 
@@ -35,6 +37,8 @@ const DENIED_HOST = 'https://example.com';
 const ALLOWED_HOST = `https://${TRUSTED_PACKAGE_REGISTRY_DOMAINS[0]}/npm`;
 
 const WORKSPACE = '/tmp/egress-check-ws';
+/** A dummy: a 401 from GitHub shows the API is reachable. */
+const GITHUB_TOKEN = 'archie-egress-probe-token';
 
 // Package-manager caches live in one shared directory outside the workspace, so
 // the probe's sandbox has to allow writing there or step 3 fails on EROFS for a
@@ -51,7 +55,8 @@ const sandboxOpts = {
   allowReadPaths: [WORKSPACE],
   // allowWrite only — a path in both lists loses its rw mount (see sandbox.ts).
   allowWritePaths: [WORKSPACE, CACHE_ROOT],
-  allowedNetworkDomains: [...TRUSTED_PACKAGE_REGISTRY_DOMAINS],
+  allowedNetworkDomains: [...TRUSTED_PACKAGE_REGISTRY_DOMAINS, ...SANDBOX_GITHUB_DOMAINS],
+  maskGitHubToken: true,
 };
 
 const prompt = `Run these commands with the Bash tool, one call each, and report their raw output verbatim. Run ALL of them even if an earlier one fails.
@@ -59,7 +64,9 @@ const prompt = `Run these commands with the Bash tool, one call each, and report
 2. curl -sS -m 10 -o /dev/null -w 'ALLOWED=%{http_code}\\n' ${ALLOWED_HOST} || echo 'ALLOWED=blocked'
 3. rm -rf ${WORKSPACE}/pkg && mkdir -p ${WORKSPACE}/pkg && cd ${WORKSPACE}/pkg && npm init -y >/dev/null && (npm install left-pad --no-audit --no-fund >/dev/null 2>&1 && test -f node_modules/left-pad/package.json && echo 'PKG=ok' || echo 'PKG=failed')
 4. test -n "$YARN_HTTPS_PROXY" && echo 'YARNPROXY=mapped' || echo 'YARNPROXY=unset'
-5. test -n "$ANTHROPIC_API_KEY" && echo 'KEYENV=set' || echo 'KEYENV=unset'; echo "KEYPROC=$(cat /proc/[0-9]*/environ 2>/dev/null | tr '\\0' '\\n' | grep -c '^ANTHROPIC_API_KEY=.')"`;
+5. test -n "$ANTHROPIC_API_KEY" && echo 'KEYENV=set' || echo 'KEYENV=unset'; echo "KEYPROC=$(cat /proc/[0-9]*/environ 2>/dev/null | tr '\\0' '\\n' | grep -c '^ANTHROPIC_API_KEY=.')"
+6. echo "GHTOKEN=$GH_TOKEN"
+7. gh api rate_limit 2>&1 | grep -q 'Bad credentials' && echo 'GHAPI=401' || echo 'GHAPI=blocked'`;
 
 // Mirrors src/agents/spawn.ts buildQueryOptions for everything that bears on the
 // sandbox boundary: permissionMode, sandbox, managedSettings, settingSources.
@@ -87,8 +94,9 @@ const it = query({
       ...(process.env.NODE_EXTRA_CA_CERTS
         ? { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS }
         : {}),
+      ...buildSandboxGitHubEnv(GITHUB_TOKEN, WORKSPACE),
     },
-    maxTurns: 8,
+    maxTurns: 10,
     permissionMode: 'bypassPermissions' as const,
     allowDangerouslySkipPermissions: true,
     sandbox: buildSandboxConfig(sandboxOpts),
@@ -143,11 +151,19 @@ function apiKey(t: string): 'hidden' | 'visible' | 'unknown' {
   return 'unknown';
 }
 
+function githubToken(t: string): 'masked' | 'exposed' | 'unknown' {
+  if (t.includes(GITHUB_TOKEN)) return 'exposed';
+  if (/GHTOKEN=fake_value_/.test(t)) return 'masked';
+  return 'unknown';
+}
+
 console.log(`CLI_VERSION=${cliVersion}`);
 console.log(`EGRESS_DENIED_HOST=${classify(transcript, 'DENIED')}`);
 console.log(`EGRESS_ALLOWED_HOST=${classify(transcript, 'ALLOWED')}`);
 console.log(`EGRESS_PKG_INSTALL=${packageInstall(transcript)}`);
 console.log(`EGRESS_YARN_PROXY=${/YARNPROXY=mapped/.test(transcript) ? 'mapped' : 'unset'}`);
 console.log(`EGRESS_API_KEY=${apiKey(transcript)}`);
+console.log(`EGRESS_GITHUB_TOKEN=${githubToken(transcript)}`);
+console.log(`EGRESS_GITHUB_API=${classify(transcript, 'GHAPI')}`);
 console.log('---- agent transcript ----');
 console.log(transcript.trim());
