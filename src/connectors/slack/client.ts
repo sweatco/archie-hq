@@ -10,7 +10,6 @@ import { z } from 'zod';
 import type { Block } from '@slack/types';
 import { WebClient } from '@slack/web-api';
 import type {
-  SlackThreadRef,
   SlackFile,
   SlackThread,
   SlackThreadMessage,
@@ -341,19 +340,6 @@ export async function postInteractiveToThread(
 }
 
 /**
- * Post an interactive message to multiple threads
- */
-export async function postInteractiveToThreads(
-  threads: SlackThreadRef[],
-  text: string,
-  blocks: unknown[],
-): Promise<void> {
-  for (const thread of threads) {
-    await postInteractiveToThread(thread.channel_id, thread.thread_id, text, blocks);
-  }
-}
-
-/**
  * Add an emoji reaction to a message.
  * An existing reaction already satisfies the request; other failures propagate.
  */
@@ -464,6 +450,23 @@ export async function updateMessage(
     text,
     blocks: blocks === undefined ? undefined : slackBlocksSchema.parse(blocks),
   });
+}
+
+/** Null when the message is gone. A reply needs `threadTs`. */
+export async function fetchMessage(
+  channel: string,
+  ts: string,
+  threadTs?: string,
+): Promise<{ text: string; blocks: unknown[] } | null> {
+  const result = await getSlackClient().conversations.replies({
+    channel,
+    ts: threadTs ?? ts,
+    oldest: ts,
+    latest: ts,
+    inclusive: true,
+  });
+  const found = result.messages?.find((message) => message.ts === ts);
+  return found ? { text: found.text ?? '', blocks: found.blocks ?? [] } : null;
 }
 
 /**

@@ -19,7 +19,8 @@ vi.mock('../../system/shutdown.js', () => ({ getIsShuttingDown: vi.fn() }));
 
 import { logger } from '../../system/logger.js';
 import { getIsShuttingDown } from '../../system/shutdown.js';
-import { createInput, deleteInput } from '../inputs.js';
+import { createInput, deleteInput, rotateKey } from '../inputs.js';
+import { lastRefusedDelivery } from '../refusals.js';
 import { mountIncomingReceiver } from '../receiver.js';
 import { vaultInputSecrets, type InputSecrets } from '../secrets.js';
 import { IncomingStore } from '../store.js';
@@ -265,6 +266,18 @@ describe('an authenticated delivery', () => {
     expect(response.status).toBe(202);
   });
 
+  it('needs the new key from the first delivery after a rotation', async () => {
+    const sender = await signedSender();
+    const rotation = await rotateKey({ store, secrets }, { kind: 'operator' }, sender.input.id);
+    if (!rotation) throw new Error('expected the rotation to succeed');
+
+    const withOldKey = await deliverSigned(sender, EVENT);
+    const withNewKey = await deliverSigned({ ...sender, secret: rotation.secret }, EVENT, 'msg_2');
+
+    expect(withOldKey.status).toBe(401);
+    expect(withNewKey.status).toBe(202);
+  });
+
   it('gets one handoff per matching consumer and a single payload', async () => {
     const sender = await signedSender();
     matched = {
@@ -401,7 +414,7 @@ describe('a rejected delivery starts no work', () => {
     {
       name: 'a zero-length body',
       status: 400,
-      error: 'invalid_json',
+      error: 'empty_body',
       send: (_signed, bearer) => deliverBearer(bearer, undefined),
     },
     {
@@ -527,6 +540,19 @@ describe('a rejected delivery starts no work', () => {
     expect(response).toMatch(/^HTTP\/1\.1 400 /);
     expect(response).toContain('{"error":"empty_body"}');
   });
+});
+
+it('answers a malformed input id in JSON, with no stack', async () => {
+  const response = await rawRequest([
+    'POST /webhooks/incoming/%E0%A4%A HTTP/1.1',
+    'Host: localhost',
+    'Content-Type: application/json',
+    'Connection: close',
+  ]);
+
+  expect(response).toMatch(/^HTTP\/1\.1 400 /);
+  expect(response).toContain('{"error":"invalid_request"}');
+  expect(response).not.toMatch(/node_modules|\bat /);
 });
 
 describe('a retry with the same event key', () => {
@@ -775,4 +801,18 @@ it('keeps secrets and bodies out of the log on accepted, rejected and conflictin
   expect(logged).not.toContain(signed.secret);
   expect(logged).not.toContain(signed.secret.replace(/^whsec_/, ''));
   expect(logged).not.toContain(bearer.secret);
+});
+
+it('notes when it refused a delivery, for the connection check', async () => {
+  const sender = await signedSender();
+  expect(lastRefusedDelivery(sender.input.id)).toBeNull();
+  const before = Date.now();
+
+  const response = await deliverSigned(
+    { ...sender, secret: `whsec_${randomBytes(32).toString('base64')}` },
+    EVENT,
+  );
+
+  expect(response.status).toBe(401);
+  expect(lastRefusedDelivery(sender.input.id)).toBeGreaterThanOrEqual(before);
 });

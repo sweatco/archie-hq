@@ -50,6 +50,8 @@ it('creates the inbox in an empty database and reopens it with its inputs', () =
       filter: [],
       routines: [],
       revision: 1,
+      owner: null,
+      purpose: '',
     },
     Date.now(),
   );
@@ -131,6 +133,8 @@ it('opens a version 1 inbox as the current version with its rows intact', () => 
     filter: [],
     routines: [],
     revision: 1,
+    owner: null,
+    purpose: '',
   });
   expect(store.receipt('rcp-1')).toMatchObject({ eventKey: 'msg_a', outcome: 'open' });
   const claimed = store.claimHandoff(3000, 1000);
@@ -169,7 +173,7 @@ it('refuses a delivery for an input that does not exist', () => {
     receivedAt: Date.now(),
   };
 
-  expect(store.receive(delivery, [])).toEqual({ status: 'unavailable', reason: 'unknown' });
+  expect(store.receive(delivery, [])).toEqual({ status: 'deleted' });
   store.close();
 });
 
@@ -184,6 +188,8 @@ it('keeps a deleted input deleted', () => {
       filter: [],
       routines: [],
       revision: 1,
+      owner: null,
+      purpose: '',
     },
     Date.now(),
   );

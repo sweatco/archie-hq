@@ -2,7 +2,7 @@
 
 Incoming events let a system other than Slack or GitHub tell Archie that something happened. A sender posts a JSON webhook to a callback URL. Archie authenticates it, records it durably, and later hands it to whatever acts on it.
 
-**Status:** the receiver, the inbox, the dispatcher and event routines are implemented behind `ARCHIE_INCOMING_EVENTS`, which is off by default. An event starts a Task only for a routine the operator linked to its input. Setting a routine up without the operator is [#403](https://github.com/sweatco/archie-hq/issues/403). The feature design is in the [incoming events plan](../plans/20261116-incoming-events-shared-receiver.md).
+**Status:** the receiver, the inbox, the dispatcher and event routines are implemented behind `ARCHIE_INCOMING_EVENTS`, which is off by default. An event starts a Task only for a routine linked to its input. A person can set a routine up in Slack with a new input, which they then own, connect a sender, and ask Archie which inputs exist and what became of each delivery. The feature design is in the [incoming events plan](../plans/20261116-incoming-events-shared-receiver.md).
 
 The inbox is in `src/incoming/`. The routine consumer is `src/system/routine-consumer.ts`, beside the trigger code it uses.
 
@@ -19,7 +19,9 @@ An input is one callback URL with its own secret.
 - **State:** `enabled`, `paused` or `deleted`. A deleted input answers `410` and cannot be resumed.
 - **Authentication:** `signed` uses the [Standard Webhooks](https://www.standardwebhooks.com/) headers `webhook-id`, `webhook-timestamp` and `webhook-signature`, with a five-minute tolerance. `bearer` uses `Authorization: Bearer <secret>`, plus an optional `Idempotency-Key`.
 - **Filter:** a list of conditions on the event JSON, such as "`/type` equals `meeting.ended`". An event that fails one is recorded as ignored.
-- **Linked routines:** the triggers the operator allowed to receive this input's events. See [Event routines](#event-routines).
+- **Owner:** the Slack user who approved the proposal that created the input. An input the operator made has no owner and is managed from the CLI alone.
+- **Purpose:** a short label for cards and listings, such as "Meeting recordings".
+- **Linked routine:** the one trigger allowed to receive this input's events, by its owner's approval or by the operator. See [Event routines](#event-routines).
 
 The secret is generated on the host and sealed with the [secrets vault](secrets.md) under `SECRETS_DIR/incoming/`. The database holds only a reference to it.
 
@@ -52,7 +54,7 @@ The inbox is its own SQLite file, `WORKDIR/incoming/state.sqlite`, in a director
 
 | Table | Holds |
 |---|---|
-| `inputs` | State, authentication scheme, secret references, filter, linked routines |
+| `inputs` | State, authentication scheme, secret references, filter, linked routines, owner, purpose |
 | `receipts` | One row per event key: digest, outcome, conflict count |
 | `payloads` | The raw body, only while a handoff is pending |
 | `handoffs` | One row per receipt and consumer: state, reason, lease, attempts, reservation |
@@ -90,16 +92,64 @@ Every handoff that ends any way other than `accepted` records why:
 
 ## Event routines
 
-An event routine is an ordinary [trigger](triggers.md) whose conditions are all `incoming_event`. Each condition names an input and may add its own filter. The routine's binding is where the result goes.
+An event routine is an ordinary [trigger](triggers.md) with one `incoming_event` condition, which names an input and may add its own filter. The routine's binding is where the result goes.
 
-Two parties must agree before a routine receives anything:
+Two things must hold before a routine receives anything:
 
-- **The conversation.** The routine is proposed and approved in the conversation it delivers to, like any trigger. Its approval card names the input.
-- **The operator.** The operator links the approved trigger to the input with the CLI. Removing the link is how access is revoked.
+- **The conversation approved it.** The routine is proposed and approved in the conversation it delivers to, like any trigger.
+- **It is linked to the input.** The approval links it when the approver may manage the input. Otherwise the operator links it with the CLI. Removing the link is how access is revoked.
 
-An input id appears in the callback URL and in logs, so the id alone grants nothing. Several routines can be linked to one input; each gets its own Task for an event that passes its filter.
+An input id appears in the callback URL and in logs, so the id alone grants nothing. An input takes one routine, which gets a Task for each event that passes its filter. A link to a deleted routine does not hold the input: the next link replaces it.
 
-This defines no scope for an input. Who owns an input, who may see its events and which conversations it may reach are [#403](https://github.com/sweatco/archie-hq/issues/403). One function, `routineMayUseInput` in `src/incoming/access.ts`, answers "may this routine still use this input?" for every check below, so scope has one place to go.
+One function, `routineMayUseInput` in `src/incoming/access.ts`, answers "may this routine still use this input?" for every check below. `mayManageInput` in `src/incoming/inputs.ts` answers who may change an input: the operator always, a Slack user only as its owner.
+
+### Approving an event routine
+
+A proposal asks for a new input, with a purpose and a scheme, or names one the operator made. Nothing is written to the inbox, and no key exists, until a person approves.
+
+The approval card is a review: the source, its owner, the filter, the audience and the instructions in full. Its Approve button carries a digest of what the card shows.
+
+| The proposal names | Who approves | Result |
+|---|---|---|
+| A new input | A member of the workspace | The input is created with that person as owner; the routine is enabled and linked |
+| An input someone owns | Anyone | Refused when proposed: a routine gets its own input |
+| An operator-made input | A member of the workspace | The routine is enabled; the operator links it |
+| Any | A guest, or a person from another organisation | Refused |
+
+- **A refusal is told to the approver alone.** The card stays, because the right person may still approve it.
+- **An edit retires the earlier card.** The proposal records where its newest review card was posted (`Trigger.review_card`). When an edit posts a new card, the earlier one is rewritten to say it is out of date and loses its buttons. Other triggers keep their earlier cards, as [triggers](triggers.md#while-a-proposal-is-pending) describes.
+- **An outdated card that is still clickable refuses.** That happens when retiring it failed. The digest is compared with the proposal when the button is clicked and again inside the trigger store's lock, so an edit that lands in between is not approved unseen. The click then retires the card.
+- **A new input stays only if its routine was enabled.** The approval creates the input, then enables the routine. When the routine is not enabled, because a denial, an edit or another click came first, the input is removed again. A crash between the two steps leaves an input with no routine: its owner deletes it from **Settings**, or the operator from the CLI.
+- **A channel shared with another organisation is refused,** at proposal and at approval. The check is the existing `isChannelShared`, which answers "not shared" when Slack cannot be asked, and it does not run again after approval ([#453](https://github.com/sweatco/archie-hq/issues/453)).
+- **The operator approves through the API** with the same reference. An input it creates has no owner.
+- **After approval, trigger rules apply.** An edit can still change a routine's event filter without the owner ([#452](https://github.com/sweatco/archie-hq/issues/452)). An approved trigger that takes no events cannot be edited into an event routine. A Task that an event started cannot edit or delete any trigger, because the sender's text is in its context; a person asks for that in another thread.
+
+The pure parts are in `src/system/routine-review.ts`: the card, the digest and the condition a new input becomes. `src/system/routine-approval.ts` checks the approver and creates and links inputs.
+
+### Connecting a sender
+
+When an approval links a routine to an input the approver manages, the approval line keeps a **Settings** button. Everyone in the conversation sees it. The button carries an id only, and each click is checked against the input as it is then: only the owner gets a window, anyone else is told who owns the input, and only they see that.
+
+**Settings** opens a window with the callback URL, the key behind a **Show key** button, the connection status, **Pause** or **Resume**, **Rotate key** and **Delete**. These do what the CLI's commands do. A rotation replaces the key at once: the old one stops working from the next delivery, and the window shows the new one. The URL is built from `ARCHIE_PUBLIC_URL`; without it the window shows the path alone.
+
+- **The key is shown to the owner alone,** and only after they ask. A Slack window is visible to the person who opened it, which makes it the one place in Slack a key may appear. The key never reaches model context, a card, an action value or a log. It does pass through Slack.
+- **An owner who is no longer a member of the workspace** is refused the key.
+- **The operator cannot read a key.** The CLI prints one only when it creates an input or rotates its key.
+
+**The connection status** reads two things and starts nothing:
+
+- the newest delivery that authenticated, whether it was acted on or not;
+- when a delivery was last refused because its signature or token did not verify. The receiver keeps this in memory (`src/incoming/refusals.ts`), so a refusal costs no write and the time is lost on restart.
+
+To test a sender without a run, pause the routine. An authenticated delivery is then recorded as ignored, with no body kept, and the status shows it.
+
+The layout is in `src/system/input-panels.ts` and the handlers are in `src/system/input-controls.ts`.
+
+### The inventory and the history
+
+The PM reads inputs with `list_inputs` and an input's newest 50 deliveries with `get_input_history`. `show_inputs` posts the listing as a panel, with a **Settings** button on each input that has an owner. All three are scoped like trigger listings: the owner's own DM and the operator see every input, and any other conversation sees an input only if its routine is visible from it.
+
+History tells a delivery as received, handed off, delivered, skipped or uncertain. It holds no event content, and a delivery that failed authentication has no receipt, so it does not appear.
 
 ### From event to Task
 
@@ -132,7 +182,7 @@ The instruction names the event file and says its content is untrusted data, nev
 - **A channel that Slack could not be asked about is not a skip.** The attempt fails and is retried. Only a channel that Slack reports missing or archived pauses the routine and skips the event as `destination_unreachable`.
 - **Timing.** A stopped routine's waiting work is skipped at its next attempt, which can be 30 minutes away. The body stays in the inbox until then.
 - **A running Task** is checked against the inbox before every post and file share, by the same gate that holds it to its [destination](memory.md). Explicit memory writes and completion extraction ask the same question, and extraction asks again just before it writes. With incoming events off, or an inbox that could not be opened, the answer is no and the refusal says so: such a Task stays silent in its thread until the inbox is open again. Context the agent already loaded is not taken back.
-- **Two writes pass without the check,** as they pass the destination check: the notice a Task's trigger tools post to a trigger's bound channel, and the removal of an acknowledgement reaction. The notice carries a summary the PM wrote, which is one reason the tool review under [Not built yet](#not-built-yet) comes before production use.
+- **Two writes pass without the check,** as they pass the destination check: the notice a Task's trigger tools post to a trigger's bound channel, and the removal of an acknowledgement reaction. The notice carries a summary the PM wrote, which the tool review under [Not built yet](#not-built-yet) covers.
 - **An uncertain run** is a Task that outlived a cancelled or failed handoff: it started, and the handoff did not record it. `history` marks it.
 
 ## Design choices
@@ -162,13 +212,15 @@ npm run incoming -- list
 npm run incoming -- pause <input-id>
 npm run incoming -- resume <input-id>
 npm run incoming -- delete <input-id>
+npm run incoming -- rotate <input-id>
 npm run incoming -- link <input-id> <trigger-id>
 npm run incoming -- unlink <input-id> <trigger-id>
 npm run incoming -- history [<input-id>]
 ```
 
 - `create` prints the callback URL, built from `ARCHIE_PUBLIC_URL`, and the secret. The secret is shown only then.
-- `link` refuses a trigger with no condition for that input, then prints its destination, summary and status. `list` shows each input's links and marks one whose trigger no longer exists.
+- `link` refuses a trigger with no condition for that input, and an input that has a trigger already. It then prints its destination, summary and status. `list` shows each input's links and marks one whose trigger no longer exists. For an input made in Slack it also shows the owner and the purpose.
+- The key of an input made in Slack is shown to its owner in Slack, under [Settings](#connecting-a-sender). The CLI cannot read it.
 - `history` shows the newest 50 handoffs: state, reason and the Task each reserved.
 
 Before running an older binary, delete event routines and `WORKDIR/incoming/`: it refuses the newer inbox and does not know the `incoming_event` condition.
@@ -197,8 +249,8 @@ These are starting defaults, named constants in `receiver.ts`, `store.ts` and `d
 ## Not built yet
 
 - Proactivity as a second consumer ([#406](https://github.com/sweatco/archie-hq/issues/406)).
-- Input scope, and setup, history, secret reveal and rotation in Slack ([#403](https://github.com/sweatco/archie-hq/issues/403)).
-- Choosing which event fields a Task receives, and how long the event file is kept ([#403](https://github.com/sweatco/archie-hq/issues/403), [#407](https://github.com/sweatco/archie-hq/issues/407)).
-- A review of the tools an event-started Task may use, with the event as untrusted input ([#439](https://github.com/sweatco/archie-hq/issues/439)). Required before production use.
+- Choosing which event fields a Task receives ([#451](https://github.com/sweatco/archie-hq/issues/451)), and how long the event file is kept ([#407](https://github.com/sweatco/archie-hq/issues/407)).
+- An overlap of two keys during rotation ([#449](https://github.com/sweatco/archie-hq/issues/449)), matching a delivery against the input as committed ([#450](https://github.com/sweatco/archie-hq/issues/450)), and an audit log of input changes ([#454](https://github.com/sweatco/archie-hq/issues/454)).
+- A review of the tools an event-started Task may use, with the event as untrusted input ([#439](https://github.com/sweatco/archie-hq/issues/439)).
 - MCP event subscriptions ([#404](https://github.com/sweatco/archie-hq/issues/404), [#405](https://github.com/sweatco/archie-hq/issues/405)).
-- A per-input rate limit. Until then, the edge in front of Archie is the only defence against a flood.
+- A per-input rate limit ([#448](https://github.com/sweatco/archie-hq/issues/448)). Until then, the edge in front of Archie is the only defence against a flood.

@@ -15,6 +15,7 @@ import type { Task } from '../tasks/task.js';
 import { appendSlackMessage, generateTaskId } from '../tasks/persistence.js';
 import type { SlackThread } from '../types/task.js';
 import type { Trigger, TriggerBinding, TriggerCondition } from '../types/trigger.js';
+import { describeCheck } from '../incoming/filter.js';
 import type { PointerCheck } from '../incoming/types.js';
 import {
   listTriggers,
@@ -591,8 +592,7 @@ export interface EventFire {
   prepare(input: Parameters<typeof Task.prepareTriggered>[0]): Promise<TriggeredTask>;
 }
 
-export type FireResult =
-  { status: 'fired'; taskId: string } | { status: 'skipped'; reason: string };
+export type FireResult = { status: 'fired' } | { status: 'skipped'; reason: string };
 
 const skipped = (reason: string): FireResult => ({ status: 'skipped', reason });
 
@@ -668,7 +668,7 @@ export async function fireEvent(routine: Trigger, fire: EventFire): Promise<Fire
     });
     emitEvent('trigger:fired', taskId, { trigger_id: routine.id });
   }
-  return { status: 'fired', taskId };
+  return { status: 'fired' };
 }
 
 // ---- Announcements (config changes only — never firing) ----
@@ -830,6 +830,10 @@ function describeCondition(c: TriggerCondition, bindingChannelId?: string): stri
     const filter = c.filter?.length ? ` where ${describeEventFilter(c.filter)}` : '';
     return `on an event from input \`${c.input_id}\`${filter}`;
   }
+  if (c.type === 'new_input_event') {
+    const filter = c.filter?.length ? ` where ${describeEventFilter(c.filter)}` : '';
+    return `on an event from a new input “${c.purpose}”${filter}`;
+  }
   const where = c.channel_id === bindingChannelId ? '' : ` in <#${c.channel_id}>`;
   const filters: string[] = [];
   if (c.match?.contains) filters.push(`mentioning "${c.match.contains}"`);
@@ -851,13 +855,6 @@ function describeEventFilter(filter: readonly PointerCheck[]): string {
   return label.length > EVENT_FILTER_LABEL_MAX
     ? `${label.slice(0, EVENT_FILTER_LABEL_MAX - 1)}…`
     : label;
-}
-
-function describeCheck(check: PointerCheck): string {
-  const field = `\`${check.pointer || '/'}\``;
-  if (check.op === 'present') return `${field} is present`;
-  if (check.op === 'equals') return `${field} is ${JSON.stringify(check.value)}`;
-  return `${field} is one of ${check.values.map((value) => JSON.stringify(value)).join(', ')}`;
 }
 
 /** First sentence / clipped form of the internal prompt — fallback when no summary was set. */

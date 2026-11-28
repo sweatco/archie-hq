@@ -16,14 +16,17 @@ import { Task } from '../tasks/task.js';
 import type { Trigger, TriggerBinding } from '../types/trigger.js';
 import { logger } from './logger.js';
 import {
+  reservedTaskId,
+  ROUTINE_CONSUMER_KIND,
+  routineReservationSchema,
+} from './routine-handoff.js';
+import {
   fireEvent,
   getEnabledTrigger,
   releaseEventSlot,
   triggersEnabled,
 } from './trigger-scheduler.js';
 import { loadTrigger } from './trigger-store.js';
-
-export const ROUTINE_CONSUMER_KIND = 'routine';
 
 const bindingSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('channel'), channel_id: z.string(), channel_name: z.string() }),
@@ -44,9 +47,6 @@ export const routineSnapshotSchema = z.object({
   binding: bindingSchema,
 });
 export type RoutineSnapshot = z.infer<typeof routineSnapshotSchema>;
-
-/** Exists once a run slot was taken; names the Task every later attempt continues. */
-export const routineReservationSchema = z.object({ task_id: z.string() });
 
 const ACCEPTED: HandleResult = { state: 'accepted' };
 
@@ -90,7 +90,7 @@ async function startRoutine(work: HandoffWork): Promise<HandleResult> {
   let taskId = handoff.reservation
     ? routineReservationSchema.parse(JSON.parse(handoff.reservation)).task_id
     : undefined;
-  if (taskId && (await startedFor(taskId, handoff.id))) return ACCEPTED;
+  if (taskId && (await Task.startedFor(taskId, handoff.id))) return ACCEPTED;
 
   const skip = async (reason: string): Promise<HandleResult> => {
     if (taskId) await discardUnstarted(taskId, handoff.id);
@@ -128,13 +128,6 @@ async function discardUnstarted(taskId: string, origin: string): Promise<boolean
   return gone;
 }
 
-async function startedFor(taskId: string, origin: string): Promise<boolean> {
-  const start = (await loadMetadata(taskId))?.triggered_start;
-  if (start && start.origin !== origin)
-    throw new Error(`Task ${taskId} was started for another handoff`);
-  return start?.phase === 'ready';
-}
-
 /** The routine as it runs now, or why unstarted work for it stops. */
 async function liveRoutine(
   inbox: InboxView,
@@ -147,24 +140,16 @@ async function liveRoutine(
 
   const routine = getEnabledTrigger(snapshot.trigger_id);
   // The index holds enabled triggers only, so the record tells a paused routine from a deleted one.
-  if (!routine)
-    return {
-      stop: (await loadTrigger(snapshot.trigger_id)) ? 'routine_paused' : 'routine_deleted',
-    };
+  if (!routine) {
+    const stored = await loadTrigger(snapshot.trigger_id);
+    if (stored?.status === 'enabled')
+      throw new Error(`Routine ${snapshot.trigger_id} is enabled but not indexed yet`);
+    return { stop: stored ? 'routine_paused' : 'routine_deleted' };
+  }
   const namesInput = routine.conditions.some(
     (condition) => condition.type === 'incoming_event' && condition.input_id === snapshot.input_id,
   );
   return namesInput ? { routine } : { stop: 'routine_changed' };
-}
-
-/** The Task a reservation names, or undefined when the stored text is not a reservation. */
-function reservedTaskId(reservation: string): string | undefined {
-  try {
-    const reserved = routineReservationSchema.safeParse(JSON.parse(reservation));
-    return reserved.success ? reserved.data.task_id : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 /** The inbox ends some handoffs without calling `handle`; a Task one of them prepared is removed here. */
@@ -172,8 +157,16 @@ async function discardAbandoned(inbox: InboxView): Promise<void> {
   for (const { handoffId, reservation } of inbox.abandonedReservations(ROUTINE_CONSUMER_KIND)) {
     const taskId = reservedTaskId(reservation);
     if (!taskId) continue;
-    const prepared = (await loadMetadata(taskId))?.status === 'preparing';
-    if ((await discardUnstarted(taskId, handoffId)) && prepared)
-      logger.system(`Discarded task ${taskId}: its handoff ${handoffId} ended before it started`);
+    try {
+      const prepared = (await loadMetadata(taskId))?.status === 'preparing';
+      if ((await discardUnstarted(taskId, handoffId)) && prepared)
+        logger.system(`Discarded task ${taskId}: its handoff ${handoffId} ended before it started`);
+    } catch (error) {
+      logger.warn(
+        'incoming',
+        `Could not discard task ${taskId} of ended handoff ${handoffId}`,
+        error,
+      );
+    }
   }
 }

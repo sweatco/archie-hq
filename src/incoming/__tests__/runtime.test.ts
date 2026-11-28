@@ -79,6 +79,8 @@ function addWaitingHandoff(): void {
       filter: [],
       routines: [],
       revision: 1,
+      owner: null,
+      purpose: '',
     },
     Date.now(),
   );
@@ -209,6 +211,14 @@ describe('with the flag on', () => {
     events = null;
     const afterClose = await deliver(baseUrl, input, 'msg_b');
     expect(afterClose.status).toBe(503);
+  });
+
+  it('closes once when it is asked twice, as on a second shutdown signal', async () => {
+    const running = mountIncomingEvents(express());
+
+    await running?.close();
+
+    await expect(running?.close()).resolves.toBeUndefined();
   });
 
   it('closes after five seconds even when a handoff attempt is still running', async () => {

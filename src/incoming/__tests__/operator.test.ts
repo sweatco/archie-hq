@@ -17,13 +17,18 @@ let store: IncomingStore;
 let secrets: InputSecrets;
 let printed: string[];
 let triggers: Map<string, Trigger>;
+/** Triggers whose record is on disk and cannot be read. */
+let unreadable: Set<string>;
 let taskStatuses: Map<string, string>;
 
 function run(...args: string[]): Promise<void> {
   const loadTrigger = (id: string) => Promise.resolve(triggers.get(id) ?? null);
   const taskStatus = (id: string) => Promise.resolve(taskStatuses.get(id) ?? null);
-  return runIncomingCommand(args, { store, secrets, loadTrigger, taskStatus }, (line) =>
-    printed.push(line),
+  const triggerExists = (id: string) => triggers.has(id) || unreadable.has(id);
+  return runIncomingCommand(
+    args,
+    { store, secrets, loadTrigger, triggerExists, taskStatus },
+    (line) => printed.push(line),
   );
 }
 
@@ -64,6 +69,7 @@ beforeEach(() => {
   secrets = vaultInputSecrets(secretsDir);
   printed = [];
   triggers = new Map();
+  unreadable = new Set();
   taskStatuses = new Map();
 });
 afterEach(() => {
@@ -181,6 +187,30 @@ it('pauses, resumes and deletes an input, and removes its secret on delete', asy
   expect(store.input(id)?.state).toBe('deleted');
 });
 
+it('rotates a key, prints the new one once and removes the old one', async () => {
+  const { id, secret } = await created();
+  printed = [];
+
+  await run('rotate', id);
+
+  const [rotated, shown] = printed;
+  expect(rotated).toBe(`Rotated the key of input ${id}. The old key no longer works.`);
+  const next = shown?.replace('Secret:        ', '');
+  expect(next).toMatch(/^whsec_/);
+  expect(next).not.toBe(secret);
+  expect(readdirSync(secretsDir)).toHaveLength(1);
+  expect(await secrets.read(store.input(id)?.secretRefs[0] ?? '')).toBe(next);
+});
+
+it('rotates no key of an input that is deleted or unknown', async () => {
+  const { id } = await created();
+  await run('delete', id);
+
+  await expect(run('rotate', id)).rejects.toThrow(/was deleted/);
+  await expect(run('rotate', 'inp-NOSUCHAAAAAAAAAAAAAAAA')).rejects.toThrow(/No input/);
+  await expect(run('rotate')).rejects.toThrow(/Usage: incoming rotate/);
+});
+
 it('says the input is already deleted when only the secret cleanup failed', async () => {
   const { id } = await created();
   vi.spyOn(secrets, 'remove').mockRejectedValueOnce(new Error('file is busy'));
@@ -200,16 +230,16 @@ it('links a trigger to an input, shows what was allowed, and lists the link', as
   await run('link', id, ROUTINE_ID);
 
   expect(printed).toEqual([
-    `Linked trigger ${ROUTINE_ID} to input ${id}.`,
-    'Delivers to: #notes (C0NOTES)',
+    'Delivers to: channel C0NOTES',
     'Does:        Meeting notes',
     'Status:      enabled',
+    `Linked trigger ${ROUTINE_ID} to input ${id}.`,
   ]);
   expect(store.input(id)).toMatchObject({ routines: [ROUTINE_ID], revision: 2 });
 
   printed = [];
   await run('link', id, ROUTINE_ID);
-  expect(printed[0]).toBe(`Trigger ${ROUTINE_ID} is already linked to input ${id}.`);
+  expect(printed.at(-1)).toBe(`Trigger ${ROUTINE_ID} is already linked to input ${id}.`);
   expect(store.input(id)).toMatchObject({ routines: [ROUTINE_ID], revision: 2 });
 
   printed = [];
@@ -223,6 +253,22 @@ it('links a trigger to an input, shows what was allowed, and lists the link', as
   expect(printed[2]).toBe(`  linked: ${ROUTINE_ID} (no longer exists)`);
 });
 
+it('prints what the proposer wrote without its control characters or its name for the channel', async () => {
+  const { id } = await created();
+  routineFor(id, {
+    summary: 'Notes\u001b[2K\rLinked trigger trg-other to input inp-other.',
+    binding: { type: 'channel', channel_id: 'C0NOTES', channel_name: 'general (C0GENERAL)' },
+  });
+  printed = [];
+
+  await run('link', id, ROUTINE_ID);
+
+  expect(printed.slice(0, 2)).toEqual([
+    'Delivers to: channel C0NOTES',
+    'Does:        Notes [2K Linked trigger trg-other to input inp-other.',
+  ]);
+});
+
 it('says when a linked trigger does not receive events yet', async () => {
   const { id } = await created();
   routineFor(id, {
@@ -233,26 +279,62 @@ it('says when a linked trigger does not receive events yet', async () => {
 
   await run('link', id, ROUTINE_ID);
 
-  expect(printed.slice(1)).toEqual([
+  expect(printed.slice(0, 3)).toEqual([
     'Delivers to: a DM with U0DANA (D0DANA)',
     'Does:        Meeting notes',
     'Status:      pending — it receives events once it is approved',
   ]);
 });
 
-it('unlinks a trigger whose record is gone, and leaves other links in place', async () => {
+it('unlinks a trigger whose record is gone', async () => {
   const { id } = await created();
   routineFor(id);
-  routineFor(id, { id: 'trg-20261121-0900-ticket' });
   await run('link', id, ROUTINE_ID);
-  await run('link', id, 'trg-20261121-0900-ticket');
   triggers.clear();
 
   await run('unlink', id, ROUTINE_ID);
 
   expect(printed.at(-1)).toBe(`Unlinked trigger ${ROUTINE_ID} from input ${id}.`);
-  expect(store.input(id)).toMatchObject({ routines: ['trg-20261121-0900-ticket'], revision: 4 });
+  expect(store.input(id)).toMatchObject({ routines: [], revision: 3 });
   await expect(run('unlink', id, ROUTINE_ID)).rejects.toThrow(/is not linked/);
+});
+
+it('refuses a second trigger on an input, which takes one', async () => {
+  const { id } = await created();
+  routineFor(id);
+  routineFor(id, { id: 'trg-20261121-0900-ticket' });
+  await run('link', id, ROUTINE_ID);
+
+  await expect(run('link', id, 'trg-20261121-0900-ticket')).rejects.toThrow(
+    /already has a trigger/,
+  );
+  expect(store.input(id)?.routines).toEqual([ROUTINE_ID]);
+});
+
+it('links a trigger to an input whose earlier trigger was deleted', async () => {
+  const { id } = await created();
+  routineFor(id);
+  routineFor(id, { id: 'trg-20261121-0900-ticket' });
+  await run('link', id, ROUTINE_ID);
+  triggers.delete(ROUTINE_ID);
+
+  await run('link', id, 'trg-20261121-0900-ticket');
+
+  expect(store.input(id)?.routines).toEqual(['trg-20261121-0900-ticket']);
+});
+
+it('keeps the link of a trigger whose record cannot be read', async () => {
+  const { id } = await created();
+  routineFor(id);
+  routineFor(id, { id: 'trg-20261121-0900-ticket' });
+  await run('link', id, ROUTINE_ID);
+  triggers.delete(ROUTINE_ID);
+  unreadable.add(ROUTINE_ID);
+
+  await expect(run('link', id, 'trg-20261121-0900-ticket')).rejects.toThrow(
+    /already has a trigger/,
+  );
+  expect(store.input(id)?.routines).toEqual([ROUTINE_ID]);
 });
 
 it('refuses a link that would deliver nothing, and changes no input', async () => {
@@ -314,9 +396,12 @@ it('shows how each handed-off event ended, why, and the Task it reserved', async
   end('failed', 'attempts_exhausted', 'task-ran-anyway');
   receive(id, 'msg_4', at + 3);
   end('failed', 'interrupted', 'task-discarded');
-  receive(other.id, 'msg_5', at + 4);
+  receive(id, 'msg_5', at + 4);
+  end('failed', 'interrupted', 'task-prepared');
+  receive(other.id, 'msg_6', at + 5);
   taskStatuses.set('task-started', 'completed');
   taskStatuses.set('task-ran-anyway', 'in_progress');
+  taskStatuses.set('task-prepared', 'preparing');
   printed = [];
 
   await run('history', id);
@@ -324,6 +409,7 @@ it('shows how each handed-off event ended, why, and the Task it reserved', async
   const cells = printed.map((line) => line.trim().split(/\s{2,}/));
   expect(cells).toEqual([
     ['Received (UTC)', 'Input', 'Trigger', 'State', 'Reason', 'Task'],
+    ['2026-11-21 09:30', id, ROUTINE_ID, 'failed', 'interrupted', 'task-prepared preparing'],
     ['2026-11-21 09:30', id, ROUTINE_ID, 'failed', 'interrupted', '-'],
     [
       '2026-11-21 09:30',
@@ -339,7 +425,7 @@ it('shows how each handed-off event ended, why, and the Task it reserved', async
 
   printed = [];
   await run('history');
-  expect(printed).toHaveLength(6);
+  expect(printed).toHaveLength(7);
   expect(printed[1]).toMatch(new RegExp(`${other.id}\\s+${ROUTINE_ID}\\s+pending`));
   await expect(run('history', 'inp-missing')).rejects.toThrow(/No input inp-missing/);
 });
@@ -386,4 +472,21 @@ it.each([
 
   if (refused) expect(check).toThrow(/not as root: \/workdir belongs to uid 1001/);
   else expect(check).not.toThrow();
+});
+
+it('lists the owner and the purpose of an input made in Slack', async () => {
+  const { createInput } = await import('../inputs.js');
+  const { input } = await createInput(
+    { store, secrets },
+    { auth: 'standard_webhooks', owner: 'U0DANA', purpose: 'Meeting recordings' },
+  );
+  await created();
+  printed = [];
+
+  await run('list');
+
+  const lines = printed.join('\n').split('\n');
+  const row = lines.findIndex((line) => line.startsWith(input.id));
+  expect(lines[row + 1]).toBe('  owner: U0DANA  purpose: Meeting recordings');
+  expect(lines.filter((line) => line.includes('owner:'))).toHaveLength(1);
 });

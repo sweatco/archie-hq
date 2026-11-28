@@ -40,4 +40,6 @@ regexes = [
   # Fixtures in src/incoming/__tests__/authenticate.test.ts: the Standard Webhooks spec's example secret and a dummy bearer token.
   '''whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw''',
   '''Zm9vYmFyLXRva2VuLXdpdGgtZW5vdWdoLWVudHJvcHk''',
+  # Fixture in src/system/__tests__/input-panels.test.ts: a dummy key, the base64 of "secret-key-for-a-test-only".
+  '''c2VjcmV0LWtleS1mb3ItYS10ZXN0LW9ubHk''',
 ]

@@ -6,7 +6,7 @@ Three condition types exist:
 
 - **Schedule** — fires on a recurring cadence (hourly / daily / weekdays / weekly at a time) or once at a future time.
 - **Channel-message** — fires on a new **top-level** message in a watched channel matching an optional filter (substring and/or author).
-- **Incoming event** — fires on an event that an [incoming events](incoming-events.md#event-routines) input received. A trigger holds these conditions alone, never beside the other two, and receives nothing until the operator links it to the input.
+- **Incoming event** — fires on an event that an [incoming events](incoming-events.md#event-routines) input received. A trigger holds these conditions alone, never beside the other two, and receives nothing until it is linked to the input. A proposal may ask for a new input instead of naming one (`new_input_event`); approval creates it.
 
 A trigger is **bound** to a delivery target: a **channel**, or a **user** (that person's 1:1 DM). Both variants carry `channel_id` and `channel_name` — for a `user` binding those are the DM conversation (`D…`) the trigger was configured in and Slack's label for it (`DM with <real name>`) — so delivery has one shape and one code path rather than two.
 
@@ -207,6 +207,8 @@ Trigger creation reuses the edit-mode approval mechanism, which is already chann
 
 There is **no operator bypass** — approving from the CLI is exactly equivalent to clicking Approve in Slack.
 
+An event routine differs in two ways. Its `ref` is the trigger id and a digest of its review, and both surfaces resolve it through `Task.approveEventRoutine`, which reports why nothing was enabled. `handleTriggerApproval` refuses an event routine, because a bare id cannot say which review was shown.
+
 ## Visibility & privacy
 
 Scoped by the **tier of the space the request comes from** (`src/system/trigger-visibility.ts`):
@@ -230,7 +232,7 @@ Every **configuration change** to a **channel**-bound trigger — created/enable
 - **Human approval is the loop guard** — a trigger-spawned task *may* call `propose_trigger`, but that only ever creates a `pending` trigger; nothing enables (or fires) without a human clicking Approve, and a task has no way to self-approve (approval comes only from the Slack button or the CLI `/approve` endpoint). So there is no autonomous amplification loop to gate against — the approval step already breaks it. (Runaway pending-proposal spam is bounded by the daily fire cap.)
 - **Read-only by default** — a fired task is an ordinary task; any write/push still needs in-the-moment edit-mode approval.
 - **Limits** — recurring schedules ≥1h apart; per-user and per-channel active-trigger caps; a per-account daily fired-run cap (in-memory, reset daily), which schedule, message and event fires share.
-- **An event routine needs the operator** — approval alone routes no event. The operator links the approved trigger to the input, and unlinking revokes it ([incoming events](incoming-events.md#event-routines)).
+- **An event routine has its own input** — its approval card is a full review whose Approve button carries a digest of what it shows, and approving also creates the input and links the routine. For an operator-made input the operator links the routine afterwards. Unlinking revokes it ([incoming events](incoming-events.md#approving-an-event-routine)).
 - **Kill switch** — `ARCHIE_TRIGGERS_ENABLED=false` disables all firing and creation globally.
 - **A DM trigger can only be created from the DM it delivers to.** The refusal is not a validation of a supplied id — there is no id to validate, because the `user` branch of `propose_trigger` reads none. It is also the reason a DM trigger cannot carry a `channel_message` condition: a message fire ingests the watched thread and replies *there*, ignoring the binding entirely, so that pairing would deliver into the watched channel instead of the DM. `buildConditions` takes the binding type and refuses it, which covers `propose_trigger` and `update_trigger` with one implementation.
 - **A fired task's visibility tier is the conversation it is homed in.** `resolveTriggerOrigin` falls back to `home_channel` when the task has no Slack `default_channel` (yet), which is exactly a fired task's state on its first turn. Without that fallback the turn resolves to the operator tier, which sees every trigger in the workspace — including other people's DM triggers — and a fired task could read them out into whatever conversation it was homed in.
@@ -252,6 +254,9 @@ Every **configuration change** to a **channel**-bound trigger — created/enable
 | `src/agents/trigger-data.ts` | The two pure pieces of the persistent directory: the sandbox grant, and the prompt block that announces the path and lists its contents |
 | `src/system/trigger-scheduler.ts` | In-memory index, 60s tick, cron math, `fireTrigger`, `fireEvent`, announcements |
 | `src/system/routine-consumer.ts` | Event routines: the snapshot at receipt, and one Task per handoff |
+| `src/system/routine-review.ts` | An event routine's review card, its digest, and the approval reference |
+| `src/system/routine-approval.ts` | Who may approve an event routine; creating and linking its input |
+| `src/system/input-panels.ts`, `input-controls.ts` | The inputs panel, the owner's **Settings** button, and the window it opens |
 | `src/system/trigger-visibility.ts` | Pure visibility decision (privacy injected) |
 | `src/system/trigger-match.ts` | Pure channel-message match decision — author-id shape, the `contains`/`from_user` predicate |
 | `src/agents/tools.ts` | PM tools: `propose_trigger`, `list_triggers`, `get_trigger`, `update_trigger`, `delete_trigger` |

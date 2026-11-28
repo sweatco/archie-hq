@@ -74,6 +74,7 @@ export class IncomingDispatcher {
   private async deliverDue(): Promise<void> {
     while (!this.stopped) {
       await this.sweepIfDue();
+      if (this.stopped) return;
       const claimed = this.store.claimHandoff(this.clock(), this.policy.leaseMs);
       if (!claimed) return;
       await this.deliver(claimed);

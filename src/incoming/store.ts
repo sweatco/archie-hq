@@ -48,7 +48,7 @@ export type ReceiveResult =
   | { status: 'ignored'; receiptId: string; reason: IgnoredReason }
   | { status: 'conflict'; receiptId: string }
   | { status: 'full' }
-  | { status: 'unavailable'; reason: 'unknown' | 'deleted' };
+  | { status: 'deleted' };
 
 export interface InputSummary {
   input: Input;
@@ -60,17 +60,26 @@ export interface InputSummary {
 
 /** One ended or waiting handoff, for the operator. */
 export interface HandoffRecord {
-  id: string;
-  receiptId: string;
   inputId: string;
   receivedAt: number;
-  consumerKind: string;
   consumerId: string;
   state: HandoffState;
   /** Set when the handoff ended any way other than `accepted`. */
   reason: string | null;
-  attempts: number;
   reservation: string | null;
+}
+
+/** An ignored delivery has no handoffs. */
+export interface DeliveryRecord {
+  receiptId: string;
+  receivedAt: number;
+  outcome: Receipt['outcome'];
+  ignoredReason: IgnoredReason | null;
+  handoffs: Array<
+    Pick<HandoffRecord, 'consumerId' | 'state' | 'reason' | 'reservation'> & {
+      consumerKind: string;
+    }
+  >;
 }
 
 export interface ClaimedHandoff {
@@ -88,6 +97,8 @@ const inputRowSchema = z.object({
   filter: z.string(),
   routines: z.string(),
   revision: z.number(),
+  owner: z.string().nullable(),
+  purpose: z.string(),
 });
 
 const receiptRowSchema = z.object({
@@ -117,16 +128,30 @@ const dueHandoffSchema = z.object({
 
 const handoffStateSchema = z.enum(['pending', 'accepted', 'skipped', 'cancelled', 'failed']);
 
-const handoffRecordSchema = z.object({
+const deliveryRowSchema = z.object({
   id: z.string(),
-  receipt_id: z.string(),
-  input_id: z.string(),
   received_at: z.number(),
+  outcome: z.enum(['open', 'closed', 'ignored']),
+  ignored_reason: z.enum(['paused', 'filtered']).nullable(),
+});
+
+const deliveryHandoffSchema = z.object({
+  receipt_id: z.string(),
   consumer_kind: z.string(),
   consumer_id: z.string(),
   state: handoffStateSchema,
   reason: z.string().nullable(),
-  attempts: z.number(),
+  reservation: z.string().nullable(),
+});
+
+const storedBytesSchema = z.object({ workspace: z.number(), input: z.number() });
+
+const handoffRecordSchema = z.object({
+  input_id: z.string(),
+  received_at: z.number(),
+  consumer_id: z.string(),
+  state: handoffStateSchema,
+  reason: z.string().nullable(),
   reservation: z.string().nullable(),
 });
 
@@ -144,6 +169,8 @@ function toInput(row: Record<string, unknown>): Input {
     filter: inputFilterSchema.parse(JSON.parse(stored.filter)),
     routines: z.array(z.string()).parse(JSON.parse(stored.routines)),
     revision: stored.revision,
+    owner: stored.owner,
+    purpose: stored.purpose,
   };
 }
 
@@ -171,7 +198,7 @@ export class IncomingStore {
 
   insertInput(input: Input, createdAt: number): void {
     this.run(
-      'INSERT INTO inputs(id,state,auth,secret_refs,filter,routines,revision,created_at) VALUES (?,?,?,?,?,?,?,?)',
+      'INSERT INTO inputs(id,state,auth,secret_refs,filter,routines,revision,owner,purpose,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
       input.id,
       input.state,
       input.auth,
@@ -179,6 +206,8 @@ export class IncomingStore {
       JSON.stringify(input.filter),
       JSON.stringify(input.routines),
       input.revision,
+      input.owner,
+      input.purpose,
       createdAt,
     );
   }
@@ -222,6 +251,34 @@ export class IncomingStore {
     return this.moveInput(id, 'deleted', now);
   }
 
+  /** Removes the row of an input no delivery reached. False when it is unknown or has a receipt, which needs its input. */
+  removeUnusedInput(id: string): boolean {
+    return (
+      this.run(
+        'DELETE FROM inputs WHERE id=? AND NOT EXISTS (SELECT 1 FROM receipts WHERE input_id=?)',
+        id,
+        id,
+      ) > 0
+    );
+  }
+
+  /** Points the input at one new key and returns the references it held. A deleted input keeps its keys. */
+  replaceSecret(id: string, ref: string): { input: Input; replaced: string[] } | null {
+    return inTransaction(this.db, () => {
+      const input = this.input(id);
+      if (!input) return null;
+      if (input.state === 'deleted') return { input, replaced: [] };
+      const revision = input.revision + 1;
+      this.run(
+        'UPDATE inputs SET secret_refs=?,revision=? WHERE id=?',
+        JSON.stringify([ref]),
+        revision,
+        id,
+      );
+      return { input: { ...input, secretRefs: [ref], revision }, replaced: input.secretRefs };
+    });
+  }
+
   /** Lets a trigger receive this input's events. A deleted input is returned unchanged. */
   linkRoutine(id: string, triggerId: string): Input | null {
     return this.changeRoutines(id, (linked) =>
@@ -252,6 +309,15 @@ export class IncomingStore {
     };
   }
 
+  /** The newest receipt of an input, whatever became of it. */
+  latestReceipt(inputId: string): Receipt | null {
+    const row = this.row(
+      'SELECT id FROM receipts WHERE input_id=? ORDER BY received_at DESC, rowid DESC LIMIT 1',
+      inputId,
+    );
+    return row ? this.receipt(String(row.id)) : null;
+  }
+
   /**
    * A known key is answered first, so a retry gets its receipt even when the inbox is full.
    * A retry of an ignored event is accepted under the same receipt once the input takes it.
@@ -259,8 +325,8 @@ export class IncomingStore {
   receive(delivery: Delivery, consumers: readonly MatchedConsumer[]): ReceiveResult {
     return inTransaction(this.db, () => {
       const input = this.input(delivery.inputId);
-      if (!input) return { status: 'unavailable', reason: 'unknown' };
-      if (input.state === 'deleted') return { status: 'unavailable', reason: 'deleted' };
+      // The receiver answers for an unknown input before it calls this, and rows are never removed.
+      if (!input || input.state === 'deleted') return { status: 'deleted' };
 
       const wanted = input.state === 'enabled' && consumers.length > 0;
       const known =
@@ -350,15 +416,17 @@ export class IncomingStore {
   }
 
   private wouldExceedCapacity(inputId: string, incomingBytes: number): boolean {
-    const stored = this.requiredRow(
-      `SELECT COALESCE(SUM(length(p.body)),0) AS workspace,
-              COALESCE(SUM(CASE WHEN r.input_id=? THEN length(p.body) END),0) AS input
-         FROM payloads p JOIN receipts r ON r.id=p.receipt_id`,
-      inputId,
+    const stored = storedBytesSchema.parse(
+      this.row(
+        `SELECT COALESCE(SUM(length(p.body)),0) AS workspace,
+                COALESCE(SUM(CASE WHEN r.input_id=? THEN length(p.body) END),0) AS input
+           FROM payloads p JOIN receipts r ON r.id=p.receipt_id`,
+        inputId,
+      ),
     );
     return (
-      Number(stored.input) + incomingBytes > this.limits.inputCapacityBytes ||
-      Number(stored.workspace) + incomingBytes > this.limits.workspaceCapacityBytes
+      stored.input + incomingBytes > this.limits.inputCapacityBytes ||
+      stored.workspace + incomingBytes > this.limits.workspaceCapacityBytes
     );
   }
 
@@ -469,8 +537,7 @@ export class IncomingStore {
   handoffHistory(limit: number, inputId?: string): HandoffRecord[] {
     return this.db
       .prepare(
-        `SELECT h.id, h.receipt_id, r.input_id, r.received_at, h.consumer_kind, h.consumer_id,
-                h.state, h.reason, h.attempts, h.reservation
+        `SELECT r.input_id, r.received_at, h.consumer_id, h.state, h.reason, h.reservation
            FROM handoffs h JOIN receipts r ON r.id=h.receipt_id
           WHERE ?1 IS NULL OR r.input_id=?1
           ORDER BY r.received_at DESC, h.rowid DESC LIMIT ?2`,
@@ -479,16 +546,52 @@ export class IncomingStore {
       .map((row) => {
         const stored = handoffRecordSchema.parse(row);
         return {
-          id: stored.id,
-          receiptId: stored.receipt_id,
           inputId: stored.input_id,
           receivedAt: stored.received_at,
-          consumerKind: stored.consumer_kind,
           consumerId: stored.consumer_id,
           state: stored.state,
           reason: stored.reason,
-          attempts: stored.attempts,
           reservation: stored.reservation,
+        };
+      });
+  }
+
+  /** Newest first, ignored deliveries included. */
+  deliveryHistory(inputId: string, limit: number): DeliveryRecord[] {
+    const newest =
+      'SELECT id FROM receipts WHERE input_id=?1 ORDER BY received_at DESC, rowid DESC LIMIT ?2';
+    const handoffs = new Map<string, DeliveryRecord['handoffs']>();
+    for (const row of this.db
+      .prepare(
+        `SELECT receipt_id, consumer_kind, consumer_id, state, reason, reservation
+           FROM handoffs WHERE receipt_id IN (${newest}) ORDER BY rowid`,
+      )
+      .all(inputId, limit)) {
+      const stored = deliveryHandoffSchema.parse(row);
+      const ofReceipt = handoffs.get(stored.receipt_id) ?? [];
+      ofReceipt.push({
+        consumerKind: stored.consumer_kind,
+        consumerId: stored.consumer_id,
+        state: stored.state,
+        reason: stored.reason,
+        reservation: stored.reservation,
+      });
+      handoffs.set(stored.receipt_id, ofReceipt);
+    }
+    return this.db
+      .prepare(
+        `SELECT id, received_at, outcome, ignored_reason FROM receipts
+          WHERE input_id=?1 ORDER BY received_at DESC, rowid DESC LIMIT ?2`,
+      )
+      .all(inputId, limit)
+      .map((row) => {
+        const stored = deliveryRowSchema.parse(row);
+        return {
+          receiptId: stored.id,
+          receivedAt: stored.received_at,
+          outcome: stored.outcome,
+          ignoredReason: stored.ignored_reason,
+          handoffs: handoffs.get(stored.id) ?? [],
         };
       });
   }
@@ -628,12 +731,6 @@ export class IncomingStore {
 
   private row(sql: string, ...args: SQLInputValue[]) {
     return this.db.prepare(sql).get(...args);
-  }
-
-  private requiredRow(sql: string, ...args: SQLInputValue[]) {
-    const row = this.row(sql, ...args);
-    if (!row) throw new Error('SQLite returned no row where one must exist');
-    return row;
   }
 
   /** Returns the number of rows changed. */

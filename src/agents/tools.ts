@@ -30,7 +30,12 @@ import {
   assignPrNumber,
 } from '../connectors/github/branch-state.js';
 import { taskBranchName, invalidRefReason } from '../connectors/github/branch-naming.js';
-import { appendAgentFinding, isThreadMuted, getTaskClonePath } from '../tasks/persistence.js';
+import {
+  appendAgentFinding,
+  isThreadMuted,
+  getTaskClonePath,
+  loadMetadata,
+} from '../tasks/persistence.js';
 import { getBaseCachePath } from '../system/workdir.js';
 import { exploreBody } from '../connectors/slack/message-body.js';
 import { assertReadable } from './artifacts.js';
@@ -128,7 +133,12 @@ import {
 import * as chrono from 'chrono-node';
 import { writeFile } from 'fs/promises';
 import { join } from 'path';
-import type { Trigger, TriggerBinding, TriggerCondition } from '../types/trigger.js';
+import type {
+  SlackMessageRef,
+  Trigger,
+  TriggerBinding,
+  TriggerCondition,
+} from '../types/trigger.js';
 import {
   generateTriggerId,
   saveTrigger,
@@ -164,8 +174,24 @@ import {
   type TriggerOrigin,
 } from '../system/trigger-visibility.js';
 import { isSlackAuthorId, isAppAuthorId } from '../system/trigger-match.js';
+import { inputServices } from '../incoming/access.js';
 import { incomingEventsEnabled } from '../incoming/runtime.js';
-import { INPUT_ID_PATTERN, inputFilterSchema } from '../incoming/types.js';
+import {
+  describeInputHistory,
+  describeInputs,
+  listInputs,
+  NO_INPUTS_VISIBLE,
+  type InventoryLookups,
+} from '../system/input-inventory.js';
+import { inputsPanelBlocks } from '../system/input-panels.js';
+import { INPUT_ID_PATTERN, inputFilterSchema, inputPurposeSchema } from '../incoming/types.js';
+import {
+  routineDestinationRefusal,
+  routineInputRefusal,
+  routineRefusalText,
+  routineReviewBlocks,
+} from '../system/routine-approval.js';
+import { approvalReference, isEventCondition, isEventRoutine } from '../system/routine-review.js';
 
 // Re-export branch state helpers for consumers that import from tools.ts
 export { hydrateBranchState, findBranchStateByPR };
@@ -2803,7 +2829,25 @@ const triggerConditionObject = z.object({
     .string()
     .optional()
     .describe(
-      'Input whose events fire the trigger (required for incoming_event), as `inp-…`. An operator creates the input and, after approval, links the trigger to it; until then the trigger receives nothing. Cannot be combined with schedule or channel_message conditions.',
+      'An input the operator made, whose events fire the trigger (incoming_event), as `inp-…`. The operator links the trigger after approval. An input set up in Slack belongs to its one routine and cannot be named here: use `new_input`. Pass this or `new_input`, not both. Cannot be combined with schedule or channel_message conditions.',
+    ),
+  new_input: z
+    .object({
+      purpose: z
+        .string()
+        .describe(
+          'What the input is for, in a few plain words, e.g. "Meeting recordings". Shown on the review card.',
+        ),
+      auth: z
+        .enum(['signed', 'bearer'])
+        .optional()
+        .describe(
+          '"signed" (default): the sender signs each delivery with Standard Webhooks headers. "bearer": the sender sends a token in the Authorization header, for senders that cannot sign.',
+        ),
+    })
+    .optional()
+    .describe(
+      'Set up a new input for this trigger (incoming_event) instead of naming an existing one. Nothing is created until a person approves the proposal; that person becomes the owner of the input. Only on a proposal, never on an approved trigger.',
     ),
   event_filter: z
     .array(
@@ -2895,11 +2939,13 @@ function makePrivacyResolver(): (channelId: string) => Promise<boolean> {
  *
  * A message fire replies in the watched thread, not to the binding, so a DM binding cannot watch a channel.
  * The scheduler tick writes back the record it read before a fire, so event conditions stay on triggers it never fires.
+ * A new input can only be asked for on a proposal, where a person's approval creates it.
  */
 function buildConditions(
   raw: RawCondition[],
   defaultTz: string,
   bindingType: TriggerBinding['type'],
+  proposal: boolean,
 ): { conditions: TriggerCondition[] } | { error: string } {
   const conditions: TriggerCondition[] = [];
   for (const c of raw) {
@@ -2954,10 +3000,25 @@ function buildConditions(
     } else if (c.type === 'incoming_event') {
       if (!incomingEventsEnabled())
         return { error: 'Incoming events are not enabled on this instance.' };
-      if (!c.input_id || !INPUT_ID_PATTERN.test(c.input_id)) {
+      if (c.new_input && c.input_id)
+        return {
+          error: 'An incoming_event condition takes either `input_id` or `new_input`, not both.',
+        };
+      if (c.new_input && !proposal)
         return {
           error:
-            'An incoming_event condition needs the `input_id` of an input an operator created (`inp-…`).',
+            'A new input can only be set up through a proposal. Propose another trigger with `new_input`.',
+        };
+      const purpose = c.new_input ? inputPurposeSchema.safeParse(c.new_input.purpose) : undefined;
+      if (purpose && !purpose.success)
+        return {
+          error:
+            'Invalid new_input.purpose — use 1 to 80 characters of plain text, without <, >, & or backticks.',
+        };
+      if (!c.new_input && (!c.input_id || !INPUT_ID_PATTERN.test(c.input_id))) {
+        return {
+          error:
+            'An incoming_event condition needs the `input_id` of an existing input (`inp-…`), or `new_input` to set one up.',
         };
       }
       const filter = inputFilterSchema.safeParse(c.event_filter ?? []);
@@ -2967,23 +3028,32 @@ function buildConditions(
         );
         return { error: `Invalid event_filter — ${problems.join('; ')}.` };
       }
-      conditions.push({
-        type: 'incoming_event',
-        input_id: c.input_id,
-        ...(filter.data.length ? { filter: filter.data } : {}),
-      });
+      const eventFilter = filter.data.length ? { filter: filter.data } : {};
+      if (c.new_input && purpose?.success)
+        conditions.push({
+          type: 'new_input_event',
+          purpose: purpose.data,
+          auth: c.new_input.auth === 'bearer' ? 'bearer' : 'standard_webhooks',
+          ...eventFilter,
+        });
+      else if (c.input_id)
+        conditions.push({ type: 'incoming_event', input_id: c.input_id, ...eventFilter });
     } else {
       return { error: `Unknown condition type "${(c as { type: string }).type}".` };
     }
   }
   if (conditions.length === 0) return { error: 'At least one condition is required.' };
-  const onEvents = conditions.filter((c) => c.type === 'incoming_event').length;
+  const onEvents = conditions.filter(isEventCondition).length;
   if (onEvents > 0 && onEvents < conditions.length) {
     return {
       error:
         'An incoming_event condition cannot share a trigger with a schedule or channel_message condition. Propose a separate trigger for each.',
     };
   }
+  if (conditions.filter(isEventCondition).length > 1)
+    return {
+      error: 'A trigger takes events from one input. Propose a separate trigger for each.',
+    };
   return { conditions };
 }
 
@@ -3007,14 +3077,74 @@ async function postTriggerApprovalCard(task: Task, trigger: Trigger): Promise<bo
   const what = triggerWhat(trigger);
   const when = triggerWhen(trigger);
   const where = triggerWhere(trigger);
-  return task.postInteractiveToUser(
-    `Set up this automation? ${what} · ${when} · ${where}`,
-    buildTriggerApprovalBlocks(trigger),
+  const text = `Set up this automation? ${what} · ${when} · ${where}`;
+  if (!isEventRoutine(trigger)) {
+    const posted = await task.postInteractiveToUser(
+      text,
+      buildTriggerApprovalBlocks(trigger),
+      'trigger',
+      undefined,
+      undefined,
+      trigger.id,
+    );
+    // A proposal edited out of being an event routine leaves a review card behind.
+    if (posted && trigger.review_card) await replaceReviewCard(task, trigger, undefined);
+    return posted;
+  }
+
+  // An event routine's card shows the whole review, and its reference says which review was shown.
+  const landed: SlackMessageRef[] = [];
+  const posted = await task.postInteractiveToUser(
+    text,
+    await routineReviewBlocks(trigger),
     'trigger',
     undefined,
     undefined,
-    trigger.id,
+    approvalReference(trigger),
+    (card) => landed.push(card),
   );
+  const [card] = landed;
+  if (card) await replaceReviewCard(task, trigger, card);
+  return posted;
+}
+
+/** Remembers the proposal's newest review card, if it has one, and retires the one before it, which can no longer approve anything. */
+async function replaceReviewCard(
+  task: Task,
+  trigger: Trigger,
+  card: SlackMessageRef | undefined,
+): Promise<void> {
+  const previous = trigger.review_card;
+  await updatePendingTrigger(trigger.id, (stored) => {
+    stored.review_card = card;
+  });
+  if (!previous) return;
+  try {
+    await task.updateSlackMessageSafely(
+      previous.channel_id,
+      previous.ts,
+      `ℹ️ ${routineRefusalText({ status: 'refused', reason: 'stale_card' })}`,
+      [],
+    );
+  } catch (error) {
+    // The card then stays clickable, and a click on it retires it instead.
+    logger.warn('tools', `Could not retire an outdated review card of ${trigger.id}`, error);
+  }
+}
+
+/** What the proposer is told about who can approve an event routine and what approval does. */
+function eventApprovalNote(conditions: readonly TriggerCondition[]): string {
+  const notes = new Set<string>();
+  for (const condition of conditions) {
+    if (condition.type === 'new_input_event') {
+      notes.add(
+        ' Approving it creates the input, and the person who approves becomes the owner of that input.',
+      );
+    } else if (condition.type === 'incoming_event') {
+      notes.add(' After approval it receives events only once an operator links it to the input.');
+    }
+  }
+  return [...notes].join('');
 }
 
 function createProposeTriggerTool(task: Task) {
@@ -3110,8 +3240,14 @@ function createProposeTriggerTool(task: Task) {
         }
       }
 
-      const built = buildConditions(args.conditions, defaultTz, binding.type);
+      const built = buildConditions(args.conditions, defaultTz, binding.type, true);
       if ('error' in built) return ok(`Could not create the trigger: ${built.error}`);
+      const inputRefusal = routineInputRefusal(built.conditions);
+      if (inputRefusal) return ok(`Could not create the trigger: ${inputRefusal}.`);
+      const routineRefusal = built.conditions.some(isEventCondition)
+        ? await routineDestinationRefusal(binding)
+        : null;
+      if (routineRefusal) return ok(`Could not create the trigger: ${routineRefusal}.`);
 
       if (binding.type === 'channel') {
         const channelId = binding.channel_id;
@@ -3158,11 +3294,8 @@ function createProposeTriggerTool(task: Task) {
       );
 
       await postTriggerApprovalCard(task, trigger);
-      const linkNote = built.conditions.some((c) => c.type === 'incoming_event')
-        ? ' After approval it receives events only once an operator links it to the input.'
-        : '';
       return ok(
-        `Trigger proposed and posted for approval. It will not run until the user approves (or types y in the CLI).${linkNote} No need to pause — continue if there is other work.`,
+        `Trigger proposed and posted for approval. It will not run until the user approves (or types y in the CLI).${eventApprovalNote(built.conditions)} No need to pause — continue if there is other work.`,
       );
     },
   );
@@ -3214,6 +3347,14 @@ function detailCondition(c: TriggerCondition, index: number): string {
   if (c.type === 'incoming_event') {
     return [
       `${head}an event received by input ${c.input_id}`,
+      c.filter?.length
+        ? `       event_filter (every check must pass): ${JSON.stringify(c.filter)}`
+        : '       event_filter: none — every event the input accepts',
+    ].join('\n');
+  }
+  if (c.type === 'new_input_event') {
+    return [
+      `${head}an event received by a new input “${c.purpose}” (${c.auth === 'bearer' ? 'bearer' : 'signed'}), created when the proposal is approved`,
       c.filter?.length
         ? `       event_filter (every check must pass): ${JSON.stringify(c.filter)}`
         : '       event_filter: none — every event the input accepts',
@@ -3298,6 +3439,85 @@ function createGetTriggerTool(task: Task) {
   );
 }
 
+function inventoryLookups(origin: TriggerOrigin): InventoryLookups {
+  const resolvePrivacy = makePrivacyResolver();
+  return {
+    loadTrigger,
+    visible: (routine) => triggerVisibleFrom(routine, origin, resolvePrivacy),
+    task: loadMetadata,
+  };
+}
+
+const INCOMING_UNAVAILABLE = 'Incoming events are not available on this instance right now.';
+
+function createListInputsTool(task: Task) {
+  return tool(
+    'list_inputs',
+    "List the incoming-event inputs visible from this conversation, each with its owner, state, last delivery and what takes its events. Every input is listed in its owner's DM. Anywhere else an input is listed only if its routine is visible from this conversation. No key or callback address is ever shown.",
+    {},
+    async () => {
+      const services = inputServices();
+      if (!services) return ok(INCOMING_UNAVAILABLE);
+      const origin = await resolveTriggerOrigin(task);
+      return ok(describeInputs(await listInputs(services, origin, inventoryLookups(origin))));
+    },
+  );
+}
+
+function createShowInputsTool(task: Task) {
+  return tool(
+    'show_inputs',
+    "Post a panel in this conversation that lists the incoming-event inputs visible from it, scoped like `list_inputs`. Each input its owner can manage has a Settings button, which opens only for that owner: it shows how to connect a sender and can delete the input. Use it when someone wants to see or manage inputs, and don't repeat the panel's content in your reply. Use `list_inputs` when you only need to read the inputs yourself.",
+    {
+      input_id: z.string().optional().describe('Show only this input.'),
+    },
+    async (args) => {
+      const services = inputServices();
+      if (!services) return ok(INCOMING_UNAVAILABLE);
+      const origin = await resolveTriggerOrigin(task);
+      const visible = await listInputs(services, origin, inventoryLookups(origin));
+      const shown = args.input_id
+        ? visible.filter((listing) => listing.input.id === args.input_id)
+        : visible;
+      if (shown.length === 0)
+        return ok(
+          args.input_id ? `Input ${args.input_id} isn't visible from here.` : NO_INPUTS_VISIBLE,
+        );
+      const posted = await task.postPanelToUser(
+        `Incoming-event inputs visible here (${shown.length})`,
+        inputsPanelBlocks(shown),
+      );
+      return ok(
+        posted
+          ? `Posted the panel with ${shown.length} input${shown.length === 1 ? '' : 's'}. Don't repeat its content.`
+          : `No panel can be posted in this conversation, so here is the list.\n${describeInputs(shown)}`,
+      );
+    },
+  );
+}
+
+function createGetInputHistoryTool(task: Task) {
+  return tool(
+    'get_input_history',
+    'Read what became of the newest deliveries to one incoming-event input: received (waiting), handed off (a task started), delivered (that task posted, with a link), skipped (with the reason) or uncertain. Use it when someone asks whether an event arrived or why a routine did not run. Scoped like `list_inputs`. No event content is kept, so none can be shown or replayed.',
+    {
+      input_id: z.string().describe('Input ID (from list_inputs or get_trigger).'),
+    },
+    async (args) => {
+      const services = inputServices();
+      if (!services) return ok(INCOMING_UNAVAILABLE);
+      const origin = await resolveTriggerOrigin(task);
+      return ok(
+        await describeInputHistory(services, args.input_id, origin, inventoryLookups(origin)),
+      );
+    },
+  );
+}
+
+// An event's text is in such a Task's context, and an edit to an approved trigger takes effect without a new approval.
+const EVENT_TASK_TRIGGER_REFUSAL =
+  'A task started by an incoming event cannot change or delete triggers; a person can ask for that in another thread.';
+
 function createUpdateTriggerTool(task: Task) {
   return tool(
     'update_trigger',
@@ -3330,6 +3550,7 @@ function createUpdateTriggerTool(task: Task) {
         ),
     },
     async (args) => {
+      if (task.metadata.triggered_start) return ok(EVENT_TASK_TRIGGER_REFUSAL);
       const trigger = await loadTrigger(args.id);
       if (!trigger) return ok(`No trigger ${args.id} found.`);
       const origin = await resolveTriggerOrigin(task);
@@ -3370,8 +3591,24 @@ function createUpdateTriggerTool(task: Task) {
           trigger.conditions.find(
             (c): c is Extract<TriggerCondition, { type: 'schedule' }> => c.type === 'schedule',
           )?.tz || 'UTC';
-        const built = buildConditions(args.conditions, defaultTz, trigger.binding.type);
+        const built = buildConditions(
+          args.conditions,
+          defaultTz,
+          trigger.binding.type,
+          trigger.status === 'pending',
+        );
         if ('error' in built) return ok(`Could not update the trigger: ${built.error}`);
+        const inputRefusal = routineInputRefusal(built.conditions, trigger.id);
+        if (inputRefusal) return ok(`Could not update the trigger: ${inputRefusal}.`);
+        // Taking events needs the review an event routine gets at approval.
+        if (
+          trigger.status !== 'pending' &&
+          !isEventRoutine(trigger) &&
+          built.conditions.some(isEventCondition)
+        )
+          return ok(
+            'Could not update the trigger: an approved trigger that takes no incoming events cannot start taking them. Propose another trigger for that.',
+          );
         nextConditions = built.conditions;
       }
 
@@ -3380,6 +3617,10 @@ function createUpdateTriggerTool(task: Task) {
           return ok('Nothing to update — pass action_prompt, summary, or conditions.');
         const deliveryError = await authorizeTriggerChange(task, trigger);
         if (deliveryError) return err(`Proposal not updated: ${deliveryError}`);
+        const routineRefusal = nextConditions?.some(isEventCondition)
+          ? await routineDestinationRefusal(trigger.binding)
+          : null;
+        if (routineRefusal) return ok(`Proposal not updated: ${routineRefusal}.`);
 
         const result = await updatePendingTrigger(args.id, (t) => {
           if (args.action_prompt) t.action.prompt = args.action_prompt;
@@ -3514,6 +3755,7 @@ function createDeleteTriggerTool(task: Task) {
       id: z.string().describe('Trigger ID (from list_triggers).'),
     },
     async (args) => {
+      if (task.metadata.triggered_start) return ok(EVENT_TASK_TRIGGER_REFUSAL);
       const trigger = await loadTrigger(args.id);
       if (!trigger) return ok(`No trigger ${args.id} found.`);
       const origin = await resolveTriggerOrigin(task);
@@ -3742,6 +3984,9 @@ export function createOrchestrationMcpServer(agent: Agent, task: Task) {
       createProposeTriggerTool(task),
       createListTriggersTool(task),
       createGetTriggerTool(task),
+      createListInputsTool(task),
+      createShowInputsTool(task),
+      createGetInputHistoryTool(task),
       createUpdateTriggerTool(task),
       createDeleteTriggerTool(task),
     ],

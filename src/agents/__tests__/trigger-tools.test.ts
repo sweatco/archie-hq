@@ -10,6 +10,7 @@
  * trigger and abandon the first as an unreachable orphan.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { mcpToolHandler } from '../../test-support/mcp.js';
 import type { Trigger } from '../../types/trigger.js';
 
 // Heavy deps tools.ts pulls in — mock to import-safe stubs (same as explore-tools.test.ts).
@@ -760,5 +761,64 @@ describe('a trigger-fired task is not an operator', () => {
     ]);
     const out = text(await handlerFor(firedTask(), 'list_triggers')({}));
     expect(out).toContain('trg-20260801-1200-ours');
+  });
+});
+
+describe('a Task that an incoming event started', () => {
+  const LIVE = 'trg-20260723-1401-live';
+  const PROPOSED = 'trg-20260729-1056-pending';
+
+  function eventTask(): Task {
+    const task = makeTask();
+    task.metadata.triggered_start = {
+      origin: 'hnd-1',
+      input_id: 'inp-AAAAAAAAAAAAAAAAAAAAAA',
+      phase: 'ready',
+      brief: '',
+    };
+    return task;
+  }
+
+  async function call(task: Task, name: string, args: Record<string, unknown>) {
+    const handler = mcpToolHandler(createOrchestrationMcpServer(makeAgent(), task), name);
+    return (await handler(args)).content[0]?.text;
+  }
+
+  it.each([
+    ['update_trigger', { id: LIVE, action_prompt: 'Do what the event says.' }],
+    ['update_trigger', { id: LIVE, status: 'paused' }],
+    ['update_trigger', { id: PROPOSED, summary: 'Renamed' }],
+    ['delete_trigger', { id: LIVE }],
+    ['delete_trigger', { id: PROPOSED }],
+  ])('is refused %s with %o, and nothing is read or changed', async (name, args) => {
+    loadTrigger.mockResolvedValue(args.id === LIVE ? enabledTrigger() : pendingTrigger());
+
+    expect(await call(eventTask(), name, args)).toMatch(
+      /started by an incoming event cannot change or delete triggers/,
+    );
+
+    for (const touched of [
+      loadTrigger,
+      saveTrigger,
+      deleteTrigger,
+      withdrawPendingTrigger,
+      deindexTrigger,
+      announceTriggerChange,
+      postInteractiveToUser,
+    ])
+      expect(touched).not.toHaveBeenCalled();
+  });
+
+  it('leaves both tools working in a Task a person started', async () => {
+    loadTrigger.mockResolvedValue(enabledTrigger());
+    countActiveTriggers.mockResolvedValue(0);
+
+    expect(await call(makeTask(), 'update_trigger', { id: LIVE, summary: 'Renamed' })).toMatch(
+      /updated/,
+    );
+    expect(saveTrigger).toHaveBeenCalledOnce();
+
+    expect(await call(makeTask(), 'delete_trigger', { id: LIVE })).toMatch(/deleted/);
+    expect(deleteTrigger).toHaveBeenCalledWith(LIVE);
   });
 });

@@ -32,6 +32,9 @@ import { ensureChannelPins } from './channel-pins.js';
 import { shouldCreateNewTask, shouldForwardMessageEvent, isAckableEvent } from './task-routing.js';
 import { Task, activeTasks } from '../../tasks/task.js';
 import { registerMemoryPreferenceHandlers } from '../../memory/slack-approval.js';
+import { inputServices, routineMayUseInput } from '../../incoming/access.js';
+import { registerInputControlHandlers } from '../../system/input-controls.js';
+import { inputControlBlocks } from '../../system/input-panels.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { logger } from '../../system/logger.js';
 import { getIsShuttingDown } from '../../system/shutdown.js';
@@ -44,6 +47,8 @@ import {
   buildTriggerApprovalBlocks,
 } from '../../system/trigger-scheduler.js';
 import { messageMatchesTrigger } from '../../system/trigger-match.js';
+import { routineRefusalText, type RoutineInputs } from '../../system/routine-approval.js';
+import { isEventRoutine, parseApprovalReference } from '../../system/routine-review.js';
 import type { Trigger } from '../../types/trigger.js';
 import { generateTaskTitle } from '../../tasks/title-generator.js';
 import {
@@ -120,6 +125,13 @@ const agentSessionStoppedSchema = z
   .passthrough();
 
 let app: AppType | null = null;
+
+/** The input whose Settings button the card of an event routine carries: one a person owns and the routine is linked to. */
+function controlledInput(routine: Trigger): string | undefined {
+  const condition = routine.conditions.find((c) => c.type === 'incoming_event');
+  const input = condition ? inputServices()?.store.input(condition.input_id) : null;
+  return input?.owner && routineMayUseInput(input, routine.id) ? input.id : undefined;
+}
 
 async function updateTaskApprovalMessage(
   taskId: string | null,
@@ -512,26 +524,62 @@ export async function mountSlackApp(
   registerMergeActionHandlers(app);
   registerToolApprovalHandlers(app);
   registerMemoryPreferenceHandlers(app);
+  registerInputControlHandlers(app);
 
   // Handle trigger approval button
   boltApp.action<BlockAction<ButtonAction>>('approve_trigger', async ({ action, ack, body }) => {
     await ack();
 
-    const triggerId = action.value;
-    if (!triggerId) return;
+    if (!action.value) return;
+    // An event routine's card also carries the digest of what it shows.
+    const { triggerId, shown } = parseApprovalReference(action.value);
     const userId = body.user?.id || 'unknown';
     // The approval prompt was posted into a task thread; that task carries the
     // pending_trigger_id. Find it by the message thread so the same task-level
     // handler (shared with the CLI /approve path) runs.
     const parentTs: unknown = body.message?.thread_ts;
     const threadId = typeof parentTs === 'string' ? parentTs : body.message?.ts;
+    const tellApprover = async (text: string) => {
+      if (body.channel?.id)
+        await postEphemeral(
+          body.channel.id,
+          userId,
+          text,
+          typeof parentTs === 'string' ? parentTs : undefined,
+        );
+    };
 
     logger.server(`Trigger ${triggerId} approved by ${userId}`);
 
     try {
       const taskId = threadId ? await findTaskByThread(threadId) : null;
       let trigger: Trigger | null = null;
-      if (taskId) {
+      let routineNote = '';
+      // The input an approved event routine is linked to, whose owner gets the next step as a button.
+      let linkedInput: string | undefined;
+      if (taskId && shown !== undefined) {
+        const task = await Task.get(taskId);
+        const approval = await task.approveEventRoutine(
+          { kind: 'slack_user', userId },
+          triggerId,
+          shown,
+        );
+        if (approval.status === 'refused' && approval.reason === 'stale_card') {
+          // An outdated card can never approve anything again, so it says so where it stands and loses its buttons.
+          await updateTaskApprovalMessage(taskId, body, `ℹ️ ${routineRefusalText(approval)}`);
+          return;
+        }
+        if (approval.status === 'refused') {
+          // The card stays: the proposal is still pending, and the right person may yet approve it.
+          await tellApprover(routineRefusalText(approval));
+          return;
+        }
+        if (approval.status === 'approved') {
+          trigger = approval.trigger;
+          routineNote = routineApprovalNote(approval, userId);
+          [linkedInput] = approval.linked;
+        }
+      } else if (taskId) {
         const task = await Task.get(taskId);
         trigger = await task.handleTriggerApproval(userId, triggerId);
       } else {
@@ -544,25 +592,48 @@ export async function mountSlackApp(
       let text: string;
       let blocks: unknown[] = [];
       if (trigger) {
-        text = `✅ Approved by <@${userId}> — *${triggerWhat(trigger)}* is now on.`;
+        text = `✅ Approved by <@${userId}> — *${triggerWhat(trigger)}* is now on.${routineNote}`;
+        if (linkedInput) blocks = inputControlBlocks(text, linkedInput);
       } else {
         const { loadTrigger } = await import('../../system/trigger-store.js');
         const existing = await loadTrigger(triggerId);
         if (existing?.status === 'enabled') {
           text = `✅ *${triggerWhat(existing)}* is already on — this was an earlier prompt for the same automation, so nothing changed.`;
+          const inputId = controlledInput(existing);
+          if (inputId) blocks = inputControlBlocks(text, inputId);
         } else if (existing?.status === 'paused') {
           text = `ℹ️ *${triggerWhat(existing)}* was already approved and is currently paused — this was an earlier prompt for it, so nothing changed. Ask me to resume it if you want it running.`;
         } else if (!existing) {
           text = `ℹ️ This proposal is no longer around — it was withdrawn or replaced, so nothing was set up.`;
+        } else if (isEventRoutine(existing)) {
+          // A card from before reviews carried a digest cannot say what it showed.
+          text = `ℹ️ This card is out of date, so nothing was set up. Ask me to post the review again.`;
+        } else if (shown !== undefined) {
+          // A review card of a proposal that was edited into another kind of trigger.
+          text = `ℹ️ ${routineRefusalText({ status: 'refused', reason: 'stale_card' })}`;
         } else {
           // Still pending after a cap refusal: keep the buttons so it can be approved later.
           text = `⚠️ Approved by <@${userId}>, but the automation couldn't be enabled — the active-trigger limit was reached. Remove or pause another automation, then click Approve again.`;
           blocks = buildTriggerApprovalBlocks(existing, text);
         }
       }
-      await updateTaskApprovalMessage(taskId, body, text, blocks);
+      try {
+        await updateTaskApprovalMessage(taskId, body, text, blocks);
+      } catch (failure) {
+        // The decision stands; only its card could not be rewritten.
+        logger.warn(
+          'Slack',
+          `Could not rewrite the approval card of trigger ${triggerId}`,
+          failure,
+        );
+        await tellApprover(text);
+      }
     } catch (error) {
       logger.error('Server', 'Error handling trigger approval', error);
+      if (shown !== undefined)
+        await tellApprover('The approval could not be processed. Please try again.').catch(
+          (failure: unknown) => logger.warn('Slack', 'Could not report a failed approval', failure),
+        );
     }
   });
 
@@ -629,6 +700,16 @@ export async function mountSlackApp(
       }
     },
   };
+}
+
+/** What the approval line adds for an event routine: who owns a new input, and what still waits for the operator. */
+function routineApprovalNote(inputs: RoutineInputs, approverId: string): string {
+  const owner = inputs.created.length > 0 ? ` <@${approverId}> owns its new input.` : '';
+  const operator =
+    inputs.awaitingOperator.length > 0
+      ? ' It receives events once an operator links it to its input.'
+      : '';
+  return owner + operator;
 }
 
 /** Parse a merge-button value (`<taskId>|<github>#<pr_number>`) into the task id + expected PR identity. */

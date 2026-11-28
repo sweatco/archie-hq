@@ -46,7 +46,22 @@ export interface Input {
   routines: string[];
   /** Counts changes to the links; a receipt records the one it was matched under. */
   revision: number;
+  /** Slack user who manages the input in Slack. Null for an input the operator made, which is managed from the CLI only. */
+  owner: string | null;
+  /** Short label for cards and listings. Empty for an input made without one. */
+  purpose: string;
 }
+
+/** A purpose is shown inside Slack messages, so it holds none of Slack's control characters. */
+export const inputPurposeSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(80)
+  .regex(/^[^<>&`\p{Cc}]+$/u, 'Expected plain text without <, >, & or backticks');
+
+/** Who asks for a change to an input. The operator acts from the host; a Slack user is checked against the owner. */
+export type InputActor = { kind: 'operator' } | { kind: 'slack_user'; userId: string };
 
 export type IgnoredReason = 'paused' | 'filtered';
 

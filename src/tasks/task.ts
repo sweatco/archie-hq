@@ -16,7 +16,9 @@ import type {
 } from '../types/task.js';
 import { CLI_CHANNEL_KEY } from '../types/task.js';
 import type { AgentDef } from '../types/agent.js';
-import type { TriggerBinding } from '../types/trigger.js';
+import type { SlackMessageRef, Trigger, TriggerBinding } from '../types/trigger.js';
+import type { InputActor } from '../incoming/types.js';
+import type { RoutineApproval } from '../system/routine-approval.js';
 import { modelDisplayLabel, resolveAgentModel } from '../agents/model-label.js';
 import { prCardFingerprint, prCardTitlePlain } from '../system/pr-card-format.js';
 import { APPROVAL_TTL_MS, PENDING_APPROVAL_TTL_MS } from '../agents/tool-approval-gate.js';
@@ -87,7 +89,6 @@ import {
   postSlackMessage,
   postSlackFiles,
   postInteractiveToThread,
-  postInteractiveToThreads,
   updateMessage,
   deleteMessage,
   buildPrCardBlocks,
@@ -413,6 +414,16 @@ export class Task {
       if (!neverStarted) return false;
       await rm(getTaskPath(taskId), { recursive: true, force: true });
       return true;
+    });
+  }
+
+  /** Whether the Task prepared for `origin` has started. A start still in flight is waited for, since it may yet be rolled back. */
+  static async startedFor(taskId: string, origin: string): Promise<boolean> {
+    return activationLock(taskId, async () => {
+      const start = (await loadMetadata(taskId))?.triggered_start;
+      if (start && start.origin !== origin)
+        throw new Error(`Task ${taskId} was started for another handoff`);
+      return start?.phase === 'ready';
     });
   }
 
@@ -1230,6 +1241,8 @@ export class Task {
     channelKey?: string,
     context?: { github: string; pr_number: number },
     ref?: string,
+    /** Told where the card landed in Slack, for a caller that will edit the card later. */
+    onPosted?: (card: SlackMessageRef) => void,
   ): Promise<boolean> {
     // Merge approvals carry the PR identity so CLI/SSE consumers can echo it
     // back on resolution (the API route requires github+pr_number for
@@ -1246,22 +1259,21 @@ export class Task {
     const ch = this.resolveSlackChannel(channelKey);
     if (ch) {
       await this.prepareMemoryDelivery(ch.channel_id);
-      await postInteractiveToThreads(
-        [
-          {
-            thread_id: ch.thread_id,
-            channel_id: ch.channel_id,
-            last_processed_ts: ch.last_processed_ts,
-          },
-        ],
-        text,
-        blocks,
-      );
+      const ts = await postInteractiveToThread(ch.channel_id, ch.thread_id, text, blocks);
+      if (ts) onPosted?.({ channel_id: ch.channel_id, ts });
       return true;
     }
     logger.slack(`POST (interactive): ${text}`);
     // Reported so callers don't claim a card was posted when none reached Slack.
     return false;
+  }
+
+  /** Posts blocks that ask for no approval. False when the task has no Slack thread. */
+  async postPanelToUser(text: string, blocks: unknown[]): Promise<boolean> {
+    const ch = this.resolveSlackChannel();
+    if (!ch) return false;
+    await this.prepareMemoryDelivery(ch.channel_id);
+    return (await postInteractiveToThread(ch.channel_id, ch.thread_id, text, blocks)) !== undefined;
   }
 
   /**
@@ -2585,61 +2597,88 @@ export class Task {
    * `/tasks/:id/approve` endpoint. Returns the enabled trigger (or null if the
    * pending proposal is gone). Dynamic imports avoid a static task↔scheduler cycle.
    */
-  async handleTriggerApproval(
-    approverId: string,
-    triggerId?: string,
-  ): Promise<import('../types/trigger.js').Trigger | null> {
+  async handleTriggerApproval(approverId: string, triggerId?: string): Promise<Trigger | null> {
     const id = triggerId ?? this.metadata.pending_trigger_id;
     if (!id) {
       logger.warn('task', `handleTriggerApproval on ${this.taskId} with no trigger id`);
       return null;
     }
     const { loadTrigger, enableProposedTrigger } = await import('../system/trigger-store.js');
-    const { indexTrigger, announceTriggerChange, triggerCapExceeded } =
-      await import('../system/trigger-scheduler.js');
+    const { isEventRoutine } = await import('../system/routine-review.js');
 
-    // Re-check caps at approval: pending proposals don't count toward the caps,
-    // so approving several proposed while under the limit could otherwise blow
-    // past it. Refuse if enabling would exceed a cap — leaving the proposal
-    // pending, for the reasons in the branch below.
     const pending = await loadTrigger(id);
     if (pending && pending.status === 'pending') {
-      try {
-        await this.prepareTriggerDelivery(pending.binding);
-      } catch (error) {
+      if (isEventRoutine(pending)) {
+        // Its approval also decides who owns its input, so it needs the card that was clicked: approveEventRoutine.
         await appendAgentFinding(
           this.taskId,
           'system',
-          `Trigger ${id} not enabled — ${error instanceof Error ? error.message : String(error)}`,
+          `Trigger ${id} not enabled — an event routine is approved from its review card`,
           'decision',
         );
         return null;
       }
-      if (await triggerCapExceeded(pending)) {
-        // Left pending so the user can free a slot and approve this same proposal.
-        logger.warn(
-          'task',
-          `Trigger ${id} not enabled — active-trigger cap reached (left pending)`,
-        );
-        await appendAgentFinding(
-          this.taskId,
-          'system',
-          `Trigger ${id} not enabled — active-trigger cap reached; proposal left awaiting approval`,
-          'decision',
-        );
-        return null;
-      }
+      if (await refusedBeforeEnabling(this, id, pending)) return null;
     }
 
-    const trigger = await enableProposedTrigger(id, approverId);
-    if (this.metadata.pending_trigger_id === id) this.metadata.pending_trigger_id = undefined;
-    this.debouncedSave();
-    if (!trigger) return null;
-    indexTrigger(trigger);
-    await appendAgentFinding(this.taskId, 'system', `Trigger ${id} approved by user`, 'decision');
-    emitEvent('trigger:created', this.taskId, { trigger_id: id });
-    await announceTriggerChange(trigger, 'enabled');
-    return trigger;
+    // Checked again inside the store's lock: an edit since the read may have made it an event routine.
+    const enabled = await enableProposedTrigger(
+      id,
+      approverId,
+      (stored) => !isEventRoutine(stored),
+    );
+    return finishTriggerApproval(this, id, enabled);
+  }
+
+  /**
+   * Approve an event routine from its review card. `shown` is the digest the clicked card carried, and must
+   * match the proposal as it is now. It creates the input a new-input condition asks for, owned by the
+   * approver, and links the routine as far as the approver may. An input it created is removed again
+   * unless the routine was enabled.
+   */
+  async approveEventRoutine(
+    approver: InputActor,
+    triggerId: string,
+    shown: string,
+  ): Promise<RoutineApproval> {
+    const { loadTrigger, enableProposedTrigger } = await import('../system/trigger-store.js');
+    const { bindNewInputs, isEventRoutine, routineDigest } =
+      await import('../system/routine-review.js');
+    const { discardInputs, prepareRoutineInputs } = await import('../system/routine-approval.js');
+
+    const pending = await loadTrigger(triggerId);
+    if (!pending || pending.status !== 'pending' || !isEventRoutine(pending))
+      return { status: 'not_pending' };
+    const digest = routineDigest(pending);
+    if (shown !== digest) return { status: 'refused', reason: 'stale_card' };
+    const blocked = await refusedBeforeEnabling(this, triggerId, pending);
+    if (blocked) return { status: 'refused', reason: blocked };
+
+    const prepared = await prepareRoutineInputs(pending, approver);
+    if (prepared.status !== 'ready') return prepared;
+
+    let enabled: Trigger | null = null;
+    try {
+      // Checked again inside the store's lock: an edit that landed since the click must not be approved unseen.
+      enabled = await enableProposedTrigger(
+        triggerId,
+        approver.kind === 'operator' ? 'cli' : approver.userId,
+        (stored) => {
+          if (routineDigest(stored) !== digest || !bindNewInputs(stored, prepared.created))
+            return false;
+          stored.review_card = undefined;
+          return true;
+        },
+      );
+    } finally {
+      if (!enabled) await discardInputs(prepared.created);
+    }
+    if (!enabled && (await loadTrigger(triggerId))?.status === 'pending')
+      return { status: 'refused', reason: 'stale_card' };
+    const trigger = await finishTriggerApproval(this, triggerId, enabled);
+    if (!trigger) return { status: 'not_pending' };
+    const { linked, awaitingOperator, created } = prepared;
+    return { status: 'approved', trigger, linked, awaitingOperator, created };
   }
 
   /**
@@ -2984,4 +3023,59 @@ function flattenRepositories(repos: unknown): {
   }
 
   return { flat, dropped, changed: true };
+}
+
+// Plain functions, not methods: tests call the approval handlers on stand-in tasks that carry only the fields these use.
+
+/**
+ * Why a pending trigger cannot be enabled now, or null when it can. The reason is recorded in the knowledge log.
+ * Caps are re-checked here because pending proposals don't count toward them, so several proposed under the
+ * limit could otherwise be approved past it. A cap refusal leaves the proposal pending, so the user can free a
+ * slot and approve the same proposal.
+ */
+async function refusedBeforeEnabling(
+  task: Pick<Task, 'taskId' | 'prepareTriggerDelivery'>,
+  id: string,
+  pending: Trigger,
+): Promise<'destination' | 'cap' | null> {
+  const { triggerCapExceeded } = await import('../system/trigger-scheduler.js');
+  try {
+    await task.prepareTriggerDelivery(pending.binding);
+  } catch (error) {
+    await appendAgentFinding(
+      task.taskId,
+      'system',
+      `Trigger ${id} not enabled — ${error instanceof Error ? error.message : String(error)}`,
+      'decision',
+    );
+    return 'destination';
+  }
+  if (await triggerCapExceeded(pending)) {
+    logger.warn('task', `Trigger ${id} not enabled — active-trigger cap reached (left pending)`);
+    await appendAgentFinding(
+      task.taskId,
+      'system',
+      `Trigger ${id} not enabled — active-trigger cap reached; proposal left awaiting approval`,
+      'decision',
+    );
+    return 'cap';
+  }
+  return null;
+}
+
+/** Records an approval's outcome on the task and, when a trigger was enabled, indexes and announces it. */
+async function finishTriggerApproval(
+  task: Pick<Task, 'taskId' | 'metadata' | 'debouncedSave'>,
+  id: string,
+  trigger: Trigger | null,
+): Promise<Trigger | null> {
+  const { indexTrigger, announceTriggerChange } = await import('../system/trigger-scheduler.js');
+  if (task.metadata.pending_trigger_id === id) task.metadata.pending_trigger_id = undefined;
+  task.debouncedSave();
+  if (!trigger) return null;
+  indexTrigger(trigger);
+  await appendAgentFinding(task.taskId, 'system', `Trigger ${id} approved by user`, 'decision');
+  emitEvent('trigger:created', task.taskId, { trigger_id: id });
+  await announceTriggerChange(trigger, 'enabled');
+  return trigger;
 }

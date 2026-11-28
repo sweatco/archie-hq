@@ -1,16 +1,33 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { statSync } from 'node:fs';
-import { z } from 'zod';
+import { reservedTaskId, startedUnrecorded } from '../system/routine-handoff.js';
 import type { Trigger } from '../types/trigger.js';
-import { createInput, deleteInput, type InputServices } from './inputs.js';
-import { INCOMING_ROUTE } from './receiver.js';
-import { inputFilterSchema, type Input, type InputAuth, type PointerCheck } from './types.js';
+import {
+  createInput,
+  deleteInput,
+  goneRoutines,
+  linkRoutine,
+  rotateKey,
+  type InputServices,
+} from './inputs.js';
+import { inputCallback } from './receiver.js';
+import {
+  inputFilterSchema,
+  type Input,
+  type InputActor,
+  type InputAuth,
+  type PointerCheck,
+} from './types.js';
 
 export interface OperatorServices extends InputServices {
   loadTrigger(id: string): Promise<Trigger | null>;
+  /** True also for a trigger whose record cannot be read. */
+  triggerExists(id: string): boolean;
   /** Null when the Task has no folder. */
   taskStatus(taskId: string): Promise<string | null>;
 }
+
+const OPERATOR: InputActor = { kind: 'operator' };
 
 export const USAGE = `archie incoming — manage inputs that receive webhooks
 
@@ -20,6 +37,7 @@ Usage:
   npm run incoming -- pause <input-id>
   npm run incoming -- resume <input-id>
   npm run incoming -- delete <input-id>
+  npm run incoming -- rotate <input-id>
   npm run incoming -- link <input-id> <trigger-id>
   npm run incoming -- unlink <input-id> <trigger-id>
   npm run incoming -- history [<input-id>]
@@ -27,9 +45,10 @@ Usage:
   --auth    signed (default): Standard Webhooks signature. bearer: Authorization header.
   --filter  JSON list of conditions an event must meet, for example
             '[{"pointer":"/type","op":"equals","value":"meeting.ended"}]'
-  link      Lets a trigger with a condition for the input receive its events.
+  link      Lets a trigger with a condition for the input receive its events. An input takes one.
             A trigger receives nothing until it is linked.
   unlink    Stops the trigger receiving the input's events.
+  rotate    Replaces the input's key and prints the new one. The old key stops working at once.
   history   The newest events handed to triggers: how each ended, why, and its Task.
 
 Environment:
@@ -48,6 +67,7 @@ const COMMANDS: readonly string[] = [
   'pause',
   'resume',
   'delete',
+  'rotate',
   'link',
   'unlink',
   'history',
@@ -92,6 +112,8 @@ export async function runIncomingCommand(
     case 'resume':
     case 'delete':
       return changeState(command, rest, services, print);
+    case 'rotate':
+      return rotate(rest, services, print);
     case 'link':
       return link(rest, services, print);
     case 'unlink':
@@ -116,13 +138,12 @@ async function create(
     filter: parseFilter(flags['--filter']),
   });
 
-  const path = INCOMING_ROUTE.replace(':inputId', input.id);
-  const publicUrl = process.env.ARCHIE_PUBLIC_URL?.replace(/\/+$/, '');
+  const callback = inputCallback(input.id);
   print(`Created input ${input.id}`);
   print(
-    publicUrl
-      ? `Callback URL:  ${publicUrl}${path}`
-      : `Callback path: ${path}  (set ARCHIE_PUBLIC_URL to print the full URL)`,
+    'url' in callback
+      ? `Callback URL:  ${callback.url}`
+      : `Callback path: ${callback.path}  (set ARCHIE_PUBLIC_URL to print the full URL)`,
   );
   print(
     auth === 'bearer'
@@ -131,6 +152,24 @@ async function create(
   );
   print(`Secret:        ${secret}`);
   print('The secret is shown this once. Store it with the sender now.');
+}
+
+async function rotate(
+  args: readonly string[],
+  services: InputServices,
+  print: (line: string) => void,
+): Promise<void> {
+  const [id] = args;
+  if (!id || args.length !== 1) throw new Error('Usage: incoming rotate <input-id>');
+  const rotation = await rotateKey(services, OPERATOR, liveInput(services, id).id);
+  if (!rotation) throw new Error(`Input ${id} was deleted`);
+  print(`Rotated the key of input ${id}. The old key no longer works.`);
+  print(`Secret:        ${rotation.secret}`);
+  print('The secret is shown this once. Store it with the sender now.');
+  if (rotation.leftBehind.length > 0)
+    print(
+      `An old secret file could not be removed and is unused: ${rotation.leftBehind.join(', ')}`,
+    );
 }
 
 type Row = readonly [string, string, string, string, string, string, string];
@@ -166,6 +205,8 @@ async function list(services: OperatorServices, print: (line: string) => void): 
         String(pendingHandoffs),
       ]),
     );
+    if (input.owner !== null || input.purpose !== '')
+      print(`  owner: ${input.owner ?? '(operator)'}  purpose: ${input.purpose || '(none)'}`);
     if (input.routines.length > 0) {
       const links = await Promise.all(
         input.routines.map(async (id) =>
@@ -176,6 +217,9 @@ async function list(services: OperatorServices, print: (line: string) => void): 
     }
   }
 }
+
+/** A trigger's text comes from whoever proposed it; a control character in it could redraw the operator's terminal. */
+const printable = (text: string) => text.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ');
 
 const STATUS_NOTE: Record<Trigger['status'], string> = {
   enabled: '',
@@ -199,20 +243,29 @@ async function link(
       `Trigger ${triggerId} has no condition for input ${inputId}, so a link would deliver nothing`,
     );
 
-  if (input.routines.includes(triggerId)) {
-    print(`Trigger ${triggerId} is already linked to input ${inputId}.`);
-  } else {
-    services.store.linkRoutine(inputId, triggerId);
-    print(`Linked trigger ${triggerId} to input ${inputId}.`);
-  }
+  // Shown before the link is made. The channel's name is whatever the proposer passed, so only its id is printed.
   const { binding } = trigger;
   print(
     binding.type === 'channel'
-      ? `Delivers to: #${binding.channel_name} (${binding.channel_id})`
-      : `Delivers to: a DM with ${binding.user_id} (${binding.channel_id})`,
+      ? `Delivers to: channel ${printable(binding.channel_id)}`
+      : `Delivers to: a DM with ${printable(binding.user_id)} (${printable(binding.channel_id)})`,
   );
-  print(`Does:        ${trigger.summary?.trim() || '(no summary)'}`);
+  print(`Does:        ${printable(trigger.summary?.trim() || '(no summary)')}`);
   print(`Status:      ${trigger.status}${STATUS_NOTE[trigger.status]}`);
+
+  const gone = goneRoutines(input, services.triggerExists);
+  const change = linkRoutine(services.store, OPERATOR, input.id, triggerId, gone);
+  if (change.status === 'refused')
+    throw new Error(
+      change.reason === 'input_taken'
+        ? `Input ${inputId} already has a trigger, and an input takes one. Create another input for ${triggerId}`
+        : `Input ${inputId} was deleted`,
+    );
+  print(
+    change.status === 'unchanged'
+      ? `Trigger ${triggerId} is already linked to input ${inputId}.`
+      : `Linked trigger ${triggerId} to input ${inputId}.`,
+  );
 }
 
 function unlink(
@@ -226,13 +279,13 @@ function unlink(
   const input = liveInput(services, inputId);
   if (!input.routines.includes(triggerId))
     throw new Error(`Trigger ${triggerId} is not linked to input ${inputId}`);
-  services.store.unlinkRoutine(inputId, triggerId);
+  const changed = services.store.unlinkRoutine(input.id, triggerId);
+  if (!changed || changed.state === 'deleted') throw new Error(`Input ${inputId} was deleted`);
   print(`Unlinked trigger ${triggerId} from input ${inputId}.`);
 }
 
 const HISTORY_LIMIT = 50;
 const HISTORY_WIDTHS = [16, 26, 24, 9, 22] as const;
-const reservedTaskSchema = z.object({ task_id: z.string() });
 
 async function history(
   args: readonly string[],
@@ -267,27 +320,16 @@ async function history(
   if (records.length === HISTORY_LIMIT) print(`Showing the newest ${HISTORY_LIMIT}.`);
 }
 
-/** A Task that outlived a cancelled or failed handoff started without the handoff recording it. */
 async function reservedTask(
   services: OperatorServices,
   state: string,
   reservation: string | null,
 ): Promise<string> {
-  const reserved = reservedTaskSchema.safeParse(parsedJson(reservation));
-  if (!reserved.success) return '-';
-  const status = await services.taskStatus(reserved.data.task_id);
+  const taskId = reservation === null ? undefined : reservedTaskId(reservation);
+  if (!taskId) return '-';
+  const status = await services.taskStatus(taskId);
   if (status === null) return '-';
-  const uncertain = state === 'cancelled' || state === 'failed';
-  return `${reserved.data.task_id} ${status}${uncertain ? ' (uncertain)' : ''}`;
-}
-
-function parsedJson(text: string | null): unknown {
-  if (text === null) return null;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
+  return `${taskId} ${status}${startedUnrecorded(state, status) ? ' (uncertain)' : ''}`;
 }
 
 function liveInput(services: InputServices, id: string): Input {

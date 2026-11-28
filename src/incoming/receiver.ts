@@ -2,12 +2,13 @@
 /** Incoming events receiver: authenticates a JSON webhook and commits its receipt before replying. */
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
-import type { Application, Request, Response } from 'express';
+import type { Application, NextFunction, Request, Response } from 'express';
 
 import { logger } from '../system/logger.js';
 import { getIsShuttingDown } from '../system/shutdown.js';
 import { bearerTokenMatches, signatureMatches } from './authenticate.js';
 import { passesFilter } from './filter.js';
+import { noteRefusedDelivery } from './refusals.js';
 import type { InputSecrets } from './secrets.js';
 import type { IncomingStore, MatchedConsumer, ReceiveResult } from './store.js';
 import type { IncomingConsumer, Input } from './types.js';
@@ -17,6 +18,13 @@ const express = require('express') as typeof import('express');
 
 export const INCOMING_ROUTE = '/webhooks/incoming/:inputId';
 export const MAX_BODY_BYTES = 1024 * 1024;
+
+/** Where a sender posts to an input: the full URL when the deployment's public URL is configured, else the path alone. */
+export function inputCallback(inputId: string): { url: string } | { path: string } {
+  const path = INCOMING_ROUTE.replace(':inputId', inputId);
+  const publicUrl = process.env.ARCHIE_PUBLIC_URL?.replace(/\/+$/, '');
+  return publicUrl ? { url: `${publicUrl}${path}` } : { path };
+}
 const GENERIC_BINDING = 'generic';
 
 export interface ReceiverServices {
@@ -34,6 +42,20 @@ type RawBodyParser = ReturnType<typeof express.raw>;
 type BodyRead = { ok: true; body: Buffer } | { ok: false; reply: Reply };
 
 const rejected = (status: number, error: string): Reply => ({ status, body: { error } });
+
+/** Express refuses a malformed path before any handler runs, and its own error page carries a stack. Mounted after the route. */
+export function answerIncomingRouteErrors(app: Application): void {
+  app.use(
+    INCOMING_ROUTE.replace('/:inputId', ''),
+    (error: unknown, _req: Request, res: Response, _next: NextFunction) => {
+      const status: unknown =
+        typeof error === 'object' && error !== null && 'status' in error ? error.status : null;
+      if (typeof status === 'number' && status >= 400 && status < 500)
+        res.status(status).json({ error: 'invalid_request' });
+      else res.status(500).json({ error: 'unavailable' });
+    },
+  );
+}
 
 export function mountIncomingReceiver(app: Application, services: ReceiverServices): void {
   logger.plain(`Incoming events: POST ${INCOMING_ROUTE}`);
@@ -55,6 +77,7 @@ export function mountIncomingReceiver(app: Application, services: ReceiverServic
     }
     res.status(reply.status).json(reply.body);
   });
+  answerIncomingRouteErrors(app);
 }
 
 async function receiveDelivery(
@@ -120,6 +143,7 @@ async function readSecrets(vault: InputSecrets, input: Input): Promise<string[]>
 }
 
 function unauthorized(input: Input): Reply {
+  noteRefusedDelivery(input.id, Date.now());
   logger.warn('incoming', `Rejected an unauthenticated delivery for input ${input.id}`);
   return rejected(401, 'unauthorized');
 }
@@ -129,10 +153,10 @@ function readBody(parseRawJson: RawBodyParser, req: Request, res: Response): Pro
     parseRawJson(req, res, (error?: unknown) => {
       if (error !== undefined) return resolve({ ok: false, reply: bodyRejection(error) });
       const body: unknown = req.body;
-      if (Buffer.isBuffer(body)) return resolve({ ok: true, body });
-      // The parser passes a request with no body or another media type through untouched.
+      if (Buffer.isBuffer(body) && body.length > 0) return resolve({ ok: true, body });
+      // The parser passes a request with no body or another media type through untouched, and reads `Content-Length: 0` as an empty buffer.
       const reply =
-        req.is('application/json') === null
+        Buffer.isBuffer(body) || req.is('application/json') === null
           ? rejected(400, 'empty_body')
           : rejected(415, 'unsupported_media_type');
       resolve({ ok: false, reply });
@@ -204,9 +228,7 @@ function replyTo(input: Input, result: ReceiveResult): Reply {
     case 'full':
       logger.warn('incoming', `Inbox is full; refused a delivery for input ${input.id}`);
       return rejected(429, 'inbox_full');
-    case 'unavailable':
-      return result.reason === 'deleted'
-        ? rejected(410, 'input_deleted')
-        : rejected(404, 'unknown_input');
+    case 'deleted':
+      return rejected(410, 'input_deleted');
   }
 }

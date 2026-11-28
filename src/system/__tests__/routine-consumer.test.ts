@@ -21,11 +21,8 @@ import { vaultInputSecrets, type InputSecrets } from '../../incoming/secrets.js'
 import { IncomingStore } from '../../incoming/store.js';
 import type { IncomingConsumer, PointerCheck } from '../../incoming/types.js';
 import type { Trigger, TriggerCondition } from '../../types/trigger.js';
-import {
-  matchRoutines,
-  ROUTINE_CONSUMER_KIND,
-  routineSnapshotSchema,
-} from '../routine-consumer.js';
+import { matchRoutines, routineSnapshotSchema } from '../routine-consumer.js';
+import { ROUTINE_CONSUMER_KIND } from '../routine-handoff.js';
 import { deindexTrigger, indexTrigger } from '../trigger-scheduler.js';
 
 const require = createRequire(import.meta.url);

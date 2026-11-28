@@ -211,6 +211,8 @@ beforeEach(() => {
         filter: [],
         routines: [],
         revision: 1,
+        owner: null,
+        purpose: '',
       },
       now,
     );
@@ -433,6 +435,30 @@ describe('an interrupted start is continued by the retry', () => {
     expect(wakes).toHaveBeenCalledTimes(1);
   });
 
+  it('does not call a Task started while its first wake can still fail', async () => {
+    await routine();
+    deliver();
+    let failWake: (error: Error) => void = () => undefined;
+    const spawned = new Promise<void>((reached) => {
+      fixture.spawn.mockImplementationOnce(() => {
+        reached();
+        return new Promise<void>((_resolve, reject) => (failWake = reject));
+      });
+    });
+    const attempt = dispatch();
+    await spawned;
+    expect(await onlyTask()).toMatchObject({ triggered_start: { phase: 'ready' } });
+
+    const started = Task.startedFor(
+      expectDefined(reservedTaskId()),
+      expectDefined(inbox().handoffs[0]).id,
+    );
+    failWake(new Error('spawn failed'));
+    await attempt;
+
+    await expect(started).resolves.toBe(false);
+  });
+
   it('gives up after the last attempt with the reason and no Task', async () => {
     await routine();
     deliver();
@@ -511,6 +537,16 @@ describe('work that may no longer run is skipped with its reason', () => {
         }),
     ],
   ];
+
+  it('retries, and skips nothing, when an enabled routine is not in the index yet', async () => {
+    await routine();
+    deliver();
+    deindexTrigger(ROUTINE_ID);
+
+    await dispatch();
+
+    expect(inbox().handoffs).toMatchObject([{ state: 'pending', attempts: 1 }]);
+  });
 
   it.each(cases)('%s', async (reason, change) => {
     await routine();
@@ -657,6 +693,25 @@ describe('a handoff the inbox ends by itself', () => {
     await dispatch();
 
     expect(taskIds()).toEqual([]);
+  });
+
+  it('removes a prepared Task listed after one that cannot be removed', async () => {
+    await routine();
+    for (const key of ['msg_1', 'msg_2']) {
+      deliver(key);
+      vi.spyOn(Task.prototype, 'startTriggered').mockRejectedValueOnce(
+        new Error('process stopped'),
+      );
+      await dispatch();
+    }
+    expect(taskIds()).toHaveLength(2);
+    vi.spyOn(Task, 'discardPrepared').mockRejectedValueOnce(new Error('EBUSY'));
+
+    store.pauseInput(INPUT_ID, now);
+    now += HOUR;
+    await dispatch();
+
+    expect(taskIds()).toHaveLength(1);
   });
 
   it('keeps a Task that had already started', async () => {

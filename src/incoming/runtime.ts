@@ -6,9 +6,9 @@ import type { Application, Request, Response } from 'express';
 import { logger } from '../system/logger.js';
 import { validateMasterKey } from '../system/secrets-vault.js';
 import { INCOMING_DIR, INCOMING_SECRETS_DIR } from '../system/workdir.js';
-import { setOpenInbox } from './access.js';
+import { setInputServices, setOpenInbox } from './access.js';
 import { IncomingDispatcher } from './dispatcher.js';
-import { INCOMING_ROUTE, mountIncomingReceiver } from './receiver.js';
+import { answerIncomingRouteErrors, INCOMING_ROUTE, mountIncomingReceiver } from './receiver.js';
 import { vaultInputSecrets, type InputSecrets } from './secrets.js';
 import { IncomingStore } from './store.js';
 import type { IncomingConsumer } from './types.js';
@@ -67,23 +67,30 @@ export function mountIncomingEvents(
     app.post(INCOMING_ROUTE, (_req: Request, res: Response) => {
       res.status(503).json({ error: 'unavailable' });
     });
+    answerIncomingRouteErrors(app);
     return null;
   }
 
+  const secrets = incomingSecrets();
   setOpenInbox(store);
-  mountIncomingReceiver(app, { store, secrets: incomingSecrets(), consumers });
+  setInputServices({ store, secrets });
+  mountIncomingReceiver(app, { store, secrets, consumers });
   const dispatcher = new IncomingDispatcher(store, consumers);
+  const close = async () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const waitedLongEnough = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, SHUTDOWN_GRACE_MS);
+    });
+    await Promise.race([dispatcher.stop(), waitedLongEnough]);
+    clearTimeout(timer);
+    setOpenInbox(null);
+    setInputServices(null);
+    store.close();
+  };
+  // A second shutdown signal asks again, and the database throws on a second close.
+  let closing: Promise<void> | undefined;
   return {
     start: () => dispatcher.start(),
-    async close() {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const waitedLongEnough = new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, SHUTDOWN_GRACE_MS);
-      });
-      await Promise.race([dispatcher.stop(), waitedLongEnough]);
-      clearTimeout(timer);
-      setOpenInbox(null);
-      store.close();
-    },
+    close: () => (closing ??= close()),
   };
 }

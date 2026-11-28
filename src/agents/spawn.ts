@@ -215,6 +215,11 @@ async function setupAgentWorkspace(taskId: string, agent: Agent): Promise<string
   return agentWorkspace;
 }
 
+/** Cuts a long brief in its middle, the routine's own prompt: the lines after it name the event file and where to post. */
+export function triggeredBriefCopy(brief: string): string {
+  return brief.length <= 8000 ? brief : `${brief.slice(0, 6000)}\n[…]\n${brief.slice(-2000)}`;
+}
+
 // ---- Audience helpers ----
 
 /**
@@ -453,7 +458,7 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
       // A crash between the start and its first wake leaves only the recovery prompt, so the instruction rides here too.
       contextLines.push(
         `This task was started by an incoming event for trigger ${metadata.triggered_by}. Its instruction:`,
-        `<triggered_task_brief>${metadata.triggered_start.brief.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').slice(0, 8000)}</triggered_task_brief>`,
+        `<triggered_task_brief>${triggeredBriefCopy(metadata.triggered_start.brief).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</triggered_task_brief>`,
       );
     }
     if (channelEntries.length === 0 && metadata.home_channel) {

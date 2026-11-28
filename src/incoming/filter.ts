@@ -35,3 +35,11 @@ function resolvePointer(document: unknown, pointer: string): Resolved {
   }
   return { found: true, value: current };
 }
+
+/** One check in words, for a card or a listing: "`/type` is "meeting.ended"". */
+export function describeCheck(check: PointerCheck): string {
+  const field = `\`${check.pointer || '/'}\``;
+  if (check.op === 'present') return `${field} is present`;
+  if (check.op === 'equals') return `${field} is ${JSON.stringify(check.value)}`;
+  return `${field} is one of ${check.values.map((value) => JSON.stringify(value)).join(', ')}`;
+}
