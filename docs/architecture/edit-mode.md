@@ -58,7 +58,7 @@ The tool writes a `decision` finding (`Edit mode requested: <reason>`), posts a 
 5. Restarts the PM: sync its session into metadata, abort the handle, stop the queue, drop the agent. The next `sendMessage` respawns it **resuming the same SDK session**, so context is kept and only the mount changes.
 6. Notifies the PM inline with `Edit mode approved by <name>` (also written to `knowledge.log` for the offline record).
 
-**Deny** calls `handleEditModeDenial()`, which notifies the PM that edit mode was denied — nothing else changes.
+**Deny** calls `handleEditModeDenial()`, which clears the pending teardown and notifies the PM that edit mode was denied.
 
 ### Why the restart
 

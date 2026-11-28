@@ -1910,6 +1910,8 @@ export class Task {
   }
 
   async handleEditModeDenial(): Promise<void> {
+    // A denial ends the wait too: same race as handleEditModeApproval.
+    this.agent?.clearPendingTeardown();
     await this.notifyPm('Edit mode denied by user', 'decision');
   }
 
@@ -2450,10 +2452,12 @@ export class Task {
   }
 
   async handleMaxModeDenial(): Promise<void> {
+    this.agent?.clearPendingTeardown();
     await this.notifyPm('Max mode denied by user', 'decision');
   }
 
   async handleResearchBudgetApproval(): Promise<void> {
+    this.agent?.clearPendingTeardown();
     this.metadata.research_budget_extra = (this.metadata.research_budget_extra ?? 0) + 5;
     this.budgets.researchRequestLimit = 5 + (this.metadata.research_budget_extra ?? 0);
     this.debouncedSave();
@@ -2464,6 +2468,7 @@ export class Task {
   }
 
   async handleResearchBudgetDenial(): Promise<void> {
+    this.agent?.clearPendingTeardown();
     await this.notifyPm('Additional research denied by user', 'decision');
   }
 
