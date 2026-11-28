@@ -102,6 +102,7 @@ import {
 } from '../connectors/slack/client.js';
 import type { SlackReactionsResult } from '../connectors/slack/client.js';
 import { renderMessageBody, shouldRedact } from '../connectors/slack/message-body.js';
+import { normalisePinText, truncateTo } from '../connectors/slack/pin-summary.js';
 import { basename, join } from 'path';
 import { AGENT_PROMPTS, buildMigrationNotice } from '../agents/prompts.js';
 import { logger } from '../system/logger.js';
@@ -116,6 +117,7 @@ import {
   scopeForSlackChannel,
 } from './memory-scope.js';
 import { approvedReplyConversation } from './destination.js';
+import { recordWorkRow } from './work-index.js';
 import { isMemoryReady } from '../memory/paths.js';
 
 // ---- Global state ----
@@ -162,6 +164,8 @@ const activationLock = createKeyedLock();
  * The lock is all the coordination needed because the open body re-checks for an existing thread first: whoever runs second finds the thread the first one linked and posts into it. An attempt that fails links nothing, so the next caller may legitimately try again — which is what makes a failed first post non-wedging rather than terminal.
  */
 const homeThreadLock = createKeyedLock();
+
+const LAST_REPLY_MAX_CHARS = 300;
 
 // ---- Task class ----
 
@@ -676,6 +680,10 @@ export class Task {
         url: buildThreadUrl(thread.channel.id, thread.threadId) ?? undefined,
       };
       this.metadata.default_channel ??= channelId;
+      const request = thread.messages.find((msg) => msg.ts === thread.currentMessageTs);
+      if (request && !shouldRedact(request, thread)) {
+        this.metadata.requested_by ??= { id: request.user.id, name: request.user.realName };
+      }
 
       for (const msg of thread.messages) {
         await writeMessage(msg);
@@ -993,6 +1001,7 @@ export class Task {
     // to this task, and the message is already live in Slack. A crash in the debounce window would leave a
     // thread nobody owns — replies to it would open a brand-new task, which is the bug this feature fixes.
     await this.save(true);
+    await this.syncWorkRow();
     return key;
   }
 
@@ -1063,6 +1072,11 @@ export class Task {
   ): void {
     const display = destination;
     const logDest = slackChannel ? Task.formatSlackDest(slackChannel).log : destination;
+    // System notices are about the machinery, not what the task told the user.
+    if (slackChannel && sender !== 'system') {
+      this.metadata.last_reply = truncateTo(normalisePinText(message), LAST_REPLY_MAX_CHARS);
+      this.debouncedSave();
+    }
     logger.agentToSlack(sender, message, { destination: display });
     emitEvent('message', this.taskId, {
       from: sender,
@@ -1658,6 +1672,7 @@ export class Task {
 
     this.metadata.status = 'stopped';
     await this.save(true);
+    await this.syncWorkRow();
 
     logger.system(`Task ${this.taskId} stopped`);
     emitEvent('task:stopped', this.taskId);
@@ -1706,6 +1721,7 @@ export class Task {
 
     this.metadata.status = 'completed';
     await this.save(true);
+    await this.syncWorkRow();
 
     logger.system(`Task ${this.taskId} completed`);
     emitEvent('task:completed', this.taskId);
@@ -2686,6 +2702,20 @@ export class Task {
     } else {
       this.debouncedSave();
     }
+    await this.syncWorkRow();
+  }
+
+  /** Copy this task's row into its conversation's work index. Best-effort: metadata is authoritative and the index is rebuilt from it. */
+  private async syncWorkRow(): Promise<void> {
+    await recordWorkRow(this.metadata).catch((error: unknown) =>
+      logger.warn('task', `Work index update failed for ${this.taskId}`, error),
+    );
+  }
+
+  async setTitle(title: string): Promise<void> {
+    this.metadata.title = title;
+    this.debouncedSave();
+    await this.syncWorkRow();
   }
 
   private startTaskTimeout(): void {

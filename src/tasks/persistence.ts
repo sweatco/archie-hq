@@ -793,6 +793,12 @@ export async function findTaskIdsByStatus(
   return ids;
 }
 
+/** Candidate ids of tasks whose metadata names this Slack channel. Callers confirm against the parsed metadata. */
+export async function findTaskIdsByChannel(channelId: string): Promise<string[]> {
+  await ensureSessionsDir();
+  return scanMetadataFiles(`"channel_id": ${JSON.stringify(channelId)}`);
+}
+
 /**
  * Find all tasks on disk (any status). Reads every metadata.json in sessions dir.
  */

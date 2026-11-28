@@ -39,6 +39,8 @@ vi.mock('../persistence.js', async (importOriginal) => {
   return { ...actual, appendMessageToUser: vi.fn().mockResolvedValue(undefined) };
 });
 
+vi.mock('../work-index.js', () => ({ recordWorkRow: vi.fn().mockResolvedValue(undefined) }));
+
 import { Task } from '../task.js';
 import { appendMessageToUser } from '../persistence.js';
 import { logger } from '../../system/logger.js';

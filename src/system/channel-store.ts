@@ -55,6 +55,18 @@ export interface ChannelPinEntry {
   permalink?: string;
 }
 
+/** One task of this conversation. Derived from task metadata by `src/tasks/work-index.ts`, which is its only writer. */
+export interface ChannelWorkRow {
+  taskId: string;
+  threadTs: string;
+  title?: string;
+  /** `waiting` is parked after a reply and waiting on a person, not "finished". */
+  state: 'working' | 'waiting' | 'stopped';
+  requestedBy?: string;
+  updatedAt: string;
+  lastReply?: string;
+}
+
 export interface ChannelStore {
   canvases: ChannelCanvasEntry[];
   /** file_id → true once an adopt/ignore announcement has been posted. */
@@ -67,6 +79,10 @@ export interface ChannelStore {
   pinsCheckedAt?: number;
   /** How many pins passed the trust gate before the display cap, so the prompt block can disclose what the CAP hid — never what the gate refused. */
   pinsEligible?: number;
+  /** Work index: the conversation's tasks, newest first. */
+  work?: ChannelWorkRow[];
+  /** Epoch ms of the last rebuild of `work` from task metadata. Absent until the first one. */
+  workRebuiltAt?: number;
 }
 
 function emptyStore(): ChannelStore {

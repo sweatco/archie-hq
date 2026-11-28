@@ -295,7 +295,7 @@ function formatDate(epochSeconds: number): string {
  *
  * Escaping ends all three at once, because a value that cannot contain `<`, `>` or `"` cannot produce a tag, an attribute, or an early close — whatever it is made of. Three of these values are user-controlled with no pin required at all: the author's and pinner's Slack display names and the channel name.
  */
-function escapeXml(value: string): string {
+export function escapeXml(value: string): string {
   return (
     value
       .replace(/&/g, '&amp;')

@@ -298,6 +298,10 @@ export interface TaskMetadata {
     content: string;
     requested_at: string;
   };
+  /** Author of the Slack message that created the task. */
+  requested_by?: { id: string; name: string };
+  /** Excerpt of the last message an agent posted to the user. */
+  last_reply?: string;
   title?: string; // AI-generated one-line summary; absent on pre-feature tasks
   slack_title_pending?: string; // channel key of the DM thread whose session has not taken `title` yet
   slack_threads?: SlackThreadRef[]; // Legacy — only present on old tasks loaded from disk, removed after migration

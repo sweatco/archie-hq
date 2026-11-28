@@ -60,6 +60,7 @@ import { getArchieAttributionIdentity } from '../connectors/github/client.js';
 import { formatConversationLabel } from '../connectors/slack/channel-ids.js';
 import { buildChannelCanvasPromptSection } from '../connectors/slack/channel-canvas.js';
 import { buildChannelPinsPromptSection } from '../connectors/slack/channel-pins.js';
+import { buildConversationRecordPromptSection } from '../connectors/slack/conversation-record.js';
 import { resolvePeopleFromTranscript } from '../connectors/slack/client.js';
 import { loadPrompt } from '../utils/prompt-loader.js';
 import { processAgentEventForLogging, logger } from '../system/logger.js';
@@ -537,6 +538,12 @@ Shared folder: ${sharedPath} [READ-ONLY]
   // time, so it sees OAuth-bound headers and never reaches servers dropped
   // below.
   mcpServers['file-bridge'] = createFileBridgeMcpServer(agent, mcpServers);
+
+  // ---- Conversation record ----
+  const conversationRecordSection = await buildConversationRecordPromptSection(metadata);
+  if (conversationRecordSection) {
+    systemPrompt = `${systemPrompt}\n\n${conversationRecordSection}`;
+  }
 
   // ---- Channel pinned messages ----
   //

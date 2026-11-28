@@ -79,6 +79,8 @@ interface TaskMetadata {
   default_channel: string | null;      // originating channel (null for CLI-originated tasks)
   home_channel?: { channel_id, channel_name };  // trigger-fired tasks: where to open the thread
   title?: string;                      // Haiku-authored one-liner; absent on pre-feature tasks
+  requested_by?: { id, name };         // author of the Slack message that created the task
+  last_reply?: string;                 // excerpt (300 chars) of the last message an agent posted to the user
   agent_sessions: Record<string, AgentSessionState | string>;  // one entry: 'pm-agent'
   repositories: AttachedRepo[];        // flat — one entry per mounted repo
   status: TaskStatus;                  // 'in_progress' | 'stopped' | 'completed'
@@ -152,6 +154,14 @@ interface AgentSessionState {
 ```
 
 `agent_sessions` holds one entry, keyed `pm-agent`. It is the only on-disk record of which session to resume at startup, and the entry max-mode clears when the approved upgrade changes the resolved model. The `AgentSessionState | string` union handles legacy files where the value was a bare session id.
+
+---
+
+## Work index
+
+`${ARCHIE_WORKDIR}/slack/channels/<channelId>.json` (the per-channel store, `src/system/channel-store.ts`) holds `work`: one row per task of that conversation, with `taskId`, `threadTs`, `title`, `state`, `requestedBy`, `updatedAt` and `lastReply`. `state` is `working` (`preparing` or `in_progress`), `waiting` (`completed`: parked after a reply, waiting on a person) or `stopped`.
+
+Task metadata is authoritative and the index is a copy. `src/tasks/work-index.ts` is its only writer: a task writes its row on activation, when it opens its home thread, when its title is set, and on every `complete()` and `stop()`. The store keeps the 50 most recently updated rows. `rebuildWorkIndex` derives the same rows from task metadata, and the first read of a conversation's index runs it once, which backfills tasks older than the index. The [conversation record](slack-integration.md#conversation-record) is its reader.
 
 ---
 
