@@ -3511,6 +3511,10 @@ function createGetInputHistoryTool(task: Task) {
   );
 }
 
+// An event's text is in such a Task's context, and an edit to an approved trigger takes effect without a new approval.
+const EVENT_TASK_TRIGGER_REFUSAL =
+  'A task started by an incoming event cannot change or delete triggers; a person can ask for that in another thread.';
+
 function createUpdateTriggerTool(task: Task) {
   return tool(
     'update_trigger',
@@ -3543,6 +3547,7 @@ function createUpdateTriggerTool(task: Task) {
         ),
     },
     async (args) => {
+      if (task.metadata.triggered_start) return ok(EVENT_TASK_TRIGGER_REFUSAL);
       const trigger = await loadTrigger(args.id);
       if (!trigger) return ok(`No trigger ${args.id} found.`);
       const origin = await resolveTriggerOrigin(task);
@@ -3747,6 +3752,7 @@ function createDeleteTriggerTool(task: Task) {
       id: z.string().describe('Trigger ID (from list_triggers).'),
     },
     async (args) => {
+      if (task.metadata.triggered_start) return ok(EVENT_TASK_TRIGGER_REFUSAL);
       const trigger = await loadTrigger(args.id);
       if (!trigger) return ok(`No trigger ${args.id} found.`);
       const origin = await resolveTriggerOrigin(task);

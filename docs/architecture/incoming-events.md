@@ -122,7 +122,7 @@ The approval card is a review: the source, its owner, the filter, the audience a
 - **A new input stays only if its routine was enabled.** The approval creates the input, then enables the routine. When the routine is not enabled, because a denial, an edit or another click came first, the input is removed again. A crash between the two steps leaves an input with no routine: its owner deletes it from **Settings**, or the operator from the CLI.
 - **A channel shared with another organisation is refused,** at proposal and at approval. The check is the existing `isChannelShared`, which answers "not shared" when Slack cannot be asked, and it does not run again after approval ([#453](https://github.com/sweatco/archie-hq/issues/453)).
 - **The operator approves through the API** with the same reference. An input it creates has no owner.
-- **After approval, trigger rules apply.** An edit can still change a routine's event filter without the owner ([#452](https://github.com/sweatco/archie-hq/issues/452)). An approved trigger that takes no events cannot be edited into an event routine.
+- **After approval, trigger rules apply.** An edit can still change a routine's event filter without the owner ([#452](https://github.com/sweatco/archie-hq/issues/452)). An approved trigger that takes no events cannot be edited into an event routine. A Task that an event started cannot edit or delete any trigger, because the sender's text is in its context; a person asks for that in another thread.
 
 The pure parts are in `src/system/routine-review.ts`: the card, the digest and the condition a new input becomes. `src/system/routine-approval.ts` checks the approver and creates and links inputs.
 
