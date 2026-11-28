@@ -16,7 +16,7 @@ vi.mock('../../system/logger.js', () => ({
 import { logger } from '../../system/logger.js';
 import { IncomingDispatcher, type DispatchPolicy } from '../dispatcher.js';
 import { IncomingStore } from '../store.js';
-import type { ConsumerMatch, HandoffWork, IncomingConsumer } from '../types.js';
+import type { ConsumerMatch, HandleResult, HandoffWork, IncomingConsumer } from '../types.js';
 
 const DAY = 24 * 60 * 60_000;
 const MARKER = 'RAW-BODY-MARKER-91c2';
@@ -111,7 +111,7 @@ function inbox() {
       payloads: db.prepare('SELECT receipt_id FROM payloads ORDER BY rowid').all(),
       handoffs: db
         .prepare(
-          'SELECT consumer_kind, state, attempts, token, lease_until, due_at, reservation FROM handoffs ORDER BY rowid',
+          'SELECT consumer_kind, state, reason, attempts, token, lease_until, due_at, reservation FROM handoffs ORDER BY rowid',
         )
         .all(),
     };
@@ -173,7 +173,15 @@ beforeEach(() => {
   store = openStore();
   for (const id of ['inp-1', 'inp-2'])
     store.insertInput(
-      { id, state: 'enabled', auth: 'bearer', secretRefs: [], filter: [], revision: 1 },
+      {
+        id,
+        state: 'enabled',
+        auth: 'bearer',
+        secretRefs: [],
+        filter: [],
+        routines: [],
+        revision: 1,
+      },
       now,
     );
 });
@@ -192,7 +200,7 @@ describe('a committed handoff', () => {
     const seen: HandoffWork[] = [];
     const routine: Handle = (work) => {
       seen.push(work);
-      return Promise.resolve('accepted');
+      return Promise.resolve({ state: 'accepted' });
     };
 
     await dispatcher({ routine }).runOnce();
@@ -222,7 +230,7 @@ describe('a committed handoff', () => {
     store.close();
     opened.splice(0);
     const reopened = openStore();
-    const routine = vi.fn<Handle>().mockResolvedValue('accepted');
+    const routine = vi.fn<Handle>().mockResolvedValue({ state: 'accepted' });
 
     await dispatcher({ routine }, { store: reopened }).runOnce();
 
@@ -233,7 +241,9 @@ describe('a committed handoff', () => {
   it('that the consumer skips is settled the same way', async () => {
     receive('msg_a');
 
-    await dispatcher({ routine: () => Promise.resolve('skipped') }).runOnce();
+    await dispatcher({
+      routine: () => Promise.resolve({ state: 'skipped', reason: 'not_wanted' }),
+    }).runOnce();
 
     expect(inbox()).toMatchObject({
       receipts: [{ outcome: 'closed' }],
@@ -251,7 +261,7 @@ describe('a committed handoff', () => {
     await dispatcher({
       routine: ({ handoff }) => {
         order.push(handoff.receiptId);
-        return Promise.resolve('accepted');
+        return Promise.resolve({ state: 'accepted' });
       },
     }).runOnce();
 
@@ -267,7 +277,7 @@ describe('a handoff whose stored delivery is unreadable', () => {
     const writer = new DatabaseSync(dbPath);
     writer.prepare('DELETE FROM payloads WHERE receipt_id=?').run(broken);
     writer.close();
-    const routine = vi.fn<Handle>().mockResolvedValue('accepted');
+    const routine = vi.fn<Handle>().mockResolvedValue({ state: 'accepted' });
 
     await dispatcher({ routine }).runOnce();
 
@@ -277,7 +287,7 @@ describe('a handoff whose stored delivery is unreadable', () => {
       receipts: [{ outcome: 'closed' }, { outcome: 'closed' }],
       payloads: [],
       handoffs: [
-        { state: 'failed', attempts: 0 },
+        { state: 'failed', reason: 'unreadable', attempts: 0 },
         { state: 'accepted', attempts: 1 },
       ],
     });
@@ -291,10 +301,10 @@ describe('a delivery with two consumers', () => {
     let atSecondStart: ReturnType<typeof inbox> | undefined;
 
     await dispatcher({
-      routine: () => Promise.resolve('accepted'),
+      routine: () => Promise.resolve({ state: 'accepted' }),
       proactivity: () => {
         atSecondStart = inbox();
-        return Promise.resolve('skipped');
+        return Promise.resolve({ state: 'skipped', reason: 'not_wanted' });
       },
     }).runOnce();
 
@@ -359,7 +369,7 @@ describe('a lease', () => {
   it('that a handler outlives records nothing once another dispatcher has taken over', async () => {
     receive('msg_a');
     const started = deferred<undefined>();
-    const slow = deferred<'skipped'>();
+    const slow = deferred<HandleResult>();
     const holder = dispatcher({
       routine: () => {
         started.resolve(undefined);
@@ -368,14 +378,14 @@ describe('a lease', () => {
     });
     // The second process reads a clock on which the first holder's lease has just ended.
     const taker = dispatcher(
-      { routine: () => Promise.resolve('accepted') },
+      { routine: () => Promise.resolve({ state: 'accepted' }) },
       { store: openStore(), clock: () => now + POLICY.leaseMs },
     );
 
     const held = holder.runOnce();
     await started.promise;
     await taker.runOnce();
-    slow.resolve('skipped');
+    slow.resolve({ state: 'skipped', reason: 'not_wanted' });
     await held;
 
     expect(inbox()).toMatchObject({
@@ -392,7 +402,7 @@ describe('a lease', () => {
     const routine: Handle = async ({ handoff }) => {
       await new Promise((resolve) => setImmediate(resolve));
       handled.push(handoff.id);
-      return 'accepted';
+      return { state: 'accepted' };
     };
 
     await Promise.all([
@@ -426,7 +436,7 @@ describe('a handler that fails', () => {
     const routine = vi
       .fn<Handle>()
       .mockRejectedValueOnce(new Error('Slack is unavailable'))
-      .mockResolvedValue('accepted');
+      .mockResolvedValue({ state: 'accepted' });
     const running = dispatcher({ routine });
 
     await running.runOnce();
@@ -486,7 +496,7 @@ describe('a handler that fails', () => {
     const running = dispatcher({
       routine: ({ handoff, saveReservation }) => {
         reservations.push(handoff.reservation);
-        if (handoff.reservation) return Promise.resolve('accepted');
+        if (handoff.reservation) return Promise.resolve({ state: 'accepted' });
         saveReservation('task-42');
         return Promise.reject(new Error('Stopped after reserving the Task'));
       },
@@ -543,7 +553,7 @@ describe('pausing or deleting an input', () => {
       receive('msg_a');
       receive('msg_b', [ROUTINE, PROACTIVITY]);
       const kept = receive('msg_c', [ROUTINE], 'inp-2');
-      const routine = vi.fn<Handle>().mockResolvedValue('accepted');
+      const routine = vi.fn<Handle>().mockResolvedValue({ state: 'accepted' });
 
       store[stop]('inp-1', now);
 
@@ -567,7 +577,7 @@ describe('pausing or deleting an input', () => {
   it('lets a handoff that is being worked on finish', async () => {
     receive('msg_a');
     const started = deferred<undefined>();
-    const slow = deferred<'accepted'>();
+    const slow = deferred<HandleResult>();
     const running = dispatcher({
       routine: () => {
         started.resolve(undefined);
@@ -582,7 +592,7 @@ describe('pausing or deleting an input', () => {
       handoffs: [{ state: 'pending' }],
     });
 
-    slow.resolve('accepted');
+    slow.resolve({ state: 'accepted' });
     await running;
     expect(inbox()).toMatchObject({ payloads: [], handoffs: [{ state: 'accepted' }] });
   });
@@ -592,7 +602,7 @@ describe('pausing or deleting an input', () => {
     async (stop) => {
       receive('msg_a');
       const started = deferred<undefined>();
-      const slow = deferred<'accepted'>();
+      const slow = deferred<HandleResult>();
       const routine = vi.fn<Handle>(() => {
         started.resolve(undefined);
         return slow.promise;
@@ -657,7 +667,7 @@ describe('the sweep', () => {
     receive('msg_old');
     now += 7 * DAY;
     receive('msg_new');
-    const routine = vi.fn<Handle>().mockResolvedValue('accepted');
+    const routine = vi.fn<Handle>().mockResolvedValue({ state: 'accepted' });
 
     await dispatcher({ routine }).runOnce();
 
@@ -671,7 +681,7 @@ describe('the sweep', () => {
   });
 
   it('removes settled receipts past retention, after which their keys are new again', async () => {
-    const running = dispatcher({ routine: () => Promise.resolve('accepted') });
+    const running = dispatcher({ routine: () => Promise.resolve({ state: 'accepted' }) });
     receive('msg_old');
     store.receive(
       {
@@ -732,7 +742,7 @@ describe('the sweep', () => {
     await dispatcher({
       routine: () => {
         now += POLICY.sweepEveryMs;
-        return Promise.resolve('accepted');
+        return Promise.resolve({ state: 'accepted' });
       },
     }).runOnce();
 
@@ -744,7 +754,7 @@ describe('the sweep', () => {
     vi.spyOn(store, 'sweep').mockImplementationOnce(() => {
       throw new Error('database is locked');
     });
-    const routine = vi.fn<Handle>().mockResolvedValue('accepted');
+    const routine = vi.fn<Handle>().mockResolvedValue({ state: 'accepted' });
 
     await dispatcher({ routine }).runOnce();
 
@@ -772,7 +782,7 @@ describe('a pass', () => {
     receive('msg_a');
     receive('msg_b');
     const started = deferred<undefined>();
-    const slow = deferred<'accepted'>();
+    const slow = deferred<HandleResult>();
     const routine = vi.fn<Handle>(() => {
       started.resolve(undefined);
       return slow.promise;
@@ -783,14 +793,14 @@ describe('a pass', () => {
     await started.promise;
     expect(routine).toHaveBeenCalledTimes(1);
 
-    slow.resolve('accepted');
+    slow.resolve({ state: 'accepted' });
     await Promise.all(passes);
     expect(routine).toHaveBeenCalledTimes(2);
   });
 
   it('lets other work run between handoffs even when handlers finish at once', async () => {
     for (let n = 0; n < 5; n += 1) receive(`msg_${n}`);
-    const routine = vi.fn<Handle>().mockResolvedValue('accepted');
+    const routine = vi.fn<Handle>().mockResolvedValue({ state: 'accepted' });
     let handledWhenOtherWorkRan = -1;
     setImmediate(() => {
       handledWhenOtherWorkRan = routine.mock.calls.length;
@@ -818,7 +828,7 @@ describe('a pass', () => {
 
 describe('the polling loop, using real timers', () => {
   it('delivers without being asked, and not after it is stopped', async () => {
-    const routine = vi.fn<Handle>().mockResolvedValue('accepted');
+    const routine = vi.fn<Handle>().mockResolvedValue({ state: 'accepted' });
     const running = dispatcher({ routine });
     receive('msg_a');
 
@@ -832,7 +842,7 @@ describe('the polling loop, using real timers', () => {
   });
 
   it('reports a pass that fails and delivers on the next one', async () => {
-    const routine = vi.fn<Handle>().mockResolvedValue('accepted');
+    const routine = vi.fn<Handle>().mockResolvedValue({ state: 'accepted' });
     vi.spyOn(store, 'claimHandoff').mockImplementationOnce(() => {
       throw new Error('database is locked');
     });
@@ -851,7 +861,7 @@ describe('the polling loop, using real timers', () => {
     });
     const routine: Handle = async () => {
       await new Promise((resolve) => setTimeout(resolve, 40));
-      return 'accepted';
+      return { state: 'accepted' };
     };
 
     dispatcher({ routine }).start();
@@ -865,7 +875,7 @@ describe('the polling loop, using real timers', () => {
     receive('msg_a');
     receive('msg_b');
     const started = deferred<undefined>();
-    const slow = deferred<'accepted'>();
+    const slow = deferred<HandleResult>();
     const routine = vi.fn<Handle>(() => {
       started.resolve(undefined);
       return slow.promise;
@@ -881,10 +891,164 @@ describe('the polling loop, using real timers', () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(stopped).toBe(false);
 
-    slow.resolve('accepted');
+    slow.resolve({ state: 'accepted' });
     await stopping;
     await pass;
     expect(routine).toHaveBeenCalledTimes(1);
     expect(inbox()).toMatchObject({ handoffs: [{ state: 'accepted' }, { state: 'pending' }] });
+  });
+});
+
+describe('why a handoff ended', () => {
+  function ended() {
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      return db.prepare('SELECT state, reason FROM handoffs ORDER BY rowid').all();
+    } finally {
+      db.close();
+    }
+  }
+
+  it('records the reason the consumer gave for a skip, and none for an accepted handoff', async () => {
+    receive('msg_a');
+    receive('msg_b');
+    const routine = vi
+      .fn<Handle>()
+      .mockResolvedValueOnce({ state: 'skipped', reason: 'routine_paused' })
+      .mockResolvedValue({ state: 'accepted' });
+
+    await dispatcher({ routine }).runOnce();
+
+    expect(ended()).toEqual([
+      { state: 'skipped', reason: 'routine_paused' },
+      { state: 'accepted', reason: null },
+    ]);
+  });
+
+  it('records a handoff that used up its attempts', async () => {
+    receive('msg_a');
+    const running = dispatcher({ routine: () => Promise.reject(new Error('still failing')) });
+
+    for (const wait of [0, 100, 200]) {
+      now += wait;
+      await running.runOnce();
+    }
+
+    expect(ended()).toEqual([{ state: 'failed', reason: 'attempts_exhausted' }]);
+  });
+
+  it('records a handoff whose last attempt was interrupted', async () => {
+    receive('msg_a');
+    for (let attempt = 0; attempt < 3; attempt++) {
+      store.claimHandoff(now, POLICY.leaseMs);
+      now += POLICY.leaseMs;
+    }
+
+    await dispatcher({ routine: () => Promise.resolve({ state: 'accepted' }) }).runOnce();
+
+    expect(ended()).toEqual([{ state: 'failed', reason: 'interrupted' }]);
+  });
+
+  it('records a handoff that outlived its maximum age', async () => {
+    receive('msg_a');
+    const routine = vi.fn<Handle>();
+    now += POLICY.handoffMaxAgeMs;
+
+    await dispatcher({ routine }).runOnce();
+
+    expect(ended()).toEqual([{ state: 'failed', reason: 'expired' }]);
+    expect(routine).not.toHaveBeenCalled();
+  });
+
+  it('records which stop of the input cancelled a waiting handoff', () => {
+    receive('msg_a', [ROUTINE], 'inp-1');
+    receive('msg_b', [ROUTINE], 'inp-2');
+
+    store.pauseInput('inp-1', now);
+    store.markInputDeleted('inp-2', now);
+
+    expect(ended()).toEqual([
+      { state: 'cancelled', reason: 'input_paused' },
+      { state: 'cancelled', reason: 'input_deleted' },
+    ]);
+  });
+
+  it('records the stop of the input for a handoff whose attempt was in flight', async () => {
+    receive('msg_a');
+    const running = dispatcher({
+      routine: () => {
+        store.pauseInput('inp-1', now);
+        return Promise.reject(new Error('interrupted by the pause'));
+      },
+    });
+
+    await running.runOnce();
+
+    expect(ended()).toEqual([{ state: 'cancelled', reason: 'input_paused' }]);
+  });
+});
+
+describe('reconciling', () => {
+  it('asks each consumer with the first pass and again with each sweep', async () => {
+    const reconcile = vi.fn<NonNullable<IncomingConsumer['reconcile']>>().mockResolvedValue();
+    const consumer: IncomingConsumer = {
+      kind: 'routine',
+      match: () => [],
+      handle: () => Promise.resolve({ state: 'accepted' }),
+      reconcile,
+    };
+    const running = new IncomingDispatcher(store, [consumer], POLICY, () => now);
+    dispatchers.push(running);
+    receive('msg_a');
+
+    await running.runOnce();
+    await running.runOnce();
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(reconcile).toHaveBeenCalledWith(store);
+
+    now += POLICY.sweepEveryMs;
+    await running.runOnce();
+    expect(reconcile).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps delivering when a consumer fails to reconcile', async () => {
+    const consumer: IncomingConsumer = {
+      kind: 'routine',
+      match: () => [],
+      handle: () => Promise.resolve({ state: 'accepted' }),
+      reconcile: () => Promise.reject(new Error('sessions directory is unreadable')),
+    };
+    const running = new IncomingDispatcher(store, [consumer], POLICY, () => now);
+    dispatchers.push(running);
+    receive('msg_a');
+
+    await running.runOnce();
+
+    expect(inbox()).toMatchObject({ handoffs: [{ state: 'accepted' }] });
+    expect(loggedText()).toContain('failed to reconcile');
+  });
+});
+
+describe('abandoned reservations', () => {
+  it('lists the reservations of handoffs that ended without being accepted', async () => {
+    for (const key of ['msg_a', 'msg_b', 'msg_c', 'msg_d']) receive(key);
+    const outcomes: HandleResult[] = [
+      { state: 'accepted' },
+      { state: 'skipped', reason: 'routine_paused' },
+    ];
+    const routine: Handle = ({ handoff, saveReservation }) => {
+      saveReservation(`task-for-${handoff.id}`);
+      const outcome = outcomes.shift();
+      return outcome ? Promise.resolve(outcome) : Promise.reject(new Error('still failing'));
+    };
+    const running = dispatcher({ routine }, { policy: { retryDelaysMs: [] } });
+
+    await running.runOnce();
+
+    const abandoned = store.abandonedReservations('routine');
+    expect(abandoned).toHaveLength(3);
+    for (const { handoffId, reservation } of abandoned)
+      expect(reservation).toBe(`task-for-${handoffId}`);
+    expect(store.abandonedReservations('proactivity')).toEqual([]);
   });
 });

@@ -2,9 +2,9 @@
 
 Incoming events let a system other than Slack or GitHub tell Archie that something happened. A sender posts a JSON webhook to a callback URL. Archie authenticates it, records it durably, and later hands it to whatever acts on it.
 
-**Status:** the receiver, the inbox and the dispatcher are implemented behind `ARCHIE_INCOMING_EVENTS`, which is off by default. Nothing acts on an event yet. Until the routine consumer lands ([#402](https://github.com/sweatco/archie-hq/issues/402)), an authenticated delivery is recorded as ignored. The feature design is in the [incoming events plan](../plans/20261116-incoming-events-shared-receiver.md).
+**Status:** the receiver, the inbox, the dispatcher and event routines are implemented behind `ARCHIE_INCOMING_EVENTS`, which is off by default. An event starts a Task only for a routine the operator linked to its input. Setting a routine up without the operator is [#403](https://github.com/sweatco/archie-hq/issues/403). The feature design is in the [incoming events plan](../plans/20261116-incoming-events-shared-receiver.md).
 
-All code is in `src/incoming/`.
+The inbox is in `src/incoming/`. The routine consumer is `src/system/routine-consumer.ts`, beside the trigger code it uses.
 
 ## How a delivery flows
 
@@ -19,6 +19,7 @@ An input is one callback URL with its own secret.
 - **State:** `enabled`, `paused` or `deleted`. A deleted input answers `410` and cannot be resumed.
 - **Authentication:** `signed` uses the [Standard Webhooks](https://www.standardwebhooks.com/) headers `webhook-id`, `webhook-timestamp` and `webhook-signature`, with a five-minute tolerance. `bearer` uses `Authorization: Bearer <secret>`, plus an optional `Idempotency-Key`.
 - **Filter:** a list of conditions on the event JSON, such as "`/type` equals `meeting.ended`". An event that fails one is recorded as ignored.
+- **Linked routines:** the triggers the operator allowed to receive this input's events. See [Event routines](#event-routines).
 
 The secret is generated on the host and sealed with the [secrets vault](secrets.md) under `SECRETS_DIR/incoming/`. The database holds only a reference to it.
 
@@ -51,10 +52,12 @@ The inbox is its own SQLite file, `WORKDIR/incoming/state.sqlite`, in a director
 
 | Table | Holds |
 |---|---|
-| `inputs` | State, authentication scheme, secret references, filter |
+| `inputs` | State, authentication scheme, secret references, filter, linked routines |
 | `receipts` | One row per event key: digest, outcome, conflict count |
 | `payloads` | The raw body, only while a handoff is pending |
-| `handoffs` | One row per receipt and consumer: state, lease, attempts |
+| `handoffs` | One row per receipt and consumer: state, reason, lease, attempts, reservation |
+
+The schema is versioned and migrates forward when the file is opened. An older binary refuses a newer file.
 
 Deleting a body is logical. Erasing it from SQLite's free pages is [#407](https://github.com/sweatco/archie-hq/issues/407).
 
@@ -63,7 +66,10 @@ Deleting a body is logical. Erasing it from SQLite's free pages is [#407](https:
 A consumer is the code that acts on an event. It implements two functions, defined in `types.ts`:
 
 - `match` runs on the request path, just before the receipt commits. It is synchronous and has no effects.
-- `handle` runs later, from the dispatcher. It may run more than once for one handoff, so the handoff id is its idempotency key.
+- `handle` runs later, from the dispatcher. It may run more than once for one handoff, so the handoff id is its idempotency key. It answers `accepted`, or `skipped` with a reason.
+- `reconcile` is optional. It runs with each sweep, the first at start, so a consumer can drop work for handoffs that ended without `handle` seeing it.
+
+`handle` can save a reservation on its handoff: a durable marker of progress that the next attempt reads. It also gets a read view of the inbox, for checks it repeats while it works.
 
 The dispatcher is one loop per process. It polls every second and delivers one handoff at a time.
 
@@ -73,6 +79,61 @@ The dispatcher is one loop per process. It polls every second and delivers one h
 - **Pause and delete:** handoffs nobody is working on are cancelled and their bodies deleted. One being worked on may finish its attempt. If that attempt fails while the input is still paused or deleted, it is cancelled too.
 - **Unreadable handoff:** a handoff whose stored body or rows cannot be loaded is failed and logged, and the next one is delivered.
 - **Sweep:** hourly, handoffs older than seven days are failed and settled receipts older than 30 days are removed. A removed receipt's key is new again.
+
+Every handoff that ends any way other than `accepted` records why:
+
+| Ending | Decided by | Reason |
+|---|---|---|
+| `skipped` | The consumer | Its own reason. Routines use the list under [What stops a routine](#what-stops-a-routine). |
+| `cancelled` | The inbox | `input_paused`, `input_deleted` |
+| `failed` | The dispatcher or the sweep | `attempts_exhausted`, `interrupted` (the process died during the last attempt), `expired`, `unreadable` (its stored body or rows could not be loaded) |
+
+## Event routines
+
+An event routine is an ordinary [trigger](triggers.md) whose conditions are all `incoming_event`. Each condition names an input and may add its own filter. The routine's binding is where the result goes.
+
+Two parties must agree before a routine receives anything:
+
+- **The conversation.** The routine is proposed and approved in the conversation it delivers to, like any trigger. Its approval card names the input.
+- **The operator.** The operator links the approved trigger to the input with the CLI. Removing the link is how access is revoked.
+
+An input id appears in the callback URL and in logs, so the id alone grants nothing. Several routines can be linked to one input; each gets its own Task for an event that passes its filter.
+
+This defines no scope for an input. Who owns an input, who may see its events and which conversations it may reach are [#403](https://github.com/sweatco/archie-hq/issues/403). One function, `routineMayUseInput` in `src/incoming/access.ts`, answers "may this routine still use this input?" for every check below, so scope has one place to go.
+
+### From event to Task
+
+1. **Snapshot at receipt.** `match` reads each linked routine from the trigger index and records its prompt and binding in the handoff. The run uses that snapshot. An edit applies to events received after it.
+2. **Live check.** At dispatch, the input must be enabled and still list the routine, and the routine must be enabled and still name the input.
+3. **Reserve.** A run slot is taken from the daily allowance that all triggers share, and the new Task's id is saved as the handoff's reservation, in one step.
+4. **Prepare.** The event is written as `incoming-event.json` in the Task's folder. Then the Task's metadata is written with status `preparing`, homed in the routine's conversation.
+5. **Start.** The live check runs again, the Task flips to `in_progress`, and the PM gets its instruction.
+
+Each step is safe to repeat. A retry finds the reservation, continues the same Task and takes no second slot. A Task that already started is accepted without a second instruction. A start whose first wake fails is undone, so the retry starts the Task. After a crash in mid-start, the retry waits for the interrupted attempt's lease to end, up to five minutes.
+
+The Task opens its own thread with its first post, as a [schedule fire](triggers.md#a-schedule-fire-homes-its-task-in-the-bound-channel) does.
+
+### The event stays in its file
+
+The instruction names the event file and says its content is untrusted data, never instructions. The body goes nowhere else: not into the snapshot, the reservation, the instruction, `metadata.json`, `knowledge.log`, an event or a log line. The Task keeps the whole event for as long as its folder lives, and backups of Task folders include it. Once the PM reads the file, its content is also in that Task's agent session transcript, in the same folder.
+
+### What stops a routine
+
+| Change | Work not started yet | A Task that already runs |
+|---|---|---|
+| Prompt edited | Runs on its snapshot | Unaffected |
+| Routine paused, deleted, or no longer naming the input | Skipped | Unaffected |
+| Input paused | Cancelled, or skipped when an attempt was in flight | Unaffected |
+| Input deleted | As for a paused input | Its next post, file share and memory write are refused |
+| Routine unlinked | Skipped | Its next post, file share and memory write are refused |
+
+- **Skip reasons:** `routine_paused`, `routine_deleted`, `routine_changed`, `routine_unlinked`, `input_paused`, `input_deleted`, `triggers_disabled`, `destination_unreachable`, `daily_cap`.
+- **A skip leaves no Task.** A Task that an earlier attempt prepared is removed with its event file, and its run slot goes back to the daily allowance. The sweep does the same for handoffs the inbox ended by itself.
+- **A channel that Slack could not be asked about is not a skip.** The attempt fails and is retried. Only a channel that Slack reports missing or archived pauses the routine and skips the event as `destination_unreachable`.
+- **Timing.** A stopped routine's waiting work is skipped at its next attempt, which can be 30 minutes away. The body stays in the inbox until then.
+- **A running Task** is checked against the inbox before every post and file share, by the same gate that holds it to its [destination](memory.md). Explicit memory writes and completion extraction ask the same question, and extraction asks again just before it writes. With incoming events off, or an inbox that could not be opened, the answer is no and the refusal says so: such a Task stays silent in its thread until the inbox is open again. Context the agent already loaded is not taken back.
+- **Two writes pass without the check,** as they pass the destination check: the notice a Task's trigger tools post to a trigger's bound channel, and the removal of an acknowledgement reaction. The notice carries a summary the PM wrote, which is one reason the tool review under [Not built yet](#not-built-yet) comes before production use.
+- **An uncertain run** is a Task that outlived a cancelled or failed handoff: it started, and the handoff did not record it. `history` marks it.
 
 ## Design choices
 
@@ -85,7 +146,9 @@ The dispatcher is one loop per process. It polls every second and delivers one h
 
 ## Operating it
 
-`ARCHIE_INCOMING_EVENTS=on` mounts the route and requires `ARCHIE_SECRETS_KEY`. With the flag off or blank, the route does not exist. Any other value, or a missing key while the flag is on, stops the boot before the slow startup steps.
+`ARCHIE_INCOMING_EVENTS=on` mounts the route and requires `ARCHIE_SECRETS_KEY`. With the flag off or blank, the route does not exist, and a Task that an event started earlier can no longer post. Any other value, or a missing key while the flag is on, stops the boot before the slow startup steps.
+
+`ARCHIE_TRIGGERS_ENABLED=false` stops routines without closing the route: events are recorded as ignored.
 
 - **Startup:** the inbox opens and the route mounts before the server listens. The dispatcher starts after Task recovery.
 - **Shutdown:** the dispatcher stops first, waiting up to five seconds for an attempt in flight, and the inbox closes. Only then does the rest of Archie shut down.
@@ -99,9 +162,16 @@ npm run incoming -- list
 npm run incoming -- pause <input-id>
 npm run incoming -- resume <input-id>
 npm run incoming -- delete <input-id>
+npm run incoming -- link <input-id> <trigger-id>
+npm run incoming -- unlink <input-id> <trigger-id>
+npm run incoming -- history [<input-id>]
 ```
 
-`create` prints the callback URL, built from `ARCHIE_PUBLIC_URL`, and the secret. The secret is shown only then.
+- `create` prints the callback URL, built from `ARCHIE_PUBLIC_URL`, and the secret. The secret is shown only then.
+- `link` refuses a trigger with no condition for that input, then prints its destination, summary and status. `list` shows each input's links and marks one whose trigger no longer exists.
+- `history` shows the newest 50 handoffs: state, reason and the Task each reserved.
+
+Before running an older binary, delete event routines and `WORKDIR/incoming/`: it refuses the newer inbox and does not know the `incoming_event` condition.
 
 In the container images the daemon runs as `archie`, while `docker exec` defaults to root. A secret file created as root would be unreadable to the daemon, so the CLI refuses to run as root there. The production image also has no `tsx`. Run the built file as the daemon's user:
 
@@ -122,10 +192,13 @@ These are starting defaults, named constants in `receiver.ts`, `store.ts` and `d
 | Attempts per handoff | 5, each limited to 5 minutes |
 | Unfinished handoff | Failed after 7 days |
 | Settled receipt | Removed after 30 days |
+| Runs started by triggers | 200 a day, shared by schedules, messages and events; counted in memory |
 
 ## Not built yet
 
-- Consumers: routines ([#402](https://github.com/sweatco/archie-hq/issues/402)) and proactivity ([#406](https://github.com/sweatco/archie-hq/issues/406)).
-- Setup, history, secret reveal and rotation in Slack ([#403](https://github.com/sweatco/archie-hq/issues/403)).
+- Proactivity as a second consumer ([#406](https://github.com/sweatco/archie-hq/issues/406)).
+- Input scope, and setup, history, secret reveal and rotation in Slack ([#403](https://github.com/sweatco/archie-hq/issues/403)).
+- Choosing which event fields a Task receives, and how long the event file is kept ([#403](https://github.com/sweatco/archie-hq/issues/403), [#407](https://github.com/sweatco/archie-hq/issues/407)).
+- A review of the tools an event-started Task may use, with the event as untrusted input ([#439](https://github.com/sweatco/archie-hq/issues/439)). Required before production use.
 - MCP event subscriptions ([#404](https://github.com/sweatco/archie-hq/issues/404), [#405](https://github.com/sweatco/archie-hq/issues/405)).
 - A per-input rate limit. Until then, the edge in front of Archie is the only defence against a flood.

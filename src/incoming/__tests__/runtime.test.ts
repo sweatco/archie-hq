@@ -71,7 +71,15 @@ async function newInput(): Promise<{ id: string; secret: string }> {
 function addWaitingHandoff(): void {
   const store = openIncomingStore();
   store.insertInput(
-    { id: 'inp-1', state: 'enabled', auth: 'bearer', secretRefs: [], filter: [], revision: 1 },
+    {
+      id: 'inp-1',
+      state: 'enabled',
+      auth: 'bearer',
+      secretRefs: [],
+      filter: [],
+      routines: [],
+      revision: 1,
+    },
     Date.now(),
   );
   store.receive(
@@ -166,7 +174,7 @@ describe('with the flag on', () => {
 
   it('hands nothing off until it is started', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
-    const handle = vi.fn<IncomingConsumer['handle']>().mockResolvedValue('accepted');
+    const handle = vi.fn<IncomingConsumer['handle']>().mockResolvedValue({ state: 'accepted' });
     events = mountIncomingEvents(express(), [{ kind: 'routine', match: () => [], handle }]);
     addWaitingHandoff();
 
@@ -185,7 +193,7 @@ describe('with the flag on', () => {
       match: () => [{ consumerId: 'trg-1', snapshot: '{}' }],
       handle: (work) => {
         handled.push(work);
-        return Promise.resolve('accepted');
+        return Promise.resolve({ state: 'accepted' });
       },
     };
     const baseUrl = await boot([consumer]);

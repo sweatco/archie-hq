@@ -27,6 +27,7 @@ export async function createInput(
     auth: spec.auth,
     secretRefs: [ref],
     filter,
+    routines: [],
     revision: 1,
   };
   try {

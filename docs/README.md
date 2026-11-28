@@ -19,7 +19,7 @@ How the system works today. Each doc describes the actual implementation, verifi
 | [Tool Approvals](architecture/tool-approvals.md) | Per-call human approval for critical MCP tools |
 | [Max Mode](architecture/max-mode.md) | The PM's per-task, human-approved model/effort upgrade |
 | [Triggers](architecture/triggers.md) | Persistent "do Y when X happens" rules |
-| [Incoming Events](architecture/incoming-events.md) | Webhook receiver, durable inbox and leased handoff, behind a flag |
+| [Incoming Events](architecture/incoming-events.md) | Webhook receiver, durable inbox, leased handoff and event routines, behind a flag |
 | [Web Research](architecture/web-research.md) | Research pipeline, multi-agent research tool |
 | [Security](architecture/security.md) | Threat model, defense layers, prompt injection defense |
 | [Secrets](architecture/secrets.md) | OAuth vault, encryption, secret handling |

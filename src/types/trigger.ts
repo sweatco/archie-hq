@@ -2,13 +2,16 @@
  * Trigger type definitions
  *
  * A Trigger is a persistent "do Y when X happens" rule that spawns a fresh task
- * when its condition fires. Two condition types ship in v1:
+ * when its condition fires. Three condition types exist:
  *   - `schedule` — fires on a recurring cron cadence or once at a future time
  *   - `channel_message` — fires on a new top-level message in a bound channel
+ *   - `incoming_event` — fires on an event received by an input
  *
  * Triggers are stored one JSON file per trigger under TRIGGERS_DIR (see
  * trigger-store.ts) and indexed in-memory by the trigger scheduler.
  */
+
+import type { PointerCheck } from '../incoming/types.js';
 
 export type TriggerStatus = 'pending' | 'enabled' | 'paused';
 
@@ -34,6 +37,9 @@ export type TriggerBinding =
  *    fire), one-off when `cron` is absent (auto-pauses after firing once).
  *  - `channel_message` — a new top-level message in `channel_id` matching the
  *    optional `match` filter.
+ *  - `incoming_event` — an event received by input `input_id` that passes every
+ *    check in `filter`. A trigger holds these alone, never beside the other two
+ *    types, and receives events only while the operator has linked it to the input.
  */
 export type TriggerCondition =
   | { type: 'schedule'; tz: string; next_run_at: string; cron?: string }
@@ -41,7 +47,8 @@ export type TriggerCondition =
       type: 'channel_message';
       channel_id: string;
       match?: { contains?: string; from_user?: string };
-    };
+    }
+  | { type: 'incoming_event'; input_id: string; filter?: PointerCheck[] };
 
 export interface Trigger {
   /** "trg-YYYYMMDD-HHMM-random6" */

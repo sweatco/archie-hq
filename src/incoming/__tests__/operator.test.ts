@@ -7,15 +7,41 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { assertNotRootBesideDaemon, runIncomingCommand } from '../operator.js';
 import { vaultInputSecrets, type InputSecrets } from '../secrets.js';
 import { IncomingStore } from '../store.js';
+import type { Trigger } from '../../types/trigger.js';
+
+const ROUTINE_ID = 'trg-20261121-0900-notes1';
 
 let root: string;
 let secretsDir: string;
 let store: IncomingStore;
 let secrets: InputSecrets;
 let printed: string[];
+let triggers: Map<string, Trigger>;
+let taskStatuses: Map<string, string>;
 
 function run(...args: string[]): Promise<void> {
-  return runIncomingCommand(args, { store, secrets }, (line) => printed.push(line));
+  const loadTrigger = (id: string) => Promise.resolve(triggers.get(id) ?? null);
+  const taskStatus = (id: string) => Promise.resolve(taskStatuses.get(id) ?? null);
+  return runIncomingCommand(args, { store, secrets, loadTrigger, taskStatus }, (line) =>
+    printed.push(line),
+  );
+}
+
+/** Stores a trigger record that names the input, as an approved proposal would. */
+function routineFor(inputId: string, over: Partial<Trigger> = {}): Trigger {
+  const trigger: Trigger = {
+    id: ROUTINE_ID,
+    status: 'enabled',
+    created_by: 'U0DANA',
+    created_at: '2026-11-21T09:00:00.000Z',
+    binding: { type: 'channel', channel_id: 'C0NOTES', channel_name: 'notes' },
+    conditions: [{ type: 'incoming_event', input_id: inputId }],
+    action: { prompt: 'Summarize the meeting.' },
+    summary: 'Meeting notes',
+    ...over,
+  };
+  triggers.set(trigger.id, trigger);
+  return trigger;
 }
 
 /** Creates an input through the command and returns what it printed about it. */
@@ -37,6 +63,8 @@ beforeEach(() => {
   store = new IncomingStore(join(root, 'state.sqlite'));
   secrets = vaultInputSecrets(secretsDir);
   printed = [];
+  triggers = new Map();
+  taskStatuses = new Map();
 });
 afterEach(() => {
   store.close();
@@ -162,6 +190,189 @@ it('says the input is already deleted when only the secret cleanup failed', asyn
 
   await run('delete', id);
   expect(readdirSync(secretsDir)).toEqual([]);
+});
+
+it('links a trigger to an input, shows what was allowed, and lists the link', async () => {
+  const { id } = await created();
+  routineFor(id);
+  printed = [];
+
+  await run('link', id, ROUTINE_ID);
+
+  expect(printed).toEqual([
+    `Linked trigger ${ROUTINE_ID} to input ${id}.`,
+    'Delivers to: #notes (C0NOTES)',
+    'Does:        Meeting notes',
+    'Status:      enabled',
+  ]);
+  expect(store.input(id)).toMatchObject({ routines: [ROUTINE_ID], revision: 2 });
+
+  printed = [];
+  await run('link', id, ROUTINE_ID);
+  expect(printed[0]).toBe(`Trigger ${ROUTINE_ID} is already linked to input ${id}.`);
+  expect(store.input(id)).toMatchObject({ routines: [ROUTINE_ID], revision: 2 });
+
+  printed = [];
+  await run('list');
+  expect(printed).toHaveLength(3);
+  expect(printed[2]).toBe(`  linked: ${ROUTINE_ID}`);
+
+  triggers.delete(ROUTINE_ID);
+  printed = [];
+  await run('list');
+  expect(printed[2]).toBe(`  linked: ${ROUTINE_ID} (no longer exists)`);
+});
+
+it('says when a linked trigger does not receive events yet', async () => {
+  const { id } = await created();
+  routineFor(id, {
+    status: 'pending',
+    binding: { type: 'user', user_id: 'U0DANA', channel_id: 'D0DANA', channel_name: 'Dana' },
+  });
+  printed = [];
+
+  await run('link', id, ROUTINE_ID);
+
+  expect(printed.slice(1)).toEqual([
+    'Delivers to: a DM with U0DANA (D0DANA)',
+    'Does:        Meeting notes',
+    'Status:      pending — it receives events once it is approved',
+  ]);
+});
+
+it('unlinks a trigger whose record is gone, and leaves other links in place', async () => {
+  const { id } = await created();
+  routineFor(id);
+  routineFor(id, { id: 'trg-20261121-0900-ticket' });
+  await run('link', id, ROUTINE_ID);
+  await run('link', id, 'trg-20261121-0900-ticket');
+  triggers.clear();
+
+  await run('unlink', id, ROUTINE_ID);
+
+  expect(printed.at(-1)).toBe(`Unlinked trigger ${ROUTINE_ID} from input ${id}.`);
+  expect(store.input(id)).toMatchObject({ routines: ['trg-20261121-0900-ticket'], revision: 4 });
+  await expect(run('unlink', id, ROUTINE_ID)).rejects.toThrow(/is not linked/);
+});
+
+it('refuses a link that would deliver nothing, and changes no input', async () => {
+  const { id } = await created();
+  const other = await created();
+  const deleted = await created();
+  await run('delete', deleted.id);
+  routineFor(other.id);
+  routineFor(deleted.id, { id: 'trg-20261121-0900-gone00' });
+  routineFor(id, {
+    id: 'trg-20261121-0900-sched0',
+    conditions: [{ type: 'schedule', tz: 'UTC', next_run_at: '2099-01-01T09:00:00.000Z' }],
+  });
+
+  await expect(run('link', id, ROUTINE_ID)).rejects.toThrow(/has no condition for input/);
+  await expect(run('link', id, 'trg-20261121-0900-sched0')).rejects.toThrow(/has no condition/);
+  await expect(run('link', id, 'trg-20261121-0900-absent')).rejects.toThrow(/No trigger/);
+  await expect(run('link', 'inp-missing', ROUTINE_ID)).rejects.toThrow(/No input inp-missing/);
+  await expect(run('link', deleted.id, 'trg-20261121-0900-gone00')).rejects.toThrow(/was deleted/);
+  await expect(run('link', id)).rejects.toThrow(/Usage/);
+  await expect(run('unlink', id)).rejects.toThrow(/Usage/);
+
+  for (const input of [id, other.id, deleted.id])
+    expect(store.input(input)).toMatchObject({ routines: [], revision: 1 });
+});
+
+it('shows how each handed-off event ended, why, and the Task it reserved', async () => {
+  const { id } = await created();
+  const other = await created();
+  const at = Date.UTC(2026, 10, 21, 9, 30);
+  const receive = (inputId: string, eventKey: string, receivedAt: number) =>
+    store.receive(
+      {
+        inputId,
+        binding: 'generic',
+        eventKey,
+        digest: 'unused',
+        body: new Uint8Array(),
+        receivedAt,
+      },
+      [{ kind: 'routine', consumerId: ROUTINE_ID, snapshot: '{}' }],
+    );
+  const end = (
+    state: 'accepted' | 'skipped' | 'failed',
+    reason: string | null,
+    taskId?: string,
+  ) => {
+    const claimed = store.claimHandoff(at + 60_000, 1000);
+    if (!claimed) throw new Error('Expected a waiting handoff');
+    if (taskId)
+      store.saveReservation(claimed.handoff.id, claimed.token, JSON.stringify({ task_id: taskId }));
+    store.finishHandoff(claimed.handoff.id, claimed.token, state, reason);
+  };
+  receive(id, 'msg_1', at);
+  end('accepted', null, 'task-started');
+  receive(id, 'msg_2', at + 1);
+  end('skipped', 'routine_paused');
+  receive(id, 'msg_3', at + 2);
+  end('failed', 'attempts_exhausted', 'task-ran-anyway');
+  receive(id, 'msg_4', at + 3);
+  end('failed', 'interrupted', 'task-discarded');
+  receive(other.id, 'msg_5', at + 4);
+  taskStatuses.set('task-started', 'completed');
+  taskStatuses.set('task-ran-anyway', 'in_progress');
+  printed = [];
+
+  await run('history', id);
+
+  const cells = printed.map((line) => line.trim().split(/\s{2,}/));
+  expect(cells).toEqual([
+    ['Received (UTC)', 'Input', 'Trigger', 'State', 'Reason', 'Task'],
+    ['2026-11-21 09:30', id, ROUTINE_ID, 'failed', 'interrupted', '-'],
+    [
+      '2026-11-21 09:30',
+      id,
+      ROUTINE_ID,
+      'failed',
+      'attempts_exhausted',
+      'task-ran-anyway in_progress (uncertain)',
+    ],
+    ['2026-11-21 09:30', id, ROUTINE_ID, 'skipped', 'routine_paused', '-'],
+    ['2026-11-21 09:30', id, ROUTINE_ID, 'accepted', '-', 'task-started completed'],
+  ]);
+
+  printed = [];
+  await run('history');
+  expect(printed).toHaveLength(6);
+  expect(printed[1]).toMatch(new RegExp(`${other.id}\\s+${ROUTINE_ID}\\s+pending`));
+  await expect(run('history', 'inp-missing')).rejects.toThrow(/No input inp-missing/);
+});
+
+it('shows a handoff whose reservation cannot be read', async () => {
+  const { id } = await created();
+  const at = Date.UTC(2026, 10, 21, 9, 30);
+  store.receive(
+    {
+      inputId: id,
+      binding: 'generic',
+      eventKey: 'msg_1',
+      digest: 'unused',
+      body: new Uint8Array(),
+      receivedAt: at,
+    },
+    [{ kind: 'routine', consumerId: ROUTINE_ID, snapshot: '{}' }],
+  );
+  const claimed = store.claimHandoff(at + 60_000, 1000);
+  if (!claimed) throw new Error('Expected a waiting handoff');
+  store.saveReservation(claimed.handoff.id, claimed.token, 'not json');
+  store.finishHandoff(claimed.handoff.id, claimed.token, 'failed', 'attempts_exhausted');
+  printed = [];
+
+  await run('history', id);
+
+  expect(printed[1]).toMatch(/failed\s+attempts_exhausted\s+-$/);
+});
+
+it('says so when no event has been handed off', async () => {
+  await run('history');
+
+  expect(printed).toEqual(['No event has been handed to a trigger yet.']);
 });
 
 it.each([

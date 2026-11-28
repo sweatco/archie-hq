@@ -12,15 +12,26 @@
 
 import { Cron } from 'croner';
 import type { Task } from '../tasks/task.js';
-import { appendSlackMessage } from '../tasks/persistence.js';
+import { appendSlackMessage, generateTaskId } from '../tasks/persistence.js';
 import type { SlackThread } from '../types/task.js';
 import type { Trigger, TriggerBinding, TriggerCondition } from '../types/trigger.js';
-import { listTriggers, saveTrigger, deleteTrigger, countActiveTriggers } from './trigger-store.js';
+import type { PointerCheck } from '../incoming/types.js';
+import {
+  listTriggers,
+  saveTrigger,
+  deleteTrigger,
+  countActiveTriggers,
+  updateLiveTrigger,
+} from './trigger-store.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { emitEvent } from './event-bus.js';
 import { logger } from './logger.js';
 import { isAppAuthorId } from './trigger-match.js';
-import { postSlackMessage, isChannelReachable } from '../connectors/slack/client.js';
+import {
+  postSlackMessage,
+  isChannelReachable,
+  channelReachability,
+} from '../connectors/slack/client.js';
 import { ensureChannelCanvas } from '../connectors/slack/channel-canvas.js';
 import { ensureChannelPins } from '../connectors/slack/channel-pins.js';
 import { formatConversationLabel } from '../connectors/slack/channel-ids.js';
@@ -59,6 +70,22 @@ function withinDailyCap(): boolean {
   if (fireCount >= DAILY_FIRE_CAP) return false;
   fireCount++;
   return true;
+}
+
+/** Run slots taken today, across schedule, message and event fires. */
+export function dailyFireCount(): number {
+  return new Date().toISOString().slice(0, 10) === fireDay ? fireCount : 0;
+}
+
+// The day each event Task took its slot, until the Task starts. Kept in memory like the count itself.
+const unstartedEventSlots = new Map<string, string>();
+
+/** Gives back the run slot of an event Task that was discarded before it started. A second call does nothing. */
+export function releaseEventSlot(taskId: string): void {
+  const day = unstartedEventSlots.get(taskId);
+  if (day === undefined) return;
+  unstartedEventSlots.delete(taskId);
+  if (day === fireDay && fireCount > 0) fireCount--;
 }
 
 // ---- Cron helpers (exported for tools + tests) ----
@@ -200,6 +227,11 @@ export function indexTrigger(trigger: Trigger): void {
 /** Remove a trigger from the index. */
 export function deindexTrigger(id: string): void {
   enabledTriggers.delete(id);
+}
+
+/** The enabled trigger as last indexed. An edit swaps in a new record, so its prompt and binding belong to one version. */
+export function getEnabledTrigger(id: string): Trigger | undefined {
+  return enabledTriggers.get(id);
 }
 
 /** All enabled channel-message triggers bound to / watching a given channel. */
@@ -392,22 +424,12 @@ export async function fireTrigger(
   // Message-context fires skip this — we just received a message there, so it's
   // live — and DMs can't be deleted. Checked BEFORE the daily cap so a bail here
   // doesn't consume a cap slot (L2).
-  if (context.kind !== 'message' && trigger.binding.type === 'channel') {
-    if (!(await isChannelReachable(trigger.binding.channel_id))) {
-      logger.warn(
-        'trigger-scheduler',
-        `Trigger ${trigger.id} bound channel ${trigger.binding.channel_id} unreachable — pausing`,
-      );
+  if (context.kind !== 'message') {
+    const reachable = await boundChannelReachable(trigger, async () => {
       trigger.status = 'paused';
       await saveTrigger(trigger);
-      deindexTrigger(trigger.id);
-      emitEvent('trigger:paused', trigger.id, { reason: 'bound channel unreachable' });
-      await notifyCreator(
-        trigger,
-        `⚠️ A trigger you set up was paused — its channel (#${trigger.binding.channel_name}) is gone or archived. Recreate it elsewhere if you still need it.`,
-      );
-      return;
-    }
+    });
+    if (!reachable) return;
   }
 
   if (!withinDailyCap()) {
@@ -476,7 +498,7 @@ export async function fireTrigger(
       channel_id: trigger.binding.channel_id,
       channel_name: trigger.binding.channel_name,
     };
-    delivery = `You have no thread yet. Your first post_to_user opens this task's own thread in ${formatConversationLabel(trigger.binding.channel_name)}, and every message after that goes into that same thread. Until then you cannot post anywhere else.`;
+    delivery = homedDelivery(trigger.binding);
   }
   await task.save(true);
 
@@ -504,16 +526,7 @@ export async function fireTrigger(
   // The `.catch` is deliberate rather than defensive: a canvas or pins scan is context, and a failed scan
   // must never cost the fire itself — a scheduled run that silently does not happen is far worse than one
   // that runs with a stale brief.
-  if (scanChannelId) {
-    await Promise.all([ensureChannelCanvas(scanChannelId), ensureChannelPins(scanChannelId)]).catch(
-      (err) =>
-        logger.warn(
-          'trigger-scheduler',
-          `Failed to refresh standing context for home channel ${scanChannelId} on trigger ${trigger.id}`,
-          err,
-        ),
-    );
-  }
+  if (scanChannelId) await refreshHomeContext(scanChannelId, trigger.id);
 
   logger.system(`Trigger ${trigger.id} fired (${context.kind}) → task ${task.taskId}`);
   await task.sendMessage(AGENT_PROMPTS.triggered(seed, reason));
@@ -521,6 +534,141 @@ export async function fireTrigger(
   trigger.last_fired_at = new Date().toISOString();
   await saveTrigger(trigger);
   emitEvent('trigger:fired', task.taskId, { trigger_id: trigger.id });
+}
+
+/** True for a DM or a live channel. A channel that is gone pauses the trigger through `pause` and tells its creator. */
+async function boundChannelReachable(
+  trigger: Trigger,
+  pause: () => Promise<unknown>,
+  reachable: (channelId: string) => Promise<boolean> = isChannelReachable,
+): Promise<boolean> {
+  if (trigger.binding.type !== 'channel') return true;
+  if (await reachable(trigger.binding.channel_id)) return true;
+  logger.warn(
+    'trigger-scheduler',
+    `Trigger ${trigger.id} bound channel ${trigger.binding.channel_id} unreachable — pausing`,
+  );
+  await pause();
+  deindexTrigger(trigger.id);
+  emitEvent('trigger:paused', trigger.id, { reason: 'bound channel unreachable' });
+  await notifyCreator(
+    trigger,
+    `⚠️ A trigger you set up was paused — its channel (#${trigger.binding.channel_name}) is gone or archived. Recreate it elsewhere if you still need it.`,
+  );
+  return false;
+}
+
+function homedDelivery(binding: TriggerBinding): string {
+  return `You have no thread yet. Your first post_to_user opens this task's own thread in ${formatConversationLabel(binding.channel_name)}, and every message after that goes into that same thread. Until then you cannot post anywhere else.`;
+}
+
+async function refreshHomeContext(channelId: string, triggerId: string): Promise<void> {
+  await Promise.all([ensureChannelCanvas(channelId), ensureChannelPins(channelId)]).catch((err) =>
+    logger.warn(
+      'trigger-scheduler',
+      `Failed to refresh standing context for home channel ${channelId} on trigger ${triggerId}`,
+      err,
+    ),
+  );
+}
+
+// ---- Event firing ----
+
+type TriggeredTask = Pick<Task, 'taskId' | 'prepareTriggerDelivery' | 'startTriggered'>;
+
+/** What one incoming event's fire takes from its handoff and from Task. */
+export interface EventFire {
+  /** The handoff that owns this fire. */
+  origin: string;
+  inputId: string;
+  event: Uint8Array;
+  /** The Task an earlier attempt reserved. Its run slot is already taken. */
+  reservedTaskId?: string;
+  /** Makes the Task id durable. Throws when the handoff's lease was lost. */
+  reserve(taskId: string): void;
+  /** Asked again just before the Task starts: the reason to stop, or null. */
+  whyStop(): Promise<string | null>;
+  prepare(input: Parameters<typeof Task.prepareTriggered>[0]): Promise<TriggeredTask>;
+}
+
+export type FireResult =
+  { status: 'fired'; taskId: string } | { status: 'skipped'; reason: string };
+
+const skipped = (reason: string): FireResult => ({ status: 'skipped', reason });
+
+/**
+ * Fire a routine for one incoming event: reserve a Task, prepare it, then start it.
+ * `routine` carries the prompt and binding as they were at receipt. Each step can repeat, because the
+ * reservation names the Task from the first attempt on. A skip leaves any prepared Task to the caller.
+ */
+export async function fireEvent(routine: Trigger, fire: EventFire): Promise<FireResult> {
+  if (!triggersEnabled()) return skipped('triggers_disabled');
+  const reachable = await boundChannelReachable(
+    routine,
+    () =>
+      updateLiveTrigger(routine.id, (stored) => {
+        stored.status = 'paused';
+      }),
+    async (channelId) => {
+      const channel = await channelReachability(channelId);
+      // Thrown, so the handoff retries: a lookup that failed says nothing about the channel.
+      if (channel === 'unknown')
+        throw new Error(`Could not check channel ${channelId} for trigger ${routine.id}`);
+      return channel === 'reachable';
+    },
+  );
+  if (!reachable) return skipped('destination_unreachable');
+
+  let taskId = fire.reservedTaskId;
+  if (!taskId) {
+    if (!withinDailyCap()) {
+      logger.warn(
+        'trigger-scheduler',
+        `Daily fire cap (${DAILY_FIRE_CAP}) reached — skipping an event for trigger ${routine.id}`,
+      );
+      return skipped('daily_cap');
+    }
+    taskId = generateTaskId();
+    unstartedEventSlots.set(taskId, fireDay);
+    try {
+      fire.reserve(taskId);
+    } catch (error) {
+      // The slot belongs to the reservation, so a reservation that was not saved frees it.
+      releaseEventSlot(taskId);
+      throw error;
+    }
+  }
+
+  const task = await fire.prepare({
+    taskId,
+    origin: fire.origin,
+    triggerId: routine.id,
+    inputId: fire.inputId,
+    binding: routine.binding,
+    event: fire.event,
+    brief: (eventPath) =>
+      AGENT_PROMPTS.triggered(
+        `${routine.action.prompt}\n\n${AGENT_PROMPTS.incomingEvent(eventPath)}\n\n${homedDelivery(routine.binding)}`,
+        'an incoming event',
+      ),
+  });
+  await task.prepareTriggerDelivery(routine.binding);
+  if (routine.binding.type === 'channel')
+    await refreshHomeContext(routine.binding.channel_id, routine.id);
+
+  const stop = await fire.whyStop();
+  if (stop) return skipped(stop);
+
+  const started = await task.startTriggered();
+  unstartedEventSlots.delete(taskId);
+  if (started) {
+    logger.system(`Trigger ${routine.id} fired (event) → task ${taskId}`);
+    await updateLiveTrigger(routine.id, (stored) => {
+      stored.last_fired_at = new Date().toISOString();
+    });
+    emitEvent('trigger:fired', taskId, { trigger_id: routine.id });
+  }
+  return { status: 'fired', taskId };
 }
 
 // ---- Announcements (config changes only — never firing) ----
@@ -678,6 +826,10 @@ function describeCondition(c: TriggerCondition, bindingChannelId?: string): stri
   if (c.type === 'schedule') {
     return c.cron ? describeSchedule(c.cron, c.tz) : describeOneOff(c.next_run_at, c.tz);
   }
+  if (c.type === 'incoming_event') {
+    const filter = c.filter?.length ? ` where ${describeEventFilter(c.filter)}` : '';
+    return `on an event from input \`${c.input_id}\`${filter}`;
+  }
   const where = c.channel_id === bindingChannelId ? '' : ` in <#${c.channel_id}>`;
   const filters: string[] = [];
   if (c.match?.contains) filters.push(`mentioning "${c.match.contains}"`);
@@ -689,6 +841,23 @@ function describeCondition(c: TriggerCondition, bindingChannelId?: string): stri
     );
   }
   return `on a new message${where}${filters.length ? ' ' + filters.join(' ') : ''}`;
+}
+
+// A filter may hold 16 checks of 64 values each, and a Slack card field holds 2000 characters.
+const EVENT_FILTER_LABEL_MAX = 300;
+
+function describeEventFilter(filter: readonly PointerCheck[]): string {
+  const label = filter.map(describeCheck).join(' and ');
+  return label.length > EVENT_FILTER_LABEL_MAX
+    ? `${label.slice(0, EVENT_FILTER_LABEL_MAX - 1)}…`
+    : label;
+}
+
+function describeCheck(check: PointerCheck): string {
+  const field = `\`${check.pointer || '/'}\``;
+  if (check.op === 'present') return `${field} is present`;
+  if (check.op === 'equals') return `${field} is ${JSON.stringify(check.value)}`;
+  return `${field} is one of ${check.values.map((value) => JSON.stringify(value)).join(', ')}`;
 }
 
 /** First sentence / clipped form of the internal prompt — fallback when no summary was set. */

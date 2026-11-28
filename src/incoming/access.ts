@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+import type { TaskMetadata } from '../types/task.js';
+import type { InboxView, Input } from './types.js';
+
+type InputReader = Pick<InboxView, 'input'>;
+
+let openInbox: InputReader | null = null;
+
+/** The daemon sets its inbox here when it opens and clears it when it closes. */
+export function setOpenInbox(inbox: InputReader | null): void {
+  openInbox = inbox;
+}
+
+/** May this routine still use this input? Every check before and during a run asks here, so scope has one place to go. */
+export function routineMayUseInput(input: Input | null, triggerId: string): boolean {
+  return input !== null && input.state !== 'deleted' && input.routines.includes(triggerId);
+}
+
+type EventStart = Pick<TaskMetadata, 'triggered_by' | 'triggered_start'>;
+
+/**
+ * A Task that an incoming event started may post, share files and write memory only while its routine may use the input.
+ * The inbox is read on every call, and a closed inbox refuses. Every other Task passes.
+ */
+export function taskMayUseItsInput(metadata: EventStart): boolean {
+  return inputRefusal(metadata) === null;
+}
+
+/** Why such a Task is refused, or null when it may go on. A closed inbox is named apart from a lost link. */
+export function inputRefusal(metadata: EventStart): string | null {
+  const start = metadata.triggered_start;
+  if (!start) return null;
+  if (!openInbox)
+    return 'the incoming events inbox is not open, so the input that started this task cannot be checked';
+  if (
+    !metadata.triggered_by ||
+    !routineMayUseInput(openInbox.input(start.input_id), metadata.triggered_by)
+  )
+    return 'this task may no longer use the incoming events input that started it';
+  return null;
+}

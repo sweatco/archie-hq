@@ -393,6 +393,16 @@ export interface TaskMetadata {
     until?: string;
   };
   triggered_by?: string; // Trigger ID that spawned this task (set by fireTrigger). Blocks the task from creating triggers.
+  /**
+   * Set on a Task started by an incoming event. `origin` is the handoff that owns the start, so a retry finds this Task instead of making another.
+   * `prepared` is on disk and inert; `ready` runs, and the spawn carries `brief` until the first wake arrives.
+   */
+  triggered_start?: {
+    origin: string;
+    input_id: string;
+    phase: 'prepared' | 'ready';
+    brief: string;
+  };
   pending_trigger_id?: string; // Trigger ID proposed by this task, awaiting approve/deny (read by handleTriggerApproval/Denial)
   created_at: string;
   updated_at: string;

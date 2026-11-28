@@ -28,6 +28,7 @@ import { mountGitHubWebhook } from './connectors/github/events.js';
 import { mountApiRoutes } from './connectors/api/routes.js';
 import { mountOAuthRoutes } from './connectors/oauth/routes.js';
 import { mountIncomingEvents, validateIncomingEventsConfig } from './incoming/runtime.js';
+import { routineConsumer } from './system/routine-consumer.js';
 import { getIsShuttingDown, setShuttingDown } from './system/shutdown.js';
 import { Task, getActiveTaskIds } from './tasks/task.js';
 import { logger } from './system/logger.js';
@@ -181,7 +182,7 @@ async function main(): Promise<void> {
     }
 
     // Deliveries are recorded once the server listens; handoff starts after task recovery, below.
-    const incomingEvents = mountIncomingEvents(app);
+    const incomingEvents = mountIncomingEvents(app, [routineConsumer]);
 
     // Mount Slack Bolt app (if configured).
     // Two modes: HTTP (bot token + signing secret) or Socket Mode (bot token + app token).

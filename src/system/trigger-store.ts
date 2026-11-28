@@ -17,9 +17,9 @@ import { TRIGGERS_DIR, TRIGGERS_DATA_DIR } from './workdir.js';
 import { logger } from './logger.js';
 import { createKeyedLock } from './keyed-lock.js';
 
-// Serializes the pending lifecycle (approve, edit, withdraw, delete) per trigger id. Not
-// reentrant: nothing inside a locked section may call another locked function. Edits to
-// live triggers and the scheduler's fire-path writes are NOT covered — only atomicity.
+// Serializes the pending lifecycle (approve, edit, withdraw, delete), edits to live triggers
+// and an event fire's writes, per trigger id. Not reentrant: nothing inside a locked section
+// may call another locked function. The scheduler tick's writes are NOT covered.
 const triggerLock = createKeyedLock();
 
 /**
@@ -247,6 +247,24 @@ export type PendingUpdate =
   | { outcome: 'updated'; trigger: Trigger }
   | { outcome: 'resolved'; status: Trigger['status'] }
   | { outcome: 'gone' };
+
+/**
+ * Changes an approved trigger by re-reading its record inside the lock, so a concurrent writer's change is kept.
+ * Returns null when the record is gone or still pending. `mutate` must be synchronous.
+ */
+export async function updateLiveTrigger(
+  id: string,
+  mutate: (trigger: Trigger) => void,
+): Promise<Trigger | null> {
+  if (!isValidTriggerId(id)) return null;
+  return triggerLock(id, async () => {
+    const trigger = await loadTrigger(id);
+    if (!trigger || trigger.status === 'pending') return null;
+    mutate(trigger);
+    await saveTrigger(trigger);
+    return trigger;
+  });
+}
 
 // `mutate` must be synchronous: nothing but the store may be awaited inside the lock.
 export async function updatePendingTrigger(

@@ -2,7 +2,7 @@
 /** Incoming events dispatcher: hands committed deliveries to consumers, each under a lease another process can take over. */
 import { logger } from '../system/logger.js';
 import type { ClaimedHandoff, IncomingStore } from './store.js';
-import type { IncomingConsumer } from './types.js';
+import type { HandleResult, IncomingConsumer, InboxEndReason } from './types.js';
 
 const LEASE_LOST = 'lost its lease; nothing recorded';
 const MINUTE = 60_000;
@@ -73,7 +73,7 @@ export class IncomingDispatcher {
 
   private async deliverDue(): Promise<void> {
     while (!this.stopped) {
-      this.sweepIfDue();
+      await this.sweepIfDue();
       const claimed = this.store.claimHandoff(this.clock(), this.policy.leaseMs);
       if (!claimed) return;
       await this.deliver(claimed);
@@ -82,7 +82,7 @@ export class IncomingDispatcher {
     }
   }
 
-  private sweepIfDue(): void {
+  private async sweepIfDue(): Promise<void> {
     const now = this.clock();
     if (now - this.sweptAt < this.policy.sweepEveryMs) return;
     // Marked before it runs, so a failing sweep waits for the next interval.
@@ -99,13 +99,20 @@ export class IncomingDispatcher {
       // Deliveries continue when housekeeping fails.
       logger.error('incoming', 'Incoming sweep failed', error);
     }
+    for (const consumer of this.consumers) {
+      try {
+        await consumer.reconcile?.(this.store);
+      } catch (error) {
+        logger.error('incoming', `Incoming consumer ${consumer.kind} failed to reconcile`, error);
+      }
+    }
   }
 
   private async deliver(claimed: ClaimedHandoff): Promise<void> {
     const { handoff, token } = claimed;
     const label = `handoff=${handoff.id} consumer=${handoff.consumerKind}/${handoff.consumerId}`;
 
-    let outcome: 'accepted' | 'skipped';
+    let outcome: HandleResult;
     try {
       outcome = await this.attempt(claimed);
     } catch (error) {
@@ -118,24 +125,35 @@ export class IncomingDispatcher {
       return;
     }
 
-    if (this.store.finishHandoff(handoff.id, token, outcome))
-      logger.system(`Incoming handoff ${outcome}: ${label}`);
+    const reason = outcome.state === 'skipped' ? outcome.reason : null;
+    if (this.store.finishHandoff(handoff.id, token, outcome.state, reason))
+      logger.system(`Incoming handoff ${outcome.state}${reason ? ` (${reason})` : ''}: ${label}`);
     else logger.warn('incoming', `Incoming handoff ${LEASE_LOST}: ${label}`);
   }
 
   /** Records a failed attempt and says what becomes of the handoff. */
   private recordFailure({ handoff, token }: ClaimedHandoff): string {
     const retryIn = this.policy.retryDelaysMs[handoff.attempts - 1];
-    if (retryIn === undefined)
-      return this.store.finishHandoff(handoff.id, token, 'failed') ? 'failed for good' : LEASE_LOST;
+    if (retryIn === undefined) {
+      const reason: InboxEndReason = this.wasInterrupted(handoff.attempts)
+        ? 'interrupted'
+        : 'attempts_exhausted';
+      return this.store.finishHandoff(handoff.id, token, 'failed', reason)
+        ? 'failed for good'
+        : LEASE_LOST;
+    }
     const released = this.store.releaseHandoff(handoff.id, token, this.clock() + retryIn);
     if (released === 'retry') return `retries in ${retryIn} ms`;
     return released === 'cancelled' ? 'cancelled with its input paused or deleted' : LEASE_LOST;
   }
 
-  private async attempt({ handoff, token, body }: ClaimedHandoff): Promise<'accepted' | 'skipped'> {
-    // A crash during the last allowed attempt leaves the handoff pending with its attempts used up.
-    if (handoff.attempts > this.policy.retryDelaysMs.length + 1)
+  /** A crash during the last allowed attempt leaves the handoff pending with its attempts used up. */
+  private wasInterrupted(attempts: number): boolean {
+    return attempts > this.policy.retryDelaysMs.length + 1;
+  }
+
+  private async attempt({ handoff, token, body }: ClaimedHandoff): Promise<HandleResult> {
+    if (this.wasInterrupted(handoff.attempts))
       throw new Error('Interrupted during its last attempt');
     const consumer = this.consumers.find((candidate) => candidate.kind === handoff.consumerKind);
     if (!consumer) throw new Error(`No consumer is registered for kind ${handoff.consumerKind}`);
@@ -143,6 +161,7 @@ export class IncomingDispatcher {
     const work = consumer.handle({
       handoff,
       body,
+      inbox: this.store,
       saveReservation: (reservation) => {
         if (!this.store.saveReservation(handoff.id, token, reservation))
           throw new Error('Lease lost; the reservation was not saved');

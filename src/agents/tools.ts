@@ -132,6 +132,7 @@ import type { Trigger, TriggerBinding, TriggerCondition } from '../types/trigger
 import {
   generateTriggerId,
   saveTrigger,
+  updateLiveTrigger,
   updatePendingTrigger,
   withdrawPendingTrigger,
   loadTrigger,
@@ -163,6 +164,8 @@ import {
   type TriggerOrigin,
 } from '../system/trigger-visibility.js';
 import { isSlackAuthorId, isAppAuthorId } from '../system/trigger-match.js';
+import { incomingEventsEnabled } from '../incoming/runtime.js';
+import { INPUT_ID_PATTERN, inputFilterSchema } from '../incoming/types.js';
 
 // Re-export branch state helpers for consumers that import from tools.ts
 export { hydrateBranchState, findBranchStateByPR };
@@ -2764,9 +2767,11 @@ function createFetchSlackReferenceTool(agent: Agent, task: Task) {
 // Trigger tools (PM-only) — propose / list / update / delete persistent triggers
 // ============================================================================
 
+const eventValue = z.union([z.string(), z.number(), z.boolean(), z.null()]);
+
 /** Zod shape for one tool-supplied trigger condition (shared by propose/update). */
 const triggerConditionObject = z.object({
-  type: z.enum(['schedule', 'channel_message']),
+  type: z.enum(['schedule', 'channel_message', 'incoming_event']),
   cron: z
     .string()
     .optional()
@@ -2793,6 +2798,25 @@ const triggerConditionObject = z.object({
     .optional()
     .describe(
       "Only fire for messages from this author (channel_message). A person's user id (`U…`), or — for a report posted by an app, bot or incoming webhook — that app's bot id (`B…`), which is the id that appears as the author of its messages. Not a name or @handle.",
+    ),
+  input_id: z
+    .string()
+    .optional()
+    .describe(
+      'Input whose events fire the trigger (required for incoming_event), as `inp-…`. An operator creates the input and, after approval, links the trigger to it; until then the trigger receives nothing. Cannot be combined with schedule or channel_message conditions.',
+    ),
+  event_filter: z
+    .array(
+      z.object({
+        pointer: z.string().describe('RFC 6901 JSON pointer into the event, e.g. "/type".'),
+        op: z.enum(['present', 'equals', 'in']),
+        value: eventValue.optional().describe('The value to compare with (op "equals").'),
+        values: z.array(eventValue).optional().describe('The accepted values (op "in").'),
+      }),
+    )
+    .optional()
+    .describe(
+      'Only fire for events that pass every check (incoming_event). Omit to fire on every event the input accepts.',
     ),
 });
 
@@ -2869,7 +2893,8 @@ function makePrivacyResolver(): (channelId: string) => Promise<boolean> {
  * Recurring schedules are interval-checked (≥1h) and get an initial next_run_at;
  * one-offs parse run_at and must be in the future.
  *
- * A message fire replies in the watched thread, not to the binding, so a DM binding is schedule-only.
+ * A message fire replies in the watched thread, not to the binding, so a DM binding cannot watch a channel.
+ * The scheduler tick writes back the record it read before a fire, so event conditions stay on triggers it never fires.
  */
 function buildConditions(
   raw: RawCondition[],
@@ -2926,11 +2951,39 @@ function buildConditions(
         channel_id: c.channel_id,
         ...(Object.keys(match).length ? { match } : {}),
       });
+    } else if (c.type === 'incoming_event') {
+      if (!incomingEventsEnabled())
+        return { error: 'Incoming events are not enabled on this instance.' };
+      if (!c.input_id || !INPUT_ID_PATTERN.test(c.input_id)) {
+        return {
+          error:
+            'An incoming_event condition needs the `input_id` of an input an operator created (`inp-…`).',
+        };
+      }
+      const filter = inputFilterSchema.safeParse(c.event_filter ?? []);
+      if (!filter.success) {
+        const problems = filter.error.issues.map(
+          (issue) => `${issue.path.join('.')}: ${issue.message}`,
+        );
+        return { error: `Invalid event_filter — ${problems.join('; ')}.` };
+      }
+      conditions.push({
+        type: 'incoming_event',
+        input_id: c.input_id,
+        ...(filter.data.length ? { filter: filter.data } : {}),
+      });
     } else {
       return { error: `Unknown condition type "${(c as { type: string }).type}".` };
     }
   }
   if (conditions.length === 0) return { error: 'At least one condition is required.' };
+  const onEvents = conditions.filter((c) => c.type === 'incoming_event').length;
+  if (onEvents > 0 && onEvents < conditions.length) {
+    return {
+      error:
+        'An incoming_event condition cannot share a trigger with a schedule or channel_message condition. Propose a separate trigger for each.',
+    };
+  }
   return { conditions };
 }
 
@@ -2967,7 +3020,7 @@ async function postTriggerApprovalCard(task: Task, trigger: Trigger): Promise<bo
 function createProposeTriggerTool(task: Task) {
   return tool(
     'propose_trigger',
-    'Propose a persistent trigger ("do Y when X happens") for the user to approve. The trigger is created in a pending state and an Approve/Deny prompt is posted — it will NOT run until the user approves. Use this after you and the user have agreed on the cadence (or channel to watch), what to do, and which channel to deliver to. Results are delivered either to a channel or, when you are being asked in a DM, to that DM (binding type "user") — a DM trigger can only be set up from the DM it will deliver to, and can only run on a schedule. You do not need to pause the task.',
+    'Propose a persistent trigger ("do Y when X happens") for the user to approve. The trigger is created in a pending state and an Approve/Deny prompt is posted — it will NOT run until the user approves. Use this after you and the user have agreed on the cadence (or channel to watch), what to do, and which channel to deliver to. Results are delivered either to a channel or, when you are being asked in a DM, to that DM (binding type "user") — a DM trigger can only be set up from the DM it will deliver to, and cannot watch a channel for messages. You do not need to pause the task.',
     {
       binding: z
         .object({
@@ -3105,8 +3158,11 @@ function createProposeTriggerTool(task: Task) {
       );
 
       await postTriggerApprovalCard(task, trigger);
+      const linkNote = built.conditions.some((c) => c.type === 'incoming_event')
+        ? ' After approval it receives events only once an operator links it to the input.'
+        : '';
       return ok(
-        'Trigger proposed and posted for approval. It will not run until the user approves (or types y in the CLI). No need to pause — continue if there is other work.',
+        `Trigger proposed and posted for approval. It will not run until the user approves (or types y in the CLI).${linkNote} No need to pause — continue if there is other work.`,
       );
     },
   );
@@ -3154,6 +3210,14 @@ function detailCondition(c: TriggerCondition, index: number): string {
       `       next run: ${c.next_run_at}`,
     ];
     return lines.join('\n');
+  }
+  if (c.type === 'incoming_event') {
+    return [
+      `${head}an event received by input ${c.input_id}`,
+      c.filter?.length
+        ? `       event_filter (every check must pass): ${JSON.stringify(c.filter)}`
+        : '       event_filter: none — every event the input accepts',
+    ].join('\n');
   }
   const lines = [`${head}a new top-level message in <#${c.channel_id}> (${c.channel_id})`];
   if (c.match?.contains)
@@ -3376,19 +3440,27 @@ function createUpdateTriggerTool(task: Task) {
       if (!editedContent && !statusChange)
         return ok('Nothing to update — pass status, action_prompt, summary, or conditions.');
 
+      const applyEdits = (target: Trigger) => {
+        if (args.action_prompt) target.action.prompt = args.action_prompt;
+        if (args.summary) target.summary = args.summary;
+        if (nextConditions) target.conditions = nextConditions;
+      };
+      // What the edit would produce, for the delivery check that runs before the record changes.
       const candidate: Trigger = {
         ...trigger,
         action: { ...trigger.action },
         conditions: [...trigger.conditions],
       };
-      if (args.action_prompt) candidate.action.prompt = args.action_prompt;
-      if (args.summary) candidate.summary = args.summary;
-      if (nextConditions) candidate.conditions = nextConditions;
+      applyEdits(candidate);
       if (plan.target !== 'unchanged') candidate.status = plan.target;
 
+      // Each write re-reads the record under the store's lock, so it keeps what a fire recorded meanwhile.
+      let updated: Trigger | null;
       if (statusChange === 'paused') {
-        trigger.status = 'paused';
-        await saveTrigger(trigger);
+        updated = await updateLiveTrigger(trigger.id, (stored) => {
+          stored.status = 'paused';
+        });
+        if (!updated) return ok(`No trigger ${args.id} found.`);
         deindexTrigger(trigger.id);
         emitEvent('trigger:paused', task.taskId, { trigger_id: trigger.id });
 
@@ -3398,25 +3470,23 @@ function createUpdateTriggerTool(task: Task) {
             `Trigger ${trigger.id} paused. Requested edits were rejected: ${deliveryError}`,
           );
         }
-        if (editedContent) {
-          await saveTrigger(candidate);
-          await announceTriggerChange(candidate, 'edited');
-        } else {
-          await announceTriggerChange(trigger, 'paused');
-        }
+        if (editedContent) updated = (await updateLiveTrigger(trigger.id, applyEdits)) ?? updated;
+        await announceTriggerChange(updated, editedContent ? 'edited' : 'paused');
       } else {
         const deliveryError = editedContent ? await authorizeTriggerChange(task, candidate) : null;
         if (deliveryError) return err(`Trigger not updated: ${deliveryError}`);
-        await saveTrigger(candidate);
-        if (candidate.status === 'enabled') indexTrigger(candidate);
-        else deindexTrigger(candidate.id);
+        updated = await updateLiveTrigger(trigger.id, (stored) => {
+          applyEdits(stored);
+          if (plan.target !== 'unchanged') stored.status = plan.target;
+        });
+        if (!updated) return ok(`No trigger ${args.id} found.`);
+        if (updated.status === 'enabled') indexTrigger(updated);
+        else deindexTrigger(updated.id);
         if (statusChange === 'resumed')
-          emitEvent('trigger:resumed', task.taskId, { trigger_id: candidate.id });
+          emitEvent('trigger:resumed', task.taskId, { trigger_id: updated.id });
         const change = editedContent ? 'edited' : statusChange;
-        if (change) await announceTriggerChange(candidate, change);
+        if (change) await announceTriggerChange(updated, change);
       }
-
-      const updated = statusChange === 'paused' && !editedContent ? trigger : candidate;
 
       // Report state back so the PM can relay it — especially the auto-resume,
       // which the user didn't explicitly ask for and should be told about.

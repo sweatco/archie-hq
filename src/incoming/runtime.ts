@@ -6,6 +6,7 @@ import type { Application, Request, Response } from 'express';
 import { logger } from '../system/logger.js';
 import { validateMasterKey } from '../system/secrets-vault.js';
 import { INCOMING_DIR, INCOMING_SECRETS_DIR } from '../system/workdir.js';
+import { setOpenInbox } from './access.js';
 import { IncomingDispatcher } from './dispatcher.js';
 import { INCOMING_ROUTE, mountIncomingReceiver } from './receiver.js';
 import { vaultInputSecrets, type InputSecrets } from './secrets.js';
@@ -58,13 +59,18 @@ export function mountIncomingEvents(
     mkdirSync(INCOMING_SECRETS_DIR, { recursive: true, mode: 0o700 });
   } catch (error) {
     // Senders retry a 503, which keeps their events alive until the inbox is back.
-    logger.error('incoming', 'Incoming events inbox cannot be opened; deliveries get 503', error);
+    logger.error(
+      'incoming',
+      'Incoming events inbox cannot be opened; deliveries get 503 and tasks that events started cannot post',
+      error,
+    );
     app.post(INCOMING_ROUTE, (_req: Request, res: Response) => {
       res.status(503).json({ error: 'unavailable' });
     });
     return null;
   }
 
+  setOpenInbox(store);
   mountIncomingReceiver(app, { store, secrets: incomingSecrets(), consumers });
   const dispatcher = new IncomingDispatcher(store, consumers);
   return {
@@ -76,6 +82,7 @@ export function mountIncomingEvents(
       });
       await Promise.race([dispatcher.stop(), waitedLongEnough]);
       clearTimeout(timer);
+      setOpenInbox(null);
       store.close();
     },
   };

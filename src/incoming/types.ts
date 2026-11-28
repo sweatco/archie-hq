@@ -31,6 +31,9 @@ export type PointerCheck = z.infer<typeof pointerCheckSchema>;
 export type InputAuth = 'standard_webhooks' | 'bearer';
 export type InputState = 'enabled' | 'paused' | 'deleted';
 
+/** The shape `createInput` mints. */
+export const INPUT_ID_PATTERN = /^inp-[A-Za-z0-9_-]{22}$/;
+
 export interface Input {
   /** Random and unguessable; public enough to appear in the callback URL and in logs. */
   id: string;
@@ -39,6 +42,9 @@ export interface Input {
   secretRefs: string[];
   /** Every check must pass before any consumer is asked to match. */
   filter: PointerCheck[];
+  /** Ids of the triggers the operator linked: the only routines that receive this input's events. */
+  routines: string[];
+  /** Counts changes to the links; a receipt records the one it was matched under. */
   revision: number;
 }
 
@@ -64,6 +70,15 @@ export interface Receipt {
 
 export type HandoffState = 'pending' | 'accepted' | 'skipped' | 'cancelled' | 'failed';
 
+/** Why the inbox itself ended a handoff. A skip carries its consumer's own reason. */
+export type InboxEndReason =
+  | 'input_paused'
+  | 'input_deleted'
+  | 'attempts_exhausted'
+  | 'interrupted'
+  | 'expired'
+  | 'unreadable';
+
 export interface Handoff {
   id: string;
   receiptId: string;
@@ -83,9 +98,19 @@ export interface ConsumerMatch {
   snapshot: string;
 }
 
+/** What a consumer may read from the inbox, as it is at the moment of the call. */
+export interface InboxView {
+  input(id: string): Input | null;
+  /** Reservations of a consumer's handoffs that ended any way other than `accepted`. */
+  abandonedReservations(consumerKind: string): Array<{ handoffId: string; reservation: string }>;
+}
+
+export type HandleResult = { state: 'accepted' } | { state: 'skipped'; reason: string };
+
 export interface HandoffWork {
   handoff: Handoff;
   body: Uint8Array;
+  inbox: InboxView;
   /** Throws when the lease was lost, which tells the consumer to stop. */
   saveReservation(reservation: string): void;
 }
@@ -96,5 +121,7 @@ export interface IncomingConsumer {
   /** Runs on the request path just before the receipt commits: synchronous and free of effects. */
   match(input: Input, event: Record<string, unknown>): ConsumerMatch[];
   /** May run more than once for a handoff, even concurrently: key the work by the handoff id. Throwing asks for a retry. */
-  handle(work: HandoffWork): Promise<'accepted' | 'skipped'>;
+  handle(work: HandoffWork): Promise<HandleResult>;
+  /** Runs with each sweep, the first at start: drops work whose handoff ended without `handle` seeing it. */
+  reconcile?(inbox: InboxView): Promise<void>;
 }

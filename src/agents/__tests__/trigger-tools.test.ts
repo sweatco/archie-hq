@@ -55,6 +55,7 @@ const {
   listTriggers,
   deleteTrigger,
   countActiveTriggers,
+  updateLiveTrigger,
   updatePendingTrigger,
   withdrawPendingTrigger,
 } = vi.hoisted(() => {
@@ -76,6 +77,13 @@ const {
     await saveTrigger(t);
     return { outcome: 'updated', trigger: t };
   });
+  const updateLiveTrigger = vi.fn(async (id: string, mutate: (t: Trigger) => void) => {
+    const t = await loadTrigger(id);
+    if (!t || t.status === 'pending') return null;
+    mutate(t);
+    await saveTrigger(t);
+    return t;
+  });
   const deleteTrigger = vi.fn();
   const withdrawPendingTrigger = vi.fn(async (id: string) => {
     const t = await loadTrigger(id);
@@ -87,6 +95,7 @@ const {
   return {
     loadTrigger,
     saveTrigger,
+    updateLiveTrigger,
     updatePendingTrigger,
     deleteTrigger,
     withdrawPendingTrigger,
@@ -100,6 +109,7 @@ vi.mock('../../system/trigger-store.js', () => ({
   listTriggers,
   deleteTrigger,
   countActiveTriggers,
+  updateLiveTrigger,
   updatePendingTrigger,
   withdrawPendingTrigger,
   generateTriggerId: vi.fn().mockReturnValue('trg-20260729-1200-newone'),

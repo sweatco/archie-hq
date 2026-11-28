@@ -14,6 +14,7 @@ import { logger } from '../system/logger.js';
 import { stripLastTouched } from './annotations.js';
 import { applyEntityUpdate, listEntities, resolveEntity } from './entities.js';
 import { rebuildIndex } from './entity-index.js';
+import { taskMayUseItsInput } from '../incoming/access.js';
 import { enqueueMemoryWrite } from './lifecycle.js';
 import {
   isAllowedEntityType,
@@ -52,6 +53,7 @@ async function source(
   messageTs: string,
 ): Promise<{ authorId: string; displayName: string; scope: TaskMemoryScope } | null> {
   if (!isMemoryReady() || !isMemoryToolsEnabled()) return null;
+  if (!taskMayUseItsInput(task.metadata)) return null;
   const destination = task.metadata.memory_destination;
   const authorId = task.metadata.memory_message_authors?.[messageTs];
   if (!destination || !authorId || !isMemoryHumanUserId(authorId)) return null;
