@@ -112,9 +112,18 @@ Route actions map to handler types:
 
 These entries are written to the task's knowledge log for the record, and the same line is handed to the PM inline so it can act without reading the file.
 
+## Reading through `gh`
+
+Agents read pull requests, reviews, checks, job logs and code scanning alerts with the `gh` CLI in Bash; the `core:github` skill lists the commands.
+
+- **Token.** At spawn the engine mints an installation token narrowed to read permissions (`src/connectors/github/sandbox-token.ts`). It covers every repository of the installation and lives one hour.
+- **Masking.** The token is passed as `GH_TOKEN` under the SDK's credential masking: Bash reads a placeholder, and the sandbox's egress proxy puts the real value into requests to `api.github.com` only. This needs TLS termination, which applies to every allowed host.
+- **Egress.** `api.github.com` and the Actions log host join the allowlist (`SANDBOX_GITHUB_DOMAINS`). `github.com` does not, so `git push` from Bash still fails at the network.
+- **Without a GitHub App**, or when minting fails, the session starts with `gh` unauthenticated.
+
 ## GitHub MCP Tools
 
-GitHub and git tools live on the `repo-tools` MCP server, defined in `src/agents/tools.ts` (`createRepoToolsMcpServer`) and attached to every task's session. Each tool resolves its target out of `metadata.repositories` — what the task has mounted with `mount_repo` — so there is nothing per-agent to scope. Read tools are always available; the write side is withheld through `disallowedTools` until edit mode is approved.
+GitHub and git tools live on the `repo-tools` MCP server, defined in `src/agents/tools.ts` (`createRepoToolsMcpServer`) and attached to every task's session. Each tool resolves its target out of `metadata.repositories` — what the task has mounted with `mount_repo` — so there is nothing per-agent to scope. The git tools are always available; the write side is withheld through `disallowedTools` until edit mode is approved. GitHub reads are not tools: the session runs `gh` in Bash (see [Reading through `gh`](#reading-through-gh)).
 
 ### Available Tools (via `repo-tools` MCP server)
 
@@ -127,14 +136,6 @@ All tools below are registered on the same `repo-tools` MCP server. The write-si
 | `fetch` | Fetch latest refs from origin. |
 | `switch_branch` | Switch to a different branch. Auto-stashes dirty work, auto-pops on return. |
 | `list_branches` | List branches created or visited by this agent in the current task. |
-| `list_prs` | List pull requests with optional filters (state, base, sort, limit). |
-| `get_pr` | Get full PR details: title, description, diff, state, and branches. |
-| `get_pr_status` | Get PR state, mergeable status, and approval status. Returns `state`, `mergeable`, `mergeableState`, `approved`. |
-| `get_pr_reviews` | Review-level summary for a PR (approvals, change requests, review bodies). |
-| `get_pr_comments` | Top-level PR conversation comments (issue comments). |
-| `get_review_threads` | Every review thread on a PR via GraphQL: `thread_id` (for `resolve_review_thread`) and per-comment `comment_id` (for `reply_to_review_comment`). |
-| `list_code_scanning_alerts` | List code scanning security alerts (e.g. CodeQL) from the repo's Security tab. Filter by state (default open), git ref/branch, or severity. Requires the App's "Code scanning alerts" read permission. |
-| `get_code_scanning_alert` | Full detail for one code scanning alert by number: rule description, severity, state, dismissal info, and the most recent instance (file, line range, ref, message). |
 
 **Edit mode only:**
 

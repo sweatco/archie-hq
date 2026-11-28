@@ -27,8 +27,6 @@ import type { AttachedRepo } from '../../types/task.js';
 vi.mock('../../connectors/github/client.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../connectors/github/client.js')>();
   return {
-    // Keep the real parseCheckRef (pure helper) so get_check_run parses for real.
-    parseCheckRef: actual.parseCheckRef,
     GitHubClient: actual.GitHubClient,
     getGitHubClient: vi.fn(),
     fetchOrigin: vi.fn().mockResolvedValue(undefined),
@@ -85,17 +83,12 @@ const mockGitHubClient = {
   mergePullRequest: vi.fn(),
   closePullRequest: vi.fn(),
   createPullRequest: vi.fn<GitHubClient['createPullRequest']>(),
-  getPRReviews: vi.fn(),
-  getPRComments: vi.fn(),
-  getReviewThreads: vi.fn(),
   updatePR: vi.fn<GitHubClient['updatePR']>(),
   addPRComment: vi.fn(),
   addReviewComment: vi.fn(),
   replyToReviewComment: vi.fn(),
   resolveReviewThread: vi.fn(),
   requestReReview: vi.fn(),
-  getCheckRunById: vi.fn(),
-  getWorkflowRunById: vi.fn(),
   resolveRepo: vi.fn().mockResolvedValue({ default_branch: 'main' }),
 };
 
@@ -599,158 +592,6 @@ describe('close_pull_request', () => {
   });
 });
 
-describe('get_pr_status (read-only server)', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.mocked(getGitHubClient).mockReturnValue(
-      Object.assign(
-        new GitHubClient({ appId: '1', privateKey: 'unused', installationId: 1 }),
-        mockGitHubClient,
-      ),
-    );
-  });
-
-  it('returns formatted status', async () => {
-    mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'open',
-      mergeable: true,
-      mergeableState: 'clean',
-      approved: true,
-    });
-
-    const tool = getRepoTool(makeAgent(), makeTask(), 'get_pr_status');
-    const result = await tool({ pr_number: 5 }, {});
-
-    expect(result.content[0].text).toContain('State: open');
-    expect(result.content[0].text).toContain('Mergeable: true');
-    expect(result.content[0].text).toContain('Approved: true');
-  });
-});
-
-describe('get_check_run', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.mocked(getGitHubClient).mockReturnValue(
-      Object.assign(
-        new GitHubClient({ appId: '1', privateKey: 'unused', installationId: 1 }),
-        mockGitHubClient,
-      ),
-    );
-  });
-
-  it('resolves a legacy /runs/<id> check-run permalink and shows output + log', async () => {
-    mockGitHubClient.getCheckRunById.mockResolvedValue({
-      id: 78033491451,
-      name: 'rspec',
-      app: 'github-actions',
-      status: 'completed',
-      conclusion: 'failure',
-      url: 'https://github.com/org/backend/runs/78033491451',
-      headSha: 'abc1234def',
-      startedAt: null,
-      completedAt: null,
-      output: { title: 'RSpec', summary: '3 failures' },
-      logTail: 'Failures:\n  1) Widget flakes\n  rspec ./spec/widget_spec.rb:12',
-    });
-
-    const tool = getRepoTool(makeAgent(), makeTask(), 'get_check_run');
-    const result = await tool({ ref: 'https://github.com/org/backend/runs/78033491451' }, {});
-
-    expect(mockGitHubClient.getCheckRunById).toHaveBeenCalledWith('org/backend', 78033491451);
-    const text = result.content[0].text;
-    expect(text).toContain('rspec');
-    expect(text).toContain('failure');
-    expect(text).toContain('Failures:');
-    expect(text).toContain('rspec ./spec/widget_spec.rb:12');
-  });
-
-  it('accepts a bare numeric id', async () => {
-    mockGitHubClient.getCheckRunById.mockResolvedValue({
-      id: 999,
-      name: 'lint',
-      app: 'ci',
-      status: 'completed',
-      conclusion: 'success',
-      url: null,
-      headSha: null,
-      startedAt: null,
-      completedAt: null,
-    });
-
-    const tool = getRepoTool(makeAgent(), makeTask(), 'get_check_run');
-    await tool({ ref: '999' }, {});
-
-    expect(mockGitHubClient.getCheckRunById).toHaveBeenCalledWith('org/backend', 999);
-  });
-
-  it('routes an /actions/runs/<id> URL to the workflow-run path', async () => {
-    mockGitHubClient.getWorkflowRunById.mockResolvedValue({
-      id: 555,
-      name: 'CI',
-      status: 'completed',
-      conclusion: 'failure',
-      headSha: 'deadbeef',
-      headBranch: 'main',
-      url: 'https://github.com/org/backend/actions/runs/555',
-      jobs: [
-        { id: 1, name: 'build', status: 'completed', conclusion: 'success', url: null },
-        {
-          id: 2,
-          name: 'test',
-          status: 'completed',
-          conclusion: 'failure',
-          url: null,
-          logTail: 'Failures:\n  boom',
-        },
-      ],
-    });
-
-    const tool = getRepoTool(makeAgent(), makeTask(), 'get_check_run');
-    const result = await tool({ ref: 'https://github.com/org/backend/actions/runs/555' }, {});
-
-    expect(mockGitHubClient.getWorkflowRunById).toHaveBeenCalledWith('org/backend', 555);
-    expect(mockGitHubClient.getCheckRunById).not.toHaveBeenCalled();
-    expect(result.content[0].text).toContain('test (job 2)');
-    expect(result.content[0].text).toContain('boom');
-  });
-
-  it('treats /actions/runs/<run>/job/<job> as a check-run (job id)', async () => {
-    mockGitHubClient.getCheckRunById.mockResolvedValue({
-      id: 42,
-      name: 'rspec',
-      app: 'github-actions',
-      status: 'completed',
-      conclusion: 'failure',
-      url: null,
-      headSha: null,
-      startedAt: null,
-      completedAt: null,
-    });
-
-    const tool = getRepoTool(makeAgent(), makeTask(), 'get_check_run');
-    await tool({ ref: 'https://github.com/org/backend/actions/runs/555/job/42' }, {});
-
-    expect(mockGitHubClient.getCheckRunById).toHaveBeenCalledWith('org/backend', 42);
-  });
-
-  it('refuses a URL pointing at a different repo', async () => {
-    const tool = getRepoTool(makeAgent(), makeTask(), 'get_check_run');
-    const result = await tool({ ref: 'https://github.com/other/repo/runs/1' }, {});
-
-    expect(result.content[0].text).toContain('Error');
-    expect(result.content[0].text).toContain('other/repo');
-    expect(mockGitHubClient.getCheckRunById).not.toHaveBeenCalled();
-  });
-
-  it('errors on an unparseable ref', async () => {
-    const tool = getRepoTool(makeAgent(), makeTask(), 'get_check_run');
-    const result = await tool({ ref: 'not-a-run' }, {});
-
-    expect(result.content[0].text).toContain('Error');
-    expect(mockGitHubClient.getCheckRunById).not.toHaveBeenCalled();
-  });
-});
-
 describe('PM agent tools', () => {
   it('does not include any PR tools', () => {
     const agent = makeAgent();
@@ -766,10 +607,6 @@ describe('PM agent tools', () => {
     const prToolNames = [
       'push_branch',
       'create_pull_request',
-      'get_pr_status',
-      'get_pr_reviews',
-      'get_pr_comments',
-      'get_review_threads',
       'update_pr',
       'add_pr_comment',
       'add_review_comment',

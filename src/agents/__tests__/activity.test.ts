@@ -38,7 +38,6 @@ describe('deriveActivity', () => {
       'opening a pull request',
     );
     expect(deriveActivity('mcp__repo-tools__push_branch', {}, ctx)).toBe('pushing the changes');
-    expect(deriveActivity('mcp__repo-tools__get_pr', {}, ctx)).toBe('reviewing the pull request');
     expect(deriveActivity('mcp__repo-tools__merge_pull_request', {}, ctx)).toBe(
       'merging the changes',
     );

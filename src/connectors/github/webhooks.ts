@@ -356,7 +356,7 @@ export function handleChecksReadyDirect(
     const entry = await appendGitHubEvent(taskId, githubRepo, {
       from: 'ci',
       destination: `PR #${prNumber}`,
-      message: `checks updated — call get_pr_checks(${prNumber}) to inspect`,
+      message: `checks updated — run \`gh pr checks ${prNumber} -R ${githubRepo}\` to inspect`,
     });
     const task = await Task.get(taskId);
     await task.sendMessage(AGENT_PROMPTS.githubActivity(entry));

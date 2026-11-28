@@ -90,7 +90,7 @@ Two `allowRead` entries are holes punched through a broad denial rather than pat
 
 ### Network
 
-Outbound access from `Bash` is deny-all by default: the session cannot `curl` or `wget`, and web access is only available through the research pipeline. The allowlist is the **union** for the whole task: `archie.json`'s `allowedNetworkDomains`, plus the two trusted package registries (`registry.npmjs.org`, `registry.yarnpkg.com`) when edit mode is approved, so `npm`/`yarn` installs and lockfile regeneration work.
+Outbound access from `Bash` is deny-all by default: the session cannot `curl` or `wget`, and web access is only available through the research pipeline. The allowlist is the **union** for the whole task: `archie.json`'s `allowedNetworkDomains`, plus the two trusted package registries (`registry.npmjs.org`, `registry.yarnpkg.com`) when edit mode is approved, so `npm`/`yarn` installs and lockfile regeneration work, plus `api.github.com` and the Actions log host for `gh` ([github-integration.md](github-integration.md#reading-through-gh)).
 
 The allowlist is enforced from the **policy tier** (`managedSettings`), not from the `sandbox` option — see `buildManagedNetworkPolicy`. `sandbox.network.allowedDomains` is silently ignored under `permissionMode: 'bypassPermissions'`, which the session runs under, so the policy tier is what actually holds the boundary. Because that enforcement lives in the Claude CLI rather than in our code it is version-coupled and has regressed before (CLI 2.1.156 → 2.1.157) with our config unchanged. `tools/e2e/egress-check.ts` asserts the boundary against a live instance for exactly this reason — treat an SDK bump as a security-relevant change and re-run it.
 
@@ -153,7 +153,7 @@ The research pipeline is the single channel through which untrusted web content 
 | Force push to any branch | blocked | GitHub branch protection (server-side) |
 | Raw `git checkout` in a clone | blocked | `.git/HEAD` in `denyWrite` (per clone at spawn — see the limitation above) |
 
-The `repo-tools` MCP server is the only pathway to GitHub.
+The `repo-tools` MCP server is the only pathway for GitHub writes. Reads go through `gh` with a read-only token that Bash sees only as a placeholder.
 
 ## Defense Layer 5: Per-task resource budgets
 

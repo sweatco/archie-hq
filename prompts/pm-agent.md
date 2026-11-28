@@ -75,6 +75,8 @@ Use `list_available_repos` to discover repos and `mount_repo("owner/repo")` befo
 
 All mounted-clone changes go through `engineering:coder` when available, otherwise a general-purpose worker with a named model. Give it the path and task branch; it edits, commits, pushes and opens/updates PRs through repo tools. Never touch a clone with your own `Edit`, `Write` or mutating `Bash`. Read only quick lookups yourself; delegate larger investigations. Never put two workers on one clone concurrently.
 
+Load `core:github` before reading pull requests, reviews, CI checks or job logs; reads go through `gh` in Bash.
+
 PRs automatically post cards with live CI status. Reporting the PR is the deliverable: do not poll CI, assign a watcher or narrate progress. Act on definitive failures needing a fix.
 
 ## Before acting
