@@ -14,9 +14,11 @@
 import {
   checkApprovalBeforeMutation,
   checkCalled,
+  checkNoReply,
   checkNotCalled,
   checkOrder,
   checkTerminalState,
+  checkTurnReply,
   parseToolMatcher,
   type Check,
   type ToolMatcher,
@@ -74,6 +76,19 @@ export function approvalBeforeMutation(_output: string, context: AssertionContex
   return toResult(checkApprovalBeforeMutation(recordOf(context), approval, mutation));
 }
 
+export function turnReply(_output: string, context: AssertionContext): GradingResult {
+  const contains = textsOption(context, 'contains');
+  const omits = textsOption(context, 'omits');
+  if (contains.length === 0 && omits.length === 0) {
+    throw new Error('config needs a contains or an omits list');
+  }
+  return toResult(checkTurnReply(recordOf(context), turnOption(context), { contains, omits }));
+}
+
+export function noReply(_output: string, context: AssertionContext): GradingResult {
+  return toResult(checkNoReply(recordOf(context), turnOption(context)));
+}
+
 /** Fails loudly when the assertion runs against another provider's response. */
 function recordOf(context: AssertionContext): SessionRecord {
   const record = context.providerResponse?.metadata?.record;
@@ -90,6 +105,28 @@ function stringOption(context: AssertionContext, key: string): string {
 
 function toolOption(context: AssertionContext, key: string): ToolMatcher {
   return parseToolMatcher(stringOption(context, key));
+}
+
+/** A turn of the case, numbered from 1. */
+function turnOption(context: AssertionContext): number {
+  const turn = context.config?.turn;
+  if (typeof turn !== 'number' || !Number.isInteger(turn) || turn < 1) {
+    throw new Error('config.turn must be a turn number, counted from 1');
+  }
+  return turn;
+}
+
+/** An optional list of texts; absent means none. YAML reads a bare `36` as a number, so quote it. */
+function textsOption(context: AssertionContext, key: string): string[] {
+  const texts = context.config?.[key] ?? [];
+  if (!isTextList(texts)) throw new Error(`config.${key} must be a list of quoted texts`);
+  return texts;
+}
+
+function isTextList(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) && value.every((text) => typeof text === 'string' && text.trim() !== '')
+  );
 }
 
 function toResult(check: Check): GradingResult {

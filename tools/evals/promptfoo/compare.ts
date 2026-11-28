@@ -153,18 +153,25 @@ function sortKeys(value: unknown): unknown {
   return Object.fromEntries(entries.map(([key, inner]) => [key, sortKeys(inner)]));
 }
 
-/** `called(tool=get_order)`, `contains 84.5`, `cost <= 1`: enough to tell a case's checks apart. */
+/**
+ * `called(tool=get_order)`, `turnReply(turn=2, contains=[36])`, `contains 84.5`,
+ * `cost <= 1`: enough to tell a case's checks apart.
+ */
 function nameCheck(assertion: z.infer<typeof assertionSchema>): string {
   const { type, value, threshold, config } = assertion;
   const grader = typeof value === 'string' ? /^file:\/\/.+:(\w+)$/.exec(value)?.[1] : undefined;
   const options = Object.entries(config ?? {})
-    .map(([key, option]) => `${key}=${Array.isArray(option) ? option.join('>') : String(option)}`)
+    .map(([key, option]) => `${key}=${showValue(option)}`)
     .join(', ');
   if (grader) return `${grader}(${options})`;
 
-  const shown = typeof value === 'string' || typeof value === 'number' ? ` ${value}` : '';
+  const isShown = typeof value === 'string' || typeof value === 'number' || Array.isArray(value);
   const limit = threshold === undefined ? '' : ` <= ${threshold}`;
-  return `${type}${shown}${limit}`;
+  return `${type}${isShown ? ` ${showValue(value)}` : ''}${limit}`;
+}
+
+function showValue(value: unknown): string {
+  return Array.isArray(value) ? `[${value.join(', ')}]` : String(value);
 }
 
 // ---- Comparison ----
@@ -449,7 +456,8 @@ export function renderMarkdown(comparison: Comparison): string {
       .filter((check) => check.change !== 0)
       .map(
         (check) =>
-          `| ${item.caseId} | ${item.candidate} | \`${check.name}\` | ${percent(check.baseRate)} | ${percent(check.candidateRate)} | ${signed(check.change * 100, 0, ' pp')} |`,
+          // A regex check's name holds `|`, which would end the table cell even inside a code span.
+          `| ${item.caseId} | ${item.candidate} | \`${check.name.replaceAll('|', '\\|')}\` | ${percent(check.baseRate)} | ${percent(check.candidateRate)} | ${signed(check.change * 100, 0, ' pp')} |`,
       ),
   );
   lines.push('', '## Checks whose pass rate changed', '');

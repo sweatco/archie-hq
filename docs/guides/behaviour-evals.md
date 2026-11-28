@@ -1,6 +1,6 @@
 # Behaviour evals
 
-Tools for grading how the PM behaved in a task: offline, from a finished task's folder alone, or live, by running the same cases on a base and a candidate instance and reporting the change. They are Stages 0 and 2 of the [behaviour evals plan](../plans/20261118-behaviour-evals.md), tracked by issues [#393](https://github.com/sweatco/archie-hq/issues/393) and [#395](https://github.com/sweatco/archie-hq/issues/395). [promptfoo](https://www.promptfoo.dev/) runs the cases, trials and reports; this repository adds what is specific to Archie: the session record, a replay provider, a live provider, the code graders and the comparison script.
+Tools for grading how the PM behaved in a task: offline, from a finished task's folder alone, or live, by running the same cases on a base and a candidate instance and reporting the change. They are Stages 0 and 2 of the [behaviour evals plan](../plans/20261118-behaviour-evals.md), tracked by issues [#393](https://github.com/sweatco/archie-hq/issues/393), [#395](https://github.com/sweatco/archie-hq/issues/395) and [#396](https://github.com/sweatco/archie-hq/issues/396). [promptfoo](https://www.promptfoo.dev/) runs the cases, trials and reports; this repository adds what is specific to Archie: the session record, a replay provider, a live provider, the code graders and the comparison script.
 
 ## Privacy rule
 
@@ -73,8 +73,14 @@ Use promptfoo's `skill-used` for skills and `cost` for cost. The Archie-specific
 | `file://assertions.ts:notCalled` | `tool` | The tool was never called and the record is complete |
 | `file://assertions.ts:order` | `tools` (list) | The tools were called in this order, not necessarily adjacent |
 | `file://assertions.ts:approvalBeforeMutation` | `approval`, `mutation` | Every successful mutation follows its own approval call, and the record is complete |
+| `file://assertions.ts:turnReply` | `turn`, `contains` and `omits` (lists, at least one) | The PM replied to that turn, and its replies hold every `contains` text and none of the `omits`, ignoring case |
+| `file://assertions.ts:noReply` | `turn` | The turn was played and the PM sent no reply to it |
 
 A tool is written as it prints: `Skill(core:triggers)`, `Agent(helper:assistant)`, a full name, or an MCP tool's short name such as `report_completion`.
+
+Turns are numbered from 1. Quote every text in `contains` and `omits`: YAML reads a bare `36` as a number, which the assertion refuses. promptfoo's own text assertions, such as `icontains-any`, `regex` and `not-regex`, read the replies of all turns joined, so they cannot tell the turns of a conversation apart; use them on single-turn cases or for a check that holds across the whole conversation.
+
+Reply and word counts are not asserted. They are measures, compared against base.
 
 `approvalBeforeMutation` sees only the request, not the human's answer. Each approval request covers one mutation, as merge and tool-call grants do; check a task-lifetime approval such as edit mode with `order`. A failed call to the mutation tool counts as its approval request, which covers gated tools whose first attempt is denied.
 
@@ -134,12 +140,88 @@ A turn that does not settle in time ends the trial as `timed_out` in `metadata.l
 
 ### Cases
 
-A case is a promptfoo test. [paired.promptfooconfig.yaml](../../tools/evals/promptfoo/paired.promptfooconfig.yaml) holds two smoke cases on the `orders` fixture plugin.
+A case is a promptfoo test in one of two files:
 
-- `vars.caseId` names the case in the report.
-- `vars.turns` lists the messages in order. A turn's `approvals` lists the answers to the approvals it is expected to raise, each as `{ type, approve }` with a type of `tool_call`, `edit_mode`, `research_budget`, `trigger` or `max_mode`, and each used once. An approval with no answer ends the trial in `approval_requested`.
-- `assert` holds the assertions above; `metadata.guards` names the input the case protects.
-- The tool fixtures are the plugins every eval instance mounts from `examples/plugins`.
+- [paired.promptfooconfig.yaml](../../tools/evals/promptfoo/paired.promptfooconfig.yaml): two smoke cases on the `orders` fixture plugin, for checking that a paired run works.
+- [baseline.promptfooconfig.yaml](../../tools/evals/promptfoo/baseline.promptfooconfig.yaml): the baseline set of 26 cases that a change is compared on.
+
+A case has these fields:
+
+| Field | Meaning |
+| --- | --- |
+| `description` | One line saying what happens in the case |
+| `vars.caseId` | The case's name in the report and in `record.eval`. Unique in its file |
+| `vars.turns` | The messages, sent in order. The first creates the task; each later one is sent once the task has settled |
+| `vars.turns[].approvals` | Answers to the approvals that turn is expected to raise, each as `{ type, approve }` with a type of `tool_call`, `edit_mode`, `research_budget`, `trigger` or `max_mode`, and each used once. An approval with no answer ends the trial in `approval_requested` |
+| `assert` | The [assertions](#assertions) that grade the trial |
+| `metadata.guards` | The behaviour the case protects, in one line |
+| `metadata.source` | Where the case comes from: a merged behaviour pull request, a skill, a rule of the PM prompt, or a fixture of the [concise pilot](../plans/20260926-prompt-only-concise-pilot.md) |
+
+The tool fixtures are the plugins every eval instance mounts from `examples/plugins`: the `orders` stub with its canned orders, the `gatecheck` stub with its worker, and the `helper` skills and worker.
+
+#### The baseline set
+
+| Group | Cases | What they cover |
+| --- | --- | --- |
+| Plugin tools | 7 | Reads from `orders`, a follow-up in the same task, a refund approved and a refund denied, a tool that fails, a record that does not exist |
+| Fixture worker and skill | 2 | A gated write made by the `gatecheck:gatekeeper` worker; the `helper` summary skill on a short text |
+| Core skills | 4 | `core:self-awareness`, `core:triggers` and `core:thread-conduct` are loaded when a request calls for them; a request to stop is answered with `mute_channel` and silence |
+| Approvals and limits | 2 | Max mode is explained, then requested; a repository change is not sent for edit approval when no repository can be mounted |
+| Reply conduct | 11 | The behaviour of pull requests 261, 303, 344, 347 and 381 and of the pilot's fixtures: the result comes first, the reply keeps to the request's scope, a shortened reply keeps its facts, a point is made once per thread, routine thanks gets no reply, a customer draft is only the text to send, and a supplied fact gets no added date, total or statistic |
+
+Five cases have two or three turns. All 26 assert on the terminal state, and 15 assert on tool or skill use over the record.
+
+What the set cannot cover on an eval instance:
+
+- Without Slack there are no reactions, no `<people_in_task>` block, no post to another channel and no trigger. The cases for `core:triggers` and `core:thread-conduct` check that the skill is loaded, not what follows.
+- Without GitHub credentials there is no repository work.
+- Factuality is checked with literal texts: a number the reply must hold, or the one unsupported claim the case names. Unsupported claims in general need the judge of issue [#393](https://github.com/sweatco/archie-hq/issues/393).
+
+#### Adding a case
+
+1. Decide the one behaviour the case protects and write it in `metadata.guards`, with its origin in `metadata.source`.
+2. Write the turns as synthetic messages that use only the fixture plugins' data. A case that production suggested is rewritten first, under the [privacy rule](#privacy-rule).
+3. Give each turn the answers to the approvals it should raise.
+4. Assert on the record where the behaviour is a tool call, and on the reply with `turnReply` where it is text. Prefer a text that a correct reply must hold. Use `omits` only for a literal that an unsupported reply would contain.
+5. Check the file without a model call:
+
+   ```bash
+   npx vitest run tools/evals/promptfoo/cases.test.ts
+   ```
+
+   It parses every case of both files as the live provider does and runs every `assertions.ts` assertion's config against an empty record.
+
+6. If the case needs new canned data, change `examples/plugins/orders/server.mjs` together with `tools/e2e/orders-stub.test.ts`.
+
+Changing a case's `vars` or `assert` makes it a new case for [base reuse](#reusing-base-results): earlier base trials no longer stand in for it.
+
+#### Cost of a run
+
+One trial of every baseline case on both arms cost $7.92 on 2026-11-24, or $3.96 an arm. A one-turn case cost $0.09 to $0.19 a trial, a two-turn case $0.21 to $0.37, and the three-turn case $0.34. Allow about $10 for each trial of the set when choosing a spend cap: the budget counts a timed-out trial at its allowance, so the counted spend runs above the recorded cost.
+
+#### Noise floor
+
+On 2026-11-24 the set ran with both arms on the same commit of `main`, `75d7c770`, SDK 0.3.321, three trials an arm: 156 trials for $23.77. Any difference between the arms of that run is noise.
+
+| Measure | Difference between the two arms |
+| --- | --- |
+| Trials that passed every assertion | 155 of 156. 25 cases passed all six trials; `gatecheck-worker-write-approved` passed five |
+| Pass rate of a case | Equal in 25 cases; one trial of three, 33 points, in one case |
+| Words of a case | Median 7%, 22% at the ninth decile, 48% in the case that lost a reply |
+| Words over the set | 4.2%, with a standard error of 2.5% |
+| Cost over the set | 0.6%, with a standard error of 1.2% |
+| Tool calls over the set | 0.3%, with a standard error of 1.3% |
+| Replies over the set | 1.1%; the count varied only in the three cases that answer an approval |
+
+Read a paired run of three trials an arm against these tolerances:
+
+- **Pass rate:** one trial in one case is noise. Two trials in a case, or the same check moving in several cases, is a change.
+- **Words:** up to 25% in one case and 5% over the set is noise.
+- **Cost and tool calls:** up to 3% over the set is noise.
+
+The tolerances come from one run. Widen them if a later run of `main` against itself exceeds them, and measure again after the model or the SDK changes. The base arm of that run is the saved baseline on `main` for [base reuse](#reusing-base-results); its results file is kept in the private evaluation location.
+
+Three cases were corrected after the first pass and run again: two text checks that failed correct replies, and the max-mode case, which now leaves its approval unanswered (see [Limits](#limits)).
 
 ### Spend cap
 
@@ -189,4 +271,6 @@ Run it with `-n` first to list what would be pulled. Always pass `-o` with a dir
 - A task that is still running when its hold runs out goes on spending. The budget has counted it at its allowance or its recorded cost, whichever was higher; anything it spends beyond that is not counted.
 - A turn that is aborted writes no usage, so its cost is never recorded. The trial then shows `costComplete: false` and counts at its allowance at least.
 - Trials on one instance share its machine and its model rate limits. Concurrency above six per instance is unmeasured.
+- The live provider answers an approval within about a second of the request, before the turn that raised it has ended. A person rarely answers that fast, so a case with an approval also measures that timing. In the noise-floor run the PM told the user of a denied refund in two trials of six, and a denied max-mode request left the task stopped in six of six, its answer never posted.
+- A host that sleeps stalls its instances, and the trials in flight end as `timed_out`. `caffeinate -i` does not keep a laptop awake with its lid closed on battery.
 - The proxy is not a sandbox. Raw TCP and UDP sockets, HTTP/2, an `http`/`https` request with its own `Agent` (including `agent: false`), DNS lookups, and child processes that ignore the proxy variables still reach the network. Providers and assertion files must not open connections of their own.

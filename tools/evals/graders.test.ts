@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   checkApprovalBeforeMutation,
   checkCalled,
+  checkNoReply,
   checkNotCalled,
   checkOrder,
   checkTerminalState,
+  checkTurnReply,
   formatToolCall,
   measureRecord,
   parseToolMatcher,
@@ -75,6 +77,48 @@ describe('measures and state', () => {
       pass: false,
       reason: 'ended stopped',
     });
+  });
+});
+
+describe('reply checks', () => {
+  it('reads the texts of one turn, ignoring case', () => {
+    const texts = (contains: string[], omits: string[] = []) => ({ contains, omits });
+
+    expect(checkTurnReply(record(), 1, texts(['one two', 'FIVE'], ['six']))).toEqual({
+      pass: true,
+      reason: 'the reply to turn 1 has the expected text',
+    });
+    // "Six." was said in turn 2, so turn 1 neither holds it nor is spoiled by it.
+    expect(checkTurnReply(record(), 1, texts(['six', 'seven'], ['four']))).toEqual({
+      pass: false,
+      reason: 'the reply to turn 1 lacks "six", "seven" and has "four"',
+    });
+    expect(checkTurnReply(record(), 2, texts([], ['three'])).pass).toBe(true);
+  });
+
+  it('does not pass on a turn without a reply or one that was not played', () => {
+    const silentSecondTurn = record({
+      turns: [
+        { inbound: 'Question', replies: ['Answer.'] },
+        { inbound: 'Thanks', replies: [] },
+      ],
+    });
+
+    expect(checkTurnReply(silentSecondTurn, 2, { contains: [], omits: ['answer'] })).toEqual({
+      pass: false,
+      reason: 'no reply to turn 2',
+    });
+    expect(checkNoReply(silentSecondTurn, 2)).toEqual({
+      pass: true,
+      reason: '0 reply(ies) to turn 2',
+    });
+    expect(checkNoReply(silentSecondTurn, 1).pass).toBe(false);
+
+    const notPlayed = 'turn 3 was not played: the record has 2 turn(s)';
+    expect(checkNoReply(silentSecondTurn, 3)).toEqual({ pass: false, reason: notPlayed });
+    expect(checkTurnReply(silentSecondTurn, 3, { contains: ['x'], omits: [] }).reason).toBe(
+      notPlayed,
+    );
   });
 });
 
