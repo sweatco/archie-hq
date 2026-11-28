@@ -98,6 +98,16 @@ npm run oauth:refresh <server-name>   # force-refresh a token
 npm run oauth:revoke  <server-name>   # delete a record
 ```
 
+### Incoming events CLI
+
+With `ARCHIE_INCOMING_EVENTS=on`, the daemon accepts webhooks at `POST /webhooks/incoming/:inputId`. Manage inputs where the daemon runs, as the same user, with `ARCHIE_SECRETS_KEY` set. Under docker compose that is inside the container: prefix the commands with `docker compose exec -u archie archie`. See [Incoming Events](../architecture/incoming-events.md).
+
+```bash
+npm run incoming -- create            # prints the callback URL and the secret, once
+npm run incoming -- list              # inputs, their state and what they received
+npm run incoming -- pause <input-id>  # also: resume, delete
+```
+
 ### REST API
 
 In addition to the TUI, you can drive the server with HTTP directly:

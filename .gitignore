@@ -27,8 +27,9 @@ build/
 # GitHub App private keys
 *.pem
 
-# Runtime OAuth tokens (encrypted, but never commit)
+# Runtime OAuth tokens and incoming event secrets (encrypted, but never commit)
 secrets/oauth/
+secrets/incoming/
 
 # Plugin-supplied credential files in the secrets volume
 secrets/*-credentials.json

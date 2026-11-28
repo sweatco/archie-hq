@@ -37,4 +37,7 @@ regexes = [
   # (tools/e2e/eval-profile.ts): a variable name, not a value. Anchored so it
   # cannot cover anything longer.
   '''^E2E_ANTHROPIC_API_KEY$''',
+  # Fixtures in src/incoming/__tests__/authenticate.test.ts: the Standard Webhooks spec's example secret and a dummy bearer token.
+  '''whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw''',
+  '''Zm9vYmFyLXRva2VuLXdpdGgtZW5vdWdoLWVudHJvcHk''',
 ]
