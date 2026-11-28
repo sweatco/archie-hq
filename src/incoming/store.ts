@@ -251,6 +251,17 @@ export class IncomingStore {
     return this.moveInput(id, 'deleted', now);
   }
 
+  /** Removes the row of an input no delivery reached. False when it is unknown or has a receipt, which needs its input. */
+  removeUnusedInput(id: string): boolean {
+    return (
+      this.run(
+        'DELETE FROM inputs WHERE id=? AND NOT EXISTS (SELECT 1 FROM receipts WHERE input_id=?)',
+        id,
+        id,
+      ) > 0
+    );
+  }
+
   /** Points the input at one new key and returns the references it held. A deleted input keeps its keys. */
   replaceSecret(id: string, ref: string): { input: Input; replaced: string[] } | null {
     return inTransaction(this.db, () => {

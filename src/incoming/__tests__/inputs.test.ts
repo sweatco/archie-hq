@@ -8,6 +8,7 @@ import {
   connectionStatus,
   createInput,
   deleteInput,
+  discardInput,
   linkRoutine,
   mayManageInput,
   revealKey,
@@ -72,6 +73,36 @@ it('keeps the owner, the purpose and a reserved id it was given', async () => {
 
   expect(input).toMatchObject({ id: 'inp-RESERVEDRESERVEDRESERV', owner: 'U0DANA' });
   expect(store.input(input.id)).toMatchObject({ owner: 'U0DANA', purpose: 'Deploys' });
+});
+
+it('discards an input no delivery reached, leaving no record and no secret', async () => {
+  const { input } = await createInput({ store, secrets }, { auth: 'bearer', owner: 'U0DANA' });
+
+  await discardInput({ store, secrets }, input.id);
+
+  expect(store.input(input.id)).toBeNull();
+  expect(store.inputSummaries()).toEqual([]);
+  expect(readdirSync(secretsDir)).toEqual([]);
+});
+
+it('deletes an input a delivery already reached when it is discarded', async () => {
+  const { input } = await createInput({ store, secrets }, { auth: 'bearer', owner: 'U0DANA' });
+  store.receive(
+    {
+      inputId: input.id,
+      binding: 'generic',
+      digest: 'd1',
+      body: Buffer.from('{}'),
+      eventKey: 'msg_1',
+      receivedAt: 1000,
+    },
+    [],
+  );
+
+  await discardInput({ store, secrets }, input.id);
+
+  expect(store.input(input.id)?.state).toBe('deleted');
+  expect(readdirSync(secretsDir)).toEqual([]);
 });
 
 it('gives an input made without an owner to the operator alone', async () => {

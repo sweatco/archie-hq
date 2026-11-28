@@ -65,6 +65,17 @@ export async function deleteInput(services: InputServices, id: string): Promise<
   return input;
 }
 
+/** Undoes `createInput`, leaving no record. An input a delivery already reached is deleted instead. */
+export async function discardInput(services: InputServices, id: string): Promise<void> {
+  const input = services.store.input(id);
+  if (!input) return;
+  if (!services.store.removeUnusedInput(id)) {
+    await deleteInput(services, id);
+    return;
+  }
+  for (const ref of input.secretRefs) await services.secrets.remove(ref);
+}
+
 /** The operator manages every input. A Slack user manages the inputs they own; an input without an owner is the operator's alone. */
 export function mayManageInput(input: Input, actor: InputActor): boolean {
   return actor.kind === 'operator' || (input.owner !== null && input.owner === actor.userId);
